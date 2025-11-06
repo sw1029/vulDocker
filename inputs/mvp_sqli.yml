@@ -1,0 +1,10 @@
+{
+  "requirement": "CWE-89 minimal MVP",
+  "scenario_id": "sid-mvp-sqli-0001",
+  "language": "python",
+  "framework": "flask",
+  "database": "sqlite",
+  "entrypoint": "login",
+  "pattern_id": "sqli-string-concat",
+  "seed": 42
+}
