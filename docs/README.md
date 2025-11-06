@@ -27,3 +27,17 @@
 - 노트북은 `experiments/`에 생성하며, 시드·모델 버전·프롬프트 해시·리트리버 스냅샷 ID 등 재현 필수 정보를 맨 앞 셀에 기입한다.
 - 중요 결과는 이미지(또는 표)로 추출하여 `docs/experiments/`에 요약문과 함께 첨부한다.
 
+버전 관리 및 문서 업데이트 절차
+- 문서 변경 시 commit 메시지에 `[docs]` 태그와 연관 TODO/이슈 ID를 포함한다.
+- 주요 결정/정책 변경은 `docs/` 내 CHANGELOG(추후) 또는 관련 문서 하단 "변경 이력" 섹션에 기록한다.
+- 문서와 코드가 함께 변경될 경우 PR 설명에 해당 문서 경로를 명시해 리뷰어가 추적 가능하게 한다.
+
+기록 유지 원칙
+- 모든 회의 메모, 실험 일지, 위험 평가 등은 날짜 기반 파일명(`YYYYMMDD_topic.md`)으로 저장한다.
+- 외부 공유용 문서는 사본을 `docs/share/`(필요 시) 하위에 두고 민감 정보 삭제 여부를 체크한다.
+- 문서 내 참조 경로는 상대 경로를 사용하며, SID/TraceId 등 식별자는 그대로 기입한다.
+
+## 연관 문서
+- `docs/requirements/goal_and_outputs.md`
+- `docs/architecture/project_structure.md`
+- `docs/policies/usage_and_compliance.md`
