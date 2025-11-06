@@ -1,7 +1,0 @@
-{
-  "sid": "sid-mvp-sqli-0001",
-  "timestamp": "2025-11-06T08:10:09.902495Z",
-  "sbom": "/home/ysw/vulDocker/artifacts/sid-mvp-sqli-0001/build/sbom.spdx.json",
-  "poc_log": "/home/ysw/vulDocker/artifacts/sid-mvp-sqli-0001/run/poc_log.json",
-  "verify_pass": true
-}
