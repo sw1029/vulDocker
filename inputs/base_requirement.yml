@@ -1,0 +1,34 @@
+# 기본 요구 템플릿 (필수/선택 항목 주석 포함)
+# 필수: requirement_id, vuln_id, language, framework, seed, retriever_commit,
+#       corpus_snapshot, pattern_id, deps_digest, base_image_digest, runtime.
+# 선택: intent, allow_intentional_vuln, generator_mode, variation_key, dep_guard 등.
+
+requirement_id: BASE-EXAMPLE-0001  # 필수 / 시나리오 식별자
+intent: "설명용 기본 요구"          # 선택 / 요구 목적 설명(로그·리포트용)
+vuln_id: CWE-89                     # 필수 / 취약 유형(CWE/CVE 등)
+language: python                    # 필수 / 주요 프로그래밍 언어
+framework: flask                    # 필수 / 주요 프레임워크
+seed: 1000                          # 필수 / Variation Key 기본 시드
+retriever_commit: stub              # 필수 / RAG 스냅샷 또는 리트리버 커밋
+corpus_snapshot: rag-snap-mvp       # 필수 / RAG 스냅샷 ID
+pattern_id: sqli-string-concat      # 필수 / 템플릿 또는 패턴 식별자
+deps_digest: sha256:placeholder     # 필수 / 의존성 해시
+base_image_digest: sha256:python311 # 필수 / 베이스 이미지 해시
+allow_intentional_vuln: true        # 선택 / 의도적인 취약 허용 여부
+
+runtime:                            # 필수 / 실행 환경 상세
+  base_image: python:3.11-slim      # 필수 / Docker 베이스 이미지
+  package_manager: pip              # 필수 / 패키지 관리자
+  db: sqlite                        # 선택 / 주요 DB 유형
+  allow_external_db: false          # 선택(기본 false) / 외부 DB 허용 여부
+
+generator_mode: template            # 선택 / template|synthesis|hybrid
+variation_key:                      # 선택 / 다변성·재현성 제어
+  mode: deterministic               #   필수(mode) / deterministic|diverse
+  self_consistency_k: 1             #   mode가 diverse일 때 2 이상 권장
+  pattern_pool_seed: 1000           #   템플릿 샘플링 시드
+
+# dep_guard, synthesis_limits 등 추가 설정이 필요한 경우 아래에 확장
+# dep_guard:
+#   llm_assist: true      # (선택) LLM에 의존성 추정을 요청해 guard 중 missing deps 힌트를 강화
+#   auto_patch: false     # (선택) true일 경우 guard가 누락 의존성을 deps[]/requirements*.txt에 자동 반영
