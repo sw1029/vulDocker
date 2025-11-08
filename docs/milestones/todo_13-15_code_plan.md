@@ -297,6 +297,7 @@ synthesis_limits:
 - Reviewer 다중 번들 지원: `agents/reviewer/service.py`가 `plan.run_matrix` 기반으로 번들별 로그/워크스페이스를 분석해 `metadata/<SID>/bundles/<slug>/reviewer_report.json`을 기록하고, 루트 요약/인덱스를 생성한다. LoopController는 차단된 번들 목록을 reason/metadata로 남기며, manifest에는 번들별 reviewer_report 경로가 포함된다.
 - Executor 정책 확장: 요구 입력에 `executor.allow_network`, `executor.network_mode`, `executor.sidecars[]`를 정의하면 PLAN→Executor→manifest로 전달되어 네트워크 허용/사이드카 컨테이너(MySQL 등)를 자동 기동한다. 런 요약 및 manifest에는 네트워크 모드와 사이드카 정보가 기록되고, CI 요약도 이를 출력한다.
 - 네트워크 자동화: 사이드카에 `aliases[]`를 지정하면 Executor가 SID 기반 사용자 정의 Docker 네트워크를 생성해 alias를 적용하고 메인 컨테이너도 동일 네트워크에서 실행한다. 입력에서 `executor.network_name`을 명시할 수도 있으며, bridge/none 모드 간 전환은 정책으로 관리된다.
+- 사이드카 템플릿 가이드: `inputs/base_requirement.yml`과 문서에 MySQL 전용 env 예시뿐 아니라 PostgreSQL 등 다른 DB에 맞춘 주석을 추가하고, `executor.sidecars[].type` 필드로 컨테이너 성격을 명시할 수 있게 했다. 다른 DB 사용 시 해당 이미지 매뉴얼에 맞는 env를 직접 지정해야 함을 강조했다.
 
 ---
 

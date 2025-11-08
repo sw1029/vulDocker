@@ -16,7 +16,7 @@
 - **실행 정책**: 
   - `policy.stop_on_first_failure`(기본 `false`)로 Executor가 첫 실패 번들에서 중단할지 여부를 지정할 수 있다.
   - `executor.allow_network`/`executor.network_mode`/`executor.network_name`으로 `docker run` 네트워크 모드를 제어한다. `allow_network=false`이면 `--network none`, `true`이면 bridge 또는 명시한 사용자 정의 네트워크를 사용한다. `executor.sidecars[].aliases[]`를 지정하면 Executor가 SID 기반의 사용자 정의 네트워크를 자동 생성해 alias를 붙인다.
-  - `executor.sidecars[]` 배열을 사용하면 MySQL 등 외부 의존 서비스를 사이드카 컨테이너로 함께 기동할 수 있으며 `name`, `image`, `env`, `aliases`, `ready_probe`를 정의해 Executor가 health check 후 메인 컨테이너를 실행한다.
+  - `executor.sidecars[]` 배열을 사용하면 외부 의존 서비스를 사이드카 컨테이너로 함께 기동할 수 있으며 `type`(mysql/postgres 등), `name`, `image`, `env`, `aliases`, `ready_probe`를 정의해 Executor가 health check 후 메인 컨테이너를 실행한다. 예시의 `MYSQL_*` 값은 MySQL 전용이며, 다른 DB를 사용할 경우 해당 이미지 매뉴얼에 맞는 환경 변수를 직접 지정해야 한다(아래 주석 예시 참조).
 
 ## 2. 핵심 출력물 4종
 1. **취약 환경 아티팩트**

@@ -50,6 +50,7 @@ executor:
   network_mode: bridge               # allow_network=true일 때 사용할 docker 네트워크. custom network 이름도 지정 가능.
   sidecars:
     - name: mysql                    # 메인 앱과 같은 네트워크에 붙는 MySQL 사이드카 예시
+      type: mysql
       image: mysql:8.0
       env:
         MYSQL_ROOT_PASSWORD: rootpw
@@ -57,6 +58,17 @@ executor:
         MYSQL_USER: sqli
         MYSQL_PASSWORD: sqli_pw
       aliases:
-        - sqli-db                    # 앱 코드에서 사용 중인 DB 호스트명
+        - sqli-db                    # 메인 앱이 DB_HOST 기본값으로 참조하는 호스트명. 여러 alias 가능.
       ready_probe:
         wait_seconds: 5              # 간단 대기 기반 헬스체크. 정교한 체크(예: TCP probe)는 추후 executor 확장에서 지원 예정.
+    # - name: postgres               # 다른 DB(예: PostgreSQL)를 사용할 때는 type/image/env를 해당 컨테이너 요구사항에 맞춰 교체
+    #   type: postgres
+    #   image: postgres:16-alpine
+    #   env:
+    #     POSTGRES_USER: sqli
+    #     POSTGRES_PASSWORD: sqli_pw
+    #     POSTGRES_DB: sqliapp
+    #   aliases:
+    #     - pg-db                    # PostgreSQL 컨테이너를 가리키도록 앱/PoC의 DB_HOST를 설정
+    #   ready_probe:
+    #     wait_seconds: 10

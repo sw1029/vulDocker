@@ -158,15 +158,16 @@ def _normalize_executor_policy(requirement: Dict[str, Any]) -> Dict[str, Any]:
                 if isinstance(alias, str) and alias.strip():
                     aliases.append(alias.strip())
         result["sidecars"].append(
-            {
-                "name": entry.get("name", "sidecar"),
-                "image": entry.get("image"),
-                "env": entry.get("env") or {},
-                "ready_probe": entry.get("ready_probe") or {},
-                "network_mode": entry.get("network_mode") or result["network_mode"],
-                "aliases": aliases,
-            }
-        )
+                {
+                    "name": entry.get("name", "sidecar"),
+                    "type": entry.get("type"),
+                    "image": entry.get("image"),
+                    "env": entry.get("env") or {},
+                    "ready_probe": entry.get("ready_probe") or {},
+                    "network_mode": entry.get("network_mode") or result["network_mode"],
+                    "aliases": aliases,
+                }
+            )
     if not result["sidecars"]:
         result["sidecars"] = []
     return result
