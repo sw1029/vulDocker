@@ -1,0 +1,21 @@
+requirement_id: REG-RES-CWE
+vuln_id: CWE-89
+intent: Researcher regression with CWE-only context
+language: python
+framework: flask
+seed: 21010
+retriever_commit: stub
+corpus_snapshot: rag-snap-20251108
+pattern_id: sqli-string-concat
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+allow_intentional_vuln: true
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+  db: sqlite
+  allow_external_db: false
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 21010

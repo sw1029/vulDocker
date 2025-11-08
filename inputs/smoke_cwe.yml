@@ -1,0 +1,14 @@
+requirement_id: CWE-SMOKE-0001
+vuln_id: CWE-89
+intent: Minimal CWE smoke test
+language: python
+framework: flask
+seed: 2025
+retriever_commit: "stub"
+corpus_snapshot: rag-snap-20251108
+pattern_id: sqli-string-concat
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+allow_intentional_vuln: true
+variation_key:
+  mode: deterministic

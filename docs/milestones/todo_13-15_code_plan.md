@@ -283,6 +283,14 @@ synthesis_limits:
 - 다양성 지표 리포트(H, 시나리오 거리) + 재현율 리포트는 `docs/milestones/diversity_report.md`로 집계.
 - 최신 CVE 성공 사례는 `artifacts/sid-cve-<id>/`에 저장하고, `docs/reporting/reproducibility_report_template.md` 기반 리포트를 자동 생성.
 
+#### 진행 상황 (2025-11-08)
+- Researcher 실행체계: `agents/researcher/service.py`·`agents/researcher/main.py`가 `docs/schemas/researcher_report.md` JSON을 출력하며, `common/prompts/templates.py`의 `build_researcher_prompt`와 `rag/tools/web_search.py`(원격/로컬 하이브리드 검색), `orchestrator/plugins/react_loop.py`(trace span=`researcher.react`, Reflexion 기반 query 증강)로 ReAct 루프를 구성했다.
+- Variation Manager: `common/variability/manager.py`가 Variation Key를 정규화하고, `orchestrator/plan.py`, `agents/generator/service.py`, `agents/reviewer/service.py`, `agents/researcher/service.py`가 동일 스펙으로 디코딩 프로파일·self-consistency·패턴 시드를 제어한다.
+- 외부 DB 가드: 템플릿 경로(`agents/generator/service.py`)가 기본적으로 `runtime.allow_external_db=false` 요구를 존중하여 외부 DB가 필요한 템플릿을 필터링하고, 실행기(`executor/runtime/docker_local.py`)는 실패 시에도 컨테이너 로그를 수집하도록 보강했다. 요구 스펙(`docs/requirements/goal_and_outputs.md`)에 `runtime.allow_external_db`를 명시적으로 정의해 입력 단계에서 허용 여부를 규정했다.
+- 최신 CVE ingest: `rag/ingest/cve_feed.py`가 NVD RSS/CISA JSON을 `rag/corpus/raw/poc/<YYYYMMDD>/`로 적재하고 `rag/index/rag-snap-<date>/metadata.json`을 생성해 prompt.md·docs/rag/* 규약에 맞는 스냅샷 파이프라인을 완성했다.
+- 다양성 지표 출력: `evals/diversity_metrics.py`가 `metadata/<SID>/plan.json`과 `generator_candidates.json`을 읽어 샤논 엔트로피·시나리오 거리·재현율을 계산하고, 결과를 `artifacts/<SID>/reports/diversity.json`에 기록하여 TODO 15 산출물(variability_report)과 ops/observability KPI(엔트로피/재현율) 요구를 충족한다.
+- 스모크 테스트: `ops/ci/smoke_regression.sh` 스크립트가 deterministic/dverse self-consistency 플로우를 자동 실행·검증하여 PoC 성공과 템플릿 다양성(후보 수 ≥ 2)을 회귀 테스트로 보장한다.
+
 ---
 
 ## 4. 정합성 검토 요약

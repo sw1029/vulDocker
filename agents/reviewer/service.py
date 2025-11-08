@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from common.config import get_decoding_profile
 from common.llm import LLMClient
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir
 from common.prompts import build_reviewer_prompt
+from common.variability import VariationManager
 from orchestrator.loop_controller import LoopController
 
 LOGGER = get_logger(__name__)
@@ -48,7 +48,8 @@ class ReviewerService:
         self.workspace = Path(self.plan["paths"]["workspace"])
         loop_cfg = self.plan.get("loop", {"max_loops": 3})
         self.loop_controller = LoopController(sid, max_loops=int(loop_cfg.get("max_loops", 3)))
-        profile = get_decoding_profile(mode)
+        self.variation_manager = VariationManager(self.plan.get("variation_key"), seed=self.plan["requirement"].get("seed"))
+        profile = self.variation_manager.profile_for("reviewer", override_mode=mode)
         reviewer_model = self.plan["requirement"].get("reviewer_model") or self.plan["requirement"].get(
             "model_version", "gpt-4.1-mini"
         )

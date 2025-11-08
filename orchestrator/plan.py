@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.sid import SID_FIELDS, compute_sid
+from common.variability import VariationManager
 
 LOGGER = get_logger(__name__)
 
@@ -61,19 +62,8 @@ def _default_components(requirement: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _normalize_variation_key(requirement: Dict[str, Any]) -> Dict[str, Any]:
-    provided = requirement.get("variation_key") or {}
-    mode = (provided.get("mode") or "deterministic").lower()
-    default_k = 5 if mode == "diverse" else 1
-    normalized = {
-        "mode": mode,
-        "self_consistency_k": int(provided.get("self_consistency_k") or default_k),
-        "pattern_pool_seed": int(
-            provided.get("pattern_pool_seed", requirement.get("seed", 0)) or 0
-        ),
-    }
-    if normalized["self_consistency_k"] < 1:
-        normalized["self_consistency_k"] = 1
-    return normalized
+    seed = requirement.get("seed", 0)
+    return VariationManager.normalize(requirement.get("variation_key"), seed=seed)
 
 
 def _loop_config(requirement: Dict[str, Any]) -> Dict[str, int]:

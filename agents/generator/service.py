@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from common.config import DecodingProfile, get_decoding_profile
+from common.config import DecodingProfile
 from common.llm import LLMClient
 from common.logging import get_logger
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.prompts import build_generator_prompt
+from common.variability import VariationManager
 from rag import latest_failure_context, load_hints, load_static_context
 from orchestrator.loop_controller import LoopController
 
@@ -150,9 +151,13 @@ class GeneratorService:
         self.metadata_dir = _metadata_dir(self.plan)
         self.workspace = _workspace_dir(self.plan)
         self.requirement = self.plan["requirement"]
-        self.variation = self.plan.get("variation_key", {})
+        self.variation_manager = VariationManager(
+            self.plan.get("variation_key"),
+            seed=self.requirement.get("seed"),
+        )
+        self.variation = self.variation_manager.key
         self.loop_index = self._read_loop_index()
-        self.profile: DecodingProfile = get_decoding_profile(mode)
+        self.profile: DecodingProfile = self.variation_manager.profile_for("generator", override_mode=mode)
         model = self.requirement.get("model_version", "gpt-4.1-mini")
         self.llm = LLMClient(model, self.profile)
         self.generator_mode = (self.requirement.get("generator_mode") or "template").lower()
@@ -194,6 +199,15 @@ class GeneratorService:
                 break
         return "-".join(part.replace(" ", "-").lower() for part in parts if part)
 
+    def _allow_external_db(self) -> bool:
+        runtime = self.requirement.get("runtime") or {}
+        if isinstance(runtime, dict) and "allow_external_db" in runtime:
+            return bool(runtime["allow_external_db"])
+        if "allow_external_db" in self.requirement:
+            return bool(self.requirement["allow_external_db"])
+        # Default to False because executor runs with --network none.
+        return False
+
     def _build_context(self) -> GeneratorContext:
         rag_snapshot = (
             self.requirement.get("rag_snapshot")
@@ -212,7 +226,7 @@ class GeneratorService:
         return GeneratorContext(rag=rag_context, failure=failure_context, hints=hints)
 
     def _candidate_k(self) -> int:
-        return max(1, int(self.variation.get("self_consistency_k", 1)))
+        return self.variation_manager.self_consistency_k("generator")
 
     def run(self) -> None:
         context = self._build_context()
@@ -343,9 +357,32 @@ class GeneratorService:
         return "\n".join(parts)
 
     def _select_template(self) -> Tuple[TemplateSpec, List[TemplateCandidate]]:
-        seed = int(self.variation.get("pattern_pool_seed", 0)) + self.loop_index
+        seed = self.variation_manager.pattern_seed_with_offset(self.loop_index)
         k = self._candidate_k()
         candidates = self._get_registry().sample_candidates(seed=seed, k=k)
+        allow_external = self._allow_external_db()
+        filtered: List[TemplateCandidate] = []
+        skipped = 0
+        for candidate in candidates:
+            if not allow_external and candidate.template.requires_external_db:
+                skipped += 1
+                continue
+            filtered.append(candidate)
+        if not filtered:
+            if skipped:
+                LOGGER.warning(
+                    "All sampled templates for %s require external databases but runtime disallows them; "
+                    "falling back to original pool.",
+                    self.sid,
+                )
+            filtered = candidates
+        elif skipped:
+            LOGGER.info(
+                "Filtered %s template candidate(s) requiring external DB for %s (runtime disallows external DB).",
+                skipped,
+                self.sid,
+            )
+        candidates = filtered
         votes: Dict[str, List[TemplateCandidate]] = {}
         for candidate in candidates:
             votes.setdefault(candidate.template.id, []).append(candidate)

@@ -1,0 +1,22 @@
+requirement_id: REG-HYB-MYSQL
+vuln_id: CWE-89
+intent: Hybrid mode regression (external DB path)
+language: python
+framework: flask
+seed: 21008
+retriever_commit: stub
+corpus_snapshot: rag-snap-20251108
+pattern_id: sqli-string-concat
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+allow_intentional_vuln: true
+generator_mode: hybrid
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+  db: mysql
+  allow_external_db: true
+variation_key:
+  mode: deterministic
+  self_consistency_k: 2
+  pattern_pool_seed: 21008

@@ -1,0 +1,21 @@
+requirement_id: REG-RES-CVE
+vuln_id: CVE-2024-0001
+intent: Researcher regression with CVE input
+language: python
+framework: flask
+seed: 21009
+retriever_commit: stub
+corpus_snapshot: rag-snap-20251108
+pattern_id: sqli-string-concat
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+allow_intentional_vuln: true
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+  db: sqlite
+  allow_external_db: false
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 21009

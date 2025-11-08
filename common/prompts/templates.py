@@ -1,8 +1,8 @@
-"""Structured prompts shared by Generator and Reviewer agents."""
+"""Structured prompts shared by Researcher, Generator, and Reviewer agents."""
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 def build_generator_prompt(
@@ -87,6 +87,46 @@ def build_reviewer_prompt(run_summary: Dict[str, object]) -> List[Dict[str, str]
     )
     user_payload = json.dumps(run_summary, indent=2, ensure_ascii=False)
     user = "Analyze the following run summary and spot regressions.\n" + user_payload
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_researcher_prompt(
+    requirement: Dict[str, object],
+    *,
+    search_results: List[Dict[str, Any]],
+    rag_context: str,
+    failure_context: str = "",
+    variation_key: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, str]]:
+    """Return messages instructing the Researcher to emit schema-compliant JSON."""
+
+    system = (
+        "You are the Researcher agent. Produce ONLY compact JSON per docs/schemas/researcher_report.md. "
+        "Use ReAct-style reasoning internally but return the final JSON object without commentary."
+    )
+    requirement_payload = json.dumps(requirement, indent=2, ensure_ascii=False)
+    search_payload = json.dumps(search_results or [], indent=2, ensure_ascii=False)
+    sections = [
+        "Create a researcher report JSON covering vuln_id, intent, preconditions, "
+        "tech_stack_candidates, minimal_repro_steps, references, pocs, deps, risks, "
+        "retrieval_snapshot_id, and optionally failure_context. "
+        "Cite relevant references and align with docs/architecture/agents_contracts.md."
+        "\n\n# Requirement\n{req}"
+        "\n\n# Search Findings\n{search}"
+        "\n\n# RAG Context\n{rag}".format(
+            req=requirement_payload,
+            search=search_payload,
+            rag=rag_context or "(snapshot empty)",
+        )
+    ]
+    if failure_context:
+        sections.append(f"\n# Failure Context\n{failure_context}")
+    if variation_key:
+        sections.append(f"\n# Variation Key\n{json.dumps(variation_key, indent=2, ensure_ascii=False)}")
+    user = "".join(sections)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},

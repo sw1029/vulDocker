@@ -115,8 +115,12 @@ def run_container_with_poc(sid: str, image_tag: str, run_dir: Path) -> None:
             "--base-url",
             "http://127.0.0.1:5000",
         ]
-        run_command(exec_cmd, run_log)
         logs_cmd = [DOCKER_BIN, "logs", container_name]
+        try:
+            run_command(exec_cmd, run_log)
+        except ExecutorError:
+            run_command(logs_cmd, run_log, check=False)
+            raise
         run_command(logs_cmd, run_log, check=False)
     finally:
         subprocess.run([DOCKER_BIN, "stop", container_name], check=False)
