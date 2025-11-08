@@ -84,6 +84,18 @@ class LLMClient:
 ## 2. TODO 14 – 핵심 안정화
 목표: Generator/Reviewer 분리, Docker 격리 강화, DB 연동 SQLi 확대, 실패 케이스 분석·Reflexion 메모리 적용. (`docs/milestones/roadmap.md` 2단계)
 
+### 2.0 진행 현황 (2024-11-06)
+- `orchestrator/plan.py`가 Variation Key에 `self_consistency_k`, `pattern_pool_seed`를 자동 포함하고 `loop.max_loops`를 기록하도록 확장했다.
+- `rag/memories/reflexion_store.jsonl` + `orchestrator/loop_controller.py` 조합으로 실패 루프 메모리를 JSONL로 적재하고, Reviewer가 차단 시 자동으로 Reflexion 레코드를 남긴다.
+- `agents/generator/service.py`는 `workspaces/templates/sqli/*` 패턴 풀(Flask+SQLite, Flask+MySQL)에서 self-consistency 샘플링 후 다수결로 템플릿을 선택하고, 실패 컨텍스트(`rag.memories.latest_failure_context`)를 프롬프트에 주입한다.
+- `agents/reviewer/service.py`는 실행 로그/정적 분석을 결합하여 `docs/schemas/reviewer_report.md` 스키마에 맞는 보고서를 생성하고, Loop Controller를 통해 성공/실패를 기록한다.
+- `executor/runtime/docker_db.py`는 내부 Docker 네트워크에 DB 컨테이너(MySQL)와 취약 앱을 함께 배치하고, PoC 실행·SBOM 작성·로그 수집을 수행한다.
+- SBOM 생성은 `syft packages docker:<image>` → 실패 시 구버전 CLI(`syft docker:<image> -o spdx-json`) 순으로 시도해 `docs/executor/sbom_guideline.md`와 정합성을 맞췄다. 실패 시 경고 후 패키징을 중단하지 않지만, 성공 시 SPDX JSON만 남도록 했다.
+- `workspaces/templates/sqli/flask_mysql_union/app/Dockerfile`에서 DB 비밀번호 등 민감 ENV를 제거해 `docs/ops/security_gates.md`의 “SecretsUsedInArgOrEnv” 경고를 해소하고, 실행 시점(`docker run -e ...`) 주입 방식과 일치시켰다.
+- `orchestrator/pack.py`는 `metadata/<SID>/loop_state.json`의 `last_result`가 `success`가 될 때까지 PACK을 차단해 `docs/architecture/orchestration_and_tracing.md`의 REVIEW 게이트 요구를 강제한다.
+- 교육용(의도적 취약) 시나리오를 위해 `inputs/*.yml`에 `allow_intentional_vuln: true`를 지정하고, PACK 단계에서 `--allow-intentional-vuln` 옵션을 명시하면 Reviewer가 blocking이어도 예외적으로 패키징할 수 있도록 정책 완화 플래그를 추가했다. 해당 예외는 plan.metadata.policy에 기록되어 감사 가능하다.
+- `ops/observability/failure_dashboard.json`과 `experiments/02_stabilization_reflexion.ipynb`로 실패율/KPI 시각화, Reflexion 실험 로그 수집 경로를 마련했다.
+
 ### 2.1 코드 작업 목록
 | 경로 | 작업 내용 | 주요 의존 문서 |
 | --- | --- | --- |

@@ -1,0 +1,11 @@
+{
+  "id": "flask_sqlite_raw",
+  "name": "Flask + SQLite raw query",
+  "pattern_id": "sqli-sqlite-raw",
+  "db": "sqlite",
+  "description": "Classic CWE-89 example backed by a local SQLite file with an unsanitized /profile endpoint.",
+  "stability_score": 0.65,
+  "tags": ["cwe-89", "raw-query", "sqlite"],
+  "requires_external_db": false,
+  "ports": {"app": 5000}
+}

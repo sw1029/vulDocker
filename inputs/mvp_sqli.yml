@@ -3,6 +3,7 @@ vuln_id: CWE-89
 language: python
 framework: flask
 orm: raw-sql
+allow_intentional_vuln: true
 runtime:
   base_image: python:3.11-slim
   package_manager: pip

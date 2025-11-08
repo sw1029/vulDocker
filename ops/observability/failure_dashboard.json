@@ -1,0 +1,121 @@
+{
+  "uid": "failure-reflexion-kpi",
+  "title": "Failure + Reflexion KPIs",
+  "tags": ["todo14", "stabilization"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Loop Failure Rate (REVIEW)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-default"
+      },
+      "targets": [
+        {
+          "expr": "rate(vul_loop_failures_total{stage=\"REVIEW\"}[5m])",
+          "legendFormat": "{{sid}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "req/s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.1},
+              {"color": "red", "value": 0.5}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Average Loop Count (last 24h)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-default"
+      },
+      "targets": [
+        {
+          "expr": "avg_over_time(vul_loop_iterations{stage=\"REVIEW\"}[24h])",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 2},
+              {"color": "red", "value": 3}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Recent Reflexion Entries",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki-default"
+      },
+      "targets": [
+        {
+          "expr": "{component=\"reflexion-store\"} |= \"blocking\" | json",
+          "refId": "C"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "reason"},
+            "properties": [
+              {"id": "custom.width", "value": 400}
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "sid",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus-default"},
+        "refresh": 2,
+        "query": "label_values(vul_loop_failures_total, sid)"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  }
+}

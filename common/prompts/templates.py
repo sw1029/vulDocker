@@ -5,7 +5,12 @@ import json
 from typing import Dict, List
 
 
-def build_generator_prompt(requirement: Dict[str, object], rag_context: str) -> List[Dict[str, str]]:
+def build_generator_prompt(
+    requirement: Dict[str, object],
+    rag_context: str,
+    *,
+    failure_context: str = "",
+) -> List[Dict[str, str]]:
     """Return chat-style messages for the Generator agent."""
 
     system = (
@@ -14,12 +19,15 @@ def build_generator_prompt(requirement: Dict[str, object], rag_context: str) -> 
         "Emit concise plans and highlight assumptions."
     )
     user_payload = json.dumps(requirement, indent=2, ensure_ascii=False)
-    user = (
+    sections = [
         "Create a build plan for a vulnerable environment using the following "
         "requirement JSON and RAG snippets. Do not write code; focus on plan, "
         "key files, and PoC outline.\n\n"
         f"# Requirement\n{user_payload}\n\n# RAG Context\n{rag_context}"
-    )
+    ]
+    if failure_context:
+        sections.append(f"\n# Failure Context\n{failure_context}")
+    user = "".join(sections)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},

@@ -60,6 +60,33 @@ def _default_components(requirement: Dict[str, Any]) -> Dict[str, str]:
     return components
 
 
+def _normalize_variation_key(requirement: Dict[str, Any]) -> Dict[str, Any]:
+    provided = requirement.get("variation_key") or {}
+    mode = (provided.get("mode") or "deterministic").lower()
+    default_k = 5 if mode == "diverse" else 1
+    normalized = {
+        "mode": mode,
+        "self_consistency_k": int(provided.get("self_consistency_k") or default_k),
+        "pattern_pool_seed": int(
+            provided.get("pattern_pool_seed", requirement.get("seed", 0)) or 0
+        ),
+    }
+    if normalized["self_consistency_k"] < 1:
+        normalized["self_consistency_k"] = 1
+    return normalized
+
+
+def _loop_config(requirement: Dict[str, Any]) -> Dict[str, int]:
+    loop = requirement.get("loop") or {}
+    max_loops = int(loop.get("max_loops", 3))
+    return {"max_loops": max(1, max_loops)}
+
+
+def _policy_config(requirement: Dict[str, Any]) -> Dict[str, bool]:
+    allow_intentional = bool(requirement.get("allow_intentional_vuln", False))
+    return {"allow_intentional_vuln": allow_intentional}
+
+
 def build_plan(requirement: Dict[str, Any]) -> Dict[str, Any]:
     sid = compute_sid(_default_components(requirement))
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -67,7 +94,9 @@ def build_plan(requirement: Dict[str, Any]) -> Dict[str, Any]:
         "sid": sid,
         "created_at": timestamp,
         "requirement": requirement,
-        "variation_key": requirement.get("variation_key", {"mode": "deterministic"}),
+        "variation_key": _normalize_variation_key(requirement),
+        "loop": _loop_config(requirement),
+        "policy": _policy_config(requirement),
         "state": "PLAN",
         "paths": {
             "metadata": str(get_metadata_dir(sid)),

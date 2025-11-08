@@ -2,5 +2,11 @@ __pycache__/
 *.pyc
 artifacts/
 metadata/
-workspaces/
+workspaces/*
+!workspaces/.gitignore
+!workspaces/templates/
+!workspaces/templates/**
 config/api_keys.ini
+
+# Runtime-generated memories/logs (do not commit)
+rag/memories/*.jsonl

@@ -1,0 +1,11 @@
+{
+  "id": "flask_mysql_union",
+  "name": "Flask + MySQL UNION-based SQLi",
+  "pattern_id": "sqli-union-mysql",
+  "db": "mysql",
+  "description": "Flask API backed by MySQL with an intentionally unsafe /statement endpoint that supports UNION-based injection.",
+  "stability_score": 0.78,
+  "tags": ["cwe-89", "mysql", "union-based"],
+  "requires_external_db": true,
+  "ports": {"app": 5000, "db": 3306}
+}
