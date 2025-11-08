@@ -291,6 +291,7 @@ synthesis_limits:
 - 다양성 지표 출력: `evals/diversity_metrics.py`가 `metadata/<SID>/plan.json`과 `generator_candidates.json`을 읽어 샤논 엔트로피·시나리오 거리·재현율을 계산하고, 결과를 `artifacts/<SID>/reports/diversity.json`에 기록하여 TODO 15 산출물(variability_report)과 ops/observability KPI(엔트로피/재현율) 요구를 충족한다.
 - 스모크 테스트: `ops/ci/smoke_regression.sh` 스크립트가 deterministic/dverse self-consistency 플로우를 자동 실행·검증하여 PoC 성공과 템플릿 다양성(후보 수 ≥ 2)을 회귀 테스트로 보장한다.
 - 로그 레벨 제어: `common/logging.py`를 확장해 `VUL_LOG_LEVEL` 환경 변수로 파이프라인 전반의 로그 레벨을 조정할 수 있게 했으며, LiteLLM 로그도 동일 수준으로 정렬된다.
+- 사용자 정의 deps 주입: 요구 입력에 `user_deps[]`를 명시하면 Generator(템플릿/합성 공통)가 `manifest.deps`와 `requirements.txt`에 자동 반영하고, 메타데이터(`metadata/<SID>/user_deps.json`)로 기록하여 guard/auto patch와 연동할 수 있게 했다.
 
 ---
 

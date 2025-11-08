@@ -9,7 +9,7 @@ fi
 REQ_PATH="$1"
 MODE="${2:-deterministic}"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
 if ! command -v docker >/dev/null 2>&1; then

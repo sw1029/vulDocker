@@ -156,6 +156,7 @@ class GeneratorService:
             seed=self.requirement.get("seed"),
         )
         self.variation = self.variation_manager.key
+        self.user_deps = self._normalize_user_deps()
         self.loop_index = self._read_loop_index()
         self.profile: DecodingProfile = self.variation_manager.profile_for("generator", override_mode=mode)
         model = self.requirement.get("model_version", "gpt-4.1-mini")
@@ -208,6 +209,58 @@ class GeneratorService:
         # Default to False because executor runs with --network none.
         return False
 
+    def _normalize_user_deps(self) -> List[str]:
+        deps = self.requirement.get("user_deps") or []
+        if not isinstance(deps, list):
+            LOGGER.warning("user_deps must be a list of strings; ignoring %s", deps)
+            return []
+        normalized: List[str] = []
+        for entry in deps:
+            if isinstance(entry, str):
+                value = entry.strip()
+                if value:
+                    normalized.append(value)
+            else:
+                LOGGER.warning("Ignoring non-string user_dep value: %s", entry)
+        return normalized
+
+    def _apply_user_deps_to_workspace(self) -> List[str]:
+        if not self.user_deps:
+            return []
+        requirements_path = self.workspace / "requirements.txt"
+        requirements_path.parent.mkdir(parents=True, exist_ok=True)
+        existing: List[str] = []
+        if requirements_path.exists():
+            existing = [
+                line.strip()
+                for line in requirements_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        lower_seen = {line.lower() for line in existing}
+        merged = list(existing)
+        added: List[str] = []
+        for dep in self.user_deps:
+            key = dep.lower()
+            if key in lower_seen:
+                continue
+            merged.append(dep)
+            lower_seen.add(key)
+            added.append(dep)
+        if added:
+            requirements_path.write_text("\n".join(merged) + "\n", encoding="utf-8")
+            LOGGER.info("Applied user_deps to requirements.txt: %s", added)
+        return added
+
+    def _record_user_deps_metadata(self, added: List[str]) -> None:
+        if not self.user_deps:
+            return
+        payload = {
+            "user_deps_requested": self.user_deps,
+            "user_deps_added": added,
+        }
+        path = self.metadata_dir / "user_deps.json"
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
     def _build_context(self) -> GeneratorContext:
         rag_snapshot = (
             self.requirement.get("rag_snapshot")
@@ -258,6 +311,8 @@ class GeneratorService:
         while True:
             try:
                 outcome = self._run_synthesis_once(context)
+                added_user_deps = self._apply_user_deps_to_workspace()
+                self._record_user_deps_metadata(added_user_deps)
                 self.loop_controller.record_success(stage="GENERATOR", note="synthesis succeeded")
                 LOGGER.info(
                     "Synthesis candidate #%s materialized %s files for %s",
@@ -295,6 +350,7 @@ class GeneratorService:
             workspace=self.workspace,
             metadata_dir=self.metadata_dir,
             mode=self.generator_mode,
+            user_deps=self.user_deps,
         )
         return engine.run(
             requirement=self.requirement,
@@ -315,7 +371,16 @@ class GeneratorService:
         (self.metadata_dir / "generator_llm_plan.md").write_text(llm_notes, encoding="utf-8")
         selection, candidates = self._select_template()
         written_files = self._get_registry().materialize(selection, self.workspace)
-        self._write_metadata(selection, candidates, written_files, context.failure, mode_label=mode_label)
+        added_user_deps = self._apply_user_deps_to_workspace()
+        self._record_user_deps_metadata(added_user_deps)
+        self._write_metadata(
+            selection,
+            candidates,
+            written_files,
+            context.failure,
+            mode_label=mode_label,
+            user_deps_added=added_user_deps,
+        )
         self.loop_controller.record_success(stage="GENERATOR", note=f"template mode: {mode_label}")
 
     def _latest_generator_failure(self) -> Dict[str, Any]:
@@ -408,6 +473,7 @@ class GeneratorService:
         failure_context: str,
         *,
         mode_label: str,
+        user_deps_added: Optional[List[str]] = None,
     ) -> None:
         candidates_path = self.metadata_dir / "generator_candidates.json"
         candidates_payload = {
@@ -425,6 +491,8 @@ class GeneratorService:
             "loop_index": self.loop_index,
             "failure_context": failure_context,
             "written_files": written_files,
+            "user_deps_requested": self.user_deps,
+            "user_deps_added": user_deps_added or [],
         }
         summary_path = self.metadata_dir / "generator_template.json"
         summary_path.write_text(json.dumps(selection_payload, indent=2, ensure_ascii=False), encoding="utf-8")

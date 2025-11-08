@@ -175,6 +175,7 @@ class SynthesisEngine:
         workspace: Path,
         metadata_dir: Path,
         mode: str,
+        user_deps: Sequence[str] | None = None,
     ) -> None:
         self.sid = sid
         self.llm = llm
@@ -182,6 +183,7 @@ class SynthesisEngine:
         self.workspace = workspace
         self.metadata_dir = ensure_dir(metadata_dir)
         self.mode = mode
+        self._user_deps = [dep.strip() for dep in (user_deps or []) if isinstance(dep, str) and dep.strip()]
         ensure_dir(self.workspace.parent)
         self._dep_guard_config: Dict[str, Any] = {}
         base_stdlib = getattr(sys, "stdlib_module_names", None) or set()
@@ -231,6 +233,7 @@ class SynthesisEngine:
             raw = self.llm.generate(messages)
             manifest = self._parse_manifest(raw, idx)
             manifest = self._apply_poc_template(manifest, poc_template)
+            manifest = self._inject_user_deps(manifest)
             declared = self._extract_declared_dependencies(manifest)
             required_static = self._detect_required_dependencies(manifest)
             llm_section = None
@@ -644,6 +647,7 @@ class SynthesisEngine:
             "rag_snapshot_digest": hashlib.sha256(rag_context.encode("utf-8")).hexdigest()
             if rag_context
             else "",
+            "user_deps": self._user_deps,
         }
         manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
         self._write_candidate_log(reports)
@@ -1276,6 +1280,21 @@ class SynthesisEngine:
             if sep in token:
                 return token.split(sep, 1)[0].strip()
         return token.strip()
+
+
+    def _inject_user_deps(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._user_deps:
+            return manifest
+        deps = [dep for dep in (manifest.get("deps") or []) if isinstance(dep, str) and dep.strip()]
+        lower_seen = {dep.lower() for dep in deps}
+        for dep in self._user_deps:
+            key = dep.lower()
+            if key in lower_seen:
+                continue
+            deps.append(dep)
+            lower_seen.add(key)
+        manifest["deps"] = deps
+        return manifest
 
 
 __all__ = ["SynthesisEngine", "SynthesisLimits", "ManifestValidationError"]
