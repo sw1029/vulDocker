@@ -292,6 +292,11 @@ synthesis_limits:
 - 스모크 테스트: `ops/ci/smoke_regression.sh` 스크립트가 deterministic/dverse self-consistency 플로우를 자동 실행·검증하여 PoC 성공과 템플릿 다양성(후보 수 ≥ 2)을 회귀 테스트로 보장한다.
 - 로그 레벨 제어: `common/logging.py`를 확장해 `VUL_LOG_LEVEL` 환경 변수로 파이프라인 전반의 로그 레벨을 조정할 수 있게 했으며, LiteLLM 로그도 동일 수준으로 정렬된다.
 - 사용자 정의 deps 주입: 요구 입력에 `user_deps[]`를 명시하면 Generator(템플릿/합성 공통)가 `manifest.deps`와 `requirements.txt`에 자동 반영하고, 메타데이터(`metadata/<SID>/user_deps.json`)로 기록하여 guard/auto patch와 연동할 수 있게 했다.
+- 다중 취약 파이프라인: `common/schema/requirement.py`가 `vuln_ids` 정규화와 `vuln_ids_digest` 생성을 담당하고, `common/run_matrix.py` + Researcher/Generator/Executor/Eval CLI가 `plan.run_matrix.vuln_bundles[]`를 순회해 취약별 workspace(`workspaces/<SID>/app/<slug>`), 메타데이터(`metadata/<SID>/bundles/<slug>/...`), 아티팩트(`artifacts/<SID>/build|run/<slug>/...`)를 생성한다. 루트 인덱스(JSON)는 `researcher_reports.json`, `generator_runs.json`, `run/index.json`, `reports/evals.json`을 통해 번들별 산출물을 집계한다.
+- Manifest/정책 확장: PACK 단계가 `metadata/<SID>/manifest.json`에 번들별 패턴/경로/빌드·RUN·Eval 결과를 기록하고, Executor/Eval은 `policy.stop_on_first_failure`를 통해 첫 실패 시 중단할지 여부를 제어한다. CI 스크립트(`ops/ci/run_case.sh`)는 manifest를 읽어 번들 상태를 요약 출력한다.
+- Reviewer 다중 번들 지원: `agents/reviewer/service.py`가 `plan.run_matrix` 기반으로 번들별 로그/워크스페이스를 분석해 `metadata/<SID>/bundles/<slug>/reviewer_report.json`을 기록하고, 루트 요약/인덱스를 생성한다. LoopController는 차단된 번들 목록을 reason/metadata로 남기며, manifest에는 번들별 reviewer_report 경로가 포함된다.
+- Executor 정책 확장: 요구 입력에 `executor.allow_network`, `executor.network_mode`, `executor.sidecars[]`를 정의하면 PLAN→Executor→manifest로 전달되어 네트워크 허용/사이드카 컨테이너(MySQL 등)를 자동 기동한다. 런 요약 및 manifest에는 네트워크 모드와 사이드카 정보가 기록되고, CI 요약도 이를 출력한다.
+- 네트워크 자동화: 사이드카에 `aliases[]`를 지정하면 Executor가 SID 기반 사용자 정의 Docker 네트워크를 생성해 alias를 적용하고 메인 컨테이너도 동일 네트워크에서 실행한다. 입력에서 `executor.network_name`을 명시할 수도 있으며, bridge/none 모드 간 전환은 정책으로 관리된다.
 
 ---
 

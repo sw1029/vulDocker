@@ -5,7 +5,12 @@
 
 requirement_id: BASE-EXAMPLE-0001  # 필수 / 시나리오 식별자
 intent: "설명용 기본 요구"          # 선택 / 요구 목적 설명(로그·리포트용)
-vuln_id: CWE-89                     # 필수 / 취약 유형(CWE/CVE 등)
+vuln_ids:                        # (선택) 다중 취약 지정 예시 (기본 샘플은 2개 취약 번들을 생성)
+  - CWE-89
+  - CWE-352
+multi_vuln: true                 # (선택) --multi-vuln CLI 플래그와 동일, true일 때 vuln_ids 전체를 처리
+# 단일 취약 시나리오를 테스트하려면 위 두 필드를 주석 처리하고 아래 vuln_id를 사용하세요.
+# vuln_id: CWE-89
 language: python                    # 필수 / 주요 프로그래밍 언어
 framework: flask                    # 필수 / 주요 프레임워크
 seed: 1000                          # 필수 / Variation Key 기본 시드
@@ -32,7 +37,26 @@ variation_key:                      # 선택 / 다변성·재현성 제어
   self_consistency_k: 1             #   mode가 diverse일 때 2 이상 권장
   pattern_pool_seed: 1000           #   템플릿 샘플링 시드
 
-# dep_guard, synthesis_limits 등 추가 설정이 필요한 경우 아래에 확장
+
 dep_guard:
    llm_assist: true      # (선택) LLM에 의존성 추정을 요청해 guard 중 missing deps 힌트를 강화
    auto_patch: true     # (선택) true일 경우 guard가 누락 의존성을 deps[]/requirements*.txt에 자동 반영
+
+policy:
+  stop_on_first_failure: false       # (선택) true일 경우 Executor가 첫 실패 번들에서 실행을 중단
+
+executor:
+  allow_network: true                # true면 docker run 시 네트워크를 개방(기본 none → bridge). 외부 DB가 필요 없으면 false 권장.
+  network_mode: bridge               # allow_network=true일 때 사용할 docker 네트워크. custom network 이름도 지정 가능.
+  sidecars:
+    - name: mysql                    # 메인 앱과 같은 네트워크에 붙는 MySQL 사이드카 예시
+      image: mysql:8.0
+      env:
+        MYSQL_ROOT_PASSWORD: rootpw
+        MYSQL_DATABASE: sqliapp
+        MYSQL_USER: sqli
+        MYSQL_PASSWORD: sqli_pw
+      aliases:
+        - sqli-db                    # 앱 코드에서 사용 중인 DB 호스트명
+      ready_probe:
+        wait_seconds: 5              # 간단 대기 기반 헬스체크. 정교한 체크(예: TCP probe)는 추후 executor 확장에서 지원 예정.

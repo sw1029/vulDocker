@@ -1,0 +1,18 @@
+requirement_id: MULTI-SAMPLE-0001
+intent: "다중 취약 번들 데모"
+vuln_ids:
+  - CWE-089
+  - CWE-352
+multi_vuln: true
+language: python
+framework: flask
+seed: 4242
+retriever_commit: rag-snap-demo
+corpus_snapshot: rag-snap-demo
+pattern_id: dual-demo
+deps_digest: sha256:demo
+base_image_digest: sha256:python311
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+  db: sqlite

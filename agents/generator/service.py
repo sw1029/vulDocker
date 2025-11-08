@@ -16,7 +16,14 @@ from common.config import DecodingProfile
 from common.llm import LLMClient
 from common.logging import get_logger
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
+from common.plan import load_plan
 from common.prompts import build_generator_prompt
+from common.run_matrix import (
+    VulnBundle,
+    bundle_requirement,
+    metadata_dir_for_bundle,
+    workspace_dir_for_bundle,
+)
 from common.variability import VariationManager
 from rag import latest_failure_context, load_hints, load_static_context
 from orchestrator.loop_controller import LoopController
@@ -24,13 +31,6 @@ from orchestrator.loop_controller import LoopController
 from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits, SynthesisOutcome
 
 LOGGER = get_logger(__name__)
-
-
-def _load_plan(sid: str) -> Dict[str, Any]:
-    plan_path = get_metadata_dir(sid) / "plan.json"
-    if not plan_path.exists():
-        raise FileNotFoundError(f"Plan not found for {sid}")
-    return json.loads(plan_path.read_text(encoding="utf-8"))
 
 
 def _metadata_dir(plan: Dict[str, Any]) -> Path:
@@ -145,12 +145,17 @@ class GeneratorService:
         sid: str,
         mode: str = "deterministic",
         template_root: Path | None = None,
+        *,
+        plan: Dict[str, Any] | None = None,
+        bundle: VulnBundle | None = None,
     ) -> None:
         self.sid = sid
-        self.plan = _load_plan(sid)
-        self.metadata_dir = _metadata_dir(self.plan)
-        self.workspace = _workspace_dir(self.plan)
-        self.requirement = self.plan["requirement"]
+        self.plan = plan or load_plan(sid)
+        self.bundle = bundle
+        self.metadata_dir = metadata_dir_for_bundle(self.plan, bundle) if bundle else _metadata_dir(self.plan)
+        self.workspace = workspace_dir_for_bundle(self.plan, bundle) if bundle else _workspace_dir(self.plan)
+        base_requirement = self.plan["requirement"]
+        self.requirement = bundle_requirement(base_requirement, bundle) if bundle else base_requirement
         self.variation_manager = VariationManager(
             self.plan.get("variation_key"),
             seed=self.requirement.get("seed"),

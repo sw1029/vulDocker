@@ -27,17 +27,25 @@ ScenarioEntry {
 ```
 
 ## 2. Scenario ID(SID)
-- 정의: `SID = H(model_version || prompt_hash || seed || retriever_commit || corpus_snapshot || pattern_id || deps_digest || base_image_digest)`.
+- 정의: `SID = H(model_version || prompt_hash || seed || retriever_commit || corpus_snapshot || pattern_id || deps_digest || base_image_digest [|| vuln_ids_digest])`.
+  - `vuln_ids_digest = sha256(join(sorted(vuln_ids)))`는 다중 취약 모드(`plan.features.multi_vuln=true`)일 때만 접미한다.
 - 해시 함수: SHA-256(기본), 필요 시 BLAKE3.
 - Variation Key(예: `{top_p, temperature, self_consistency_k, pattern_pool_seed}`)는 SID 외부에 저장하며 다양성 요구 시 변경.
 
 ## 3. 아티팩트 디렉토리 규칙
 - 구조: `artifacts/<SID>/`
-  - `build/` : Dockerfile, 이미지 manifest, SBOM(`sbom.spdx.json` 또는 `.cdx`)
-  - `run/` : PoC 실행 로그, 메트릭, traces dump
-  - `reports/` : 재현 리포트, Reviewer 보고서, PoC 판정 결과
+  - `build/` : Dockerfile, 이미지 manifest, SBOM(`sbom.spdx.json` 또는 `.cdx`). 다중 취약일 경우 `build/<slug>/`에 취약별 빌드 로그·SBOM을 저장한다.
+  - `run/` : PoC 실행 로그, 메트릭, traces dump. 다중 취약일 경우 `run/<slug>/run.log` + `summary.json`, 루트 `run/index.json`은 모든 번들의 로그 위치와 image_tag를 집계한다.
+  - `reports/` : 재현 리포트, Reviewer 보고서, PoC 판정 결과. Eval 출력(`evals.json`)은 `results[]` 배열을 통해 취약별 판정을 병렬로 기록한다.
   - `metadata.json` : ScenarioEntry 정보 + Variation Key + KPI
+- 다중 취약 모드에서는 `metadata/<SID>/bundles/<slug>/...`에 Researcher/Generator/Reviewer 산출물을 저장하고, 루트 인덱스(`metadata/<SID>/researcher_reports.json`, `metadata/<SID>/generator_runs.json`)로 번들별 경로를 취합한다.
 - 압축 및 해시: 각 하위 폴더 tarball 생성 시 SHA-256 기록.
+- PACK 단계에서 작성되는 `metadata/<SID>/manifest.json`은 아래 정보를 포함한다.
+  - `features`, `policy`, `vuln_ids`, `vuln_ids_digest`
+  - `indices`(`researcher_reports`, `generator_runs`, `reviewer_report`, `run/index.json`, `reports/evals.json`, `reports/diversity.json`)
+  - `bundles[]`: `vuln_id`, `slug`, `pattern_id`, `deps_digest`, `paths.workspace|metadata|build|run`, `artifacts.build_log|sbom|run_log|run_summary|eval_result`, `researcher_report`, `generator_template`, `reviewer_report`, `artifacts.run_summary.network_mode`, `artifacts.run_summary.sidecars[]`
+  - `reports.evals`(`overall_pass` + `results[]`) 및 `reports.diversity`
+  - 향후 PACK 확장에서 `bundles[].artifact_hash`를 포함시켜 SBOM/이미지 무결성 검증을 단일 JSON에서 수행할 예정.
 
 ## 4. 버전 및 보존 정책
 - **버전 태깅**: `sid` + `revision`(loop count) 조합으로 동일 SID 내 반복 수정 추적.

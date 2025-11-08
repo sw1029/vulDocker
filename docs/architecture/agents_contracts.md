@@ -28,6 +28,7 @@
   "retrieval_snapshot_id": "rag-snap-20241106"
 }
 ```
+- 다중 취약 모드(`requirement.multi_vuln: true` 또는 PLAN `features.multi_vuln`)에서는 `requirement.vuln_ids[]` 순서대로 보고서를 작성하고, 각 보고서는 해당 `vuln_id`를 명시해야 한다.
 - **도구 사용**: 검색 API, 사내 문헌, 코드 저장소. 외부 호출 시 안전 정책 준수(네트워크 허용 도메인 목록).
 
 ## 2. Generator

@@ -4,12 +4,14 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from common.llm import LLMClient
 from common.logging import get_logger
-from common.paths import ensure_dir, get_metadata_dir
+from common.paths import ensure_dir
+from common.plan import load_plan
 from common.prompts import build_researcher_prompt
+from common.run_matrix import VulnBundle, bundle_requirement, metadata_dir_for_bundle
 from common.variability import VariationManager
 from orchestrator.plugins import ReactLoop, ReactSpan
 from rag.static_loader import load_static_context
@@ -18,21 +20,25 @@ from rag.tools import SearchResult, WebSearchTool
 LOGGER = get_logger(__name__)
 
 
-def _load_plan(sid: str) -> Dict[str, Any]:
-    plan_path = get_metadata_dir(sid) / "plan.json"
-    if not plan_path.exists():
-        raise FileNotFoundError(f"Plan not found for {sid}")
-    return json.loads(plan_path.read_text(encoding="utf-8"))
-
-
 class ResearcherService:
     """Produces researcher_report.json aligned with docs/schemas/researcher_report.md."""
 
-    def __init__(self, sid: str, mode: str = "deterministic", search_limit: int = 3) -> None:
+    def __init__(
+        self,
+        sid: str,
+        mode: str = "deterministic",
+        search_limit: int = 3,
+        *,
+        plan: Optional[Dict[str, Any]] = None,
+        bundle: Optional[VulnBundle] = None,
+    ) -> None:
         self.sid = sid
-        self.plan = _load_plan(sid)
-        self.metadata_dir = ensure_dir(Path(self.plan["paths"]["metadata"]))
-        self.requirement = self.plan["requirement"]
+        self.plan = plan or load_plan(sid)
+        self.bundle = bundle
+        base_metadata_dir = ensure_dir(Path(self.plan["paths"]["metadata"]))
+        self.metadata_dir = metadata_dir_for_bundle(self.plan, bundle) if bundle else base_metadata_dir
+        base_requirement = self.plan["requirement"]
+        self.requirement = bundle_requirement(base_requirement, bundle) if bundle else base_requirement
         self.variation_manager = VariationManager(self.plan.get("variation_key"), seed=self.requirement.get("seed"))
         self.profile = self.variation_manager.profile_for("researcher", override_mode=mode)
         model = (

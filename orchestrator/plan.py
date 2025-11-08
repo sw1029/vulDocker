@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
+from common.schema import RequirementNormalization, RequirementValidationError, normalize_requirement
 from common.sid import SID_FIELDS, compute_sid
 from common.variability import VariationManager
 
@@ -72,28 +73,50 @@ def _loop_config(requirement: Dict[str, Any]) -> Dict[str, int]:
     return {"max_loops": max(1, max_loops)}
 
 
-def _policy_config(requirement: Dict[str, Any]) -> Dict[str, bool]:
+def _policy_config(normalization: RequirementNormalization) -> Dict[str, Any]:
+    requirement = normalization.requirement
     allow_intentional = bool(requirement.get("allow_intentional_vuln", False))
-    return {"allow_intentional_vuln": allow_intentional}
+    policy_section = requirement.get("policy") or {}
+    stop_on_first_failure = bool(
+        policy_section.get("stop_on_first_failure", requirement.get("stop_on_first_failure", False))
+    )
+    return {
+        "allow_intentional_vuln": allow_intentional,
+        "stop_on_first_failure": stop_on_first_failure,
+        "executor": normalization.executor_policy,
+    }
 
 
-def build_plan(requirement: Dict[str, Any]) -> Dict[str, Any]:
-    sid = compute_sid(_default_components(requirement))
+def build_plan(normalization: RequirementNormalization) -> Dict[str, Any]:
+    components = _default_components(normalization.requirement)
+    if normalization.vuln_ids_digest:
+        components["vuln_ids_digest"] = normalization.vuln_ids_digest
+    sid = compute_sid(components)
     timestamp = datetime.now(timezone.utc).isoformat()
     plan = {
         "sid": sid,
         "created_at": timestamp,
-        "requirement": requirement,
-        "variation_key": _normalize_variation_key(requirement),
-        "loop": _loop_config(requirement),
-        "policy": _policy_config(requirement),
+        "requirement": normalization.requirement,
+        "variation_key": _normalize_variation_key(normalization.requirement),
+        "loop": _loop_config(normalization.requirement),
+        "policy": _policy_config(normalization),
         "state": "PLAN",
+        "features": {"multi_vuln": normalization.multi_vuln},
+        "requested_vuln_ids": normalization.requested_vuln_ids,
+        "vuln_ids": normalization.effective_vuln_ids,
         "paths": {
             "metadata": str(get_metadata_dir(sid)),
             "workspace": str(get_workspace_dir(sid)),
             "artifacts": str(get_artifacts_dir(sid)),
         },
     }
+    if normalization.vuln_ids_digest:
+        plan["vuln_ids_digest"] = normalization.vuln_ids_digest
+    plan["run_matrix"] = {"vuln_bundles": normalization.bundles}
+    if normalization.ignored_vuln_ids:
+        plan["ignored_vuln_ids"] = normalization.ignored_vuln_ids
+    if normalization.warnings:
+        plan["warnings"] = normalization.warnings
     return plan
 
 
@@ -109,16 +132,28 @@ def write_plan(plan: Dict[str, Any]) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plan stage for MVP")
     parser.add_argument("--input", required=True, type=Path, help="Requirement YAML/JSON file")
+    parser.add_argument(
+        "--multi-vuln",
+        action="store_true",
+        help="Opt into multi-vulnerability bundling for a single SID",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    requirement = _load_requirement(args.input)
-    missing_fields = [field for field in SID_FIELDS if field not in requirement]
+    raw_requirement = _load_requirement(args.input)
+    missing_fields = [field for field in SID_FIELDS if field not in raw_requirement]
     if missing_fields:
         LOGGER.info("Missing optional SID components will use defaults: %s", missing_fields)
-    plan = build_plan(requirement)
+    try:
+        normalization = normalize_requirement(raw_requirement, multi_vuln_opt_in=args.multi_vuln)
+    except RequirementValidationError as exc:
+        LOGGER.error("Invalid requirement: %s", exc)
+        raise SystemExit(1) from exc
+    for warning in normalization.warnings:
+        LOGGER.warning("%s", warning)
+    plan = build_plan(normalization)
     plan_path = write_plan(plan)
     LOGGER.info("Scenario %s planned. Metadata written to %s", plan["sid"], plan_path)
 

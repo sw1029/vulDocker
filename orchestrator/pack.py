@@ -7,6 +7,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -14,6 +15,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
+from common.plan import load_plan
+from common.run_matrix import (
+    artifacts_dir_for_bundle,
+    load_vuln_bundles,
+    metadata_dir_for_bundle,
+    workspace_dir_for_bundle,
+)
 
 LOGGER = get_logger(__name__)
 
@@ -27,13 +35,6 @@ def parse_args() -> argparse.Namespace:
         help="Bypass REVIEW blocking gate when plan.policy.allow_intentional_vuln is true.",
     )
     return parser.parse_args()
-
-
-def load_plan(sid: str) -> dict:
-    plan_path = get_metadata_dir(sid) / "plan.json"
-    if not plan_path.exists():
-        raise FileNotFoundError(f"Plan file missing for {sid}: {plan_path}")
-    return json.loads(plan_path.read_text(encoding="utf-8"))
 
 
 def snapshot_workspace(sid: str) -> Path:
@@ -70,17 +71,108 @@ def assert_review_passed(sid: str, plan: dict, allow_intentional: bool) -> None:
 
 def write_manifest(sid: str, plan: dict) -> Path:
     metadata_dir = get_metadata_dir(sid)
+    artifacts_dir = get_artifacts_dir(sid)
+    bundles = _collect_bundle_records(plan, sid)
+    reports_dir = artifacts_dir / "reports"
     manifest = {
         "sid": sid,
         "packed_at": datetime.now(timezone.utc).isoformat(),
         "variation_key": plan.get("variation_key"),
         "paths": plan.get("paths"),
         "status": "success",
+        "features": plan.get("features", {}),
+        "policy": plan.get("policy", {}),
+        "vuln_ids": plan.get("vuln_ids") or [plan.get("requirement", {}).get("vuln_id")],
+        "vuln_ids_digest": plan.get("vuln_ids_digest"),
+        "bundles": bundles,
+        "indices": _collect_indices(metadata_dir, artifacts_dir),
+        "reports": {
+            "evals": _load_json(reports_dir / "evals.json"),
+            "diversity": _load_json(reports_dir / "diversity.json"),
+        },
     }
     manifest_path = metadata_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     LOGGER.info("Manifest written to %s", manifest_path)
     return manifest_path
+
+
+def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, Any]]:
+    bundles: List[Dict[str, Any]] = []
+    eval_data = _load_json(get_artifacts_dir(sid) / "reports" / "evals.json") or {}
+    eval_results = eval_data.get("results") or []
+    eval_map = {entry.get("slug") or entry.get("vuln_id"): entry for entry in eval_results}
+    run_index = _load_json(get_artifacts_dir(sid) / "run" / "index.json") or {"runs": []}
+    run_map = {entry.get("slug"): entry for entry in run_index.get("runs", [])}
+    requirement = plan.get("requirement", {})
+    dep_digest = requirement.get("deps_digest")
+
+    for bundle in load_vuln_bundles(plan):
+        metadata_dir = metadata_dir_for_bundle(plan, bundle)
+        workspace_dir = workspace_dir_for_bundle(plan, bundle)
+        build_dir = artifacts_dir_for_bundle(plan, bundle, "build")
+        run_dir = artifacts_dir_for_bundle(plan, bundle, "run")
+        researcher_report = metadata_dir / "researcher_report.json"
+        generator_template = metadata_dir / "generator_template.json"
+        reviewer_report = metadata_dir / "reviewer_report.json"
+        generator_payload = _load_json(generator_template)
+        pattern_id = (generator_payload or {}).get("pattern_id") or requirement.get("pattern_id")
+        run_record = run_map.get(bundle.slug, {})
+        eval_record = eval_map.get(bundle.slug) or eval_map.get(bundle.vuln_id)
+
+        bundle_entry = {
+            "vuln_id": bundle.vuln_id,
+            "slug": bundle.slug,
+            "pattern_id": pattern_id,
+            "deps_digest": dep_digest,
+            "paths": {
+                "workspace": str(workspace_dir),
+                "metadata": str(metadata_dir),
+                "build": str(build_dir),
+                "run": str(run_dir),
+            },
+            "artifacts": {
+                "build_log": _existing(build_dir / "build.log"),
+                "sbom": _existing(build_dir / "sbom.spdx.json"),
+                "run_log": _existing(run_dir / "run.log"),
+                "run_summary": run_record,
+                "eval_result": eval_record,
+            },
+            "researcher_report": _existing(researcher_report),
+            "generator_template": _existing(generator_template),
+            "reviewer_report": _existing(reviewer_report),
+        }
+        bundles.append(bundle_entry)
+    return bundles
+
+
+def _collect_indices(metadata_dir: Path, artifacts_dir: Path) -> Dict[str, Optional[str]]:
+    indices = {
+        "researcher_reports": _existing(metadata_dir / "researcher_reports.json"),
+        "generator_runs": _existing(metadata_dir / "generator_runs.json"),
+        "reviewer_report": _existing(metadata_dir / "reviewer_report.json"),
+        "reviewer_reports_index": _existing(metadata_dir / "reviewer_reports.json"),
+        "run_index": _existing(artifacts_dir / "run" / "index.json"),
+        "evals": _existing(artifacts_dir / "reports" / "evals.json"),
+        "diversity": _existing(artifacts_dir / "reports" / "diversity.json"),
+    }
+    return indices
+
+
+def _load_json(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        LOGGER.warning("Failed to parse JSON at %s: %s", path, exc)
+        return None
+
+
+def _existing(path: Path) -> Optional[str]:
+    if path.exists():
+        return str(path)
+    return None
 
 
 def main() -> None:

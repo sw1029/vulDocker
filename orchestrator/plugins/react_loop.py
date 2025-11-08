@@ -77,20 +77,21 @@ class ReactLoop:
         """Generate deterministic ReAct-style seed queries."""
 
         queries: List[str] = []
-        vuln_id = requirement.get("vuln_id") or requirement.get("cwe_id") or requirement.get("cve_id")
+        vuln_ids = _vuln_ids_from_requirement(requirement)
         language = requirement.get("language")
         framework = requirement.get("framework")
         tech_stack = " ".join(filter(None, [language, framework]))
         intent = requirement.get("intent") or requirement.get("goal") or ""
 
-        if vuln_id:
+        for vuln_id in vuln_ids:
             queries.append(f"{vuln_id} exploit writeup {tech_stack}".strip())
         if intent:
             queries.append(f"{intent} poc tutorial {tech_stack}".strip())
         runtime = requirement.get("runtime") or {}
         db = runtime.get("db") or runtime.get("database") or requirement.get("database")
         if db:
-            queries.append(f"{vuln_id or 'vulnerability'} {db} misconfiguration case study")
+            anchor = vuln_ids[0] if vuln_ids else "vulnerability"
+            queries.append(f"{anchor} {db} misconfiguration case study")
 
         if not queries:
             queries.append("autonomous vulnerability lab research report")
@@ -142,6 +143,18 @@ class ReactLoop:
     def _append_span(self, payload: Dict[str, Any]) -> None:
         with self._span_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _vuln_ids_from_requirement(requirement: Dict[str, Any]) -> List[str]:
+    values = requirement.get("vuln_ids")
+    if isinstance(values, list):
+        normalized = [str(item).strip() for item in values if isinstance(item, str) and item.strip()]
+        if normalized:
+            return normalized
+    fallback = requirement.get("vuln_id") or requirement.get("cwe_id") or requirement.get("cve_id")
+    if isinstance(fallback, str) and fallback.strip():
+        return [fallback.strip()]
+    return []
 
 
 __all__ = ["ReactLoop", "ReactSpan"]

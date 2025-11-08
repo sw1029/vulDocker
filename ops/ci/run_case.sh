@@ -31,11 +31,13 @@ echo "[CASE] Planning ${REQ_PATH}"
 python orchestrator/plan.py --input "${REQ_PATH}"
 
 SID=$(python - "$REQ_PATH" <<'PY'
-import orchestrator.plan as plan_module
 from pathlib import Path
 import sys
+import orchestrator.plan as plan_module
+from common.schema import normalize_requirement
 req = plan_module._load_requirement(Path(sys.argv[1]))
-plan = plan_module.build_plan(req)
+norm = normalize_requirement(req)
+plan = plan_module.build_plan(norm)
 print(plan["sid"])
 PY
 )
@@ -55,17 +57,30 @@ python - <<'PY'
 import json, os, pathlib
 sid = os.environ["SID"]
 root = pathlib.Path(".")
-plan = json.loads((root / f"metadata/{sid}/plan.json").read_text(encoding="utf-8"))
-evals = json.loads((root / f"artifacts/{sid}/reports/evals.json").read_text(encoding="utf-8"))
-div = json.loads((root / f"artifacts/{sid}/reports/diversity.json").read_text(encoding="utf-8"))
+manifest_path = root / f"metadata/{sid}/manifest.json"
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+bundles = []
+for entry in manifest.get("bundles", []):
+    eval_result = entry.get("artifacts", {}).get("eval_result") or {}
+    run_summary = entry.get("artifacts", {}).get("run_summary") or {}
+    bundles.append(
+        {
+            "vuln_id": entry.get("vuln_id"),
+            "slug": entry.get("slug"),
+            "eval_pass": eval_result.get("verify_pass"),
+            "run_passed": run_summary.get("run_passed"),
+            "error": run_summary.get("error"),
+            "network_mode": run_summary.get("network_mode"),
+            "sidecars": run_summary.get("sidecars"),
+        }
+    )
 summary = {
     "sid": sid,
-    "variation_key": plan.get("variation_key"),
-    "verify_pass": evals.get("verify_pass"),
-    "evidence": evals.get("evidence"),
-    "diversity": div.get("metrics"),
+    "overall_pass": (manifest.get("reports", {}) or {}).get("evals", {}).get("overall_pass"),
+    "policy": manifest.get("policy"),
+    "bundles": bundles,
 }
-print("[CASE] Summary:", json.dumps(summary, indent=2))
+print("[CASE] Summary:", json.dumps(summary, indent=2, ensure_ascii=False))
 PY
 
 echo "[CASE] Artifacts -> artifacts/${SID}"

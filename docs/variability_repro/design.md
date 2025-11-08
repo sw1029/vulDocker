@@ -26,7 +26,7 @@ prompt.md 7장과 TODO 10 요구를 충족하기 위해 시나리오 차원, 샘
   3. 패턴 풀에서 Variation Key에 따라 시드 고정 후 선택.
 
 ## 3. Scenario ID 및 Variation Key
-- SID 정의: `H(model_version || prompt_hash || seed || retriever_commit || corpus_snapshot || pattern_id || deps_digest || base_image_digest)`.
+- SID 정의: `H(model_version || prompt_hash || seed || retriever_commit || corpus_snapshot || pattern_id || deps_digest || base_image_digest)`를 기본으로 하되, 다중 취약 모드에서는 `vuln_ids_digest = sha256(join(sorted(vuln_ids)))`를 보조 필드로 추가해 조합 전체를 해시에 반영한다.
 - Variation Key 예시:
 ```json
 {
@@ -38,6 +38,7 @@ prompt.md 7장과 TODO 10 요구를 충족하기 위해 시나리오 차원, 샘
 ```
 - 재현 모드: Variation Key 고정, deterministic 파라미터 사용.
 - 다변성 모드: Variation Key 일부 변경(top_p 등)으로 다양성 제어.
+- `plan.run_matrix.vuln_bundles[]`에 취약별 slug·워크스페이스 상대 경로를 저장하고, Variation Manager는 동일 Variation Key를 공유하되 Executor/Eval 단계에서 slug별 경로(`workspaces/<SID>/app/<slug>`, `metadata/<SID>/bundles/<slug>`, `artifacts/<SID>/run/<slug>`)를 참조해 번들 단위 재현성을 확보한다.
 
 ## 4. 지표
 - **다변성**: 
