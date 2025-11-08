@@ -1,0 +1,18 @@
+requirement_id: MVP-SQLI-0001
+vuln_id: CWE-89
+language: python
+framework: flask
+orm: raw-sql
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+seed: 1337
+retriever_commit: "0000000"
+corpus_snapshot: rag-snap-mvp
+pattern_id: sqli-string-concat
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+variation_key:
+  mode: deterministic
+  top_p: 1.0
+  temperature: 0.0

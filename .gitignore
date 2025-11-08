@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+artifacts/
+metadata/
+workspaces/
+config/api_keys.ini

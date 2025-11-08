@@ -1,0 +1,27 @@
+"""Scenario ID helper aligned with docs/architecture/metastore_and_artifacts.md."""
+from __future__ import annotations
+
+import hashlib
+import json
+from typing import Dict
+
+
+SID_FIELDS = [
+    "model_version",
+    "prompt_hash",
+    "seed",
+    "retriever_commit",
+    "corpus_snapshot",
+    "pattern_id",
+    "deps_digest",
+    "base_image_digest",
+]
+
+
+def compute_sid(components: Dict[str, str]) -> str:
+    """Return the deterministic SID hash."""
+
+    payload = {key: components.get(key, "") for key in SID_FIELDS}
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return f"sid-{digest[:12]}"
