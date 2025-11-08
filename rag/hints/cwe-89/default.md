@@ -1,0 +1,3 @@
+- Ensure at least one code path concatenates raw request parameters into the SQL string without parameter binding.
+- Provide a deterministic seed dataset and mention the vulnerable table + columns inside README.md so PoC expectations stay reproducible.
+- Make the PoC search for the string "SQLi SUCCESS" inside stdout/stderr; the verifier relies on that exact token.

@@ -1,0 +1,2 @@
+- Pin Flask and database driver versions in requirements.txt to satisfy SBOM/reproducibility gates.
+- Keep file layout limited to `Dockerfile`, `app.py`, `requirements.txt`, `schema.sql`, `seed_data.sql`, `poc.py`, `README.md` unless the plan explicitly asks for more.

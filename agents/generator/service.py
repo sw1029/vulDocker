@@ -1,8 +1,7 @@
-"""Generator microservice implementation for TODO 14.
+"""Generator microservice implementation for TODO 14~14.5.
 
-This module introduces a template registry + self-consistency voting based on
-``workspaces/templates/sqli/*`` as defined in
-docs/milestones/todo_13-15_code_plan.md.
+Extends the original template registry with synthesis/hybrid modes, enforcing
+the guard rails documented in docs/milestones/todo_13-15_code_plan.md.
 """
 from __future__ import annotations
 
@@ -11,14 +10,16 @@ import random
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from common.config import DecodingProfile, get_decoding_profile
 from common.llm import LLMClient
 from common.logging import get_logger
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.prompts import build_generator_prompt
-from rag import latest_failure_context, load_static_context
+from rag import latest_failure_context, load_hints, load_static_context
+
+from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits
 
 LOGGER = get_logger(__name__)
 
@@ -75,6 +76,15 @@ class TemplateCandidate:
             "metadata": self.template.metadata,
         }
         return payload
+
+
+@dataclass
+class GeneratorContext:
+    """Context shared across generator modes."""
+
+    rag: str
+    failure: str
+    hints: str
 
 
 class TemplateRegistry:
@@ -144,7 +154,10 @@ class GeneratorService:
         self.profile: DecodingProfile = get_decoding_profile(mode)
         model = self.requirement.get("model_version", "gpt-4.1-mini")
         self.llm = LLMClient(model, self.profile)
-        self.registry = TemplateRegistry(template_root)
+        self.generator_mode = (self.requirement.get("generator_mode") or "template").lower()
+        self.synthesis_limits = SynthesisLimits.from_requirement(self.requirement)
+        self._template_root = template_root
+        self._registry: Optional[TemplateRegistry] = None
 
     def _read_loop_index(self) -> int:
         loop_path = self.metadata_dir / "loop_state.json"
@@ -153,25 +166,109 @@ class GeneratorService:
         data = json.loads(loop_path.read_text(encoding="utf-8"))
         return int(data.get("current_loop", 0))
 
-    def run(self) -> None:
-        rag_snapshot = self.requirement.get("rag_snapshot") or self.requirement.get("corpus_snapshot", "mvp-sample")
+    def _get_registry(self) -> TemplateRegistry:
+        if self._registry is None:
+            self._registry = TemplateRegistry(self._template_root)
+        return self._registry
+
+    def _stack_descriptor(self) -> str:
+        parts: List[str] = []
+        for key in ("language", "framework"):
+            value = self.requirement.get(key)
+            if value:
+                parts.append(str(value))
+        runtime = self.requirement.get("runtime") or {}
+        if isinstance(runtime, dict):
+            for key in ("db", "database", "data_store"):
+                value = runtime.get(key)
+                if value:
+                    parts.append(str(value))
+                    break
+        for key in ("database", "db"):
+            value = self.requirement.get(key)
+            if value:
+                parts.append(str(value))
+                break
+        return "-".join(part.replace(" ", "-").lower() for part in parts if part)
+
+    def _build_context(self) -> GeneratorContext:
+        rag_snapshot = (
+            self.requirement.get("rag_snapshot")
+            or self.requirement.get("corpus_snapshot")
+            or "mvp-sample"
+        )
         rag_context = load_static_context(rag_snapshot)
         failure_context = latest_failure_context(self.sid)
+        hints = ""
+        if self.generator_mode in {"synthesis", "hybrid"}:
+            cwe = self.requirement.get("vuln_id") or ""
+            hints = load_hints(cwe, stack=self._stack_descriptor()) if cwe else ""
+        return GeneratorContext(rag=rag_context, failure=failure_context, hints=hints)
+
+    def _candidate_k(self) -> int:
+        return max(1, int(self.variation.get("self_consistency_k", 1)))
+
+    def run(self) -> None:
+        context = self._build_context()
+        if self.generator_mode == "synthesis":
+            self._run_synthesis(context)
+            return
+        if self.generator_mode == "hybrid":
+            try:
+                self._run_synthesis(context)
+                return
+            except ManifestValidationError as exc:
+                LOGGER.warning(
+                    "Synthesis guard rejected all candidates for %s; falling back to template. %s",
+                    self.sid,
+                    exc,
+                )
+            except Exception as exc:  # pragma: no cover - safety net
+                LOGGER.warning("Hybrid synthesis failure (%s); using template path.", exc)
+            self._run_template(context, mode_label="hybrid-template")
+            return
+        self._run_template(context, mode_label="template")
+
+    def _run_synthesis(self, context: GeneratorContext) -> None:
+        engine = SynthesisEngine(
+            sid=self.sid,
+            llm=self.llm,
+            limits=self.synthesis_limits,
+            workspace=self.workspace,
+            metadata_dir=self.metadata_dir,
+            mode=self.generator_mode,
+        )
+        outcome = engine.run(
+            requirement=self.requirement,
+            rag_context=context.rag,
+            hints=context.hints,
+            failure_context=context.failure,
+            candidate_k=self._candidate_k(),
+            poc_template=self.requirement.get("poc_template"),
+        )
+        LOGGER.info(
+            "Synthesis candidate #%s materialized %s files for %s",
+            outcome.selected.index,
+            len(outcome.written_files),
+            self.sid,
+        )
+
+    def _run_template(self, context: GeneratorContext, *, mode_label: str) -> None:
         prompt_messages = build_generator_prompt(
             self.requirement,
-            rag_context,
-            failure_context=failure_context,
+            context.rag,
+            failure_context=context.failure,
         )
         llm_notes = self.llm.generate(prompt_messages)
         (self.metadata_dir / "generator_llm_plan.md").write_text(llm_notes, encoding="utf-8")
         selection, candidates = self._select_template()
-        written_files = self.registry.materialize(selection, self.workspace)
-        self._write_metadata(selection, candidates, written_files, failure_context)
+        written_files = self._get_registry().materialize(selection, self.workspace)
+        self._write_metadata(selection, candidates, written_files, context.failure, mode_label=mode_label)
 
     def _select_template(self) -> Tuple[TemplateSpec, List[TemplateCandidate]]:
         seed = int(self.variation.get("pattern_pool_seed", 0)) + self.loop_index
-        k = max(1, int(self.variation.get("self_consistency_k", 1)))
-        candidates = self.registry.sample_candidates(seed=seed, k=k)
+        k = self._candidate_k()
+        candidates = self._get_registry().sample_candidates(seed=seed, k=k)
         votes: Dict[str, List[TemplateCandidate]] = {}
         for candidate in candidates:
             votes.setdefault(candidate.template.id, []).append(candidate)
@@ -195,9 +292,14 @@ class GeneratorService:
         candidates: List[TemplateCandidate],
         written_files: List[str],
         failure_context: str,
+        *,
+        mode_label: str,
     ) -> None:
         candidates_path = self.metadata_dir / "generator_candidates.json"
-        candidates_payload = [c.to_payload() for c in candidates]
+        candidates_payload = {
+            "mode": mode_label,
+            "candidates": [c.to_payload() for c in candidates],
+        }
         candidates_path.write_text(json.dumps(candidates_payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
         selection_payload = {

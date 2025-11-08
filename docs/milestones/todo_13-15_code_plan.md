@@ -170,6 +170,85 @@ synthesis_limits:
 ```
 명령: PLAN → DRAFT(합성) → BUILD/RUN → VERIFY → REVIEW → PACK(`--allow-intentional-vuln`).
 
+### 14.5.7 구현 현황 (2025-11-08)
+- `agents/generator/synthesis.py`: `SynthesisEngine`이 LLM 매니페스트를 다중 시도(k=`variation_key.self_consistency_k`)로 수집하고, 경로·바이트·시グ니처 가드를 통과한 후보만 채택한다. 선택된 매니페스트는 `metadata/<SID>/generator_manifest.json`에 기록되고, 모든 후보 점수/요약은 `generator_candidates.json`으로 남는다.
+- `common/prompts/templates.py` + `rag/static_loader.load_hints()`: 합성 전용 프롬프트(`build_synthesis_prompt`)가 내부 힌트(`rag/hints/cwe-89/*.md`)와 Reflexion 실패 맥락을 함께 주입해 docs/architecture/agents_contracts.md, docs/schemas/generator_manifest.md와 정합성을 유지한다.
+- `agents/generator/service.py`: `generator_mode`(template/synthesis/hybrid) 분기와 하이브리드 폴백 로직을 구현해 동일 엔트리포인트에서 두 모드를 모두 운용한다. synthesis/hybrid 경로는 SBOM·정책 가드가 통과된 매니페스트만 워크스페이스에 머티리얼라이즈하며, 템플릿 경로도 메타데이터 포맷을 통일했다.
+- `evals/static_signatures/sqli.py`: 합성 후보를 정적으로 스크리닝해 UNION SELECT, `' OR '1'='1` 등 패턴 감지와 점수화를 수행한다. 점수는 Candidate self-consistency 투표에 반영되어 신호가 빈약한 매니페스트는 탈락한다.
+- `docs/schemas/generator_manifest.md`: files[], deps[], build/run, PoC 성공 시グ니처 등 필수 항목을 명문화해 LLM·리뷰어·메타스토어 간 계약을 고정했다. `metadata/<SID>/generator_manifest.json`은 해당 스키마로 직렬화된다.
+- `poc_template` 주입: Requirement에 포함된 PoC 템플릿을 합성 프롬프트(`build_synthesis_prompt`)와 `SynthesisEngine`이 동시에 참조해, LLM이 누락하더라도 `cmd`/`success_signature`가 자동 보강된다. `SQLi SUCCESS` 문자열 미포함 시 엔진이 강제로 삽입하여 guard 실패를 차단한다.
+- `의존성 가드`: `SynthesisEngine`이 PoC/앱 파일에서 `import requests` 등 외부 모듈 사용을 감지해, `manifest.deps`/`requirements.txt`에 없는 경우 `missing dependency` 위반으로 후보를 차단한다. PoC가 사용하는 라이브러리가 Docker 이미지에 반드시 포함되도록 강제해 executor 실패를 예방한다.
+
+### 14.5.8 의존성 가드 범용성 고도화(비교/구현안)
+현 구현은 MVP 단계로, Python/`requests`에 국한된 문자열 기반 감지에 의존한다. 아래와 같이 한계와 개선안을 명시하고, 단계적(Phase 1→3)으로 범용성과 결정론을 동시에 강화한다.
+
+1) 현 구현 요약(비교 기준)
+- 감지 방식: 파일 본문 문자열에서 `import requests|from requests`만 탐지해 `required_deps` 집합을 산출(agents/generator/synthesis.py의 `_detect_required_dependencies`).
+- 선언 집합: `manifest.deps[]`와 `requirements*.txt`에서 토큰 추출 후 버전 제거하여 정규화(같은 파일의 `_extract_declared_dependencies`).
+- 검증: `required_deps - declared_deps`가 비어야 통과. 그 외 가드(파일 수/바이트/경로, PoC 시그니처)와 독립적으로 판단.
+
+2) 한계점(범용성 관점)
+- 언어·생태계 단일화: Python 전용, Node/Go/Ruby 등은 미지원.
+- 취약한 파싱: 단순 문자열 검색으로 별칭(`import requests as r`), 다중라인, 주석/문자열 리터럴에 의한 오탐/미탐 가능. base64 `content`는 미분석.
+- stdlib 구분 부재: `sqlite3`, `json` 등 표준 라이브러리까지 오탐 위험.
+- 빌드 불일치: `deps[]`에만 있고 `requirements.txt`로 설치되지 않으면 실행 실패 가능(현재 교차검증 부재).
+- allowlist 경직성: 제한적 파일명 화이트리스트로 구조 변화에 취약.
+
+3) 단계별 구현안(구체)
+- Phase 1: 정적·결정론 고도화(코드 변경 중심)
+  - Python AST 감지: `ast`로 `Import`/`ImportFrom` 수집 → 최상위 모듈 추출 → 표준 라이브러리(`sys.stdlib_module_names`) 제외 → 모듈→패키지 매핑 적용. 신규 함수로 교체: `SynthesisEngine._detect_required_dependencies`.
+  - 매핑 테이블: 자주 쓰는 모듈 매핑을 내장
+    - `bs4→beautifulsoup4`, `PIL→Pillow`, `yaml→PyYAML`, `cv2→opencv-python`, `dateutil→python-dateutil`, `psycopg2→psycopg2-binary`, `sklearn→scikit-learn` 등.
+  - 선언 수집 강화: `_extract_declared_dependencies`에 `pyproject.toml([tool.poetry.dependencies])`, `setup.cfg`의 `install_requires` 파싱 추가. Python 3.11의 `tomllib` 사용(외부 의존 없음). extras/마커(`pkg[extra]`, `; python_version<...`) 제거 후 canonical name 비교.
+  - 빌드 교차검증: Dockerfile/빌드 지시와의 일치 검사 추가
+    - `build.command`와 `Dockerfile`의 `RUN pip install -r <file>` 또는 `RUN pip install <pkgs>`를 파싱하여 “실제 설치 집합”을 생성.
+    - 규칙: `required_deps ⊆ 설치 집합`이 아니면 `missing-from-build: <pkg>` 오류. `deps[] ⊆ requirements*.txt` 불일치도 `missing-from-requirements` 오류로 보고.
+  - allowlist 개선: 기본 allowlist에 glob 허용(`fnmatch`). 기본값 예시: `Dockerfile`, `*.py`, `*.sql`, `requirements*.txt`, `poc.*`, `README.md`(하위 호환 위해 기존 목록도 유지). `_guard_manifest`가 정밀 경로 비교 대신 glob 매칭 사용.
+  - 감사/로그: `metadata/<SID>/generator_candidates.json`의 candidate 요약에 `dep_guard` 섹션 추가
+    - `declared`, `required_static`, `missing_static`, `installed_from_build`, `errors`(세부 규칙별), `accepted`.
+
+- Phase 2: LLM 보강(옵트인, 고신뢰만 반영)
+  - 목적: 정적 분석으로 매핑/판단이 애매한 항목(비표준 모듈명, OS 패키지 필요 추정 등)을 LLM이 제안.
+  - 신규 함수: `SynthesisEngine._llm_infer_dependencies(manifest, static_required, declared) -> LlmDepHints`
+  - 프롬프트(요약): 파일 경로/언어/상위 코드 발췌(최대 200~400자) + 정적 감지 결과를 입력; 응답은 JSON 스키마 `{ python:[], node:[], apt:[], mappings: [{module, package, reason, confidence}] }`로 제한.
+  - 병합 규칙: `missing = (static_required - declared) ∪ llm.high_conf_missing`. `confidence=high`만 강제, `medium/low`는 힌트로 로그에 기록.
+  - 토글: `requirement.dep_guard.llm_assist=true`일 때만 활성화(결정론 모드 기본 비활성화).
+
+- Phase 3: 언어/생태계 확장(플러그블)
+  - 구조: `agents/generator/deps/`에 생태계별 감지기 모듈 추가, 인터페이스 통일: `detect_required(manifest) -> Dict[str, Set[str]]`(예: `{"python": {...}, "node": {...}}`).
+  - Node/JS: `import … from 'pkg'`, `require('pkg')` 정규식 + `package.json` 선언 병합, Dockerfile의 `npm install`/`yarn add`와 교차검증.
+  - Shell(OS): Dockerfile `apt-get install`에서 OS 패키지 추론(로그/참조용), 강제성은 낮게 유지.
+
+4) 구현 세부(파일/함수)
+- `agents/generator/synthesis.py`
+  - `_detect_required_dependencies` → Python AST 기반으로 대체(표준 라이브러리 필터, 매핑 적용, base64 `files[].encoding`은 디코드 후 분석 시도).
+  - `_extract_declared_dependencies` → `pyproject.toml`/`setup.cfg` 파싱 추가, extras/mar ker 제거.
+  - `_guard_manifest` 내부에 빌드 교차검증 서브루틴 추가: `Dockerfile`/`build.command` 스캔 → `installed_from_build` 집합 생성 → 누락 보고.
+  - `SynthesisLimits.allowlist` → glob 허용. 기본값을 `['Dockerfile','*.py','*.sql','requirements*.txt','poc.*','README.md']`로 확대(기존 명시 파일명도 유지).
+  - 후보 로그(`_write_candidate_log`)에 `dep_guard` 요약 추가.
+- (선택) `agents/generator/deps/python.py` 등으로 감지 로직 분리해 향후 언어 플러그인 도입 용이화.
+
+5) 수용 기준/테스트
+- 정적 케이스
+  - `from bs4 import BeautifulSoup` → `beautifulsoup4` 요구 감지.
+  - `import PIL.Image` → `Pillow`; `import yaml` → `PyYAML`; `import cv2` → `opencv-python`.
+  - 표준 라이브러리(`sqlite3`, `json`)는 미감지.
+  - `deps[]`에는 있고 `requirements.txt`에 누락 → `missing-from-requirements`로 거부.
+  - Dockerfile이 `pip install -r requirements.txt`만 수행하고 요구 패키지가 리스트에 없을 때 → `missing-from-build`로 거부.
+- LLM 보강(활성화 시)
+  - LLM이 `psycopg2` 대신 `psycopg2-binary`를 high confidence로 제안 시 누락 감지 병합.
+- 로그/추적성
+  - `metadata/<SID>/generator_candidates.json`에 `dep_guard` 섹션 포함(정적/LLM 결과, 매핑, 누락, 설치 집합, 규칙별 오류 목록, 최종 판정).
+
+6) 롤아웃/리스크 관리
+- Phase 1을 기본값으로 먼저 배포(결정론 보장). Phase 2는 옵트인 토글로 도입, 저신뢰 응답은 리포팅만. Phase 3는 언어별 점진 도입.
+- 환각/버전 불안정 완화: LLM은 high confidence만 강제 반영, 나머지는 감사 로그로 제한. 결정론 모드에서는 LLM 비활성화 유지.
+
+#### 진행 상황 (2025-11-08)
+- Phase 1 반영 완료: `agents/generator/synthesis.py`에 glob 허용 allowlist, Python AST 기반 import 감지, stdlib 필터 및 모듈→패키지 매핑을 도입해 `requests` 한정 가드를 대체.
+- 선언/설치 교차검증 강화: `deps[]`, `requirements*.txt`, `pyproject.toml`, `setup.cfg`를 모두 파싱하고, Dockerfile/빌드 커맨드의 `pip install` 명령과 대조하여 `missing-from-build`·`missing-from-requirements`를 Guard 단계에서 즉시 차단.
+- 감사 로그 확장: 각 후보의 `generator_candidates.json` 요약에 `dep_guard` 섹션을 추가하여 선언·정적 요구·빌드 설치 집합·누락 항목을 기록하고, guard 위반 원인을 결정론적으로 재현 가능하게 남김.
+
 ---
 
 ## 3. TODO 15 – 고도화

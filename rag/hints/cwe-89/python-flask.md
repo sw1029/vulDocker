@@ -1,0 +1,3 @@
+- Use Flask with debug logging enabled and SQLite via the built-in sqlite3 module to keep dependencies small.
+- Expose a `/login` or `/search` route that reads `request.args` and concatenates it into the SQL query. Document the unsafe snippet in README.md.
+- Ship a lightweight `schema.sql` + `seed_data.sql` and create the database inside the Dockerfile build stage so that runtime workdir already contains `app.db`.
