@@ -215,9 +215,10 @@ synthesis_limits:
   - 토글: `requirement.dep_guard.llm_assist=true`일 때만 활성화(결정론 모드 기본 비활성화).
 
 - Phase 3: 언어/생태계 확장(플러그블)
-  - 구조: `agents/generator/deps/`에 생태계별 감지기 모듈 추가, 인터페이스 통일: `detect_required(manifest) -> Dict[str, Set[str]]`(예: `{"python": {...}, "node": {...}}`).
-  - Node/JS: `import … from 'pkg'`, `require('pkg')` 정규식 + `package.json` 선언 병합, Dockerfile의 `npm install`/`yarn add`와 교차검증.
-  - Shell(OS): Dockerfile `apt-get install`에서 OS 패키지 추론(로그/참조용), 강제성은 낮게 유지.
+  - 구조: `agents/generator/deps/`에 언어별 검출기(`python.py`, `node.py`, `go.py` 등)를 두고, 공통 인터페이스 `detect_required(manifest) -> Dict[str, Set[str]]`와 `load_stdlib_spec(language, version)`를 제공한다. 각 모듈은 `prototypes/stdlib/<language>-<version>.json`을 로드해 stdlib/alias/default-version/denylist를 정의하고, 필요 시 `tools/bootstrap_stdlib.py --language node --version 20`으로 갱신한다.
+  - Node/JS: `import … from 'pkg'`/`require('pkg')` 정규식과 AST-lite 파서를 결합해 모듈 이름을 추출하고, `package.json`, `package-lock.json`, `pnpm-lock.yaml`에서 선언된 deps와 비교한다. Dockerfile/빌드 스크립트의 `npm install`, `yarn add`, `pnpm install`명령을 파싱해 설치 집합을 생성하고 guard/auto_patch가 교차검증한다. 기본 버전 테이블(`default_versions.node.json`)과 alias(`fs-extra` 등)를 JSON으로 관리한다.
+  - Go/Rust 등의 컴파일 언어: `go.mod`, `Cargo.toml` 등 프로젝트 메타파일을 파싱해 선언 집합을 얻고, 소스 파일(`import "pkg"`)에서 필요한 모듈을 감지한다. stdlib 목록은 언어별 JSON 스펙에 포함하고, guard는 stdlib 임포트에 대해 경고만 기록한다.
+  - Shell(OS) 패키지: Dockerfile의 `apt-get install`, `apk add`, `yum install`을 정규화해 `os_packages` 컬렉션을 생성하고, LLM이 추정한 OS 패키지와 비교해 로그/참조용으로 남긴다(강제성 낮음). auto patch는 OS 패키지에 대해서는 적용하지 않고, 추후 TODO 15에서 사용자 입력을 통해 설치 명령을 보강할 수 있게 힌트를 제공한다.
 
 4) 구현 세부(파일/함수)
 - `agents/generator/synthesis.py`
@@ -255,6 +256,7 @@ synthesis_limits:
 - Phase 3(자동 보강) 설계: `dep_guard.auto_patch=true` 토글이 켜진 경우, LLM이 high confidence로 제안한 패키지를 `SynthesisEngine`이 즉시 `manifest.deps[]` 및 `requirements*.txt`에 삽입하도록 계획한다. stdlib 또는 비설치 대상(`logging`, `sqlite3` 등)은 화이트리스트로 제외하고, 버전은 헬퍼(`common/deps/resolver.py`, 신규)를 통해 기본 핀 버전 테이블(예: `requests==2.32.2`, `pysqlite3-binary==0.5.2`)에서 가져온다. 적용된 패치는 `dep_guard.auto_patch` 섹션으로 로그/메타데이터에 기록하고, 사용자 입력(차후 UI)으로 override 가능하게 한다. TODO 15의 “사용자 정의 deps 주입” 기능과 결합해, 자동 삽입 후에도 사용자가 확인/편집한 최종 목록이 plan/manifest에 반영되도록 통합한다.
 - Phase 3 구현 완료(2025-11-08): auto patch가 `deps[]`뿐 아니라 `requirements*.txt`를 동기화하고, Dockerfile 빌드 명령(`pip install -r requirements.txt`)과 정합성을 검사하여 `requests`처럼 이미 deps에 있던 패키지도 requirements/빌드 경로에 자동 반영한다. stdlib/alias(`sqlite3→pysqlite3-binary`) 처리가 guard 위반을 막고, 모든 조치는 `generator_failures.jsonl.auto_patch`와 `failure_context`로 노출되어 TODO 15 사용자 입력 단계와 연계된다.
 - Stdlib/alias 부트스트랩: `tools/bootstrap_stdlib.py`가 LLM으로부터 언어별 stdlib/alias/default-version JSON을 생성해 `prototypes/stdlib/<lang>-<ver>.json`에 저장한다. 이후 `common/deps/stdlib.py`가 해당 JSON을 로드해 guard/auto_patch에서 공통으로 사용하므로, 프롬프트 지침(“stdlib는 deps에 넣지 말 것”)과 stdlib skip 로직이 다양한 언어/버전에 쉽게 확장된다.
+- Phase 3 구현: `agents/generator/deps/`에 Python/Node/OS 패키지 감지 모듈을 도입해 `detect_required(manifest)` 인터페이스를 통일했고, Node용 `package.json`/Docker install 교차검증과 OS 패키지 추론을 guard 보고서에 포함했다. 새로운 구조는 TODO 15에서 Go/Rust 등 추가 언어를 플러그블하게 수용할 수 있게 한다.
 
 ---
 

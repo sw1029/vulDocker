@@ -24,6 +24,14 @@ from common.prompts import build_synthesis_prompt
 from common.paths import ensure_dir
 from evals.static_signatures import analyze_sql_injection_signals
 
+from agents.generator.deps import (
+    detect_node_installs,
+    detect_node_required,
+    detect_os_packages,
+    detect_python_required,
+    extract_node_declared,
+)
+
 try:  # Python >=3.11
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - fallback for older interpreters
@@ -517,6 +525,23 @@ class SynthesisEngine:
                 errors.append(msg)
                 dep_error_messages.append(msg)
 
+        node_required = self._detect_node_required(manifest)
+        node_declared = self._extract_node_declared_sets(manifest)
+        missing_node = sorted(node_required - node_declared)
+        for dep in missing_node:
+            msg = f"missing node dependency '{dep}' required by manifest files"
+            errors.append(msg)
+            dep_error_messages.append(msg)
+        node_installs = self._detect_node_installs(manifest)
+        missing_node_build = sorted((node_required - node_installs) - set(missing_node))
+        for dep in missing_node_build:
+            msg = f"node dependency '{dep}' not installed by build commands"
+            errors.append(msg)
+            dep_error_messages.append(msg)
+
+        os_packages = detect_os_packages(manifest, self._read_text_content)
+        os_packages = {manager: sorted(packages) for manager, packages in os_packages.items() if packages}
+
         llm_section = precomputed_llm or {"enabled": False}
         llm_stdlib_skips: List[str] = []
         if self._dep_guard_config.get("llm_assist") and precomputed_llm is None:
@@ -552,6 +577,14 @@ class SynthesisEngine:
             "errors": dep_error_messages,
             "llm": llm_section,
             "auto_patch": auto_patch,
+            "node": {
+                "required": sorted(node_required),
+                "declared": sorted(node_declared),
+                "missing": missing_node,
+                "installed": sorted(node_installs),
+                "missing_install": missing_node_build,
+            },
+            "os_packages": os_packages,
         }
 
         return errors, dep_guard
@@ -656,6 +689,33 @@ class SynthesisEngine:
         }
         with failure_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def _detect_node_required(self, manifest: Dict[str, Any]) -> set[str]:
+        return {
+            self._canonicalize_package_name(name)
+            for name in detect_node_required(manifest, self._read_text_content)
+        }
+
+    def _extract_node_declared_sets(self, manifest: Dict[str, Any]) -> set[str]:
+        return {
+            self._canonicalize_package_name(name)
+            for name in extract_node_declared(manifest, self._read_text_content)
+            if self._canonicalize_package_name(name)
+        }
+
+    def _detect_node_installs(self, manifest: Dict[str, Any]) -> set[str]:
+        dockerfile_entry = self._find_file_entry(manifest, "Dockerfile")
+        dockerfile_text = self._read_text_content(dockerfile_entry) if dockerfile_entry else ""
+        build_section = manifest.get("build")
+        if not isinstance(build_section, dict):
+            build_section = {}
+        build_command = build_section.get("command") or ""
+        installs = detect_node_installs(dockerfile_text, build_command or "")
+        return {
+            self._canonicalize_package_name(name)
+            for name in installs
+            if self._canonicalize_package_name(name)
+        }
 
     def _maybe_auto_patch_dependencies(
         self,
@@ -852,18 +912,10 @@ class SynthesisEngine:
         )
 
     def _detect_required_dependencies(self, manifest: Dict[str, Any]) -> set[str]:
-        required: set[str] = set()
-        for entry in manifest.get("files", []):
-            if not isinstance(entry, dict):
-                continue
-            path = (entry.get("path") or "").strip()
-            if not path or not self._is_python_path(path):
-                continue
-            content = self._read_text_content(entry)
-            if not content:
-                continue
-            required.update(self._detect_python_imports(content))
-        return required
+        return {
+            self._canonicalize_package_name(name)
+            for name in detect_python_required(manifest, self._read_text_content)
+        }
 
     def _llm_infer_dependencies(
         self,
@@ -1024,29 +1076,6 @@ class SynthesisEngine:
                     }
                 )
         return suggestions
-
-    def _detect_python_imports(self, source: str) -> set[str]:
-        packages: set[str] = set()
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            return packages
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    root = (alias.name or "").split(".")[0]
-                    package = self._canonicalize_package_name(root)
-                    if package and package not in self._stdlib_modules:
-                        packages.add(package)
-            elif isinstance(node, ast.ImportFrom):
-                if node.level:
-                    continue  # relative import
-                module = node.module or ""
-                root = module.split(".")[0]
-                package = self._canonicalize_package_name(root)
-                if package and package not in self._stdlib_modules:
-                    packages.add(package)
-        return packages
 
     def _detect_build_installs(
         self,
