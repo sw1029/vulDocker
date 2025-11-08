@@ -1,0 +1,37 @@
+requirement_id: MVP-SQLI-0001
+vuln_id: CWE-89
+language: python
+framework: flask
+allow_intentional_vuln: true
+generator_mode: synthesis
+synthesis_limits:
+  max_files: 12
+  max_bytes_per_file: 64000
+  allowlist:
+    - Dockerfile
+    - app.py
+    - requirements.txt
+    - schema.sql
+    - seed_data.sql
+    - poc.py
+    - README.md
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+seed: 1337
+retriever_commit: "0000000"
+corpus_snapshot: rag-snap-mvp
+pattern_id: sqli-string-concat
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+variation_key:
+  mode: deterministic
+  self_consistency_k: 2
+poc_template:
+  cmd: "python poc.py"
+  success_signature: "SQLi SUCCESS"
+  notes: "HTTP GET exploit against /login"
+
+dep_guard:
+  llm_assist: true
+  auto_patch: true

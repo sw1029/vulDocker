@@ -1,0 +1,42 @@
+{
+  "language": "python",
+  "version": "3.11",
+  "stdlib_modules": [
+    "abc",
+    "argparse",
+    "asyncio",
+    "base64",
+    "collections",
+    "contextlib",
+    "dataclasses",
+    "datetime",
+    "functools",
+    "hashlib",
+    "http",
+    "json",
+    "logging",
+    "math",
+    "os",
+    "pathlib",
+    "random",
+    "re",
+    "sqlite3",
+    "ssl",
+    "statistics",
+    "subprocess",
+    "sys",
+    "threading",
+    "typing",
+    "unittest",
+    "urllib",
+    "uuid"
+  ],
+  "aliases": [
+    {"module": "sqlite3", "package": "pysqlite3-binary"}
+  ],
+  "default_versions": {
+    "requests": "2.32.2",
+    "pysqlite3-binary": "0.5.2"
+  },
+  "auto_patch_denylist": ["logging", "sqlite3"]
+}

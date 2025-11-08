@@ -248,6 +248,13 @@ synthesis_limits:
 - Phase 1 반영 완료: `agents/generator/synthesis.py`에 glob 허용 allowlist, Python AST 기반 import 감지, stdlib 필터 및 모듈→패키지 매핑을 도입해 `requests` 한정 가드를 대체.
 - 선언/설치 교차검증 강화: `deps[]`, `requirements*.txt`, `pyproject.toml`, `setup.cfg`를 모두 파싱하고, Dockerfile/빌드 커맨드의 `pip install` 명령과 대조하여 `missing-from-build`·`missing-from-requirements`를 Guard 단계에서 즉시 차단.
 - 감사 로그 확장: 각 후보의 `generator_candidates.json` 요약에 `dep_guard` 섹션을 추가하여 선언·정적 요구·빌드 설치 집합·누락 항목을 기록하고, guard 위반 원인을 결정론적으로 재현 가능하게 남김.
+- Phase 2(LMM 보강) 적용: `dep_guard.llm_assist=true` 요구 시 코드 스니펫과 정적 분석 요약을 LLM에 전달해 고신뢰 누락 의존성을 추론하고, `generator_candidates.json.dep_guard.llm`에 추론 근거/신뢰도를 기록하며 guard 단계에서 high confidence 제안을 즉시 차단한다.
+- 실패 컨텍스트 자동 보강: guard 위반으로 모든 후보가 탈락하면 `metadata/<SID>/generator_failures.jsonl`에 누락 의존성과 LLM 제안이 기록되고, `rag.memories.latest_failure_context()`가 이 로그를 읽어 다음 합성 프롬프트의 `failure_context`에 "Generator guard" 힌트를 자동 주입한다. TODO 15에서 사용자가 수동으로 원하는 `deps[]`를 기입해 재시도할 때 이 로그를 근거로 활용할 수 있다.
+- Generator 루프 통합: `agents/generator/service.py`가 `LoopController`와 연동되어 guard 실패 시 동일 실행 내에서 루프를 돌며 재시도하고, 실패 시점마다 Reflexion/`generator_failures.jsonl` 정보를 `loop_state.json`에 기록한다. 루프 한계(`plan.loop.max_loops`)를 초과하면 기존과 동일하게 `ManifestValidationError`를 전달하되, 성공 시에는 `LoopController.record_success`로 다음 단계(REVIEW)가 동일 루프 인덱스를 공유할 수 있게 했다.
+- 프롬프트 힌트 강화: 최신 guard 실패 로그에서 추출한 `missing_dependencies`/`suggested_dependencies`를 `failure_context`에 자동 주입해 LLM 프롬프트에 “Generator guard hint: declare …” 문구가 포함되도록 했으며, TODO 15에서 사용자가 원하는 `deps[]`를 직접 지정할 때도 동일 정보를 UI와 공유한다.
+- Phase 3(자동 보강) 설계: `dep_guard.auto_patch=true` 토글이 켜진 경우, LLM이 high confidence로 제안한 패키지를 `SynthesisEngine`이 즉시 `manifest.deps[]` 및 `requirements*.txt`에 삽입하도록 계획한다. stdlib 또는 비설치 대상(`logging`, `sqlite3` 등)은 화이트리스트로 제외하고, 버전은 헬퍼(`common/deps/resolver.py`, 신규)를 통해 기본 핀 버전 테이블(예: `requests==2.32.2`, `pysqlite3-binary==0.5.2`)에서 가져온다. 적용된 패치는 `dep_guard.auto_patch` 섹션으로 로그/메타데이터에 기록하고, 사용자 입력(차후 UI)으로 override 가능하게 한다. TODO 15의 “사용자 정의 deps 주입” 기능과 결합해, 자동 삽입 후에도 사용자가 확인/편집한 최종 목록이 plan/manifest에 반영되도록 통합한다.
+- Phase 3 구현 완료(2025-11-08): auto patch가 `deps[]`뿐 아니라 `requirements*.txt`를 동기화하고, Dockerfile 빌드 명령(`pip install -r requirements.txt`)과 정합성을 검사하여 `requests`처럼 이미 deps에 있던 패키지도 requirements/빌드 경로에 자동 반영한다. stdlib/alias(`sqlite3→pysqlite3-binary`) 처리가 guard 위반을 막고, 모든 조치는 `generator_failures.jsonl.auto_patch`와 `failure_context`로 노출되어 TODO 15 사용자 입력 단계와 연계된다.
+- Stdlib/alias 부트스트랩: `tools/bootstrap_stdlib.py`가 LLM으로부터 언어별 stdlib/alias/default-version JSON을 생성해 `prototypes/stdlib/<lang>-<ver>.json`에 저장한다. 이후 `common/deps/stdlib.py`가 해당 JSON을 로드해 guard/auto_patch에서 공통으로 사용하므로, 프롬프트 지침(“stdlib는 deps에 넣지 말 것”)과 stdlib skip 로직이 다양한 언어/버전에 쉽게 확장된다.
 
 ---
 

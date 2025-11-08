@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from common.logging import get_logger
-from common.paths import get_repo_root
+from common.paths import get_metadata_dir, get_repo_root
 
 LOGGER = get_logger(__name__)
 _STORE_PATH = get_repo_root() / "rag" / "memories" / "reflexion_store.jsonl"
+GENERATOR_FAILURE_FILENAME = "generator_failures.jsonl"
 
 
 @dataclass
@@ -81,18 +82,71 @@ def load_memories(sid: Optional[str] = None, limit: Optional[int] = None) -> Lis
     return records
 
 
+def _load_generator_failures(sid: str) -> List[dict]:
+    path = get_metadata_dir(sid) / GENERATOR_FAILURE_FILENAME
+    if not path.exists():
+        return []
+    records: List[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            entry.setdefault("stage", "GENERATOR")
+            entry.setdefault("timestamp", "")
+            records.append(entry)
+        except json.JSONDecodeError as exc:  # pragma: no cover - corruption guard
+            LOGGER.warning("Skipping malformed generator failure line: %s", exc)
+            continue
+    records.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+    return records
+
+
 def latest_failure_context(sid: str, limit: int = 3) -> str:
     """Return a human-readable summary for prompt injection."""
 
-    records = load_memories(sid=sid, limit=limit)
-    if not records:
-        return ""
-    summary_lines = []
-    for record in records:
-        summary_lines.append(
-            f"- Loop {record.get('loop_count')}: {record.get('reason')}. "
-            f"Hint: {record.get('remediation_hint')}"
+    generator_records = _load_generator_failures(sid)
+    reflexion_limit = limit * 2 if limit is not None else None
+    reflexion_records = load_memories(sid=sid, limit=reflexion_limit)
+    combined: List[dict] = []
+    for record in generator_records:
+        combined.append(
+            {
+                "stage": record.get("stage", "GENERATOR"),
+                "timestamp": record.get("timestamp", ""),
+                "loop_count": record.get("loop_count"),
+                "reason": record.get("reason", "guard failure"),
+                "hint": record.get("fix_hint", ""),
+                "missing": record.get("missing_dependencies", []),
+            }
         )
+    for record in reflexion_records:
+        combined.append(
+            {
+                "stage": record.get("stage", "REVIEW"),
+                "timestamp": record.get("timestamp", ""),
+                "loop_count": record.get("loop_count"),
+                "reason": record.get("reason", ""),
+                "hint": record.get("remediation_hint", ""),
+                "missing": record.get("metadata", {}).get("missing_dependencies", []),
+            }
+        )
+    if not combined:
+        return ""
+    combined.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+    summary_lines = []
+    for record in combined[:limit]:
+        stage = record.get("stage")
+        if stage == "GENERATOR":
+            missing = record.get("missing") or []
+            missing_part = f" Missing deps: {', '.join(missing)}." if missing else ""
+            summary_lines.append(
+                f"- Generator guard: {record.get('reason')}.{missing_part} Hint: {record.get('hint')}"
+            )
+        else:
+            summary_lines.append(
+                f"- Loop {record.get('loop_count')}: {record.get('reason')}. Hint: {record.get('hint')}"
+            )
     return "\n".join(summary_lines)
 
 

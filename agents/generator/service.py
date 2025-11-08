@@ -18,8 +18,9 @@ from common.logging import get_logger
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.prompts import build_generator_prompt
 from rag import latest_failure_context, load_hints, load_static_context
+from orchestrator.loop_controller import LoopController
 
-from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits
+from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits, SynthesisOutcome
 
 LOGGER = get_logger(__name__)
 
@@ -158,6 +159,8 @@ class GeneratorService:
         self.synthesis_limits = SynthesisLimits.from_requirement(self.requirement)
         self._template_root = template_root
         self._registry: Optional[TemplateRegistry] = None
+        loop_cfg = self.plan.get("loop", {"max_loops": 3})
+        self.loop_controller = LoopController(self.sid, max_loops=int(loop_cfg.get("max_loops", 3)))
 
     def _read_loop_index(self) -> int:
         loop_path = self.metadata_dir / "loop_state.json"
@@ -199,6 +202,9 @@ class GeneratorService:
         )
         rag_context = load_static_context(rag_snapshot)
         failure_context = latest_failure_context(self.sid)
+        guard_hint = self._guard_prompt_hint()
+        if guard_hint:
+            failure_context = (failure_context + "\n" + guard_hint).strip()
         hints = ""
         if self.generator_mode in {"synthesis", "hybrid"}:
             cwe = self.requirement.get("vuln_id") or ""
@@ -210,12 +216,13 @@ class GeneratorService:
 
     def run(self) -> None:
         context = self._build_context()
+        self._ensure_loop_started()
         if self.generator_mode == "synthesis":
-            self._run_synthesis(context)
+            self._run_synthesis_with_loops(context)
             return
         if self.generator_mode == "hybrid":
             try:
-                self._run_synthesis(context)
+                self._run_synthesis_with_loops(context)
                 return
             except ManifestValidationError as exc:
                 LOGGER.warning(
@@ -229,7 +236,44 @@ class GeneratorService:
             return
         self._run_template(context, mode_label="template")
 
-    def _run_synthesis(self, context: GeneratorContext) -> None:
+    def _ensure_loop_started(self) -> None:
+        if self.loop_controller.current_loop == 0:
+            self.loop_controller.start_loop()
+
+    def _run_synthesis_with_loops(self, context: GeneratorContext) -> None:
+        while True:
+            try:
+                outcome = self._run_synthesis_once(context)
+                self.loop_controller.record_success(stage="GENERATOR", note="synthesis succeeded")
+                LOGGER.info(
+                    "Synthesis candidate #%s materialized %s files for %s",
+                    outcome.selected.index,
+                    len(outcome.written_files),
+                    self.sid,
+                )
+                return
+            except ManifestValidationError as exc:
+                failure_meta = self._latest_generator_failure()
+                reason = failure_meta.get("reason") or str(exc)
+                fix_hint = failure_meta.get("fix_hint") or "Review generator_failures.jsonl and add missing deps."
+                metadata = {
+                    "missing_dependencies": failure_meta.get("missing_dependencies", []),
+                    "suggested_dependencies": failure_meta.get("suggested_dependencies", []),
+                }
+                self.loop_controller.record_failure(
+                    stage="GENERATOR",
+                    reason=reason,
+                    fix_hint=fix_hint,
+                    blocking=True,
+                    metadata=metadata,
+                )
+                if self.loop_controller.should_continue():
+                    self.loop_controller.start_loop()
+                    context = self._build_context()
+                    continue
+                raise
+
+    def _run_synthesis_once(self, context: GeneratorContext) -> SynthesisOutcome:
         engine = SynthesisEngine(
             sid=self.sid,
             llm=self.llm,
@@ -238,19 +282,13 @@ class GeneratorService:
             metadata_dir=self.metadata_dir,
             mode=self.generator_mode,
         )
-        outcome = engine.run(
+        return engine.run(
             requirement=self.requirement,
             rag_context=context.rag,
             hints=context.hints,
             failure_context=context.failure,
             candidate_k=self._candidate_k(),
             poc_template=self.requirement.get("poc_template"),
-        )
-        LOGGER.info(
-            "Synthesis candidate #%s materialized %s files for %s",
-            outcome.selected.index,
-            len(outcome.written_files),
-            self.sid,
         )
 
     def _run_template(self, context: GeneratorContext, *, mode_label: str) -> None:
@@ -264,6 +302,45 @@ class GeneratorService:
         selection, candidates = self._select_template()
         written_files = self._get_registry().materialize(selection, self.workspace)
         self._write_metadata(selection, candidates, written_files, context.failure, mode_label=mode_label)
+        self.loop_controller.record_success(stage="GENERATOR", note=f"template mode: {mode_label}")
+
+    def _latest_generator_failure(self) -> Dict[str, Any]:
+        path = self.metadata_dir / "generator_failures.jsonl"
+        if not path.exists():
+            return {}
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if not lines:
+            return {}
+        try:
+            return json.loads(lines[-1])
+        except json.JSONDecodeError:
+            return {}
+
+    def _guard_prompt_hint(self) -> str:
+        entry = self._latest_generator_failure()
+        missing = entry.get("missing_dependencies") or []
+        suggested = entry.get("suggested_dependencies") or []
+        auto_patch = entry.get("auto_patch") or {}
+        skipped = auto_patch.get("skipped") or []
+        stdlib_skipped = [item.get("name") for item in skipped if item.get("reason") == "stdlib"]
+        if not missing and not suggested:
+            return ""
+        unique_missing = sorted({dep for dep in missing if dep})
+        unique_suggested = sorted({dep for dep in suggested if dep})
+        parts: List[str] = []
+        if unique_missing:
+            parts.append(
+                "Generator guard hint: declare and install the following dependencies in deps[] and requirements*.txt -> "
+                + ", ".join(unique_missing)
+            )
+        if unique_suggested and unique_suggested != unique_missing:
+            parts.append("LLM suggested dependencies: " + ", ".join(unique_suggested))
+        if stdlib_skipped:
+            parts.append(
+                "Note: the following modules are stdlib and do not require pip installation -> "
+                + ", ".join(sorted(set(stdlib_skipped)))
+            )
+        return "\n".join(parts)
 
     def _select_template(self) -> Tuple[TemplateSpec, List[TemplateCandidate]]:
         seed = int(self.variation.get("pattern_pool_seed", 0)) + self.loop_index

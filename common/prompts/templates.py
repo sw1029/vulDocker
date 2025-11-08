@@ -56,7 +56,7 @@ def build_synthesis_prompt(
     sections = [
         "Synthesize candidate #{idx} for the request below. The manifest must be JSON "
         "and contain files[], deps[], build, run, poc, notes, pattern_tags[]. "
-        "Respect the file/path limits verbatim and include the SQLi success signature."
+        "Respect the file/path limits verbatim, include the SQLi success signature, and do not add standard library modules (e.g., logging, sqlite3) to deps[]."
         "\n\n# Requirement\n{req}\n\n# Synthesis Limits\n{limits}"
         "\n\n# Internal Hints\n{hints}\n\n# RAG Context\n{rag}".format(
             idx=candidate_index,

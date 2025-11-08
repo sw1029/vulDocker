@@ -14,9 +14,11 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
+from common.deps.stdlib import load_stdlib_spec
 from common.logging import get_logger
 from common.prompts import build_synthesis_prompt
 from common.paths import ensure_dir
@@ -66,38 +68,6 @@ PYTHON_MODULE_PACKAGE_MAP = {
     "lxml": "lxml",
     "pymysql": "pymysql",
     "mysqlclient": "mysqlclient",
-}
-
-
-FALLBACK_STDLIB_MODULES = {
-    "abc",
-    "argparse",
-    "asyncio",
-    "base64",
-    "collections",
-    "contextlib",
-    "dataclasses",
-    "datetime",
-    "functools",
-    "hashlib",
-    "http",
-    "json",
-    "logging",
-    "math",
-    "os",
-    "pathlib",
-    "random",
-    "re",
-    "sqlite3",
-    "ssl",
-    "statistics",
-    "subprocess",
-    "sys",
-    "threading",
-    "typing",
-    "unittest",
-    "urllib",
-    "uuid",
 }
 
 
@@ -205,14 +175,20 @@ class SynthesisEngine:
         self.metadata_dir = ensure_dir(metadata_dir)
         self.mode = mode
         ensure_dir(self.workspace.parent)
-        stdlib_names = getattr(sys, "stdlib_module_names", None)
-        stdlib_pool = set(stdlib_names) if stdlib_names else set()
-        stdlib_pool.update(FALLBACK_STDLIB_MODULES)
+        self._dep_guard_config: Dict[str, Any] = {}
+        base_stdlib = getattr(sys, "stdlib_module_names", None) or set()
         self._stdlib_modules = {
             self._canonicalize_package_name(name)
-            for name in stdlib_pool
+            for name in base_stdlib
             if self._canonicalize_package_name(name)
         }
+        self._module_alias_map = dict(PYTHON_MODULE_PACKAGE_MAP)
+        self._default_versions = {
+            "requests": "2.32.2",
+            "pysqlite3-binary": "0.5.2",
+        }
+        self._auto_patch_denylist = {"logging", "sqlite3"}
+        self._stdlib_aliases_loaded = False
 
     def run(
         self,
@@ -229,6 +205,9 @@ class SynthesisEngine:
         candidate_k = max(1, int(candidate_k or 1))
         reports: List[CandidateReport] = []
         self._requirement = requirement
+        self._load_stdlib_spec()
+        self._dep_guard_config = requirement.get("dep_guard") or {}
+        self._auto_patch_enabled = bool(self._dep_guard_config.get("auto_patch"))
         poc_template = self._normalize_poc_template(poc_template)
 
         for idx in range(1, candidate_k + 1):
@@ -244,7 +223,23 @@ class SynthesisEngine:
             raw = self.llm.generate(messages)
             manifest = self._parse_manifest(raw, idx)
             manifest = self._apply_poc_template(manifest, poc_template)
-            violations, guard_report = self._guard_manifest(manifest)
+            declared = self._extract_declared_dependencies(manifest)
+            required_static = self._detect_required_dependencies(manifest)
+            llm_section = None
+            if self._dep_guard_config.get("llm_assist") or self._auto_patch_enabled:
+                llm_section = self._llm_infer_dependencies(manifest, required_static, declared)
+            auto_patch_info = (
+                self._maybe_auto_patch_dependencies(manifest, declared, required_static, llm_section)
+                if self._auto_patch_enabled
+                else {"enabled": False}
+            )
+            if auto_patch_info.get("patched") or auto_patch_info.get("synced_requirements"):
+                declared = self._extract_declared_dependencies(manifest)
+            violations, guard_report = self._guard_manifest(
+                manifest,
+                precomputed_llm=llm_section,
+                auto_patch=auto_patch_info,
+            )
             static_report = analyze_sql_injection_signals(manifest)
             score = self._score_candidate(len(violations), static_report.get("score", 0.0))
             reports.append(
@@ -262,6 +257,7 @@ class SynthesisEngine:
         self._write_candidate_log(reports)
         accepted = [report for report in reports if not report.violations]
         if not accepted:
+            self._record_guard_failure(reports)
             violation_lines = [
                 f"candidate #{report.index}: {', '.join(report.violations)}"
                 for report in reports
@@ -295,6 +291,28 @@ class SynthesisEngine:
         if "SQLi SUCCESS" not in signature:
             normalized["success_signature"] = f"{signature} SQLi SUCCESS".strip()
         return normalized
+
+    def _load_stdlib_spec(self) -> None:
+        language = (self._requirement.get("language") or "python").lower()
+        runtime = self._requirement.get("runtime") or {}
+        version = (
+            runtime.get("language_version")
+            or runtime.get("python_version")
+            or self._requirement.get("language_version")
+            or "3.11"
+        )
+        spec = load_stdlib_spec(language=language, version=str(version))
+        self._stdlib_modules = {self._canonicalize_package_name(name) for name in spec.stdlib_modules}
+        # Merge aliases/defaults with fallbacks to preserve canonical names.
+        self._module_alias_map = dict(PYTHON_MODULE_PACKAGE_MAP)
+        self._module_alias_map.update({k.lower(): v for k, v in spec.aliases.items()})
+        self._default_versions = {
+            "requests": "2.32.2",
+            "pysqlite3-binary": "0.5.2",
+        }
+        self._default_versions.update(spec.default_versions)
+        self._auto_patch_denylist = {"logging", "sqlite3"} | spec.auto_patch_denylist
+        self._stdlib_aliases_loaded = True
 
     def _apply_poc_template(self, manifest: Dict[str, Any], template: Dict[str, Any]) -> Dict[str, Any]:
         poc = manifest.get("poc")
@@ -423,9 +441,16 @@ class SynthesisEngine:
             },
         }
 
-    def _guard_manifest(self, manifest: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
+    def _guard_manifest(
+        self,
+        manifest: Dict[str, Any],
+        *,
+        precomputed_llm: Dict[str, Any] | None = None,
+        auto_patch: Dict[str, Any] | None = None,
+    ) -> Tuple[List[str], Dict[str, Any]]:
         errors: List[str] = []
         dep_error_messages: List[str] = []
+        auto_patch = auto_patch or {"enabled": False}
 
         files = manifest.get("files")
         if not isinstance(files, list) or not files:
@@ -492,6 +517,29 @@ class SynthesisEngine:
                 errors.append(msg)
                 dep_error_messages.append(msg)
 
+        llm_section = precomputed_llm or {"enabled": False}
+        llm_stdlib_skips: List[str] = []
+        if self._dep_guard_config.get("llm_assist") and precomputed_llm is None:
+            llm_section = self._llm_infer_dependencies(manifest, required_deps, declared)
+        if llm_section:
+            patched = set(auto_patch.get("patched_canonicals") or [])
+            llm_missing = sorted(
+                set(llm_section.get("missing_high_conf", []))
+                - declared.combined
+                - set(missing_static)
+                - patched
+            )
+            llm_section["missing_high_conf"] = sorted(set(llm_section.get("missing_high_conf", [])))
+            for dep in llm_missing:
+                if self._is_stdlib_module(dep):
+                    llm_stdlib_skips.append(dep)
+                    continue
+                msg = f"llm inferred dependency '{dep}' missing from manifest declarations"
+                errors.append(msg)
+                dep_error_messages.append(msg)
+            if llm_stdlib_skips:
+                llm_section["skipped_stdlib"] = sorted({self._canonicalize_package_name(dep) for dep in llm_stdlib_skips})
+
         dep_guard = {
             "declared": sorted(declared.combined),
             "declared_from_deps": sorted(declared.from_deps_field),
@@ -502,6 +550,8 @@ class SynthesisEngine:
             "missing_from_requirements": missing_from_requirements,
             "missing_from_build": missing_from_build,
             "errors": dep_error_messages,
+            "llm": llm_section,
+            "auto_patch": auto_patch,
         }
 
         return errors, dep_guard
@@ -565,6 +615,180 @@ class SynthesisEngine:
         manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
         self._write_candidate_log(reports)
 
+    def _record_guard_failure(self, reports: List[CandidateReport]) -> None:
+        failure_path = self.metadata_dir / "generator_failures.jsonl"
+        ensure_dir(failure_path.parent)
+        missing_static: set[str] = set()
+        missing_from_requirements: set[str] = set()
+        missing_from_build: set[str] = set()
+        llm_high_conf: set[str] = set()
+        guard_notes: List[str] = []
+        auto_patched: set[str] = set()
+        auto_patch_entries: List[Dict[str, Any]] = []
+        for report in reports:
+            guard = report.guard_report or {}
+            missing_static.update(guard.get("missing_static") or [])
+            missing_from_requirements.update(guard.get("missing_from_requirements") or [])
+            missing_from_build.update(guard.get("missing_from_build") or [])
+            errors = guard.get("errors") or []
+            guard_notes.extend(errors)
+            llm_section = guard.get("llm") or {}
+            llm_high_conf.update(llm_section.get("missing_high_conf") or [])
+            auto_patch = guard.get("auto_patch") or {}
+            auto_patch_entries.append(auto_patch)
+            auto_patched.update(auto_patch.get("patched_canonicals") or [])
+        suggested = sorted(llm_high_conf or missing_static)
+        if auto_patched:
+            suggested = sorted(set(suggested) | auto_patched)
+        missing_all = sorted(missing_static | missing_from_requirements | missing_from_build | llm_high_conf)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        reason = "; ".join(sorted(set(guard_notes))) or "guard violations"
+        fix_hint = "Add the missing dependencies to manifest.deps and requirements*.txt, then re-run synthesis."
+        entry = {
+            "stage": "GENERATOR",
+            "timestamp": timestamp,
+            "reason": reason,
+            "fix_hint": fix_hint,
+            "missing_dependencies": missing_all,
+            "suggested_dependencies": suggested,
+            "notes": guard_notes,
+            "auto_patch": auto_patch_entries[-1] if auto_patch_entries else {},
+        }
+        with failure_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def _maybe_auto_patch_dependencies(
+        self,
+        manifest: Dict[str, Any],
+        declared: DeclaredDependencies,
+        required_static: set[str],
+        llm_section: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "enabled": True,
+            "patched": [],
+            "skipped": [],
+            "patched_canonicals": [],
+            "synced_requirements": [],
+        }
+        static_candidates: set[str] = set(required_static - declared.combined)
+        candidate_names: set[str] = set(static_candidates)
+        llm_candidates: set[str] = set()
+        if llm_section:
+            for suggestion in llm_section.get("suggestions", []) or []:
+                name = suggestion.get("name") or suggestion.get("package")
+                if name and suggestion.get("enforce"):
+                    candidate_names.add(name)
+                    llm_candidates.add(name)
+        requirements_entry = self._ensure_requirements_entry(manifest)
+        deps_list = manifest.setdefault("deps", [])
+        if not isinstance(deps_list, list):
+            deps_list = []
+            manifest["deps"] = deps_list
+        declared_deps = {
+            self._canonicalize_package_name(self._strip_version(dep.split(" ", 1)[0]))
+            for dep in deps_list
+            if isinstance(dep, str)
+        }
+        requirements_packages = self._extract_packages_from_requirements(requirements_entry.get("content", ""))
+        missing_requirements = declared_deps - requirements_packages
+        for canonical in sorted(missing_requirements):
+            if canonical in self._auto_patch_denylist:
+                continue
+            version = self._default_versions.get(canonical)
+            name = canonical
+            if version:
+                self._append_requirement_line(requirements_entry, name, version)
+                info["synced_requirements"].append({"name": name, "version": version})
+            else:
+                info["synced_requirements"].append({"name": name, "reason": "no default version"})
+        if not candidate_names:
+            return info
+        patched_canonicals: set[str] = set()
+        for raw_name in sorted(candidate_names):
+            canonical = self._canonicalize_package_name(raw_name)
+            if not canonical:
+                continue
+            target_name = self._module_alias_map.get(canonical, canonical)
+            target_canonical = self._canonicalize_package_name(target_name)
+            if target_canonical in self._auto_patch_denylist:
+                info["skipped"].append({"name": raw_name, "reason": "stdlib"})
+                continue
+            if target_canonical in self._stdlib_modules and target_name == canonical:
+                info["skipped"].append({"name": raw_name, "reason": "stdlib"})
+                continue
+            if target_canonical in declared_deps or target_canonical in patched_canonicals:
+                continue
+            version = self._default_versions.get(target_canonical)
+            if version is None:
+                info["skipped"].append({"name": raw_name, "reason": "no default version"})
+                continue
+            spec = f"{target_name}=={version}"
+            deps_list.append(spec)
+            self._append_requirement_line(requirements_entry, target_name, version)
+            patched_canonicals.add(target_canonical)
+            info["patched"].append(
+                {
+                    "name": target_name,
+                    "version": version,
+                    "source": "llm" if raw_name in llm_candidates else "static",
+                }
+            )
+        info["patched_canonicals"] = sorted(patched_canonicals)
+        return info
+
+    def _ensure_requirements_entry(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        files = manifest.setdefault("files", [])
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            path = (entry.get("path") or "").lower()
+            if fnmatch.fnmatch(path, "requirements*.txt"):
+                entry.setdefault("content", "")
+                if not entry.get("description"):
+                    entry["description"] = "Pinned deps for SBOM."
+                return entry
+        entry = {
+            "path": "requirements.txt",
+            "description": "Auto-generated requirements",
+            "content": "",
+        }
+        files.append(entry)
+        return entry
+
+    def _append_requirement_line(self, entry: Dict[str, Any], package: str, version: str) -> None:
+        content = entry.get("content") or ""
+        existing = {
+            self._canonicalize_package_name(
+                self._strip_version(line.split("#", 1)[0].strip())
+            )
+            for line in content.splitlines()
+            if line.strip()
+        }
+        canonical = self._canonicalize_package_name(package)
+        if canonical in existing:
+            return
+        line = f"{package}=={version}" if version else package
+        if content and not content.endswith("\n"):
+            content += "\n"
+        content += f"{line}\n"
+        entry["content"] = content
+
+    def _extract_packages_from_requirements(self, content: str) -> set[str]:
+        packages: set[str] = set()
+        if not isinstance(content, str):
+            return packages
+        for raw_line in content.splitlines():
+            token = raw_line.split("#", 1)[0].strip()
+            if not token:
+                continue
+            canonical = self._canonicalize_package_name(self._strip_version(token))
+            if canonical:
+                packages.add(canonical)
+        return packages
+
+    def _is_stdlib_module(self, name: str) -> bool:
+        return self._canonicalize_package_name(name) in self._stdlib_modules
     def _extract_declared_dependencies(self, manifest: Dict[str, Any]) -> DeclaredDependencies:
         combined: set[str] = set()
         from_deps_field: set[str] = set()
@@ -640,6 +864,166 @@ class SynthesisEngine:
                 continue
             required.update(self._detect_python_imports(content))
         return required
+
+    def _llm_infer_dependencies(
+        self,
+        manifest: Dict[str, Any],
+        required_static: set[str],
+        declared: DeclaredDependencies,
+    ) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "enabled": True,
+            "missing_high_conf": [],
+            "suggestions": [],
+            "status": "skipped",
+            "raw_excerpt": "",
+        }
+
+        try:
+            messages = self._build_dep_guard_messages(manifest, required_static, declared)
+            response = self.llm.generate(messages)
+        except Exception as exc:  # pragma: no cover - safety
+            LOGGER.warning("LLM dependency inference failed for %s: %s", self.sid, exc)
+            result["status"] = f"error: {exc}"[:120]
+            result["error"] = str(exc)
+            return result
+
+        result["raw_excerpt"] = response[:400]
+        data = self._parse_json_response(response)
+        if not isinstance(data, dict):
+            result["status"] = "parse_error"
+            return result
+
+        python_section = data.get("python") or {}
+        suggestions = self._normalize_llm_suggestions(python_section)
+        result["suggestions"] = suggestions
+        result["status"] = "ok"
+        result["missing_high_conf"] = sorted(
+            {entry["name"] for entry in suggestions if entry.get("enforce")}
+        )
+        result["mappings"] = python_section.get("mappings", [])
+        return result
+
+    def _build_dep_guard_messages(
+        self,
+        manifest: Dict[str, Any],
+        required_static: set[str],
+        declared: DeclaredDependencies,
+    ) -> List[Dict[str, str]]:
+        system = (
+            "You are a dependency auditor for vulnerable app bundles. "
+            "Given code snippets and static detector output, infer missing runtime dependencies. "
+            "Reply with strict JSON following the schema described in the user prompt."
+        )
+        snippets = self._gather_file_snippets(manifest)
+        payload = {
+            "static_analysis": {
+                "declared": sorted(declared.combined),
+                "required_static": sorted(required_static),
+            },
+            "file_snippets": snippets,
+        }
+        schema_hint = {
+            "python": {
+                "missing": [
+                    {"name": "package", "reason": "why", "confidence": "high|medium|low"}
+                ],
+                "mappings": [
+                    {"module": "module name", "package": "distribution", "confidence": "high|medium|low"}
+                ],
+            },
+            "node": {
+                "missing": [],
+            },
+            "apt": {
+                "missing": [],
+            },
+        }
+        instructions = (
+            "Analyze the snippets and static findings. "
+            "Only include packages that are NOT clearly declared. "
+            "If unsure, mark confidence as low. High confidence entries should only be used when the import clearly maps to a package. "
+            "Respond with JSON matching this schema; omit empty sections."
+        )
+        user_content = (
+            f"{instructions}\n\n"
+            f"# Schema\n{json.dumps(schema_hint, indent=2, ensure_ascii=False)}\n\n"
+            f"# Context\n{json.dumps(payload, indent=2, ensure_ascii=False)}"
+        )
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ]
+
+    def _gather_file_snippets(self, manifest: Dict[str, Any], *, max_files: int = 6, max_chars: int = 400) -> List[Dict[str, str]]:
+        snippets: List[Dict[str, str]] = []
+        for entry in manifest.get("files", []):
+            if len(snippets) >= max_files:
+                break
+            if not isinstance(entry, dict):
+                continue
+            path = (entry.get("path") or "").strip()
+            content = self._read_text_content(entry)
+            if not path or not content:
+                continue
+            snippets.append(
+                {
+                    "path": path,
+                    "language": self._guess_language(path),
+                    "snippet": content[:max_chars],
+                }
+            )
+        return snippets
+
+    @staticmethod
+    def _guess_language(path: str) -> str:
+        suffix = Path(path).suffix.lower().lstrip(".")
+        return suffix or "text"
+
+    def _parse_json_response(self, raw: str) -> Any:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                snippet = raw[start : end + 1]
+                try:
+                    return json.loads(snippet)
+                except json.JSONDecodeError:
+                    return None
+        return None
+
+    def _normalize_llm_suggestions(self, python_section: Dict[str, Any]) -> List[Dict[str, Any]]:
+        suggestions: List[Dict[str, Any]] = []
+        missing = python_section.get("missing")
+        if isinstance(missing, list):
+            for entry in missing:
+                if isinstance(entry, str):
+                    name = entry
+                    reason = ""
+                    confidence = "high"
+                    module = ""
+                elif isinstance(entry, dict):
+                    name = entry.get("name") or entry.get("package") or entry.get("dependency")
+                    reason = entry.get("reason") or entry.get("detail") or ""
+                    confidence = (entry.get("confidence") or "").lower() or "medium"
+                    module = entry.get("module") or ""
+                else:
+                    continue
+                canonical = self._canonicalize_package_name(name or "")
+                if not canonical:
+                    continue
+                suggestions.append(
+                    {
+                        "name": canonical,
+                        "reason": reason,
+                        "confidence": confidence,
+                        "module": module,
+                        "enforce": confidence in {"high", "certain"},
+                    }
+                )
+        return suggestions
 
     def _detect_python_imports(self, source: str) -> set[str]:
         packages: set[str] = set()
@@ -820,7 +1204,8 @@ class SynthesisEngine:
         if not normalized or normalized == ".":
             return ""
         normalized = normalized.replace("_", "-")
-        return PYTHON_MODULE_PACKAGE_MAP.get(normalized, normalized)
+        alias_map = getattr(self, "_module_alias_map", PYTHON_MODULE_PACKAGE_MAP)
+        return alias_map.get(normalized, normalized)
 
     def _read_text_content(self, entry: Dict[str, Any]) -> str:
         content = entry.get("content")
