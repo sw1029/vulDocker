@@ -121,6 +121,57 @@ class LLMClient:
 
 ---
 
+## 2.5. TODO 14.5 – 합성(LLM) 기반 ‘템플릿 없는’ 유동적 취약 Docker 생성
+목표: 템플릿 파일 전개 없이 LLM이 코드/도커/PoC 번들을 직접 합성하여 교육용 취약 이미지를 생성. TODO 15(외부 RAG) 전 단계로 내부 힌트 기반으로 품질을 안정화.
+
+### 14.5.1 코드 작업 목록
+| 경로 | 작업 내용 | 주요 의존 문서 |
+| --- | --- | --- |
+| `agents/generator/synthesis.py` (신규) | 합성 엔진 구현: LLM 출력(JSON 매니페스트) 검증·가드(경로/확장자/크기), 후보 k개 점수화/선택, 머티리얼라이즈, 메타 기록 | agents_contracts, variability_repro/design |
+| `common/prompts/templates.py` | 합성 전용 프롬프트 `build_synthesis_prompt()` 추가(출력 스키마 엄수, 필수 파일/PoC/시グ니처 포함) | prompt.md, schemas |
+| `agents/generator/service.py` | `generator_mode: synthesis|hybrid|template` 분기. synthesis/hybrid 결과를 `metadata/<SID>/generator_manifest.json`, `generator_candidates.json`으로 기록 | agents_contracts |
+| `rag/static_loader.py` + `rag/hints/cwe-89/*.md` (신규) | 내부 힌트 로딩(`load_hints(CWE, stack)`), 합성 프롬프트에 주입(14.5 단계), 15에서 외부 RAG로 대체 | rag/design |
+| `evals/static_signatures/sqli.py` (신규) | 합성 후보 정적 스크리닝(문자열 조합/UNION SELECT 등 시グ니처), Reviewer 보조 | evals/specs |
+| `docs/schemas/generator_manifest.md` (신규) | 합성 출력 스키마 정의: files[], deps[], build/run, poc{cmd, success_signature}, notes/pattern_tags[] | schemas/* |
+
+### 14.5.2 동작 흐름
+1. PLAN: 요구에 `generator_mode: synthesis`, `synthesis_limits{max_files, max_bytes_per_file, allowlist[]}`, `allow_intentional_vuln`(교육용)을 명시 → `plan.json`에 반영.
+2. DRAFT(합성): 합성 프롬프트에 Requirement+내부 힌트+Reflexion 실패맥락+Variation Key를 포함하여 k개 매니페스트 샘플 → 스키마/가드/정적 시그니처 검증 → 점수화 다수결 → 1개 채택 → 워크스페이스에 파일 기록.
+3. BUILD/RUN: 기존 실행기(`executor/runtime/docker_db.py`)로 빌드, Anchore Syft 1.x로 SPDX SBOM 생성, 내부 네트워크에서 DB+앱 실행, 로그 수집.
+4. VERIFY: `evals/poc_verifier/mvp_sqli.py`로 `SQLi SUCCESS` 시グ니처 판정.
+5. REVIEW: 로그+정적 분석 병합, blocking이면 Reflexion 메모리(JSONL) 기록 → 다음 합성 루프에 `failure_context`로 주입.
+6. PACK: 기본은 Reviewer 차단 시 금지. 교육용은 요구의 정책 플래그(true) + `--allow-intentional-vuln` CLI가 동시에 있을 때 예외 허용(감사 로그 남김).
+
+### 14.5.3 가드/정책
+- 허용 경로 화이트리스트(기본: `Dockerfile, app.py, requirements.txt, poc.py, schema.sql, README.md`), 확장자/바이트 상한(예: 12개/≤64KB) 적용.
+- 금지 토큰 블록리스트(역쉘, `rm -rf`, 외부 네트워크 호출 등) 필터.
+- 의존 고정(핀 버전), 내부 네트워크 격리, SBOM 필수 생성(`docs/executor/sbom_guideline.md`).
+- 정책 게이트: Reviewer 차단 시 PACK 금지. 교육용 예외는 `plan.policy.allow_intentional_vuln=true`+`--allow-intentional-vuln` 동시 충족 시에만 허용.
+
+### 14.5.4 지표/검증 및 수용 기준
+- 합성만으로 빌드/실행/PoC 성공(템플릿 디렉토리 미사용) → `evals.json.verify_pass=true`.
+- SPDX SBOM 생성 성공(`artifacts/<SID>/build/sbom.spdx.json`).
+- Reviewer 보고서 존재 및 Reflexion 루프 동작. 재현 모드에서 동일 입력/시드로 동일 manifest hash/SID 산출.
+- 템플릿 의존도 0% (합성 모드): 전개 파일이 모두 합성 매니페스트에서 기인함을 `generator_manifest.json`으로 증명.
+
+### 14.5.5 정합성 체크
+- `prompt.md`: 합성 지침/출력 스키마 엄수, 에이전트 계약 준수.
+- `docs/variability_repro/design.md`: Variation Key/시드/self-consistency 반영.
+- `docs/executor/security_policies.md`, `docs/executor/sbom_guideline.md`, `docs/ops/security_gates.md`: 실행 격리·SBOM·보안 게이트 일치.
+- `docs/architecture/agents_contracts.md`: Generator/Reviewer/Executor 계약 항목 충족.
+
+### 14.5.6 사용 예시(교육용 허용)
+```
+generator_mode: synthesis
+allow_intentional_vuln: true
+synthesis_limits:
+  max_files: 12
+  max_bytes_per_file: 64000
+```
+명령: PLAN → DRAFT(합성) → BUILD/RUN → VERIFY → REVIEW → PACK(`--allow-intentional-vuln`).
+
+---
+
 ## 3. TODO 15 – 고도화
 목표: Researcher 도입, 외부 검색+ReAct 연동, 최신 CVE 자가 생성, 다변성 모드(top-p/self-consistency) 도입 및 다양성·재현성 지표 자동 측정.
 
