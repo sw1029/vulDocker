@@ -300,6 +300,7 @@ synthesis_limits:
 - **docs/milestones/mvp_runbook.md & roadmap.md**: 명령 시퀀스·지표를 그대로 참조, 각 단계 산출물 위치 일치.
 - **docs/architecture/\***: 오케스트레이션, 에이전트 계약, 메타스토어 규약에 따라 경로/스키마/Trace 규칙을 설계.
 - **docs/variability_repro/design.md & docs/decoding/model_and_decoding_strategy.md**: Variation Key, LHS, 디코딩 파라미터 정의를 그대로 코드에 투영.
+- **docs/architecture/multi_vuln_single_sid.md**: 단일 SID에서 다중 취약을 생성하는 확장 설계·구현안을 별도 문서로 정리(옵트인 방식, 스키마/실행 흐름/평가 확장).
 - **docs/executor/\*** & **docs/ops/security_gates.md**: 실행기 정책, SBOM, 보안 게이트 절차를 TODO 13~15 실행기에 통합.
 - **docs/evals/specs.md** & **docs/reporting/reproducibility_report_template.md**: 검증·리포트 산출 형식을 준수하도록 모듈 경로를 명시.
 
