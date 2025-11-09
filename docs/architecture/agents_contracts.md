@@ -13,6 +13,7 @@
   - 요구 정의(취약점 ID, 패턴 힌트, 환경 제약).
   - 현재 실패 로그(선택) → 쿼리 증강.
   - Retrieval snapshot ID, 모델 버전(재현용).
+- **출력 활용 규칙**: Researcher 보고서의 `preconditions`, `tech_stack_candidates`, `deps`는 Generator 단계에서 템플릿/LLM 선택 점수에 가산되어 자연어 요구와 검색 결과가 실제 코드 스택 선정에 직접 영향을 준다.
 - **출력 JSON 스키마** (`docs/schemas/researcher_report.md` 예정):
 ```
 {
@@ -37,6 +38,7 @@
   - Researcher 보고서.
   - Scenario 차원 파라미터(언어/프레임워크/DB 등).
   - 패턴/템플릿 ID, Variation Key.
+  - `poc_payloads[]` 등 메타모픽 PoC 입력.
 - **출력**:
   - 파일 번들(코드, Dockerfile, 스크립트) + 메타JSON (`generated_artifacts.json`).
   - PoC 스크립트 초안.
@@ -65,6 +67,7 @@
 - **정책**:
   - 치명적 이슈(예: 빌드 실패, 보안 위반)는 즉시 LOOP 트리거.
   - Reviewer는 상위 성능 모델(품질 모드) 사용 권장.
+  - PoC 판정은 `evals.poc_verifier.registry`에 등록된 취약점별 검증기를 호출해 수행하며, 미등록 취약점은 blocking 이슈로 보고한다.
 
 ## 4. Executor
 - **목표**: 빌드, 실행, PoC 검증 및 자원 측정.

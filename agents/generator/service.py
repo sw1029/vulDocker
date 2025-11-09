@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from common.config import DecodingProfile
 from common.llm import LLMClient
@@ -31,6 +32,19 @@ from orchestrator.loop_controller import LoopController
 from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits, SynthesisOutcome
 
 LOGGER = get_logger(__name__)
+
+MYSQL_DRIVERS = {
+    "pymysql",
+    "mysqlclient",
+    "mysql-connector",
+    "mysql-connector-python",
+}
+POSTGRES_DRIVERS = {
+    "psycopg2",
+    "psycopg2-binary",
+    "pg8000",
+    "asyncpg",
+}
 
 
 def _metadata_dir(plan: Dict[str, Any]) -> Path:
@@ -60,6 +74,17 @@ class TemplateSpec:
     @property
     def requires_external_db(self) -> bool:
         return bool(self.metadata.get("requires_external_db", False))
+
+    @property
+    def db(self) -> str:
+        return str(self.metadata.get("db") or "").lower()
+
+    @property
+    def tags(self) -> List[str]:
+        raw = self.metadata.get("tags") or []
+        if not isinstance(raw, list):
+            return []
+        return [str(x).strip().lower() for x in raw if isinstance(x, str) and x.strip()]
 
 
 @dataclass
@@ -93,7 +118,7 @@ class TemplateRegistry:
     """Discovers template directories and handles workspace materialization."""
 
     def __init__(self, root: Path | None = None) -> None:
-        default_root = get_repo_root() / "workspaces" / "templates" / "sqli"
+        default_root = get_repo_root() / "workspaces" / "templates"
         self.root = root or default_root
         self.templates = self._discover()
         if not self.templates:
@@ -166,7 +191,7 @@ class GeneratorService:
         self.profile: DecodingProfile = self.variation_manager.profile_for("generator", override_mode=mode)
         model = self.requirement.get("model_version", "gpt-4.1-mini")
         self.llm = LLMClient(model, self.profile)
-        self.generator_mode = (self.requirement.get("generator_mode") or "template").lower()
+        self.generator_mode = (self.requirement.get("generator_mode") or "hybrid").lower()
         self.synthesis_limits = SynthesisLimits.from_requirement(self.requirement)
         self._template_root = template_root
         self._registry: Optional[TemplateRegistry] = None
@@ -214,6 +239,17 @@ class GeneratorService:
         # Default to False because executor runs with --network none.
         return False
 
+    def _runtime_db(self) -> str:
+        runtime = self.requirement.get("runtime") or {}
+        for key in ("db", "database"):
+            value = runtime.get(key)
+            if value:
+                return str(value).strip().lower()
+        value = self.requirement.get("db") or self.requirement.get("database")
+        if value:
+            return str(value).strip().lower()
+        return ""
+
     def _normalize_user_deps(self) -> List[str]:
         deps = self.requirement.get("user_deps") or []
         if not isinstance(deps, list):
@@ -228,6 +264,27 @@ class GeneratorService:
             else:
                 LOGGER.warning("Ignoring non-string user_dep value: %s", entry)
         return normalized
+
+    def _should_include_user_dep(self, dep: str) -> bool:
+        dep_norm = dep.strip().lower()
+        if not dep_norm:
+            return False
+        runtime_db = self._runtime_db()
+        if dep_norm in MYSQL_DRIVERS:
+            if runtime_db in {"mysql", "mariadb"}:
+                return True
+            if not runtime_db:
+                return self._allow_external_db()
+            LOGGER.info("Skipping MySQL driver dependency '%s' for runtime db=%s", dep, runtime_db or "unknown")
+            return False
+        if dep_norm in POSTGRES_DRIVERS:
+            if runtime_db in {"postgres", "postgresql"}:
+                return True
+            if not runtime_db:
+                return self._allow_external_db()
+            LOGGER.info("Skipping PostgreSQL driver dependency '%s' for runtime db=%s", dep, runtime_db or "unknown")
+            return False
+        return True
 
     def _apply_user_deps_to_workspace(self) -> List[str]:
         if not self.user_deps:
@@ -245,6 +302,8 @@ class GeneratorService:
         merged = list(existing)
         added: List[str] = []
         for dep in self.user_deps:
+            if not self._should_include_user_dep(dep):
+                continue
             key = dep.lower()
             if key in lower_seen:
                 continue
@@ -305,6 +364,17 @@ class GeneratorService:
             except Exception as exc:  # pragma: no cover - safety net
                 LOGGER.warning("Hybrid synthesis failure (%s); using template path.", exc)
             self._run_template(context, mode_label="hybrid-template")
+            return
+        # In template mode, attempt a compatibility check first; if no viable
+        # template exists for the requested vuln/runtime, fall back to LLM synthesis.
+        if not self._has_viable_template():
+            LOGGER.warning(
+                "No viable template found for sid=%s (vuln=%s, db=%s). Falling back to synthesis.",
+                self.sid,
+                (self.requirement.get("vuln_id") or "").upper(),
+                ((self.requirement.get("runtime") or {}).get("db") or "").lower(),
+            )
+            self._run_synthesis_with_loops(context)
             return
         self._run_template(context, mode_label="template")
 
@@ -376,6 +446,7 @@ class GeneratorService:
         (self.metadata_dir / "generator_llm_plan.md").write_text(llm_notes, encoding="utf-8")
         selection, candidates = self._select_template()
         written_files = self._get_registry().materialize(selection, self.workspace)
+        self._augment_workspace_if_needed(selection)
         added_user_deps = self._apply_user_deps_to_workspace()
         self._record_user_deps_metadata(added_user_deps)
         self._write_metadata(
@@ -427,48 +498,89 @@ class GeneratorService:
         return "\n".join(parts)
 
     def _select_template(self) -> Tuple[TemplateSpec, List[TemplateCandidate]]:
+        # Prefer templates matching vuln_id tags and runtime DB; respect external DB policy.
+        allow_external = self._allow_external_db()
+        req_vuln = str(self.requirement.get("vuln_id") or "").strip().lower()
+        req_db = str(((self.requirement.get("runtime") or {}).get("db")) or "").strip().lower()
+        req_pattern = str(self.requirement.get("pattern_id") or "").strip().lower()
+        researcher_tags = self._researcher_hint_tags()
+
+        all_templates = self._get_registry().templates
+        scored: List[Tuple[float, TemplateSpec]] = []
+        for t in all_templates:
+            if not allow_external and t.requires_external_db:
+                continue
+            score = 0.0
+            if req_vuln and req_vuln in t.tags:
+                score += 3.0
+            if req_db and req_db == t.db:
+                score += 2.0
+            if req_pattern and req_pattern == (t.pattern_id or "").lower():
+                score += 1.0
+            if researcher_tags:
+                overlap = len(researcher_tags & set(t.tags))
+                if overlap:
+                    score += 0.5 * overlap
+            # small tie-breaker on stability
+            score += 0.1 * t.stability
+            scored.append((score, t))
+
+        # If nothing scored, fallback to sampling to keep legacy behavior
+        if not scored:
+            seed = self.variation_manager.pattern_seed_with_offset(self.loop_index)
+            k = self._candidate_k()
+            candidates = self._get_registry().sample_candidates(seed=seed, k=k)
+            return candidates[0].template, candidates
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best = scored[0][1]
+
+        # For traceability, still emit candidate list using sampler
         seed = self.variation_manager.pattern_seed_with_offset(self.loop_index)
         k = self._candidate_k()
         candidates = self._get_registry().sample_candidates(seed=seed, k=k)
+        return best, candidates
+
+    def _has_viable_template(self) -> bool:
         allow_external = self._allow_external_db()
-        filtered: List[TemplateCandidate] = []
-        skipped = 0
-        for candidate in candidates:
-            if not allow_external and candidate.template.requires_external_db:
-                skipped += 1
+        req_vuln = str(self.requirement.get("vuln_id") or "").strip().lower()
+        req_db = str(((self.requirement.get("runtime") or {}).get("db")) or "").strip().lower()
+        if not req_vuln or not req_db:
+            return False
+        templates = self._get_registry().templates
+        for t in templates:
+            if not allow_external and t.requires_external_db:
                 continue
-            filtered.append(candidate)
-        if not filtered:
-            if skipped:
-                LOGGER.warning(
-                    "All sampled templates for %s require external databases but runtime disallows them; "
-                    "falling back to original pool.",
-                    self.sid,
-                )
-            filtered = candidates
-        elif skipped:
-            LOGGER.info(
-                "Filtered %s template candidate(s) requiring external DB for %s (runtime disallows external DB).",
-                skipped,
-                self.sid,
-            )
-        candidates = filtered
-        votes: Dict[str, List[TemplateCandidate]] = {}
-        for candidate in candidates:
-            votes.setdefault(candidate.template.id, []).append(candidate)
-        # Majority vote followed by best score tiebreaker.
-        sorted_votes = sorted(
-            votes.items(),
-            key=lambda item: (
-                len(item[1]),
-                item[1][0].template.stability,
-            ),
-            reverse=True,
-        )
-        winning_id, _ = sorted_votes[0]
-        tied = votes[winning_id]
-        winner = max(tied, key=lambda candidate: candidate.score)
-        return winner.template, candidates
+            vuln_match = req_vuln in t.tags
+            db_match = req_db == t.db
+            if vuln_match and db_match:
+                return True
+        return False
+
+    def _researcher_hint_tags(self) -> Set[str]:
+        report_path = self.metadata_dir / "researcher_report.json"
+        if not report_path.exists():
+            return set()
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return set()
+        tags: Set[str] = set()
+        for key in ("preconditions", "tech_stack_candidates", "deps"):
+            entries = report.get(key) or []
+            if isinstance(entries, list):
+                for entry in entries:
+                    tags.update(self._normalize_hint_tokens(entry))
+            elif isinstance(entries, str):
+                tags.update(self._normalize_hint_tokens(entries))
+        return tags
+
+    @staticmethod
+    def _normalize_hint_tokens(value: Any) -> Set[str]:
+        if not isinstance(value, str):
+            return set()
+        tokens = {token.strip().lower() for token in re.split(r"[^a-zA-Z0-9]+", value) if token.strip()}
+        return tokens
 
     def _write_metadata(
         self,
@@ -502,6 +614,21 @@ class GeneratorService:
         summary_path = self.metadata_dir / "generator_template.json"
         summary_path.write_text(json.dumps(selection_payload, indent=2, ensure_ascii=False), encoding="utf-8")
         LOGGER.info("Generator template summary written to %s", summary_path)
+
+    def _augment_workspace_if_needed(self, selection: TemplateSpec) -> None:
+        """Placeholder hook for future template augmentation.
+
+        The current iteration only records intent; concrete augmentation rules will
+        be injected once docs/evals/rules/*.yaml is available.
+        """
+
+        augmentation = self.requirement.get("augmentation") or {}
+        if not augmentation:
+            return
+        LOGGER.info(
+            "Template augmentation requested for %s but no automations are configured.",
+            selection.id,
+        )
 
 
 __all__ = ["GeneratorService", "TemplateRegistry", "TemplateSpec"]

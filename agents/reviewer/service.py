@@ -16,12 +16,16 @@ from common.prompts import build_reviewer_prompt
 from common.run_matrix import (
     VulnBundle,
     artifacts_dir_for_bundle,
+    bundle_requirement,
     load_vuln_bundles,
     metadata_dir_for_bundle,
     workspace_dir_for_bundle,
 )
 from common.variability import VariationManager
 from orchestrator.loop_controller import LoopController
+from evals.poc_verifier import evaluate_with_vuln
+from evals.poc_verifier import csrf as _verifier_csrf  # noqa: F401
+from evals.poc_verifier import mvp_sqli as _verifier_sqli  # noqa: F401
 
 LOGGER = get_logger(__name__)
 SQLI_PATTERN = re.compile(r"SELECT.+\{.+\}", re.IGNORECASE | re.DOTALL)
@@ -150,14 +154,45 @@ class ReviewerService:
                 reason="run.log missing",
                 fix_hint="Repeat EXECUTOR RUN step for this bundle",
             )
-        content = log_path.read_text(encoding="utf-8")
-        success = "SQLi SUCCESS" in content
+        bundle_requirement_view = bundle_requirement(self.plan["requirement"], bundle)
+        run_summary = self._load_run_summary(bundle)
+        try:
+            result = evaluate_with_vuln(
+                bundle.vuln_id,
+                log_path,
+                requirement=bundle_requirement_view,
+                run_summary=run_summary,
+                plan_policy=self.plan.get("policy"),
+            )
+        except FileNotFoundError:
+            return ReviewerContext(
+                sid=self.sid,
+                bundle=bundle,
+                log_path=log_path,
+                log_excerpt="run log missing",
+                success=False,
+                issues=[
+                    self._issue_stub(
+                        bundle=bundle,
+                        file="poc.py",
+                        line=0,
+                        issue="Run log missing",
+                        fix_hint="Re-run executor to collect bundle-specific run.log",
+                        evidence=[str(log_path)],
+                    )
+                ],
+                blocking=True,
+                reason="run.log missing",
+                fix_hint="Repeat EXECUTOR RUN step for this bundle",
+            )
+        success = bool(result.get("verify_pass"))
         issues: List[Dict[str, Any]] = []
         reason = ""
         fix_hint = ""
-        blocking = not success
+        blocking_status = {"evaluated", "evaluated-llm", None}
+        blocking = (not success) or (result.get("status") not in blocking_status)
         if not success:
-            reason = "SQLi SUCCESS marker missing"
+            reason = result.get("evidence") or "PoC verification failed"
             fix_hint = "Inspect application logs and PoC payload"
             issues.append(
                 self._issue_stub(
@@ -169,6 +204,7 @@ class ReviewerService:
                     evidence=[str(log_path)],
                 )
             )
+        content = log_path.read_text(encoding="utf-8")
         excerpt = content[-2000:] if content else ""
         return ReviewerContext(
             sid=self.sid,
@@ -181,6 +217,15 @@ class ReviewerService:
             reason=reason,
             fix_hint=fix_hint,
         )
+
+    def _load_run_summary(self, bundle: VulnBundle) -> Dict[str, Any]:
+        summary_path = artifacts_dir_for_bundle(self.plan, bundle, "run") / "summary.json"
+        if not summary_path.exists():
+            return {}
+        try:
+            return json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
 
     def _scan_workspace(self, bundle: VulnBundle) -> List[Dict[str, Any]]:
         issues: List[Dict[str, Any]] = []

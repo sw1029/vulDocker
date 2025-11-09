@@ -44,6 +44,34 @@ DEFAULT_POC_TEMPLATE = {
     "notes": "Auto-injected fallback PoC block",
 }
 
+DEFAULT_SUCCESS_SIGNATURES = {
+    "cwe-89": "SQLi SUCCESS",
+    "cwe-352": "CSRF SUCCESS",
+}
+
+DEFAULT_FLAG_TOKENS = {
+    "cwe-89": "FLAG-sqli-demo-token",
+    "cwe-352": "FLAG-csrf-demo-token",
+}
+
+FALLBACK_POC_ENDPOINTS = {
+    "cwe-89": {
+        "method": "get",
+        "path": "/login",
+        "payload": {
+            "username": "' OR '1'='1",
+            "password": "' OR '1'='1",
+        },
+    },
+    "cwe-352": {
+        "method": "post",
+        "path": "/transfer",
+        "payload": {
+            "amount": "250",
+        },
+    },
+}
+
 
 def _default_allowlist() -> List[str]:
     return [
@@ -80,6 +108,26 @@ PYTHON_MODULE_PACKAGE_MAP = {
 
 
 PIP_INSTALL_PATTERN = re.compile(r"pip(?:3)?\s+install(?P<body>[^&;|\n]*)", re.IGNORECASE)
+EXTERNAL_DB_PACKAGES = {
+    "pymysql",
+    "mysqlclient",
+    "mysql-connector",
+    "mysql-connector-python",
+    "psycopg2",
+    "psycopg2-binary",
+    "pg8000",
+    "asyncpg",
+}
+EXTERNAL_DB_KEYWORDS = {
+    "pymysql",
+    "mysqlclient",
+    "mysql.connector",
+    "psycopg2",
+    "pg8000",
+    "asyncpg",
+    "mysql-connector",
+    "mysql.connector",
+}
 
 
 @dataclass
@@ -233,6 +281,7 @@ class SynthesisEngine:
             raw = self.llm.generate(messages)
             manifest = self._parse_manifest(raw, idx)
             manifest = self._apply_poc_template(manifest, poc_template)
+            manifest = self._ensure_fallback_poc(manifest, poc_template)
             manifest = self._inject_user_deps(manifest)
             declared = self._extract_declared_dependencies(manifest)
             required_static = self._detect_required_dependencies(manifest)
@@ -281,8 +330,16 @@ class SynthesisEngine:
             )
             raise ManifestValidationError("All synthesis manifests violated guard rails.")
         selected = max(accepted, key=lambda report: (report.score, -report.index))
+        requires_external_db = self._manifest_requires_external_db(selected.manifest)
         written = self._materialize(selected.manifest)
-        self._write_records(selected, reports, hints, rag_context, failure_context)
+        self._write_records(
+            selected,
+            reports,
+            hints,
+            rag_context,
+            failure_context,
+            requires_external_db=requires_external_db,
+        )
         return SynthesisOutcome(selected=selected, written_files=written, reports=reports)
 
     # --- internal helpers -------------------------------------------------
@@ -298,9 +355,14 @@ class SynthesisEngine:
             for key, value in template.items():
                 if value:
                     normalized[key] = value
-        signature = normalized.get("success_signature", "")
-        if "SQLi SUCCESS" not in signature:
-            normalized["success_signature"] = f"{signature} SQLi SUCCESS".strip()
+        vuln = str(self._requirement.get("vuln_id") or "").strip().lower()
+        success_signature = DEFAULT_SUCCESS_SIGNATURES.get(vuln, normalized.get("success_signature") or "Exploit SUCCESS")
+        normalized["success_signature"] = success_signature
+        flag_token = DEFAULT_FLAG_TOKENS.get(vuln, "FLAG-demo-token")
+        normalized["flag_token"] = flag_token
+        flag_note = f"On exploit success, print '{success_signature}' and '{flag_token}'."
+        notes = normalized.get("notes", "").strip()
+        normalized["notes"] = f"{notes} {flag_note}".strip()
         return normalized
 
     def _load_stdlib_spec(self) -> None:
@@ -334,6 +396,26 @@ class SynthesisEngine:
             if not poc.get(key):
                 poc[key] = value
         manifest["poc"] = poc
+        return manifest
+
+    def _ensure_fallback_poc(self, manifest: Dict[str, Any], template: Dict[str, Any]) -> Dict[str, Any]:
+        files = manifest.get("files")
+        if not isinstance(files, list):
+            manifest["files"] = files = []
+        has_poc_file = any(isinstance(entry, dict) and (entry.get("path") or "").lower() == "poc.py" for entry in files)
+        if has_poc_file:
+            return manifest
+        vuln = str(self._requirement.get("vuln_id") or "").strip().lower()
+        success_signature = template.get("success_signature") or DEFAULT_SUCCESS_SIGNATURES.get(vuln, "Exploit SUCCESS")
+        flag_token = template.get("flag_token") or DEFAULT_FLAG_TOKENS.get(vuln, "FLAG-demo-token")
+        content = self._build_fallback_poc_content(vuln, success_signature, flag_token)
+        files.append(
+            {
+                "path": "poc.py",
+                "description": "Fallback PoC used when the LLM omits poc.py",
+                "content": content,
+            }
+        )
         return manifest
 
     def _parse_manifest(self, raw: str, idx: int) -> Dict[str, Any]:
@@ -634,6 +716,8 @@ class SynthesisEngine:
         hints: str,
         rag_context: str,
         failure_context: str,
+        *,
+        requires_external_db: bool,
     ) -> None:
         manifest_path = self.metadata_dir / "generator_manifest.json"
         manifest_payload = {
@@ -648,6 +732,7 @@ class SynthesisEngine:
             if rag_context
             else "",
             "user_deps": self._user_deps,
+            "requires_external_db": requires_external_db,
         }
         manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
         self._write_candidate_log(reports)
@@ -959,6 +1044,67 @@ class SynthesisEngine:
         )
         result["mappings"] = python_section.get("mappings", [])
         return result
+
+    def _manifest_requires_external_db(self, manifest: Dict[str, Any]) -> bool:
+        deps = manifest.get("deps") or []
+        for dep in deps:
+            dep_lower = str(dep).lower()
+            if any(package in dep_lower for package in EXTERNAL_DB_PACKAGES):
+                return True
+        files = manifest.get("files") or []
+        for entry in files:
+            content = entry.get("content")
+            if not isinstance(content, str):
+                continue
+            lowered = content.lower()
+            if any(keyword in lowered for keyword in EXTERNAL_DB_KEYWORDS):
+                return True
+        return False
+
+    def _build_fallback_poc_content(self, vuln: str, success_signature: str, flag_token: str) -> str:
+        endpoint = FALLBACK_POC_ENDPOINTS.get(vuln) or FALLBACK_POC_ENDPOINTS.get("cwe-89")
+        method = (endpoint.get("method") or "get").lower()
+        path = endpoint.get("path", "/")
+        payload = endpoint.get("payload") or {}
+        payload_literal = json.dumps(payload)
+        lines = [
+            "import argparse",
+            "import sys",
+            "import requests",
+            "",
+            "DEFAULT_BASE = 'http://127.0.0.1:5000'",
+            "PAYLOAD = " + payload_literal,
+            "SUCCESS_SIGNATURE = " + repr(success_signature),
+            "FLAG_TOKEN = " + repr(flag_token),
+            "",
+            "def exploit(base_url: str) -> bool:",
+            "    url = base_url.rstrip('/') + '" + path + "'",
+        ]
+        if method == "post":
+            lines.append("    response = requests.post(url, data=PAYLOAD, timeout=5)")
+        else:
+            lines.append("    response = requests.get(url, params=PAYLOAD, timeout=5)")
+        lines.extend(
+            [
+                "    if response.status_code < 400:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return True",
+                "    return False",
+                "",
+                "def main():",
+                "    parser = argparse.ArgumentParser(description='Fallback PoC executor')",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    if not exploit(args.base_url):",
+                "        print('Exploit failed; signature not emitted')",
+                "        sys.exit(1)",
+                "",
+                "if __name__ == '__main__':",
+                "    main()",
+            ]
+        )
+        return "\n".join(lines) + "\n"
 
     def _build_dep_guard_messages(
         self,

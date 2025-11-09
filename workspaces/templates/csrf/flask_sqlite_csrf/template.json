@@ -1,0 +1,11 @@
+{
+  "id": "flask_sqlite_csrf",
+  "name": "Flask + SQLite CSRF demo",
+  "pattern_id": "csrf-missing-token",
+  "db": "sqlite",
+  "description": "Flask endpoint performing state changes without CSRF token enforcement.",
+  "stability_score": 0.62,
+  "tags": ["cwe-352", "csrf", "flask", "sqlite"],
+  "requires_external_db": false,
+  "ports": {"app": 5000}
+}

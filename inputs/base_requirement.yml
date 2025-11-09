@@ -31,7 +31,7 @@ user_deps:                          # 선택 / Generator가 manifest.deps 및 re
   - requests==2.31.0                # 예시 / 버전 지정 가능
   - pymysql                         # 예시 / 문자열이면 자동 병합, 중복은 무시
 
-generator_mode: template            # 선택 / template|synthesis|hybrid
+generator_mode: hybrid            # 선택 / template|synthesis|hybrid
 variation_key:                      # 선택 / 다변성·재현성 제어
   mode: deterministic               #   필수(mode) / deterministic|diverse
   self_consistency_k: 1             #   mode가 diverse일 때 2 이상 권장

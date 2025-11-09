@@ -20,8 +20,10 @@ from common.plan import load_plan
 from common.run_matrix import (
     VulnBundle,
     artifacts_dir_for_bundle,
+    bundle_requirement,
     is_multi_vuln,
     load_vuln_bundles,
+    metadata_dir_for_bundle,
     workspace_dir_for_bundle,
 )
 
@@ -98,9 +100,11 @@ def run_container_with_poc(
     sid: str,
     bundle: VulnBundle,
     image_tag: str,
+    workspace: Path,
     run_dir: Path,
     executor_policy: Dict[str, Any],
     network_alias: "NetworkHandle",
+    payloads: List[str] | None = None,
 ) -> None:
     if DOCKER_BIN is None:
         raise ExecutorError("Docker binary not available")
@@ -115,28 +119,50 @@ def run_container_with_poc(
         "--rm",
         "--name",
         container_name,
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--cap-drop",
+        "ALL",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
         "--network",
         network_mode,
         image_tag,
     ]
     try:
         run_command(start_cmd, run_log)
-        time.sleep(3)
-        exec_cmd = [
-            DOCKER_BIN,
-            "exec",
-            container_name,
-            "python",
-            "poc.py",
-            "--base-url",
-            "http://127.0.0.1:5000",
-        ]
+        time.sleep(1)
         logs_cmd = [DOCKER_BIN, "logs", container_name]
+        _push_poc_script(workspace, container_name, run_log)
         try:
-            run_command(exec_cmd, run_log)
+            _wait_for_app_ready(container_name, run_log)
         except ExecutorError:
             run_command(logs_cmd, run_log, check=False)
             raise
+        payload_list = payloads or [None]
+        for index, payload in enumerate(payload_list, start=1):
+            exec_cmd = [
+                DOCKER_BIN,
+                "exec",
+                container_name,
+                "python",
+                "/tmp/poc.py",
+                "--base-url",
+                "http://127.0.0.1:5000",
+            ]
+            if payload:
+                exec_cmd.extend(["--payload", payload])
+            if len(payload_list) > 1:
+                with run_log.open("a", encoding="utf-8") as handle:
+                    handle.write(f"\n# Payload {index}: {payload or 'default'}\n")
+            try:
+                run_command(exec_cmd, run_log)
+            except ExecutorError:
+                run_command(logs_cmd, run_log, check=False)
+                raise
         run_command(logs_cmd, run_log, check=False)
     finally:
         subprocess.run([DOCKER_BIN, "stop", container_name], check=False)
@@ -201,6 +227,13 @@ def _run_bundle(
     workspace = workspace_dir_for_bundle(plan, bundle)
     build_dir = artifacts_dir_for_bundle(plan, bundle, "build")
     run_dir = artifacts_dir_for_bundle(plan, bundle, "run")
+    bundle_requirement_view = bundle_requirement(plan["requirement"], bundle)
+    payloads_raw = bundle_requirement_view.get("poc_payloads")
+    poc_payloads: List[str] = []
+    if isinstance(payloads_raw, list):
+        for entry in payloads_raw:
+            if isinstance(entry, str) and entry.strip():
+                poc_payloads.append(entry)
     image_tag = f"{sid}-{bundle.slug}" if multi else sid
     do_build = args.build or not (args.build or args.run)
     do_run = args.run or not (args.build or args.run)
@@ -220,22 +253,48 @@ def _run_bundle(
         "stop_on_first_failure": stop_on_first_failure,
         "network_mode": None,
         "sidecars": [],
+        "invocation": None,
+        "build_attempted": False,
+        "run_attempted": False,
     }
 
     current_stage: Optional[str] = None
     sidecars: List[Dict[str, str]] = []
     network_handle = network_pool.acquire(bundle)
     summary["network_mode"] = network_handle.mode
+    needs_sidecars = _bundle_requires_external_db(plan, bundle)
+    if do_build and do_run:
+        summary["invocation"] = "build+run"
+    elif do_build:
+        summary["invocation"] = "build"
+    elif do_run:
+        summary["invocation"] = "run"
+    else:
+        summary["invocation"] = "noop"
     try:
         if do_build:
             current_stage = "build"
+            summary["build_attempted"] = True
             build_image(sid, workspace, build_dir, image_tag)
             summary["build_passed"] = True
         if do_run:
             current_stage = "run"
-            sidecars = _start_sidecars(sid, bundle, executor_policy, run_dir, network_handle)
+            summary["run_attempted"] = True
+            if needs_sidecars:
+                sidecars = _start_sidecars(sid, bundle, executor_policy, run_dir, network_handle)
+            else:
+                sidecars = []
             summary["sidecars"] = sidecars
-            run_container_with_poc(sid, bundle, image_tag, run_dir, executor_policy, network_handle)
+            run_container_with_poc(
+                sid,
+                bundle,
+                image_tag,
+                workspace,
+                run_dir,
+                executor_policy,
+                network_handle,
+                payloads=poc_payloads,
+            )
             summary["run_passed"] = True
             summary["executed"] = True
     except ExecutorError as exc:
@@ -244,7 +303,22 @@ def _run_bundle(
     finally:
         _stop_sidecars(sidecars)
         network_pool.release(network_handle)
-        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        summary_path = run_dir / "summary.json"
+        previous: Dict[str, Any] = {}
+        if summary_path.exists():
+            try:
+                previous = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                previous = {}
+        merged = dict(previous)
+        merged.update(summary)
+        merged["build_passed"] = _merge_stage_flag(previous, summary, "build_passed", "build_attempted")
+        merged["run_passed"] = _merge_stage_flag(previous, summary, "run_passed", "run_attempted")
+        merged["executed"] = _merge_stage_flag(previous, summary, "executed", "run_attempted")
+        if not merged.get("invocation") and previous.get("invocation"):
+            merged["invocation"] = previous.get("invocation")
+        summary_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+        summary = merged
     LOGGER.info("Executor bundle completed: %s", summary)
     return summary
 
@@ -252,9 +326,96 @@ def _run_bundle(
 def _write_index(sid: str, summaries: List[Dict[str, str]]) -> None:
     run_root = ensure_dir(get_artifacts_dir(sid) / "run")
     index_path = run_root / "index.json"
-    payload = {"sid": sid, "runs": summaries}
+
+    # Merge with existing index to preserve build/run states across separate invocations
+    existing: Dict[str, Any] = {}
+    if index_path.exists():
+        try:
+            old = json.loads(index_path.read_text(encoding="utf-8"))
+            for entry in (old.get("runs") or []):
+                slug = entry.get("slug") or entry.get("vuln_id")
+                if slug:
+                    existing[slug] = entry
+        except Exception:
+            existing = {}
+
+    merged: Dict[str, Dict[str, Any]] = dict(existing)
+    for entry in summaries:
+        slug = entry.get("slug") or entry.get("vuln_id")
+        if not slug:
+            continue
+        prev = merged.get(slug, {})
+        # Boolean fields: preserve any prior True
+        build_passed = _merge_stage_flag(prev, entry, "build_passed", "build_attempted")
+        run_passed = _merge_stage_flag(prev, entry, "run_passed", "run_attempted")
+        executed = _merge_stage_flag(prev, entry, "executed", "run_attempted")
+
+        merged[slug] = {
+            **prev,
+            **entry,
+            "build_passed": build_passed,
+            "run_passed": run_passed,
+            "executed": executed,
+        }
+
+    payload = {"sid": sid, "runs": list(merged.values())}
     index_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     LOGGER.info("Executor index written to %s", index_path)
+
+
+def _merge_stage_flag(
+    previous: Optional[Dict[str, Any]],
+    current: Dict[str, Any],
+    field: str,
+    attempted_field: str,
+) -> bool:
+    if current.get(attempted_field):
+        return bool(current.get(field))
+    if previous:
+        return bool(previous.get(field))
+    return bool(current.get(field))
+
+
+def _bundle_requires_external_db(plan: Dict[str, Any], bundle: VulnBundle) -> bool:
+    metadata_dir = metadata_dir_for_bundle(plan, bundle)
+    template_summary = metadata_dir / "generator_template.json"
+    manifest_path = metadata_dir / "generator_manifest.json"
+    for path in (manifest_path, template_summary):
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            value = data.get("requires_external_db")
+            if value is not None:
+                return bool(value)
+    requirement = bundle_requirement(plan["requirement"], bundle)
+    runtime = requirement.get("runtime") or {}
+    db = str(runtime.get("db") or "").strip().lower()
+    return db in {"mysql", "postgres", "postgresql", "mariadb"}
+
+
+def _push_poc_script(workspace: Path, container_name: str, log_path: Path) -> None:
+    if DOCKER_BIN is None:
+        raise ExecutorError("Docker binary not available for copying PoC script")
+    poc_path = workspace / "poc.py"
+    if not poc_path.exists():
+        raise ExecutorError(f"PoC script missing at {poc_path}")
+    data = poc_path.read_bytes()
+    cmd = [
+        DOCKER_BIN,
+        "exec",
+        "-i",
+        container_name,
+        "sh",
+        "-c",
+        "cat > /tmp/poc.py && chmod 0644 /tmp/poc.py",
+    ]
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("$ " + " ".join(cmd) + "\n")
+        proc = subprocess.run(cmd, input=data, stdout=handle, stderr=subprocess.STDOUT, check=False)
+    if proc.returncode != 0:
+        raise ExecutorError(f"Command failed ({proc.returncode}): {' '.join(cmd)}")
 
 
 def _start_sidecars(
@@ -297,15 +458,73 @@ def _start_sidecars(
             cmd.extend(["--network-alias", alias])
         cmd.append(image)
         run_command(cmd, run_log)
-        _wait_for_sidecar(entry.get("ready_probe") or {}, container_name, run_log)
+        _wait_for_sidecar(entry, container_name, run_log)
         records.append({"name": name, "container": container_name, "image": image})
     return records
 
 
-def _wait_for_sidecar(probe: Dict[str, Any], container_name: str, log_path: Path) -> None:
+def _wait_for_sidecar(entry: Dict[str, Any], container_name: str, log_path: Path) -> None:
+    probe = entry.get("ready_probe") or {}
+    probe_type = (probe.get("type") or "").strip().lower()
+    if probe_type == "mysql":
+        _probe_mysql_sidecar(entry, container_name, log_path, probe)
+        return
     delay = int(probe.get("wait_seconds", 5))
     if delay > 0:
         time.sleep(delay)
+
+
+def _probe_mysql_sidecar(
+    entry: Dict[str, Any], container_name: str, log_path: Path, probe: Dict[str, Any]
+) -> None:
+    if DOCKER_BIN is None:
+        raise ExecutorError("Docker binary not available for mysql probes")
+    env = entry.get("env") or {}
+    user = probe.get("user") or env.get("MYSQL_USER") or env.get("MYSQL_ROOT_USER") or "root"
+    password = probe.get("password") or env.get("MYSQL_PASSWORD") or env.get("MYSQL_ROOT_PASSWORD") or ""
+    host = probe.get("host") or "127.0.0.1"
+    retries = int(probe.get("retries", 10))
+    interval = float(probe.get("interval", 2.0))
+    command = [
+        DOCKER_BIN,
+        "exec",
+        container_name,
+        "mysqladmin",
+        "-h",
+        host,
+        "-u",
+        user,
+    ]
+    if password:
+        command.append(f"-p{password}")
+    command.append("ping")
+    for attempt in range(1, retries + 1):
+        proc = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if proc.returncode == 0:
+            return
+        time.sleep(interval)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"mysql readiness probe failed for {container_name}\n")
+    raise ExecutorError(f"mysql sidecar did not become ready: {container_name}")
+
+
+def _wait_for_app_ready(container_name: str, log_path: Path, port: int = 5000, retries: int = 10, delay: float = 1.5) -> None:
+    if DOCKER_BIN is None:
+        raise ExecutorError("Docker binary not available for app readiness probe")
+    script = "import socket,sys;s=socket.socket();s.settimeout(1);s.connect(('127.0.0.1', int(sys.argv[1])));s.close()"
+    for attempt in range(1, retries + 1):
+        proc = subprocess.run(
+            [DOCKER_BIN, "exec", container_name, "python", "-c", script, str(port)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return
+        time.sleep(delay)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"application readiness probe failed for {container_name}\n")
+    raise ExecutorError(f"application in {container_name} did not become ready on port {port}")
 
 
 def _stop_sidecars(sidecars: List[Dict[str, str]]) -> None:

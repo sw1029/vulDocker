@@ -3,9 +3,11 @@
 prompt.md 8장과 TODO 11 항목을 충족하기 위해 PoC 판정, 메타모픽 테스트, 정적 분석, 커버리지 측정을 정의한다. 모든 작업은 `conda`의 `vul` 환경에서 수행한다.
 
 ## 1. PoC 판정
-- **명세**: 취약 동작의 기대 결과(예: SQLi면 DB dump, 명령주입이면 시스템 파일 변경)를 코드로 명시.
-- **구현**: `evals/poc_verifier/` 스크립트. 입력: PoC 실행 로그, 예상 패턴.
-- **출력**: pass/fail, 근거 로그 ID, 검증 시간.
+- **명세**: 취약 동작의 기대 결과(예: SQLi면 FLAG 유출, CSRF면 토큰 없이 상태 변경)를 코드로 명시.
+- **플러그인 구조**: `evals/poc_verifier/registry.py`에 vuln_id별 검증기를 등록하고, `evals/poc_verifier/main.py` CLI 및 Reviewer가 동일 플러그인을 호출한다.
+- **LLM 보조 검증**: 플러그인이 없거나 실패할 때는 `requirement.policy.verifier.llm_assist=true`인 경우 LLM이 JSON 스키마(판단/근거/assertion program)를 생성하고, `evals/assertions.py`가 로컬에서 이를 검증하여 최종 pass/fail을 결정한다.
+- **메타모픽 입력**: `requirement.poc_payloads[]`가 지정되면 Executor가 동일 컨테이너에서 payload를 순차 실행하고, 검증기는 모든 payload 결과를 통합 평가한다.
+- **출력**: pass/fail, 근거 로그 ID, 검증 시간, status(`evaluated|skipped|unsupported`).
 
 ## 2. 메타모픽 테스트
 - 테스트 템플릿: CWE별 변형 규칙 집합.

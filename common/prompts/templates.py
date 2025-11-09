@@ -131,3 +131,59 @@ def build_researcher_prompt(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+
+
+def build_llm_verifier_prompt(
+    requirement: Dict[str, Any],
+    run_summary: Dict[str, Any],
+    log_excerpt: str,
+    *,
+    evidence_rules: Optional[Dict[str, Any]] = None,
+    metamorphic: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, str]]:
+    """Prompt instructing the LLM verifier helper to emit structured JSON."""
+
+    schema_hint = {
+        "verify_pass": "boolean",
+        "confidence": "high|medium|low",
+        "rationale": "short string",
+        "proposed_assertions": [
+            {
+                "op": "regex_contains|contains|not_contains|number_delta",
+                "pattern": "regex or literal",
+                "flags": ["i"],
+                "pattern_before": "...",
+                "pattern_after": "...",
+                "comparator": "lt|gt|eq",
+                "delta": 0,
+            }
+        ],
+        "extracted_evidence": ["string"],
+        "metamorphic": {"total": 0, "passed": 0, "rationale": "..."},
+    }
+    system = (
+        "You are a verification analyst. Determine if the exploit succeeded using ONLY the provided context. "
+        "Reply with STRICT JSON matching the described schema. "
+        "Do not invent data, do not cite external knowledge, and keep responses concise."
+    )
+    sections = [
+        "Analyze the following requirement, executor run summary, rules, and log excerpt. "
+        "Return strictly-formatted JSON per the schema below. If unsure, set confidence=low."
+        f"\n\n# Schema\n{json.dumps(schema_hint, indent=2, ensure_ascii=False)}",
+        f"\n\n# Requirement\n{json.dumps(requirement or {}, indent=2, ensure_ascii=False)}",
+        f"\n\n# Run Summary\n{json.dumps(run_summary or {}, indent=2, ensure_ascii=False)}",
+    ]
+    if evidence_rules:
+        sections.append(
+            f"\n\n# Evidence Rules\n{json.dumps(evidence_rules, indent=2, ensure_ascii=False)}"
+        )
+    if metamorphic:
+        sections.append(
+            f"\n\n# Metamorphic Context\n{json.dumps(metamorphic, indent=2, ensure_ascii=False)}"
+        )
+    sections.append(f"\n\n# Log Excerpt (tail)\n```text\n{log_excerpt}\n```")
+    user = "".join(sections)
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]

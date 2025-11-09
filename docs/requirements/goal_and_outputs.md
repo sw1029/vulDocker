@@ -11,6 +11,8 @@
 - **환경 제약**: 언어/프레임워크/DB/OS/로케일 등 요구 조건. 미지정 시 시나리오 차원 테이블과 LHS 샘플링으로 자동 선택.
 - **외부 DB 허용 여부**: `runtime.allow_external_db`(기본값 `false`)로 명시. 실행기는 기본적으로 `--network none`으로 동작하므로, 외부 데이터베이스나 네트워크 서비스가 필요하면 `true`로 설정해 템플릿 선택 및 실행기 정책과 일치시켜야 한다.
 - **사용자 의존성 주입**: `user_deps` 배열로 pip 패키지를 지정하면 Generator가 `manifest.deps`/`requirements*.txt`에 강제로 포함한다. stdlib(`sqlite3`) 등은 guard에서 경고 후 무시될 수 있으므로 최소한의 실제 외부 패키지만 명시하는 것을 권장한다.
+- **Generator 모드**: `generator_mode`를 `template`/`synthesis`/`hybrid` 중 선택한다. `hybrid`는 템플릿을 우선 시도하고 조건에 맞는 템플릿이 없으면 자동으로 LLM 합성으로 폴백한다.
+- **PoC payload 세트**: `poc_payloads: ["1001 OR 1=1", "1001 UNION SELECT ..."]`처럼 배열을 지정하면 Executor가 동일 컨테이너에서 순차적으로 페이로드를 실행해 메타모픽 검증을 강화한다. 비워 두면 기본 PoC만 실행한다.
 - **다변성 모드 요청**: 기본(재현) 또는 다양성 강조 모드(top-p, self-consistency, variation key 지정).
 - **검증 강도 옵션**: 메타모픽 테스트, 정적 분석, 커버리지 측정 등 옵션 선택.
 - **실행 정책**: 
