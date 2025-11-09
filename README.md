@@ -90,7 +90,7 @@ flowchart LR
   E --> G["Reviewer<br/>(agents/reviewer)<br/>reviewer_reports.json, loop_state.json"]
   F --> H["PACK<br/>(orchestrator/pack.py)<br/>manifest.json, source_snapshot"]
   G --> H
-
+```
 
 ## 코드 논리 구조(핵심 모듈)
 - 오케스트레이션
