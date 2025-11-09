@@ -1,0 +1,10 @@
+cwe: CWE-89
+success_signature: SQLi SUCCESS
+flag_token: FLAG-sqli-demo-token
+requires_external_db: false
+patterns:
+  - type: file_contains
+    path: app.py
+    contains: "SELECT"
+  - type: poc_contains
+    contains: "SQLi SUCCESS"

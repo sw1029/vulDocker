@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--template-root",
         type=Path,
-        help="Override template root (defaults to workspaces/templates/sqli)",
+        help="Override template root (defaults to workspaces/templates)",
     )
     return parser.parse_args()
 

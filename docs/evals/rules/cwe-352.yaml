@@ -1,0 +1,10 @@
+cwe: CWE-352
+success_signature: CSRF SUCCESS
+flag_token: FLAG-csrf-demo-token
+requires_external_db: false
+patterns:
+  - type: file_contains
+    path: app.py
+    contains: "@app.route('/transfer" 
+  - type: poc_contains
+    contains: "CSRF SUCCESS"

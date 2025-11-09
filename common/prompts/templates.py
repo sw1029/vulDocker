@@ -4,6 +4,16 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+DEFAULT_SUCCESS_SIGNATURES = {
+    "cwe-89": "SQLi SUCCESS",
+    "cwe-352": "CSRF SUCCESS",
+}
+
+
+def _success_signature(requirement: Dict[str, object]) -> str:
+    vuln = str((requirement or {}).get("vuln_id") or "").strip().lower()
+    return DEFAULT_SUCCESS_SIGNATURES.get(vuln, "Exploit SUCCESS")
+
 
 def build_generator_prompt(
     requirement: Dict[str, object],
@@ -53,13 +63,15 @@ def build_synthesis_prompt(
     )
     requirement_payload = json.dumps(requirement, indent=2, ensure_ascii=False)
     limits_payload = json.dumps(limits or {}, indent=2, ensure_ascii=False)
+    success_signature = _success_signature(requirement)
     sections = [
         "Synthesize candidate #{idx} for the request below. The manifest must be JSON "
         "and contain files[], deps[], build, run, poc, notes, pattern_tags[]. "
-        "Respect the file/path limits verbatim, include the SQLi success signature, and do not add standard library modules (e.g., logging, sqlite3) to deps[]."
+        "Respect the file/path limits verbatim, ensure the PoC prints the {sig} success signature (or the requirement-specific equivalent), and do not add standard library modules (e.g., logging, sqlite3) to deps[]."
         "\n\n# Requirement\n{req}\n\n# Synthesis Limits\n{limits}"
         "\n\n# Internal Hints\n{hints}\n\n# RAG Context\n{rag}".format(
             idx=candidate_index,
+            sig=success_signature,
             req=requirement_payload,
             limits=limits_payload,
             hints=hints or "(none provided)",

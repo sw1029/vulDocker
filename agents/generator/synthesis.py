@@ -23,6 +23,7 @@ from common.logging import get_logger
 from common.prompts import build_synthesis_prompt
 from common.paths import ensure_dir
 from evals.static_signatures import analyze_sql_injection_signals
+from common.rules import load_rule
 
 from agents.generator.deps import (
     detect_node_installs,
@@ -247,6 +248,7 @@ class SynthesisEngine:
         }
         self._auto_patch_denylist = {"logging", "sqlite3"}
         self._stdlib_aliases_loaded = False
+        self._rule: Dict[str, Any] = {}
 
     def run(
         self,
@@ -266,6 +268,7 @@ class SynthesisEngine:
         self._load_stdlib_spec()
         self._dep_guard_config = requirement.get("dep_guard") or {}
         self._auto_patch_enabled = bool(self._dep_guard_config.get("auto_patch"))
+        self._rule = load_rule(requirement.get("vuln_id"))
         poc_template = self._normalize_poc_template(poc_template)
 
         for idx in range(1, candidate_k + 1):
@@ -300,7 +303,7 @@ class SynthesisEngine:
                 precomputed_llm=llm_section,
                 auto_patch=auto_patch_info,
             )
-            static_report = analyze_sql_injection_signals(manifest)
+            static_report = self._analyze_static_signals(manifest)
             score = self._score_candidate(len(violations), static_report.get("score", 0.0))
             reports.append(
                 CandidateReport(
@@ -349,6 +352,12 @@ class SynthesisEngine:
         bonus = max(0.0, min(1.0, signal_score)) * 0.3
         return min(1.0, round(base + bonus, 3))
 
+    def _analyze_static_signals(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        vuln = str((self._requirement or {}).get("vuln_id") or "").strip().lower()
+        if vuln in {"cwe-89", "sqli"}:
+            return analyze_sql_injection_signals(manifest)
+        return {"signals": {}, "hit_count": 0, "score": 0.0, "keywords_found": []}
+
     def _normalize_poc_template(self, template: Dict[str, Any] | None) -> Dict[str, Any]:
         normalized = dict(DEFAULT_POC_TEMPLATE)
         if isinstance(template, dict):
@@ -356,9 +365,11 @@ class SynthesisEngine:
                 if value:
                     normalized[key] = value
         vuln = str(self._requirement.get("vuln_id") or "").strip().lower()
-        success_signature = DEFAULT_SUCCESS_SIGNATURES.get(vuln, normalized.get("success_signature") or "Exploit SUCCESS")
+        rule_sig = (self._rule or {}).get("success_signature") if hasattr(self, "_rule") else None
+        success_signature = rule_sig or DEFAULT_SUCCESS_SIGNATURES.get(vuln, normalized.get("success_signature") or "Exploit SUCCESS")
         normalized["success_signature"] = success_signature
-        flag_token = DEFAULT_FLAG_TOKENS.get(vuln, "FLAG-demo-token")
+        rule_flag = (self._rule or {}).get("flag_token") if hasattr(self, "_rule") else None
+        flag_token = rule_flag or DEFAULT_FLAG_TOKENS.get(vuln, "FLAG-demo-token")
         normalized["flag_token"] = flag_token
         flag_note = f"On exploit success, print '{success_signature}' and '{flag_token}'."
         notes = normalized.get("notes", "").strip()
@@ -574,8 +585,10 @@ class SynthesisEngine:
             errors.append("poc section incomplete")
         else:
             signature = poc.get("success_signature", "")
-            if "SQLi SUCCESS" not in signature:
-                errors.append("success_signature must include 'SQLi SUCCESS'")
+            vuln = str((self._requirement or {}).get("vuln_id") or "").strip().lower()
+            expected_signature = DEFAULT_SUCCESS_SIGNATURES.get(vuln, "Exploit SUCCESS")
+            if expected_signature and expected_signature not in signature:
+                errors.append(f"success_signature must include '{expected_signature}'")
 
         deps = manifest.get("deps")
         if deps is None or not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
@@ -623,6 +636,19 @@ class SynthesisEngine:
             msg = f"node dependency '{dep}' not installed by build commands"
             errors.append(msg)
             dep_error_messages.append(msg)
+
+        rule_patterns = (self._rule or {}).get("patterns") or []
+        for pattern in rule_patterns:
+            ptype = (pattern.get("type") or "").strip().lower()
+            if ptype == "file_contains":
+                path = pattern.get("path")
+                needle = pattern.get("contains")
+                if path and needle and not self._file_contains(manifest, path, needle):
+                    errors.append(f"rule violation: file {path} missing '{needle}'")
+            elif ptype == "poc_contains":
+                needle = pattern.get("contains")
+                if needle and not self._poc_contains(manifest, needle):
+                    errors.append(f"rule violation: poc missing '{needle}'")
 
         os_packages = detect_os_packages(manifest, self._read_text_content)
         os_packages = {manager: sorted(packages) for manager, packages in os_packages.items() if packages}
@@ -1046,6 +1072,9 @@ class SynthesisEngine:
         return result
 
     def _manifest_requires_external_db(self, manifest: Dict[str, Any]) -> bool:
+        rule_value = (self._rule or {}).get("requires_external_db") if hasattr(self, "_rule") else None
+        if rule_value is not None:
+            return bool(rule_value)
         deps = manifest.get("deps") or []
         for dep in deps:
             dep_lower = str(dep).lower()
@@ -1059,6 +1088,43 @@ class SynthesisEngine:
             lowered = content.lower()
             if any(keyword in lowered for keyword in EXTERNAL_DB_KEYWORDS):
                 return True
+        return False
+
+    @staticmethod
+    def _file_contains(manifest: Dict[str, Any], path: str | None, needle: str | None) -> bool:
+        if not path or not needle:
+            return False
+        target = path.strip().lower()
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            current = str(entry.get("path") or "").strip().lower()
+            if not current:
+                continue
+            if current == target or current.endswith(target):
+                content = entry.get("content")
+                if isinstance(content, str) and needle in content:
+                    return True
+        return False
+
+    @staticmethod
+    def _poc_contains(manifest: Dict[str, Any], needle: str) -> bool:
+        if not needle:
+            return False
+        poc = manifest.get("poc")
+        if isinstance(poc, dict):
+            for key in ("cmd", "notes", "success_signature"):
+                value = poc.get(key)
+                if isinstance(value, str) and needle in value:
+                    return True
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or "").strip().lower()
+            if path.endswith("poc.py"):
+                content = entry.get("content")
+                if isinstance(content, str) and needle in content:
+                    return True
         return False
 
     def _build_fallback_poc_content(self, vuln: str, success_signature: str, flag_token: str) -> str:
