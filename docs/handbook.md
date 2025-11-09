@@ -79,3 +79,13 @@ LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합�
 
 본 핸드북은 요지 중심으로 유지되며, 변경 시 PR 설명에 본 파일 경로를 명시해 추적 가능성을 확보합니다.
 
+## 코드 디렉토리별 상세 설명
+- 인덱스: `docs/code/README.md`
+- orchestrator: `docs/code/orchestrator.md`
+- common: `docs/code/common.md`
+- agents (researcher/generator/reviewer): `docs/code/agents_researcher.md`, `docs/code/agents_generator.md`, `docs/code/agents_reviewer.md`
+- executor: `docs/code/executor.md`
+- evals: `docs/code/evals.md`
+- rag: `docs/code/rag.md`
+- ops: `docs/code/ops.md`
+- workspaces/metadata/artifacts: `docs/code/workspaces.md`
