@@ -142,7 +142,7 @@ def render_readme(requirement_id: str) -> str:
         # MVP SQLi scenario - {requirement_id}
 
         ## Overview
-        - Inspired by docs/milestones/mvp_runbook.md and docs/evals/specs.md
+        - Inspired by docs/handbook.md (빠른 시작/평가)
         - Vulnerability: unsanitized SQL query composition in `/profile`
         - PoC: run `python poc.py --base-url http://127.0.0.1:5000`
 

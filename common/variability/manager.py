@@ -1,7 +1,6 @@
 """Variation Key normalization and decoding profile management.
 
-The implementation mirrors docs/variability_repro/design.md and
-docs/decoding/model_and_decoding_strategy.md so that PLAN, Generator,
+The implementation mirrors docs/handbook.md (다변성/디코딩) so that PLAN, Generator,
 Reviewer, and Researcher share the same normalization logic.
 """
 from __future__ import annotations

@@ -31,5 +31,4 @@ prompt.md 13장(지표) 및 TODO 17 요구에 따라 KPI 수집 파이프라인�
 
 ## 5. 정합성 체크
 - [x] prompt.md KPI 항목 반영.
-- [x] docs/ops/observability.md와 Collector/대시보드 설계 일치.
-
+- [x] docs/handbook.md(관측성)와 Collector/대시보드 설계 일치.

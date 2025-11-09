@@ -1,7 +1,8 @@
 """Plan stage CLI.
 
 Creates Scenario ID, metadata records, and workspace scaffolding using the
-inputs defined in docs/milestones/mvp_runbook.md."""
+inputs outlined in docs/handbook.md (빠른 시작 섹션).
+"""
 from __future__ import annotations
 
 import argparse

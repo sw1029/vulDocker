@@ -1,7 +1,8 @@
-"""Synthesis engine for TODO 14.5.
+"""Synthesis engine for generator.
 
-This module turns LLM JSON manifests into on-disk workspaces while enforcing
-the guard rails described in docs/milestones/todo_13-15_code_plan.md."""
+Turns LLM JSON manifests into on-disk workspaces while enforcing guard rails
+described in docs/handbook.md (스키마/아키텍처 섹션).
+"""
 from __future__ import annotations
 
 import ast
@@ -141,7 +142,7 @@ class DeclaredDependencies:
 
 @dataclass(frozen=True)
 class SynthesisLimits:
-    """Constraints mirrored in docs/schemas/generator_manifest.md."""
+    """Constraints mirrored in docs/handbook.md (generator_manifest)."""
 
     max_files: int = 12
     max_bytes_per_file: int = 64_000

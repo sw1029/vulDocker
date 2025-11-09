@@ -25,7 +25,7 @@ def build_generator_prompt(
 
     system = (
         "You are the Generator agent inside an autonomous vulnerability testbed. "
-        "Follow the contracts described in docs/architecture/agents_contracts.md. "
+        "Follow the contracts described in docs/handbook.md (아키텍처). "
         "Emit concise plans and highlight assumptions."
     )
     user_payload = json.dumps(requirement, indent=2, ensure_ascii=False)
@@ -58,8 +58,8 @@ def build_synthesis_prompt(
 
     system = (
         "You synthesize intentionally vulnerable Docker bundles for education. "
-        "Follow docs/architecture/agents_contracts.md and produce ONLY compact JSON "
-        "matching docs/schemas/generator_manifest.md."
+        "Follow docs/handbook.md (아키텍처/스키마) and produce ONLY compact JSON "
+        "matching the generator_manifest section."
     )
     requirement_payload = json.dumps(requirement, indent=2, ensure_ascii=False)
     limits_payload = json.dumps(limits or {}, indent=2, ensure_ascii=False)
@@ -95,7 +95,7 @@ def build_reviewer_prompt(run_summary: Dict[str, object]) -> List[Dict[str, str]
 
     system = (
         "You are the Reviewer agent. Inspect logs and code summaries. "
-        "Return JSON with any blocking issues per docs/architecture/agents_contracts.md."
+        "Return JSON with any blocking issues per docs/handbook.md (아키텍처)."
     )
     user_payload = json.dumps(run_summary, indent=2, ensure_ascii=False)
     user = "Analyze the following run summary and spot regressions.\n" + user_payload
@@ -116,7 +116,7 @@ def build_researcher_prompt(
     """Return messages instructing the Researcher to emit schema-compliant JSON."""
 
     system = (
-        "You are the Researcher agent. Produce ONLY compact JSON per docs/schemas/researcher_report.md. "
+        "You are the Researcher agent. Produce ONLY compact JSON per docs/handbook.md (researcher_report). "
         "Use ReAct-style reasoning internally but return the final JSON object without commentary."
     )
     requirement_payload = json.dumps(requirement, indent=2, ensure_ascii=False)
@@ -125,7 +125,7 @@ def build_researcher_prompt(
         "Create a researcher report JSON covering vuln_id, intent, preconditions, "
         "tech_stack_candidates, minimal_repro_steps, references, pocs, deps, risks, "
         "retrieval_snapshot_id, and optionally failure_context. "
-        "Cite relevant references and align with docs/architecture/agents_contracts.md."
+        "Cite relevant references and align with docs/handbook.md (아키텍처)."
         "\n\n# Requirement\n{req}"
         "\n\n# Search Findings\n{search}"
         "\n\n# RAG Context\n{rag}".format(

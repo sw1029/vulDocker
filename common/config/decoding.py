@@ -1,6 +1,6 @@
 """Decoding profile definitions used by LLM calls.
 
-The values mirror docs/decoding/model_and_decoding_strategy.md so that
+The values mirror docs/handbook.md (디코딩) so that
 scripts can import a single helper and stay in sync with the documentation."""
 from __future__ import annotations
 

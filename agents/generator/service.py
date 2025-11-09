@@ -1,7 +1,7 @@
-"""Generator microservice implementation for TODO 14~14.5.
+"""Generator microservice for synthesis/hybrid modes.
 
-Extends the original template registry with synthesis/hybrid modes, enforcing
-the guard rails documented in docs/milestones/todo_13-15_code_plan.md.
+Extends the template registry and enforces guard rails defined in
+docs/handbook.md (아키텍처/스키마 섹션).
 """
 from __future__ import annotations
 

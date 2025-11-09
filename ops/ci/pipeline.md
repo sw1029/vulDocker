@@ -21,5 +21,4 @@ TODO 20과 prompt.md 15장 정책 요구를 충족하기 위해 이미지 다이
 
 ## 4. 정합성 체크
 - [x] TODO 20 요구 반영.
-- [x] docs/executor/sbom_guideline.md, docs/variability_repro/design.md와 연계.
-
+- [x] docs/handbook.md(실행기/다변성)와 연계.

@@ -1,4 +1,4 @@
-"""Scenario ID helper aligned with docs/architecture/metastore_and_artifacts.md."""
+"""Scenario ID helper aligned with docs/handbook.md (메타스토어/아티팩트 섹션)."""
 from __future__ import annotations
 
 import hashlib

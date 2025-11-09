@@ -21,7 +21,7 @@ LOGGER = get_logger(__name__)
 
 
 class ResearcherService:
-    """Produces researcher_report.json aligned with docs/schemas/researcher_report.md."""
+    """Produces researcher_report.json aligned with docs/handbook.md (researcher_report)."""
 
     def __init__(
         self,
@@ -121,7 +121,7 @@ class ResearcherService:
         except json.JSONDecodeError as exc:
             snippet = text[:400]
             raise RuntimeError(
-                "Researcher output is not valid JSON. Ensure docs/schemas/researcher_report.md is followed.\n"
+                "Researcher output is not valid JSON. Ensure docs/handbook.md (researcher_report) is followed.\n"
                 f"Snippet: {snippet}"
             ) from exc
         if not isinstance(report, dict):

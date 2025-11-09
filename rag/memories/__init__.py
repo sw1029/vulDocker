@@ -2,8 +2,7 @@
 
 The storage format is a JSON Lines file that captures reviewer findings or
 executor failures so that follow-up generator passes can inject the
-``failure_context`` described in docs/rag/design.md and
-docs/milestones/todo_13-15_code_plan.md.
+``failure_context`` described in docs/handbook.md (RAG/실패 맥락).
 """
 from __future__ import annotations
 
