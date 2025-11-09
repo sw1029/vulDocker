@@ -81,37 +81,16 @@ API 키 설정(선택)
 ## 다이어그램
 ```mermaid
 flowchart LR
-  A[inputs/*.yml] --> B[PLAN\n(orchestrator/plan.py)\nmetadata/<SID>/plan.json]
+  A["inputs/*.yml"] --> B["PLAN<br/>(orchestrator/plan.py)<br/>metadata/SID/plan.json"]
   B --> C{Researcher?}
-  C -->|report| C1[metadata/<SID>/researcher_report.json]
-  B --> D[Generator\n(agents/generator)\nworkspaces/<SID>/..., generator_runs.json]
-  D --> E[Executor\n(executor/docker_local.py)\nbuild.log, run.log, index/summary]
-  E --> F[Evals\n(evals/poc_verifier)\nreports/evals.json]
-  E --> G[Reviewer\n(agents/reviewer)\nreviewer_reports.json, loop_state.json]
-  F --> H[PACK\n(orchestrator/pack.py)\nmanifest.json, source_snapshot]
+  C -->|report| C1["metadata/SID/researcher_report.json"]
+  B --> D["Generator<br/>(agents/generator)<br/>workspaces/SID/..., generator_runs.json"]
+  D --> E["Executor<br/>(executor/docker_local.py)<br/>build.log, run.log, index/summary"]
+  E --> F["Evals<br/>(evals/poc_verifier)<br/>reports/evals.json"]
+  E --> G["Reviewer<br/>(agents/reviewer)<br/>reviewer_reports.json, loop_state.json"]
+  F --> H["PACK<br/>(orchestrator/pack.py)<br/>manifest.json, source_snapshot"]
   G --> H
-```
 
-ASCII (대안)
-```
-inputs/*.yml
-  │
-  ├─ PLAN (orchestrator/plan.py) → metadata/<SID>/plan.json
-  │
-  ├─(optional) Researcher → metadata/<SID>/researcher_report.json
-  │
-  ├─ Generator → workspaces/<SID>/** , metadata/<SID>/generator_runs.json
-  │
-  ├─ Executor (Docker build/run)
-  │      └─ artifacts/<SID>/build/build.log, build/sbom.spdx.json
-  │      └─ artifacts/<SID>/run/run.log, run/summary.json, run/index.json
-  │
-  ├─ Evals → artifacts/<SID>/reports/evals.json
-  │
-  ├─ Reviewer → metadata/<SID>/reviewer_reports.json , metadata/<SID>/loop_state.json
-  │
-  └─ PACK (orchestrator/pack.py) → metadata/<SID>/manifest.json , artifacts/<SID>/build/source_snapshot/
-```
 
 ## 코드 논리 구조(핵심 모듈)
 - 오케스트레이션
