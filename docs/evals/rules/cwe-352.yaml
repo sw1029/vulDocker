@@ -2,6 +2,9 @@ cwe: CWE-352
 success_signature: CSRF SUCCESS
 flag_token: FLAG-csrf-demo-token
 requires_external_db: false
+strict_flag: true
+output:
+  format: auto
 patterns:
   - type: file_contains
     path: app.py

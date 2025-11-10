@@ -10,3 +10,4 @@ config/api_keys.ini
 
 # Runtime-generated memories/logs (do not commit)
 rag/memories/*.jsonl
+.vscode/settings.json

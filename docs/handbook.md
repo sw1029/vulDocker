@@ -16,8 +16,8 @@
    - Docker build + SBOM(`artifacts/<SID>/build/`)
 4) RUN: `python executor/runtime/docker_local.py --sid <SID> --run`
    - 컨테이너 내부 `python poc.py` 실행(`artifacts/<SID>/run/run.log`)
-5) VERIFY: `python evals/poc_verifier/mvp_sqli.py --sid <SID>`
-   - `run.log`의 성공 시그니처 → `artifacts/<SID>/reports/evals.json`
+5) VERIFY: `python evals/poc_verifier/main.py --sid <SID>`
+   - `docs/evals/rules/*.yaml`에 정의된 성공 시그니처/FLAG 토큰을 기준으로 자동 평가 → `artifacts/<SID>/reports/evals.json`
 6) PACK: `python orchestrator/pack.py --sid <SID>`
    - 스냅샷/메타(`metadata/<SID>/manifest.json`)
 
@@ -26,7 +26,7 @@ LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합�
 ## 요구/출력/성공 기준
 - 입력 스펙: 취약군(CWE), 스택, 변이키(temperature/top-p/k), RAG 스냅샷, 정책.
 - 출력물: workspace, 이미지/SBOM, 로그/트레이스, 평가 결과, 패키징 메타.
-- 성공 기준: PoC 성공 시그니처(SQLi/CSRF 등) 검출, 보안 위반 0, 재현율 목표 충족.
+- 성공 기준: `docs/evals/rules/*.yaml`에 정의된 성공 시그니처/FLAG 토큰 검출, 보안 위반 0, 재현율 목표 충족.
 
 ## 아키텍처(상태·에이전트·메타스토어)
 - 상태 전이: PLAN → PACK, 단계별 Span(`plan`, `draft.generator`, `build.executor`, `run.executor`, `verify.pipeline`, `review.reviewer`, `pack.orchestrator`).

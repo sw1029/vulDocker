@@ -2,6 +2,9 @@ cwe: CWE-89
 success_signature: SQLi SUCCESS
 flag_token: FLAG-sqli-demo-token
 requires_external_db: false
+strict_flag: false
+output:
+  format: auto
 patterns:
   - type: file_contains
     path: app.py

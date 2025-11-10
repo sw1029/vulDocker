@@ -19,6 +19,7 @@ from common.logging import get_logger
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_generator_prompt
+from common.rules import load_rule
 from common.run_matrix import (
     VulnBundle,
     bundle_requirement,
@@ -32,6 +33,11 @@ from orchestrator.loop_controller import LoopController
 from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits, SynthesisOutcome
 
 LOGGER = get_logger(__name__)
+
+DEFAULT_TEMPLATE_ENDPOINTS = {
+    "cwe-89": {"method": "GET", "path": "/profile"},
+    "cwe-352": {"method": "POST", "path": "/transfer"},
+}
 
 MYSQL_DRIVERS = {
     "pymysql",
@@ -616,19 +622,111 @@ class GeneratorService:
         LOGGER.info("Generator template summary written to %s", summary_path)
 
     def _augment_workspace_if_needed(self, selection: TemplateSpec) -> None:
-        """Placeholder hook for future template augmentation.
-
-        The current iteration only records intent; concrete augmentation rules will
-        be injected once docs/evals/rules/*.yaml is available.
-        """
-
-        augmentation = self.requirement.get("augmentation") or {}
-        if not augmentation:
+        augmentation_cfg = self.requirement.get("augmentation") or {}
+        enabled = augmentation_cfg.get("enabled")
+        if enabled is False:
+            LOGGER.info("Template augmentation disabled for %s", selection.id)
             return
-        LOGGER.info(
-            "Template augmentation requested for %s but no automations are configured.",
-            selection.id,
-        )
+
+        vuln_id = str(self.requirement.get("vuln_id") or "").strip().lower()
+        rule = load_rule(vuln_id)
+        if not rule:
+            return
+        success_signature = str(rule.get("success_signature") or "").strip()
+        flag_token = str(rule.get("flag_token") or "").strip()
+        if not success_signature and not flag_token:
+            return
+
+        markers_lines = ["# Verification markers", ""]
+        if success_signature:
+            markers_lines.append(f"- Success signature: `{success_signature}`")
+        if flag_token:
+            markers_lines.append(f"- Flag token: `{flag_token}`")
+        markers_text = "\n".join(markers_lines) + "\n"
+        markers_path = self.workspace / "MARKERS.md"
+        if not markers_path.exists() or markers_path.read_text(encoding="utf-8") != markers_text:
+            markers_path.write_text(markers_text, encoding="utf-8")
+            LOGGER.info("Wrote marker hints to %s", markers_path)
+
+        readme_path = self.workspace / "README.md"
+        marker_block = ["## Verification markers", ""]
+        if success_signature:
+            marker_block.append(f"- PoC must print `{success_signature}` on success.")
+        if flag_token:
+            marker_block.append(
+                "- Successful exploit should surface the flag token `{}`.".format(flag_token)
+            )
+        marker_block.append("")
+        block_text = "\n".join(marker_block)
+
+        if readme_path.exists():
+            current = readme_path.read_text(encoding="utf-8")
+        else:
+            current = "# Template README\n\n"
+        if block_text.strip() not in current:
+            updated = current.rstrip() + "\n\n" + block_text + "\n"
+            readme_path.write_text(updated, encoding="utf-8")
+            LOGGER.info("Appended verification markers to %s", readme_path)
+
+        self._ensure_poc_scaffold(vuln_id, success_signature, flag_token)
+
+    def _ensure_poc_scaffold(
+        self, vuln_id: str, success_signature: str, flag_token: str
+    ) -> None:
+        poc_path = self.workspace / "poc.py"
+        if poc_path.exists():
+            return
+
+        endpoint = DEFAULT_TEMPLATE_ENDPOINTS.get(vuln_id, {"method": "GET", "path": "/"})
+        method = endpoint.get("method", "GET").upper()
+        path = endpoint.get("path", "/")
+
+        content_lines = [
+            "import argparse",
+            "import sys",
+            "from urllib.request import Request, urlopen",
+            "from urllib.error import URLError, HTTPError",
+            "",
+            "SUCCESS_SIGNATURE = " + repr(success_signature or "Exploit SUCCESS"),
+            "FLAG_TOKEN = " + repr(flag_token or ""),
+            "PATH = " + repr(path),
+            "METHOD = " + repr(method),
+            "",
+            "def exploit(base_url: str) -> bool:",
+            "    url = base_url.rstrip('/') + PATH",
+            "    data = None",
+            "    status = 0",
+            "    try:",
+            "        req = Request(url, method=METHOD)",
+            "        with urlopen(req, timeout=5) as resp:",
+            "            data = resp.read()",
+            "            status = resp.status",
+            "    except (HTTPError, URLError) as exc:",
+            "        print(f'[auto] request failed: {exc}', file=sys.stderr)",
+            "        return False",
+            "    if status < 400:",
+            "        print(SUCCESS_SIGNATURE)",
+            "        if FLAG_TOKEN:",
+            "            print(FLAG_TOKEN)",
+            "        if data:",
+            "            print(data.decode('utf-8', errors='ignore'))",
+            "        return True",
+            "    return False",
+            "",
+            "def main() -> None:",
+            "    parser = argparse.ArgumentParser(description='Auto-generated PoC scaffold')",
+            "    parser.add_argument('--base-url', default='http://127.0.0.1:5000')",
+            "    args = parser.parse_args()",
+            "    if exploit(args.base_url):",
+            "        sys.exit(0)",
+            "    print('[auto] scaffold did not trigger exploit', file=sys.stderr)",
+            "    sys.exit(1)",
+            "",
+            "if __name__ == '__main__':",
+            "    main()",
+        ]
+        poc_path.write_text("\n".join(content_lines) + "\n", encoding="utf-8")
+        LOGGER.info("Created scaffold poc.py for %s", self.sid)
 
 
 __all__ = ["GeneratorService", "TemplateRegistry", "TemplateSpec"]

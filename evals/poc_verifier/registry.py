@@ -4,7 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional
 
+from common.logging import get_logger
+from common.rules import list_rules
 from evals.poc_verifier.llm_assisted import llm_assisted_verify
+from evals.poc_verifier.rule_based import verify_with_rule
+
+LOGGER = get_logger(__name__)
 
 VerifierFunc = Callable[[Path], Dict[str, Any]]
 
@@ -13,6 +18,9 @@ _REGISTRY: Dict[str, VerifierFunc] = {}
 
 def _normalize(vuln_id: str) -> str:
     return (vuln_id or "").strip().lower()
+
+
+_RULE_IDS = {_normalize(entry.get("id", "")) for entry in list_rules()}
 
 
 def register_verifier(vuln_ids: Iterable[str], func: VerifierFunc) -> None:
@@ -34,22 +42,44 @@ def evaluate_with_vuln(
     run_summary: Optional[Dict[str, Any]] = None,
     plan_policy: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    rule_known = _rule_known(vuln_id)
     verifier = get_verifier(vuln_id)
+    verifier_policy = _resolve_verifier_policy(requirement, plan_policy)
+
     base_result: Dict[str, Any]
     if verifier is None:
-        base_result = {
-            "verify_pass": False,
-            "evidence": f"No verifier registered for {vuln_id}",
-            "log_path": str(log_path),
-            "status": "unsupported",
-        }
+        base_result = verify_with_rule(
+            vuln_id,
+            log_path,
+            requirement=requirement,
+            run_summary=run_summary,
+            policy=verifier_policy,
+        )
+        base_result.setdefault("verifier_meta", {"type": "rule", "rule_available": rule_known})
+        if not rule_known:
+            LOGGER.warning("No verifier or rule file available for %s", vuln_id)
     else:
         base_result = verifier(log_path)
+        base_result.setdefault("verifier_meta", {"type": "plugin", "rule_available": rule_known})
+        if not base_result.get("verify_pass"):
+            rule_result = verify_with_rule(
+                vuln_id,
+                log_path,
+                requirement=requirement,
+                run_summary=run_summary,
+                policy=verifier_policy,
+            )
+            if rule_result.get("status") != "unsupported":
+                base_result = rule_result
+                base_result.setdefault(
+                    "verifier_meta", {"type": "rule", "rule_available": rule_known}
+                )
+                if base_result.get("verify_pass"):
+                    return base_result
 
     if base_result.get("verify_pass"):
         return base_result
 
-    verifier_policy = _resolve_verifier_policy(requirement, plan_policy)
     llm_result = llm_assisted_verify(
         vuln_id,
         log_path,
@@ -59,6 +89,10 @@ def evaluate_with_vuln(
         base_result=base_result,
     )
     return llm_result or base_result
+
+
+def _rule_known(vuln_id: str) -> bool:
+    return _normalize(vuln_id) in _RULE_IDS
 
 
 def _resolve_verifier_policy(

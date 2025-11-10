@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import functools
-import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import yaml
 
-RULES_ROOT = Path(__file__).resolve().parents[1] / "docs" / "evals" / "rules"
+RULES_ROOT = Path(__file__).resolve().parents[2] / "docs" / "evals" / "rules"
 
 
 @functools.lru_cache(maxsize=32)
@@ -27,5 +26,25 @@ def load_rule(vuln_id: str | None) -> Dict[str, Any]:
         raise ValueError(f"Rule file {path} must contain a mapping")
     return data
 
+@functools.lru_cache(maxsize=1)
+def list_rules() -> List[Dict[str, Any]]:
+    """Return metadata for all available rule files."""
 
-__all__ = ["load_rule"]
+    entries: List[Dict[str, Any]] = []
+    if not RULES_ROOT.exists():
+        return entries
+    for rule_path in sorted(RULES_ROOT.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(rule_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        rule_id = str(data.get("cwe") or rule_path.stem).strip()
+        if not rule_id:
+            continue
+        entries.append({"id": rule_id, "path": str(rule_path), "data": data})
+    return entries
+
+
+__all__ = ["load_rule", "list_rules"]

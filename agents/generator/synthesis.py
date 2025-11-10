@@ -42,7 +42,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for older interpreter
 LOGGER = get_logger(__name__)
 DEFAULT_POC_TEMPLATE = {
     "cmd": "python poc.py",
-    "success_signature": "SQLi SUCCESS",
+    "success_signature": "Exploit SUCCESS",
     "notes": "Auto-injected fallback PoC block",
 }
 
@@ -587,9 +587,18 @@ class SynthesisEngine:
         else:
             signature = poc.get("success_signature", "")
             vuln = str((self._requirement or {}).get("vuln_id") or "").strip().lower()
-            expected_signature = DEFAULT_SUCCESS_SIGNATURES.get(vuln, "Exploit SUCCESS")
+            rule_sig = (self._rule or {}).get("success_signature") if hasattr(self, "_rule") else None
+            expected_signature = rule_sig or DEFAULT_SUCCESS_SIGNATURES.get(vuln, "Exploit SUCCESS")
             if expected_signature and expected_signature not in signature:
                 errors.append(f"success_signature must include '{expected_signature}'")
+            expected_flag = None
+            if hasattr(self, "_rule"):
+                expected_flag = (self._rule or {}).get("flag_token")
+            expected_flag = expected_flag or DEFAULT_FLAG_TOKENS.get(vuln)
+            strict_flag = bool((self._rule or {}).get("strict_flag")) if hasattr(self, "_rule") else False
+            if strict_flag and expected_flag:
+                if not self._manifest_contains_literal(manifest, expected_flag):
+                    errors.append(f"flag token '{expected_flag}' missing from manifest")
 
         deps = manifest.get("deps")
         if deps is None or not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
@@ -1126,6 +1135,23 @@ class SynthesisEngine:
                 content = entry.get("content")
                 if isinstance(content, str) and needle in content:
                     return True
+        return False
+
+    @staticmethod
+    def _manifest_contains_literal(manifest: Dict[str, Any], needle: str) -> bool:
+        if not needle:
+            return False
+        poc = manifest.get("poc")
+        if isinstance(poc, dict):
+            for value in poc.values():
+                if isinstance(value, str) and needle in value:
+                    return True
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            content = entry.get("content")
+            if isinstance(content, str) and needle in content:
+                return True
         return False
 
     def _build_fallback_poc_content(self, vuln: str, success_signature: str, flag_token: str) -> str:

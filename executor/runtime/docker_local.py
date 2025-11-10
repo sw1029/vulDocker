@@ -33,7 +33,9 @@ SYFT_BIN = shutil.which("syft")
 
 
 class ExecutorError(RuntimeError):
-    pass
+    def __init__(self, message: str, returncode: int | None = None):
+        super().__init__(message)
+        self.returncode = returncode
 
 
 def run_command(cmd: List[str], log_path: Path, check: bool = True, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -49,7 +51,10 @@ def run_command(cmd: List[str], log_path: Path, check: bool = True, cwd: Path | 
             check=False,
         )
     if check and proc.returncode != 0:
-        raise ExecutorError(f"Command failed ({proc.returncode}): {' '.join(cmd)}")
+        raise ExecutorError(
+            f"Command failed ({proc.returncode}): {' '.join(cmd)}",
+            returncode=proc.returncode,
+        )
     return proc
 
 
@@ -105,7 +110,7 @@ def run_container_with_poc(
     executor_policy: Dict[str, Any],
     network_alias: "NetworkHandle",
     payloads: List[str] | None = None,
-) -> None:
+) -> int:
     if DOCKER_BIN is None:
         raise ExecutorError("Docker binary not available")
     run_log = run_dir / "run.log"
@@ -132,6 +137,7 @@ def run_container_with_poc(
         network_mode,
         image_tag,
     ]
+    last_exit_code = None
     try:
         run_command(start_cmd, run_log)
         time.sleep(1)
@@ -159,11 +165,15 @@ def run_container_with_poc(
                 with run_log.open("a", encoding="utf-8") as handle:
                     handle.write(f"\n# Payload {index}: {payload or 'default'}\n")
             try:
-                run_command(exec_cmd, run_log)
-            except ExecutorError:
+                proc = run_command(exec_cmd, run_log)
+                last_exit_code = proc.returncode
+            except ExecutorError as exc:
+                if last_exit_code is None and getattr(exc, "returncode", None) is not None:
+                    last_exit_code = exc.returncode
                 run_command(logs_cmd, run_log, check=False)
                 raise
         run_command(logs_cmd, run_log, check=False)
+        return last_exit_code if last_exit_code is not None else 0
     finally:
         subprocess.run([DOCKER_BIN, "stop", container_name], check=False)
 
@@ -256,6 +266,7 @@ def _run_bundle(
         "invocation": None,
         "build_attempted": False,
         "run_attempted": False,
+        "exit_code": None,
     }
 
     current_stage: Optional[str] = None
@@ -285,7 +296,7 @@ def _run_bundle(
             else:
                 sidecars = []
             summary["sidecars"] = sidecars
-            run_container_with_poc(
+            exit_code = run_container_with_poc(
                 sid,
                 bundle,
                 image_tag,
@@ -297,9 +308,12 @@ def _run_bundle(
             )
             summary["run_passed"] = True
             summary["executed"] = True
+            summary["exit_code"] = exit_code
     except ExecutorError as exc:
         summary["error"] = str(exc)
         summary["failed_stage"] = current_stage
+        if summary.get("exit_code") is None and getattr(exc, "returncode", None) is not None:
+            summary["exit_code"] = exc.returncode
     finally:
         _stop_sidecars(sidecars)
         network_pool.release(network_handle)
@@ -317,6 +331,8 @@ def _run_bundle(
         merged["executed"] = _merge_stage_flag(previous, summary, "executed", "run_attempted")
         if not merged.get("invocation") and previous.get("invocation"):
             merged["invocation"] = previous.get("invocation")
+        if summary.get("exit_code") is None and previous.get("exit_code") is not None:
+            merged.setdefault("exit_code", previous.get("exit_code"))
         summary_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
         summary = merged
     LOGGER.info("Executor bundle completed: %s", summary)
@@ -349,6 +365,9 @@ def _write_index(sid: str, summaries: List[Dict[str, str]]) -> None:
         build_passed = _merge_stage_flag(prev, entry, "build_passed", "build_attempted")
         run_passed = _merge_stage_flag(prev, entry, "run_passed", "run_attempted")
         executed = _merge_stage_flag(prev, entry, "executed", "run_attempted")
+        exit_code = entry.get("exit_code")
+        if exit_code is None:
+            exit_code = prev.get("exit_code")
 
         merged[slug] = {
             **prev,
@@ -356,6 +375,7 @@ def _write_index(sid: str, summaries: List[Dict[str, str]]) -> None:
             "build_passed": build_passed,
             "run_passed": run_passed,
             "executed": executed,
+            "exit_code": exit_code,
         }
 
     payload = {"sid": sid, "runs": list(merged.values())}

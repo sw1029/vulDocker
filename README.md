@@ -52,7 +52,7 @@ API 키 설정(선택)
 - 산출: `metadata/<SID>/manifest.json`, 소스 스냅샷
 
 기본 점검
-- `artifacts/<SID>/run/run.log` 내 `SQLi SUCCESS`와 `FLAG` 문구를 확인합니다.
+- `docs/evals/rules/<CWE>.yaml`에 정의된 `success_signature`와 `flag_token`이 `artifacts/<SID>/run/run.log`(또는 PoC가 출력한 JSON)에서 모두 확인되는지 체크합니다.
 
 ## 파이프라인 구조(상태/흐름)
 - PLAN → GENERATE → EXECUTE → VERIFY → REVIEW → PACK
