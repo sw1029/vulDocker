@@ -123,27 +123,32 @@ class GeneratorContext:
 class TemplateRegistry:
     """Discovers template directories and handles workspace materialization."""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, extra_roots: Optional[List[Path]] = None) -> None:
         default_root = get_repo_root() / "workspaces" / "templates"
-        self.root = root or default_root
+        roots: List[Path] = [root or default_root]
+        for extra in extra_roots or []:
+            if extra and extra not in roots:
+                roots.append(extra)
+        self.roots = roots
         self.templates = self._discover()
         if not self.templates:
-            raise RuntimeError(f"No templates found under {self.root}")
+            raise RuntimeError(f"No templates found under {[str(r) for r in self.roots]}")
 
     def _discover(self) -> List[TemplateSpec]:
         templates: List[TemplateSpec] = []
-        if not self.root.exists():
-            return templates
-        for metadata_file in self.root.rglob("template.json"):
-            meta = json.loads(metadata_file.read_text(encoding="utf-8"))
-            template_id = meta.get("id") or metadata_file.parent.name
-            templates.append(
-                TemplateSpec(
-                    id=template_id,
-                    path=metadata_file.parent / "app",
-                    metadata=meta,
+        for base in self.roots:
+            if not base.exists():
+                continue
+            for metadata_file in base.rglob("template.json"):
+                meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+                template_id = meta.get("id") or metadata_file.parent.name
+                templates.append(
+                    TemplateSpec(
+                        id=template_id,
+                        path=metadata_file.parent / "app",
+                        metadata=meta,
+                    )
                 )
-            )
         return templates
 
     def sample_candidates(self, *, seed: int, k: int) -> List[TemplateCandidate]:
@@ -184,6 +189,10 @@ class GeneratorService:
         self.plan = plan or load_plan(sid)
         self.bundle = bundle
         self.metadata_dir = metadata_dir_for_bundle(self.plan, bundle) if bundle else _metadata_dir(self.plan)
+        self.metadata_root = ensure_dir(Path(self.plan["paths"]["metadata"]))
+        self.runtime_rules_dir = ensure_dir(self.metadata_root / "runtime_rules")
+        self.runtime_templates_dir = ensure_dir(self.metadata_root / "runtime_templates")
+        self._register_runtime_rule_env(self.runtime_rules_dir)
         self.workspace = workspace_dir_for_bundle(self.plan, bundle) if bundle else _workspace_dir(self.plan)
         base_requirement = self.plan["requirement"]
         self.requirement = bundle_requirement(base_requirement, bundle) if bundle else base_requirement
@@ -211,9 +220,23 @@ class GeneratorService:
         data = json.loads(loop_path.read_text(encoding="utf-8"))
         return int(data.get("current_loop", 0))
 
+    def _register_runtime_rule_env(self, path: Path) -> None:
+        import os
+
+        if not path.exists():
+            return
+        env_key = "VULD_RUNTIME_RULE_DIRS"
+        existing = os.environ.get(env_key, "")
+        parts = [p for p in existing.split(os.pathsep) if p]
+        path_str = str(path)
+        if path_str not in parts:
+            parts.append(path_str)
+            os.environ[env_key] = os.pathsep.join(parts)
+
     def _get_registry(self) -> TemplateRegistry:
         if self._registry is None:
-            self._registry = TemplateRegistry(self._template_root)
+            extras = [self.runtime_templates_dir] if self.runtime_templates_dir.exists() else []
+            self._registry = TemplateRegistry(self._template_root, extra_roots=extras)
         return self._registry
 
     def _stack_descriptor(self) -> str:

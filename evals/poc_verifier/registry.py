@@ -47,7 +47,8 @@ def evaluate_with_vuln(
     verifier_policy = _resolve_verifier_policy(requirement, plan_policy)
 
     base_result: Dict[str, Any]
-    if verifier is None:
+    prefer_rule = bool(verifier_policy.get("prefer_rule"))
+    if verifier is None or prefer_rule:
         base_result = verify_with_rule(
             vuln_id,
             log_path,
@@ -58,6 +59,10 @@ def evaluate_with_vuln(
         base_result.setdefault("verifier_meta", {"type": "rule", "rule_available": rule_known})
         if not rule_known:
             LOGGER.warning("No verifier or rule file available for %s", vuln_id)
+        if base_result.get("status") == "unsupported" and verifier and not prefer_rule:
+            plugin_result = verifier(log_path)
+            plugin_result.setdefault("verifier_meta", {"type": "plugin", "rule_available": rule_known})
+            base_result = plugin_result
     else:
         base_result = verifier(log_path)
         base_result.setdefault("verifier_meta", {"type": "plugin", "rule_available": rule_known})
@@ -76,6 +81,11 @@ def evaluate_with_vuln(
                 )
                 if base_result.get("verify_pass"):
                     return base_result
+
+    if prefer_rule and base_result.get("status") == "unsupported" and verifier is not None:
+        plugin_result = verifier(log_path)
+        plugin_result.setdefault("verifier_meta", {"type": "plugin", "rule_available": rule_known})
+        base_result = plugin_result
 
     if base_result.get("verify_pass"):
         return base_result

@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from common.rules import load_rule
 
 DEFAULT_FLAG_MARKER = "FLAG"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKSPACES_ROOT = REPO_ROOT / "workspaces"
 
 
 def verify_with_rule(
@@ -40,6 +42,7 @@ def verify_with_rule(
         }
 
     summary_data = _load_summary_data(log_path, run_summary)
+    workspace_dirs = _workspace_candidates(log_path, run_summary or summary_data)
 
     evidence: List[str] = []
     success = False
@@ -69,6 +72,9 @@ def verify_with_rule(
     success, exit_evidence = _apply_exit_policy(success, summary_data, policy)
     evidence.extend(exit_evidence)
 
+    pattern_evidence = _evaluate_patterns(rule, workspace_dirs)
+    evidence.extend(pattern_evidence)
+
     if not evidence:
         evidence.append("Signature missing")
 
@@ -93,6 +99,8 @@ def _evaluate_text_markers(
     if policy:
         policy_strict = policy.get("strict_flag")
     strict_flag = bool(policy_strict if policy_strict is not None else rule.get("strict_flag", False))
+    if not strict_flag and policy and policy.get("strict_flag_default"):
+        strict_flag = True
 
     signature_hit = bool(signature and signature in log_text)
     if signature_hit:
@@ -238,6 +246,121 @@ def _load_summary_data(
         if isinstance(data, dict):
             return data
     return None
+
+
+def _evaluate_patterns(
+    rule: Dict[str, Any],
+    workspace_dirs: List[Path],
+) -> List[str]:
+    patterns = rule.get("patterns") or []
+    if not patterns or not workspace_dirs:
+        return []
+
+    evidence: List[str] = []
+    for entry in patterns:
+        if not isinstance(entry, dict):
+            continue
+        ptype = str(entry.get("type") or "").strip().lower()
+        needle = entry.get("contains")
+        if not needle:
+            continue
+        needle_str = str(needle)
+
+        if ptype == "file_contains":
+            rel_path = entry.get("path")
+            if not rel_path:
+                continue
+            hit = _workspace_contains(workspace_dirs, rel_path, needle_str)
+            if hit:
+                evidence.append(f"{rel_path} contains '{needle_str}'")
+        elif ptype == "poc_contains":
+            rel_path = entry.get("path") or "poc.py"
+            hit = _workspace_contains(workspace_dirs, rel_path, needle_str)
+            if hit:
+                evidence.append(f"{rel_path} contains '{needle_str}'")
+    return evidence
+
+
+def _workspace_candidates(
+    log_path: Path,
+    run_summary: Optional[Dict[str, Any]],
+) -> List[Path]:
+    sid = ""
+    if isinstance(run_summary, dict):
+        sid = str(run_summary.get("sid") or "").strip()
+    if not sid:
+        sid = _extract_sid_from_log(log_path)
+    if not sid:
+        return []
+
+    slug = ""
+    if isinstance(run_summary, dict):
+        slug = str(run_summary.get("slug") or "").strip()
+    if not slug:
+        slug = _extract_slug_from_log(log_path)
+
+    base = WORKSPACES_ROOT / sid
+    candidates: List[Path] = []
+    seen: set[Path] = set()
+
+    def _append(path: Path) -> None:
+        if path in seen:
+            return
+        if path.is_dir():
+            seen.add(path)
+            candidates.append(path)
+
+    if slug:
+        slug_variants = [
+            Path(slug),
+            Path("app") / slug,
+            Path(slug) / "app",
+            Path("app") / slug / "app",
+        ]
+        for variant in slug_variants:
+            _append(base / variant)
+
+    _append(base / "app")
+    _append(base)
+    return candidates
+
+
+def _extract_sid_from_log(log_path: Path) -> str:
+    parts = log_path.resolve().parts
+    for idx, part in enumerate(parts):
+        if part == "artifacts" and idx + 1 < len(parts):
+            return parts[idx + 1]
+    return ""
+
+
+def _extract_slug_from_log(log_path: Path) -> str:
+    parent = log_path.parent
+    if parent.name != "run" and parent.parent.name == "run":
+        return parent.name
+    return ""
+
+
+def _workspace_contains(
+    workspace_dirs: Iterable[Path],
+    relative_path: str,
+    needle: str,
+) -> Optional[str]:
+    rel = Path(relative_path)
+    for workspace in workspace_dirs:
+        candidate = workspace / rel
+        if not candidate.is_file():
+            continue
+        text = _read_file(candidate)
+        if needle in text:
+            return str(candidate)
+    return None
+
+
+def _read_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="utf-8", errors="ignore")
 
 
 def _apply_exit_policy(

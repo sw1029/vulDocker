@@ -135,11 +135,6 @@ def _normalize_executor_policy(requirement: Dict[str, Any]) -> Dict[str, Any]:
     policy = requirement.get("executor") or {}
     if not isinstance(policy, dict):
         policy = {}
-    defaults = {
-        "allow_network": False,
-        "network_mode": "none",
-        "sidecars": [],
-    }
     result = {
         "allow_network": bool(policy.get("allow_network", False)),
         "network_mode": str(policy.get("network_mode") or ("bridge" if policy.get("allow_network") else "none")),
@@ -151,13 +146,13 @@ def _normalize_executor_policy(requirement: Dict[str, Any]) -> Dict[str, Any]:
         for entry in sidecars:
             if not isinstance(entry, dict):
                 continue
-        aliases: List[str] = []
-        raw_aliases = entry.get("aliases") or []
-        if isinstance(raw_aliases, list):
-            for alias in raw_aliases:
-                if isinstance(alias, str) and alias.strip():
-                    aliases.append(alias.strip())
-        result["sidecars"].append(
+            aliases: List[str] = []
+            raw_aliases = entry.get("aliases") or []
+            if isinstance(raw_aliases, list):
+                for alias in raw_aliases:
+                    if isinstance(alias, str) and alias.strip():
+                        aliases.append(alias.strip())
+            result["sidecars"].append(
                 {
                     "name": entry.get("name", "sidecar"),
                     "type": entry.get("type"),

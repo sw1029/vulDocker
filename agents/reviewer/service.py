@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from common.llm import LLMClient
 from common.logging import get_logger
@@ -51,6 +51,7 @@ class ReviewerService:
         self.sid = sid
         self.plan = load_plan(sid)
         self.metadata_root = ensure_dir(Path(self.plan["paths"]["metadata"]))
+        self._register_runtime_rules()
         loop_cfg = self.plan.get("loop", {"max_loops": 3})
         self.loop_controller = LoopController(sid, max_loops=int(loop_cfg.get("max_loops", 3)))
         self.variation_manager = VariationManager(self.plan.get("variation_key"), seed=self.plan["requirement"].get("seed"))
@@ -204,6 +205,14 @@ class ReviewerService:
                     evidence=[str(log_path)],
                 )
             )
+        exit_issues, exit_reason = self._check_exit_code_policy(bundle, run_summary)
+        if exit_issues:
+            issues.extend(exit_issues)
+            if success:
+                success = False
+                reason = exit_reason or "Non-zero exit code detected"
+                fix_hint = "Inspect executor logs and container exit status"
+            blocking = True
         content = log_path.read_text(encoding="utf-8")
         excerpt = content[-2000:] if content else ""
         return ReviewerContext(
@@ -247,6 +256,46 @@ class ReviewerService:
                 )
         return issues
 
+    def _check_exit_code_policy(
+        self,
+        bundle: VulnBundle,
+        run_summary: Dict[str, Any],
+    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
+        issues: List[Dict[str, Any]] = []
+        verifier_policy = ((self.plan.get("policy") or {}).get("verifier") or {})
+        require_zero = bool(verifier_policy.get("require_exit_code_zero"))
+        if not require_zero:
+            return issues, None
+        if not run_summary or not run_summary.get("run_attempted"):
+            return issues, None
+        exit_code = run_summary.get("exit_code")
+        summary_path = artifacts_dir_for_bundle(self.plan, bundle, "run") / "summary.json"
+        if exit_code is None:
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="summary.json",
+                    line=0,
+                    issue="Exit code metadata missing (policy requires zero)",
+                    fix_hint="Re-run executor >= v1.1 to capture exit_code in summary.json",
+                    evidence=[str(summary_path)],
+                )
+            )
+            return issues, "exit_code missing"
+        if exit_code not in (0, None):
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="summary.json",
+                    line=0,
+                    issue=f"Executor exit_code={exit_code} (expected 0)",
+                    fix_hint="Inspect application/container logs; resolve runtime crash", 
+                    evidence=[str(summary_path)],
+                )
+            )
+            return issues, f"exit_code={exit_code}"
+        return issues, None
+
     def _issue_stub(
         self,
         *,
@@ -256,6 +305,7 @@ class ReviewerService:
         issue: str,
         fix_hint: str,
         evidence: List[str] | None = None,
+        severity: str = "high",
     ) -> Dict[str, Any]:
         return {
             "sid": self.sid,
@@ -264,7 +314,7 @@ class ReviewerService:
             "line": max(1, line),
             "issue": issue,
             "fix_hint": fix_hint,
-            "severity": "high",
+            "severity": severity,
             "test_change": "Add PoC regression test",
             "evidence_log_ids": evidence or [],
             "blocking": True,
@@ -288,6 +338,20 @@ class ReviewerService:
         payload = {"sid": self.sid, "bundles": bundle_reports}
         index_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         LOGGER.info("Reviewer bundle index written to %s", index_path)
+
+    def _register_runtime_rules(self) -> None:
+        import os
+
+        runtime_dir = self.metadata_root / "runtime_rules"
+        if not runtime_dir.exists():
+            return
+        env_key = "VULD_RUNTIME_RULE_DIRS"
+        existing = os.environ.get(env_key, "")
+        parts = [p for p in existing.split(os.pathsep) if p]
+        path_str = str(runtime_dir)
+        if path_str not in parts:
+            parts.append(path_str)
+            os.environ[env_key] = os.pathsep.join(parts)
 
 
 __all__ = ["ReviewerService"]

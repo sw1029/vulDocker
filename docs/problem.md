@@ -1,0 +1,63 @@
+# LLM 기반 취약 테스트베드 코드 분석 결과
+
+## 하드코딩된 구현 지점
+
+- **취약점 정보 및 템플릿의 하드코딩**: 코드에 특정 CWE 번호와 취약점 템플릿이 고정되어 있습니다. 예를 들어 agents/generator/templates.py에는 **SQL 인젝션(CWE-89)** 시나리오를 위한 Flask 애플리케이션 코드와 PoC가 그대로 문자열로 정의되어 있습니다[\[1\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/templates.py#L50-L59)[\[2\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/templates.py#L102-L110). 이러한 방식으로 CWE-89( SQLi )에 해당하는 app.py, poc.py 등의 코드가 미리 작성되어 있으며, 다른 취약점에는 적용되지 않습니다. 또한 workspaces/templates/ 디렉토리에 **sqli나 csrf 등 미리 정해진 취약점 폴더**들이 있고, 그 안에 Flask 앱 예제 코드와 template.json 메타데이터가 존재합니다[\[3\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/workspaces/templates/sqli/flask_mysql_union/template.json#L2-L10). 이는 특정 취약점 조합(예: _flask_mysql_union_, _flask_sqlite_raw_, _flask_sqlite_csrf_)에 대한 이미지 템플릿을 고정된 디렉토리 구조로 제공하는 것으로, 새로운 취약점을 추가하려면 이와 같은 디렉토리를 수작업으로 늘려야 합니다.
+- **파일 경로 및 명령어의 하드코딩**: 코드 생성 및 실행 흐름에서 다루는 파일명과 경로가 고정되어 있습니다. 예를 들어, **app.py와 poc.py**는 웹 서비스와 PoC의 기본 파일명으로 전제됩니다. docs/evals/rules/\*.yaml의 검증 규칙에서도 app.py 파일에 특정 문자열이 있는지 확인하도록 되어 있어(path: app.py 지정)[\[4\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/docs/evals/rules/cwe-352.yaml#L6-L10), 애플리케이션 파일명이 고정됩니다. 또한 PoC 실행은 기본적으로 python poc.py 명령으로 하드코딩되어 있으며[\[5\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L42-L47), 성공 시그니처도 각 CWE별로 **"SQLi SUCCESS"**, **"CSRF SUCCESS"** 같은 문자열로 미리 정의되어 있습니다[\[6\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L48-L56). 이러한 고정된 문자열과 경로는 LLM이 생성한 결과물이 형식을 조금만 벗어나도 시스템이 인식하지 못하게 만들 수 있습니다.
+- **정적 취약점 검출 로직**: 코드 내 일부 로직은 특정 취약점 패턴만 인식하도록 하드코딩되어 있습니다. 예를 들어, **SQL 인젝션**을 위해 준비된 정적 분석기(analyze_sql_injection_signals)를 활용하며[\[7\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L24-L28), agents/generator/synthesis.py에서는 기본 **성공 표식(success_signature)**을 CWE-89와 CWE-352에 한해 "SQLi SUCCESS", "CSRF SUCCESS"로 지정하고 그렇지 않은 경우 "Exploit SUCCESS"로 단순 처리합니다[\[8\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L2-L10). 이는 코드가 SQLi나 CSRF가 아닌 경우엔 포괄적인 취약 신호를 충분히 체크하지 못하고 있음을 의미합니다.
+
+## 취약점별 **분기 처리** 사례
+
+- **검증 단계 분기**: PoC 검증기(evals/poc_verifier)는 취약점 종류별로 별도 함수가 등록되는 구조입니다. mvp_sqli.py와 csrf.py에서 register_verifier(\["CWE-89", "sqli"\], ...), register_verifier(\["CWE-352", "csrf"\], ...)와 같이 각 취약점 ID에 맞는 검증 함수를 개별 등록하고 있습니다[\[9\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/mvp_sqli.py#L22-L30)[\[10\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/csrf.py#L20-L28). 이 함수들은 로그에서 "SQLi SUCCESS" 또는 "CSRF SUCCESS" 문자열과 FLAG 토큰 존재 여부를 확인하여 성공 판정하는데, 새로운 취약점에 대해서는 이러한 검증 함수가 없으며 기본적으로 "FLAG" 문자열 존재 여부만으로 판단하거나 아예 검증을 수행하지 못할 수 있습니다. 즉, **지원하는 CWE 목록이 코드에 고정**되어 있고 그 외의 취약점은 별도 로직이 없는 상태입니다.
+- **생성 단계 분기**: Generator는 **템플릿 모드**와 **LLM 합성 모드**로 나뉘어 동작하며, 이때 분기 조건이 **요구사항에 명시된 취약점 종류(vuln_id)**와 **데이터베이스 종류** 등에 따라 결정됩니다. GeneratorService.\_select_template에서는 입력 요구사항의 vuln_id, db, pattern_id를 템플릿 메타데이터와 비교하여 점수를 매겨 가장 적합한 템플릿을 선택합니다[\[11\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L514-L523)[\[12\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L544-L553). 이때 템플릿의 태그에 요구 vuln_id가 포함되는지, DB 종류 문자열이 일치하는지 등에 **고정된 가중치(예: vuln_id 매치 시 +3, DB 매치 시 +2)**를 부여하여 분기합니다. 이러한 로직은 새로운 취약점이나 환경이 추가되면 코드 수정과 템플릿 메타데이터 업데이트가 필요하며, 분기 조건이 고정(enum)처럼 설계되어 **확장성이 떨어집니다**.
+- **기능 토글 분기**: Generator는 _hybrid_ 모드에서 우선 LLM 합성을 시도하고 **모든 후보가 검증 실패하면** 템플릿 경로로 **폴백**하도록 구현되어 있습니다[\[13\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L350-L359)[\[14\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L370-L379). 이때 **어떤 취약점에 대해 템플릿을 사용할지** 여부는 \_has_viable_template()에서 vuln_id와 db 조합의 템플릿 존재 여부로 bool을 리턴하여 분기합니다[\[12\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L544-L553). 즉, **지원하는 취약점-환경 조합만 템플릿 모드로 처리**하고 나머지는 LLM에만 의존하도록 분기되어 있습니다. 이 역시 코드에 내재된 조건으로서, 새로운 조합 추가 시 함수를 개선해야 하는 구조입니다.
+
+## 일반화된 자동화 흐름과의 충돌
+
+위와 같은 하드코딩 및 분기 구조는 **RAG 기반 정보수집 및 LLM 생성에 의한 동적 취약성 주입**이라는 목표와 상충될 수 있습니다. 몇 가지 충돌 사례는 다음과 같습니다:
+
+- **제한된 취약점 종류**: 현재 시스템은 SQLi(CWE-89)와 CSRF(CWE-352) 위주로 구성되어 있어, LLM이 다른 CWE(IDOR, XSS 등)를 생성하도록 요구할 경우 지원이 원활하지 않습니다. 예를 들어 **XSS(CWE-79)** 취약점을 주입하려 할 때, 해당 CWE에 대한 rules/\*.yaml 규칙이나 register_verifier가 없으므로 성공 판정 기준(예: "XSS SUCCESS" 등)이 사전에 정의되어 있지 않습니다. 이때 Generator 합성 로직은 기본 "Exploit SUCCESS"를 사용하게 되지만[\[15\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L8-L16), PoC 검증 단계에서는 FLAG만 보고 통과시키거나 아예 검증 누락될 위험이 있습니다. 이는 **새로운 취약점에 대해 LLM이 아무리 잘 코드를 만들어도, 프레임워크가 이를 인지·검증하지 못하는 문제**로 이어집니다.
+- **동적 생성의 제약**: LLM이 만들어내는 응답 형식이나 내용이 하드코딩된 기대와 다르면 흐름이 깨질 수 있습니다. 예를 들어 현재 **모든 PoC는 표식으로 "... SUCCESS" 문자열과 FLAG를 출력하도록 강제**되어 있습니다[\[16\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/mvp_sqli.py#L12-L20). LLM 프롬프트에 이러한 요구를 넣겠지만, 만약 LLM이 다른 형태로 응답하면 검증이 실패합니다. 실제로 agents/generator/synthesis.py는 **LLM 생성 결과의 success_signature 필드에 CWE별 지정 문자열이 포함되지 않으면 오류로 간주**하도록 가드레일을 두었습니다[\[17\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L20-L23). 이는 LLM 응답을 유연하게 처리하지 못하고, 정해둔 패턴만 허용함으로써 동적 생성의 표현력을 제한합니다.
+- **템플릿 의존성과 확장성 문제**: 본래 목표는 LLM이 다양한 취약 조합을 **자동 합성**하는 것인데, 현재는 코드베이스에 내장된 템플릿(예: Flask+SQLite, Flask+MySQL 등)으로 한정된 조합만 생성되는 경향이 있습니다. Generator는 새로운 취약점 조합에 **적합한 템플릿이 없으면 LLM 합성으로 대체**하지만[\[18\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L370-L378), 이때도 템플릿이 전혀 없는 완전히 새로운 경우에는 LLM에게 과부하가 갈 뿐 아니라, **개발자가 사전에 커버하지 않은 조합에 대한 품질 보장이 어려워집니다**. 즉 자동화 파이프라인이 일반적인 입력을 받아 처리하는 것이 아니라, 미리 대비된 시나리오에 대해서만 완전한 동작을 보장하는 형태가 되어 **완전 자동화라는 취지와 거리가 멀어집니다**.
+
+## 개선 방향 제언
+
+- **데이터 드리븐 구조로 변경**: 취약점별 상수(strings)나 동작을 코드에 직접 넣기보다는 **구성 파일이나 매니페스트**로 관리하는 것이 좋습니다. 예를 들어 성공 판정 문자열, FLAG 토큰, 검증 방식 등을 docs/evals/rules/\*.yaml처럼 외부 파일에 정의하고, 코드에서는 이를 일반화된 로더로 처리하게 합니다. 이미 존재하는 common.rules.load_rule 함수가 CWE 규칙을 불러오고 있으므로[\[19\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/common/rules/__init__.py#L18-L27), 이를 확대하여 **검증기(verifier)**가 YAML의 success_signature를 자동으로 참고하게 하고, 새로운 CWE 규칙 추가 시 코드 수정 없이도 검증 로직이 반영되도록 개선할 수 있습니다.
+- **검증 로직 일반화**: register_verifier 패턴 대신 **단일 범용 검증 함수**를 두어, plan.json이나 규칙 파일에서 기대하는 성공 신호를 읽어 체크하도록 바꾸면 취약점 추가시 함수를 새로 만드는 수고를 덜 수 있습니다. 예컨대 **모든 PoC의 기본 성공 요건**을 "FLAG 문자열 존재 여부 + 규칙에서 정의한 success_signature 포함 여부"로 통일하고, 현재 CSRF나 SQLi처럼 특별한 검증이 필요하면 규칙에 그 패턴을 추가 정의하는 방식입니다. 이렇게 하면 새로운 CWE에 대한 YAML만 작성하면 동일한 검증 루틴을 타게 되어 **확장성이 높아집니다**.
+- **LLM 프롬프트 및 출력의 유연화**: LLM이 항상 정해진 문자열을 출력하도록 강제하기보다는, **JSON 스키마나 토큰** 등으로 성공 여부를 표시하게 하는 것도 고려해볼 수 있습니다. 예를 들어 PoC가 실행 후 {"result": "SUCCESS"} 같은 JSON을 로그에 남기도록 약속하면, 다양한 취약점에도 불구하고 **검증 파서는 일관된 키를 찾기만 하면** 되므로 단순화됩니다. 현재는 CWE마다 다른 "XYZ SUCCESS" 문자열을 쓰게 하는데, 이런 변형 대신 공통 포맷을 LLM에게 학습시켜 일관성을 높이면 하드코딩을 줄일 수 있습니다.
+- **템플릿 시스템의 일반화/자동화**: 새로운 서비스 스택이나 취약 패턴에 대응하려면 템플릿을 일일이 코딩하는 대신, **LLM이 생성한 코드를 보완하는 보조책**으로 템플릿을 활용하도록 조율하는 것이 좋습니다. 즉 현재처럼 분기적으로 "지원 안 되면 LLM만 써라"가 아니라, **가능한 한 LLM이 생성하되 실패율이 높은 부분만 템플릿으로 패치**하는 방향입니다. 이를 위해서는 템플릿을 CWE별로 나누기보다 취약점 삽입 **패턴(예: 문자열 연결 기반 SQLi, UNION 기반 SQLi 등)** 단위로 모듈화하고, LLM 출력에 해당 패턴이 불충분할 경우 해당 모듈을 삽입하거나 수정하는 방식이 바람직합니다. 이렇게 하면 템플릿 추가가 곧바로 여러 CWE에 재사용될 수 있어 **범용성이 향상**됩니다.
+- **구성 가능(enum화된) 설계 지양**: 마지막으로, 코드 곳곳의 if-else나 리스트로 열거된 취약점 처리들을 가능하면 **플러그인화**하거나 **동적 발견**으로 전환하는 것이 권장됩니다. 예를 들어 workspaces/templates/\* 폴더를 스캔하여 새로운 취약 패턴이 있으면 자동 등록하고[\[20\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L126-L135), rag/hints/나 rag/corpus/도 디렉토리명(CWE-ID)을 기준으로 자동 연결하는 등, **"새 CWE 추가 = 새 파일/폴더 추가"**로 충분하도록 만들어야 합니다. 현재도 일부는 그런 구조이지만 (예: 규칙 YAML 자동 로드), 이를 전 영역에 확대하면 하드코딩을 크게 줄이고 **LLM 주도 흐름과 충돌 없이 범용적인 테스트베드로 발전**시킬 수 있을 것입니다.
+
+**출처:** 코드베이스 sw1029/vulDocker의 README 및 소스 파일 분석[\[1\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/templates.py#L50-L59)[\[9\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/mvp_sqli.py#L22-L30) 등.
+
+[\[1\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/templates.py#L50-L59) [\[2\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/templates.py#L102-L110) templates.py
+
+<https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/templates.py>
+
+[\[3\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/workspaces/templates/sqli/flask_mysql_union/template.json#L2-L10) template.json
+
+<https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/workspaces/templates/sqli/flask_mysql_union/template.json>
+
+[\[4\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/docs/evals/rules/cwe-352.yaml#L6-L10) cwe-352.yaml
+
+<https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/docs/evals/rules/cwe-352.yaml>
+
+[\[5\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L42-L47) [\[6\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L48-L56) [\[7\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L24-L28) [\[8\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L2-L10) [\[15\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L8-L16) [\[17\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py#L20-L23) synthesis.py
+
+<https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/synthesis.py>
+
+[\[9\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/mvp_sqli.py#L22-L30) [\[16\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/mvp_sqli.py#L12-L20) mvp_sqli.py
+
+<https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/mvp_sqli.py>
+
+[\[10\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/csrf.py#L20-L28) csrf.py
+
+<https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/evals/poc_verifier/csrf.py>
+
+[\[11\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L514-L523) [\[12\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L544-L553) [\[13\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L350-L359) [\[14\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L370-L379) [\[18\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L370-L378) [\[20\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py#L126-L135) service.py
+
+<https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/agents/generator/service.py>
+
+[\[19\]](https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/common/rules/__init__.py#L18-L27) \__init_\_.py
+
+<https://github.com/sw1029/vulDocker/blob/2ec2581cadb78efe20041b605fe40b8f8684840b/common/rules/__init__.py>

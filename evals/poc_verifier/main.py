@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -21,6 +23,7 @@ from common.run_matrix import (
 )
 
 from evals.poc_verifier.registry import evaluate_with_vuln
+from rag.memories import ReflexionRecord, append_memory
 
 # Ensure built-in verifiers are registered
 from evals.poc_verifier import csrf  # noqa: F401
@@ -72,6 +75,7 @@ def _evaluate_single(log_path: Path, vuln_id: str) -> Dict[str, Any]:
 
 def _evaluate_all(sid: str) -> Dict[str, Any]:
     plan = load_plan(sid)
+    _register_runtime_rules(plan)
     bundles = load_vuln_bundles(plan)
     run_index = _load_run_index(sid)
     results: List[Dict[str, Any]] = []
@@ -109,6 +113,7 @@ def _evaluate_all(sid: str) -> Dict[str, Any]:
         entry["slug"] = bundle.slug
         entry["run_summary"] = run_record
         results.append(entry)
+    _record_verifier_feedback(plan, results)
     overall = _overall_pass(results)
     return {"sid": sid, "overall_pass": overall, "results": results}
 
@@ -128,6 +133,62 @@ def main() -> None:
     output_path = reports_dir / "evals.json"
     output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     LOGGER.info("Evaluation result saved to %s", output_path)
+
+
+def _register_runtime_rules(plan: Dict[str, Any]) -> None:
+    metadata_root = Path(plan["paths"]["metadata"])
+    runtime_dir = metadata_root / "runtime_rules"
+    if not runtime_dir.exists():
+        return
+    env_key = "VULD_RUNTIME_RULE_DIRS"
+    existing = os.environ.get(env_key, "")
+    parts = [p for p in existing.split(os.pathsep) if p]
+    path_str = str(runtime_dir)
+    if path_str not in parts:
+        parts.append(path_str)
+        os.environ[env_key] = os.pathsep.join(parts)
+
+
+def _record_verifier_feedback(plan: Dict[str, Any], results: List[Dict[str, Any]]) -> None:
+    metadata_dir = Path(plan["paths"]["metadata"])
+    loop_state = metadata_dir / "loop_state.json"
+    loop_count = 0
+    if loop_state.exists():
+        try:
+            state = json.loads(loop_state.read_text(encoding="utf-8"))
+            loop_count = int(state.get("current_loop", 0))
+        except json.JSONDecodeError:
+            loop_count = 0
+    timestamp = datetime.now(timezone.utc).isoformat()
+    for entry in results:
+        if entry.get("verify_pass"):
+            continue
+        reason = entry.get("evidence") or "PoC verification failed"
+        fix_hint = _derive_fix_hint(reason)
+        append_memory(
+            ReflexionRecord(
+                sid=plan["sid"],
+                loop_count=loop_count,
+                stage="VERIFIER",
+                reason=reason,
+                remediation_hint=fix_hint,
+                blocking=True,
+                metadata={
+                    "bundle": entry.get("slug", ""),
+                    "log_path": entry.get("log_path", ""),
+                },
+                timestamp=timestamp,
+            )
+        )
+
+
+def _derive_fix_hint(reason: str) -> str:
+    text = reason.lower()
+    if "signature missing" in text:
+        return "Ensure app/PoC prints the success signature and flag token into run.log"
+    if "flag" in text and "missing" in text:
+        return "Expose the expected flag token during successful exploitation"
+    return "Inspect run.log and adjust PoC/app to satisfy the rule-defined success signature"
 
 
 if __name__ == "__main__":

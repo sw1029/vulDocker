@@ -1,0 +1,25 @@
+{
+  "manifest": {
+    "overall_pass": true
+  },
+  "evals": [
+    {
+      "slug": "cwe-89",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "evidence_contains": [
+        "SQLi SUCCESS",
+        "FLAG-sqli-demo-token"
+      ]
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": [
+      "cwe-89"
+    ],
+    "issue_snippets": [
+      "Raw SQL string interpolation"
+    ]
+  }
+}
