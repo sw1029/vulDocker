@@ -48,6 +48,7 @@ policy:
     require_exit_code_zero: true     # 새 정책: run_summary.exit_code가 0이 아니면 실패 처리
     strict_flag_default: true        # 룰에 strict_flag가 없을 때 기본적으로 엄격 비교 실시
     prefer_rule: true                # 전용 검증기보다 룰 기반 검증을 우선 사용
+    llm_assist: true                 # 룰/플러그인 실패 시 LLM 보조 판정 활성화
 
 executor:
   allow_network: true                # true면 docker run 시 네트워크를 개방(기본 none → bridge). 외부 DB가 필요 없으면 false 권장.
