@@ -104,6 +104,21 @@ def _load_generator_failures(sid: str) -> List[dict]:
 def latest_failure_context(sid: str, limit: int = 3) -> str:
     """Return a human-readable summary for prompt injection."""
 
+    def _format_log_excerpt(metadata: Dict[str, object], *, limit_chars: int = 900) -> str:
+        excerpt = metadata.get("log_excerpt")
+        if not isinstance(excerpt, str) or not excerpt.strip():
+            return ""
+        text = excerpt.strip()
+        if limit_chars > 0 and len(text) > limit_chars:
+            # Keep the tail (it is usually the most actionable part of build/run logs).
+            text = text[-limit_chars:]
+        path = metadata.get("log_excerpt_path")
+        label = ""
+        if isinstance(path, str) and path.strip():
+            label = Path(path.strip()).name
+        header = f"Log excerpt ({label} tail):" if label else "Log excerpt (tail):"
+        return f"\n  {header}\n```text\n{text}\n```"
+
     generator_records = _load_generator_failures(sid)
     reflexion_limit = limit * 2 if limit is not None else None
     reflexion_records = load_memories(sid=sid, limit=reflexion_limit)
@@ -120,14 +135,22 @@ def latest_failure_context(sid: str, limit: int = 3) -> str:
             }
         )
     for record in reflexion_records:
+        meta = record.get("metadata")
+        meta = meta if isinstance(meta, dict) else {}
+        stage = record.get("stage", "REVIEW")
+        if stage == "EXECUTOR":
+            substage = meta.get("stage")
+            if isinstance(substage, str) and substage.strip():
+                stage = f"EXECUTOR/{substage.strip()}"
         combined.append(
             {
-                "stage": record.get("stage", "REVIEW"),
+                "stage": stage,
                 "timestamp": record.get("timestamp", ""),
                 "loop_count": record.get("loop_count"),
                 "reason": record.get("reason", ""),
                 "hint": record.get("remediation_hint", ""),
-                "missing": record.get("metadata", {}).get("missing_dependencies", []),
+                "missing": meta.get("missing_dependencies", []),
+                "log_excerpt": _format_log_excerpt(meta),
             }
         )
     if not combined:
@@ -143,8 +166,9 @@ def latest_failure_context(sid: str, limit: int = 3) -> str:
                 f"- Generator guard: {record.get('reason')}.{missing_part} Hint: {record.get('hint')}"
             )
         else:
+            log_excerpt = record.get("log_excerpt") or ""
             summary_lines.append(
-                f"- Loop {record.get('loop_count')}: {record.get('reason')}. Hint: {record.get('hint')}"
+                f"- Loop {record.get('loop_count')} ({record.get('stage')}): {record.get('reason')}. Hint: {record.get('hint')}{log_excerpt}"
             )
     return "\n".join(summary_lines)
 

@@ -74,10 +74,17 @@ for entry in manifest.get("bundles", []):
     )
 summary = {
     "sid": sid,
-    "overall_pass": (manifest.get("reports", {}) or {}).get("evals", {}).get("overall_pass"),
+    "overall_pass": None,
     "policy": manifest.get("policy"),
     "bundles": bundles,
 }
+reports = manifest.get("reports")
+if not isinstance(reports, dict):
+    reports = {}
+evals_report = reports.get("evals")
+if not isinstance(evals_report, dict):
+    evals_report = {}
+summary["overall_pass"] = evals_report.get("overall_pass")
 print("[CASE] Summary:", json.dumps(summary, indent=2, ensure_ascii=False))
 PY
 

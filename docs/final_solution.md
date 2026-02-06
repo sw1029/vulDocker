@@ -7,7 +7,7 @@
 ## 범위/비범위
 
 - 유지: 파이프라인 단계 및 메타 저장 구조(SID, `metadata/`, `workspaces/`, `artifacts/`)
-- 목표: “레포에 없는 CWE/스택” 입력 시에도 **동적으로 생성/실행/검증까지** 이어지게 만들기
+- 목표: “레포에 없는 CWE/스택” 입력 시에도 **(새 CWE마다 정적 템플릿을 추가하지 않고)** 동적으로 생성/실행/검증까지 이어지게 만들기
 - 비범위(이번 단계): 단계 재명명/분산 실행/외부 배포 자동화/모든 CWE 정적 템플릿 구축
 
 ## 현재 상태(코드 기준 체크리스트)
@@ -35,6 +35,10 @@
 - [x] Researcher candidate rule/template 생성의 CWE-89/352 하드코딩 제거(verification_spec/스캔 기반) (`agents/researcher/service.py`)
 - [x] Template mode PoC scaffold의 CWE별 endpoint 하드코딩 제거(서비스 엔트리 스캔 기반 추론) (`agents/generator/service.py`)
 - [ ] 기본 rule/template/hints 커버리지가 CWE-89/352 중심으로 편중 (`docs/evals/rules/`, `workspaces/templates/`, `rag/hints/`)
+- [x] Executor BUILD 실패 시 build.log tail이 루프 피드백에 충분히 반영되지 않음(현재 run.log 위주) (`orchestrator/run_pipeline.py`, `rag/memories/*`)
+- [x] `/tmp`가 tmpfs로 마운트되는 실행 제약에서 “build-time에 /tmp에 상태를 만들어두는” 합성 결과가 발생할 수 있음(특히 SQLite 초기화) → 프롬프트/가드로 강제 필요 (`common/prompts/templates.py`, `agents/generator/synthesis.py`)
+- [x] Dockerfile 내 멀티라인 `RUN python -c "...\n..."` 같은 문법 오류가 EXECUTE 단계까지 가서야 발견됨 → 사전 검증/자동 완화 필요 (`agents/generator/synthesis.py`)
+- [x] CI 요약 스크립트가 `manifest.reports.evals=null` 같은 실패 케이스를 안전하게 처리하지 못해(요약 단계에서 예외) 진단이 끊길 수 있음 (`ops/ci/run_case.sh`)
 
 ---
 
@@ -56,6 +60,7 @@
   - [x] 옵션 B: verifier-side에서 runtime rule을 생성(또는 Researcher 트리거)한 뒤 재시도(루프 피드백 포함)
 - [x] `evals/poc_verifier/registry.py`의 `_RULE_IDS` import-time 캐시를 제거/갱신해 runtime rule 등록 이후에도 `rule_known`이 정확하도록 한다.
 - [x] unknown CWE의 “기본 토큰/시그니처”를 Generator/Researcher/Verifier 간에 일치시키고(예: `FLAG-auto-token` vs “미주입/미요구”), 소스가 다른 경우에도 1곳에서 결정되도록 한다.
+- [ ] **(강화)** PoC 출력이 “응답 텍스트에 우연히 포함”되는 것에 의존하지 않도록, 모든 합성 PoC는 성공 시 `success_signature`와 `flag_token`(있으면)을 **명시적으로 print** 하도록 계약을 강화한다(Verifier의 안정성/일반화 목적).
 
 #### EXECUTE (실행기 하드코딩 제거)
 - [x] `executor/runtime/docker_local.py`의 base-url/port 하드코딩을 제거하고 아래 소스에서 동적으로 resolve한다.
@@ -65,12 +70,15 @@
 - [x] 컨테이너 readiness probe를 다중 전략(`tcp/http/shell`)으로 확장해 Python이 없는 이미지에서도 동작하게 한다.
 - [x] sidecar alias 사용 시 생성되는 ephemeral network를 실행 종료 시 정리한다.
 - [x] 컨테이너가 즉시 크래시해도 로그를 수집할 수 있게 main 컨테이너의 `--rm` 의존을 제거하고(수동 cleanup), 실패 시 `docker logs` 근거를 남긴다.
+- [x] **(강화)** EXECUTOR 실패 요약/루프 피드백에 `build.log`/`run.log` tail을 stage별로 정확히 포함하고, 흔한 실패 모드를 분류해 더 구체적 fix_hint를 제공한다.
+  - 예: Dockerfile parse error(`unknown instruction`) / sqlite `no such table` / import error / readiness timeout 등.
 
 #### ORCHESTRATE (E2E 루프 — EXECUTE/VERIFY 실패의 자동 수렴)
 - [x] GENERATE 이후 단계(EXECUTE/VERIFY/REVIEW)에서 실패해도 “즉시 중단”하지 않고, `LoopController` + Reflexion memory를 통해 **재합성 루프**로 수렴시킨다.
   - [x] `orchestrator/run_pipeline.py` 추가: RESEARCH → GENERATE → EXECUTE(build/run) → VERIFY → REVIEW → PACK를 loop로 실행
   - [x] EXECUTOR/VERIFY 실패 시 `LoopController.record_failure(stage=...)`로 실패 맥락을 저장하고 다음 synthesis 프롬프트에 주입되게 한다(`rag/memories/*`).
-  - [x] CI 엔트리(`ops/ci/run_case.sh`)는 위 pipeline runner를 호출해 실패 시에도 PACK/요약 출력이 남게 한다.
+- [x] CI 엔트리(`ops/ci/run_case.sh`)는 위 pipeline runner를 호출해 실패 시에도 PACK/요약 출력이 남게 한다.
+- [x] **(강화)** Reflexion memory에 “실패 로그 근거”를 최소 형태로 포함하고(길이 제한), `latest_failure_context()`가 stage별 핵심 근거를 요약해 Generator prompt에 주입하도록 확장한다.
 
 #### GENERATE (LLM 기반 동적 생성 일관성)
 - [x] `agents/generator/synthesis.py`의 `_normalize_poc_template`를 수정해, rule/runtime이 없을 때는 `poc.flag_token`을 주입하지 않고(또는 사용자/룰 제공값만 사용) 계약 불일치를 줄인다.
@@ -82,10 +90,16 @@
 - [x] Synthesis fallback PoC의 CWE별 endpoint 하드코딩(`FALLBACK_POC_ENDPOINTS`)을 제거하고 서비스 엔트리 기반 추론으로 일반화한다.
 - [x] SQLi 전용 static signal(후보 스코어링)을 vuln별 플러그인 구조로 확장한다.
 - [x] 서비스 구조 템플릿에 의존하지 않되, 반복적인 런타임 보일러플레이트(DB init/경로/제약)를 stack-level 힌트로 제공해 합성 안정성을 높인다(`rag/boilerplate/*`, `rag/static_loader.py`, `agents/generator/service.py`).
+- [x] **(핵심)** `/tmp` tmpfs 제약을 합성 단계에서 “실패 방지 가드”로 승격한다.
+  - [x] 프롬프트에 “`/tmp`는 실행 시 tmpfs로 덮이며 매 run 초기화된다 → build-time에 `/tmp/*.db` 같은 상태 파일을 만들지 말고, 서비스 시작 시 `/app/schema.sql` 등을 읽어 `/tmp`에 초기화”를 명시한다.
+  - [x] SQLite 등 상태 초기화가 필요한 스택에 대해, service_main에 `init_*()` 패턴이 없으면 자동 보강(경량 텍스트 패치)하거나 후보 점수/가드에서 강하게 페널티한다.
+- [x] Dockerfile 생성 결과의 문법 안정성을 강화한다(최소: 멀티라인 `RUN python -c "...\n..."` 금지/자동 수정, 권장: entrypoint/init 스크립트 패턴).
 
 #### TEST/REPRO (문서/테스트 정합)
 - [x] “레포에 없는 CWE” 입력 케이스에 대한 e2e 테스트를 추가한다(Researcher → Generator → Executor → Verifier).
 - [x] static rule이 존재해도 runtime rule이 override 되는지(캐시 포함) 회귀 테스트를 추가한다 (`tests/test_runtime_rules.py`)
+- [x] SQLite(/tmp tmpfs) 초기화 관련 회귀 테스트를 추가한다(예: 합성 Dockerfile에 `/tmp/app.db` 생성이 포함되면 실패로 간주, 또는 service_main에 init_sqlite_db 패턴이 없으면 경고).
+- [ ] 다양한 CWE(예: XSS/Path Traversal/Command Injection/SSRF 등)로 “새 CWE 추가 없이 synthesis-only로 build/run/verify까지 완주”하는 스모크 케이스를 최소 3개 추가한다(스택은 동일해도 됨).
 
 ### SHOULD (권장 — 커버리지/운영성/재현성 확대)
 - [ ] runtime_rules v2 스키마를 기준으로 `docs/evals/rules/*.yaml`(legacy) 마이그레이션 플랜을 운영한다(호환 유지).
@@ -93,11 +107,15 @@
 - [ ] `rag/hints/` 커버리지를 CWE-89 중심에서 확장(CWE-352 + 우선순위 CWE)하고, stack별 힌트 분리를 도입한다.
 - [ ] LLM provider 설정을 OpenAI 단일 섹션 의존에서 확장(stage별 모델/endpoint/키)하되, 비밀정보 노출 방지 정책을 포함한다.
 - [x] metadata에 “해석된 RuleSpec/선택된 template/source(정적/런타임/매니페스트)”를 저장해 디버깅 비용을 낮춘다.
+- [ ] “CWE-specific hints가 없는 경우”에도 동작하도록 힌트 폴백을 추가한다(예: `rag/hints/default.md` 또는 vuln-class 기반 힌트).
+- [ ] Researcher의 검색 소스가 로컬 코퍼스에만 갇히지 않도록, 선택적 원격 검색 엔드포인트/캐시(스냅샷 저장) 운용 가이드를 추가한다(`VUL_WEB_SEARCH_ENDPOINT`, `rag/index/*`).
 
 ### COULD (선택 — 실험/고도화)
 - [ ] rule 없는 케이스에서 LLM-assisted verifier를 정책 기반으로 default-on(오프라인 스텁 시 graceful skip 포함).
 - [ ] 다중 컨테이너 스택(db/redis 등) 지원(docker compose 또는 sidecar + network whitelist + healthcheck).
 - [ ] 자동 메타모픽 테스트(입력 변형, 회귀) 및 “부분 성공/불완전” 등급화.
+- [ ] “스택 스켈레톤 + 취약 패치(injection) manifest” 모델로 전환(정적 템플릿을 CWE별로 늘리지 않고도 안정적인 생성/수정/검증이 가능).
+- [ ] CWE 카탈로그(정의/패턴/완화) 최소 지식베이스를 RAG로 구축해 “레포에 정보가 없는 CWE”도 Researcher가 일관된 vuln_spec을 만들 수 있게 한다.
 
 ### WON'T (이번 범위 제외)
 - [ ] 파이프라인 단계/아키텍처 대규모 개편(새 스케줄러/분산 실행 등)
@@ -110,8 +128,11 @@
 
 - Generator: `agents/generator/service.py`, `agents/generator/synthesis.py`
 - Researcher: `agents/researcher/service.py`
+- Orchestrator/Loop: `orchestrator/run_pipeline.py`, `orchestrator/loop_controller.py`
 - Executor: `executor/runtime/docker_local.py`
 - Verifier: `evals/poc_verifier/main.py`, `evals/poc_verifier/registry.py`, `evals/poc_verifier/rule_based.py`
+- Prompts/RAG: `common/prompts/templates.py`, `rag/boilerplate/*`, `rag/hints/*`, `rag/memories/*`
+- Ops/CI: `ops/ci/run_case.sh`, `ops/ci/run_base_example.sh`
 - Rules/Templates/Hints: `docs/evals/rules/`, `workspaces/templates/`, `rag/hints/`
 - Tests/E2E: `tests/test_runtime_rules.py`, `evals/poc_verifier/tests/test_rule_based.py`, `tests/e2e/*`
 

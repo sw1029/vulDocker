@@ -104,11 +104,14 @@ def _summarize_executor_error(sid: str, *, stage: str) -> Tuple[str, str, Dict[s
     # Add a small log tail excerpt for the first failing bundle when available.
     if metadata["failures"]:
         first = metadata["failures"][0]
-        run_log_path = first.get("run_log")
-        if isinstance(run_log_path, str) and run_log_path:
-            excerpt = _tail_text(Path(run_log_path), limit_chars=2200)
+        preferred_key = "build_log" if stage == "build" else "run_log"
+        fallback_key = "run_log" if preferred_key == "build_log" else "build_log"
+        chosen_path = first.get(preferred_key) or first.get(fallback_key)
+        if isinstance(chosen_path, str) and chosen_path:
+            excerpt = _tail_text(Path(chosen_path), limit_chars=2200)
             if excerpt:
                 metadata["log_excerpt"] = excerpt
+                metadata["log_excerpt_path"] = chosen_path
 
     reason = f"Executor {stage} failed:\n" + "\n".join(failure_lines)
     hint = "Inspect executor logs and adjust the generated bundle to satisfy executor constraints."
@@ -118,6 +121,29 @@ def _summarize_executor_error(sid: str, *, stage: str) -> Tuple[str, str, Dict[s
         hint = (
             "Avoid invoking sqlite3 CLI at runtime. Use Python sqlite3 module and store the DB under /tmp "
             "(container runs with --read-only)."
+        )
+    elif "no such table" in joined and "sqlite" in joined:
+        hint = (
+            "SQLite table missing at runtime. Remember /tmp is mounted as tmpfs and starts empty each run; "
+            "initialize the SQLite DB under /tmp at service startup (e.g., read schema.sql/seed_data.sql from /app, "
+            "create tables, then handle requests)."
+        )
+    elif "dockerfile parse error" in joined or "unknown instruction" in joined:
+        hint = (
+            "Dockerfile parse error detected. Ensure every Dockerfile line starts with a valid instruction "
+            "(FROM/RUN/COPY/...) or is a continuation line ending with '\\'. Avoid multi-line `RUN python -c \"...` "
+            "blocks that spill Python code onto new Dockerfile lines."
+        )
+    elif "before_first_request" in joined and "attributeerror" in joined:
+        hint = (
+            "Flask compatibility error detected: `before_first_request` is removed in Flask 3. "
+            "Remove that decorator and run initialization explicitly at startup (call init_db() before app.run) "
+            "or use before_request with a one-time guard."
+        )
+    elif "modulenotfounderror" in joined or "no module named" in joined:
+        hint = (
+            "Missing runtime dependency detected (ModuleNotFoundError). Add the required package to manifest.deps "
+            "and requirements*.txt (or enable dep_guard.auto_patch) so `pip install -r requirements.txt` installs it."
         )
     elif "read-only file system" in joined:
         hint = "Container runs with --read-only; write runtime state only under /tmp (or use in-memory)."
@@ -293,4 +319,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

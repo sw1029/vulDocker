@@ -67,14 +67,16 @@ def build_synthesis_prompt(
     limits_payload = json.dumps(limits or {}, indent=2, ensure_ascii=False)
     success_signature = _success_signature(requirement)
     execution_constraints = (
-        "- Container is executed with `--read-only` and a tmpfs mount at `/tmp` (writable). "
-        "Do NOT write to the working directory (commonly `/app`) or other paths at runtime; "
-        "store all runtime state under `/tmp` (or in-memory).\n"
+        "- Container is executed with `--read-only` and `/tmp` is mounted as tmpfs (writable). "
+        "`/tmp` starts EMPTY on every container run and masks anything written to `/tmp` at image build time. "
+        "Do NOT create stateful artifacts under `/tmp` during Docker build expecting them at runtime. "
+        "Instead, keep schema/seed files under `/app` and initialize runtime state under `/tmp` when the service starts.\n"
         "- Do NOT rely on external OS binaries at runtime (ex: `sqlite3`, `psql`, `mysql`, `curl`). "
         "Prefer pure language libraries. If an OS binary is truly required, install it in the Dockerfile "
         "at build time and keep it (do not purge it if used at runtime).\n"
         "- If your service uses SQLite and performs writes (INSERT/UPDATE/DELETE), the DB file path MUST be under `/tmp` "
-        "(ex: `APP_DB_PATH=os.environ.get('APP_DB_PATH', '/tmp/app.db')`).\n"
+        "(ex: `APP_DB_PATH=os.environ.get('APP_DB_PATH', '/tmp/app.db')`). "
+        "If the DB is under `/tmp`, you MUST initialize tables/seed data at service startup (schema.sql -> creates tables).\n"
         "- The service MUST bind to `0.0.0.0` and listen on the declared port (default 5000)."
     )
     sections = [

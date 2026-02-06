@@ -788,6 +788,27 @@ class SynthesisEngine:
         """Guardrails for executor runtime constraints (read-only container, /tmp writable)."""
 
         errors: List[str] = []
+        dockerfile_tmp_db_matches: List[str] = []
+        dockerfile_entry: Dict[str, Any] | None = None
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("path") or "").strip() == "Dockerfile":
+                dockerfile_entry = entry
+                break
+        if dockerfile_entry:
+            dockerfile_text = self._read_text_content(dockerfile_entry)
+            if dockerfile_text:
+                errors.extend(self._lint_dockerfile(dockerfile_text))
+                dockerfile_tmp_db_matches = self._dockerfile_tmp_db_artifacts(dockerfile_text)
+
+        if self._manifest_python_contains(manifest, "before_first_request"):
+            errors.append(
+                "executor constraint violation: Flask compatibility issue: do not use before_first_request "
+                "(removed in Flask 3). Initialize resources explicitly at startup (call init_db() before app.run) "
+                "or use before_request with a one-time guard."
+            )
+
         service_path = self._resolve_rule_path("{{service_entry}}", manifest) or "app.py"
         service_entry: Dict[str, Any] | None = None
         for entry in manifest.get("files", []):
@@ -810,10 +831,21 @@ class SynthesisEngine:
         if self._contains_sqlite3_cli_runtime(service_text):
             errors.append(
                 "executor constraint violation: service_main must not invoke sqlite3 CLI at runtime "
-                "(container is --read-only); use python sqlite3 module or initialize DB at build time"
+                "(container is --read-only); use Python sqlite3 module and initialize the DB at service startup "
+                "(create tables/seed data under /tmp)"
             )
 
         sqlite_used = "import sqlite3" in lowered or "sqlite3.connect" in lowered
+        sqlite_db_under_tmp = sqlite_used and self._sqlite_db_path_is_tmp_writable(service_text)
+        has_sqlite_init = self._manifest_has_sqlite_init(manifest)
+        if dockerfile_tmp_db_matches and not (sqlite_db_under_tmp and has_sqlite_init):
+            errors.append(self._format_dockerfile_tmp_db_error(dockerfile_tmp_db_matches))
+        if sqlite_db_under_tmp and not has_sqlite_init:
+            errors.append(
+                "executor constraint violation: SQLite DB is under /tmp but no runtime schema/init code detected "
+                "(ex: executescript(schema.sql) / CREATE TABLE / db.create_all). "
+                "Remember /tmp starts empty each run; initialize tables/seed data when the service starts."
+            )
         if sqlite_used and self._contains_sql_write_operations(service_text):
             if not self._sqlite_db_path_is_tmp_writable(service_text):
                 errors.append(
@@ -822,6 +854,123 @@ class SynthesisEngine:
                 )
 
         return errors
+
+    def _manifest_python_contains(self, manifest: Dict[str, Any], needle: str) -> bool:
+        if not needle:
+            return False
+        needle = needle.lower()
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or "").strip().lower()
+            if not path.endswith(".py"):
+                continue
+            text = self._read_text_content(entry)
+            if isinstance(text, str) and needle in text.lower():
+                return True
+        return False
+
+    @staticmethod
+    def _lint_dockerfile(dockerfile_text: str) -> List[str]:
+        if not dockerfile_text:
+            return []
+        valid = {
+            "ADD",
+            "ARG",
+            "CMD",
+            "COPY",
+            "ENTRYPOINT",
+            "ENV",
+            "EXPOSE",
+            "FROM",
+            "HEALTHCHECK",
+            "LABEL",
+            "MAINTAINER",
+            "ONBUILD",
+            "RUN",
+            "SHELL",
+            "STOPSIGNAL",
+            "USER",
+            "VOLUME",
+            "WORKDIR",
+        }
+        errors: List[str] = []
+        continuation = False
+        for lineno, line in enumerate(dockerfile_text.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if continuation:
+                continuation = stripped.endswith("\\")
+                continue
+            token = stripped.split(None, 1)[0].upper()
+            if token not in valid:
+                errors.append(
+                    f"Dockerfile syntax risk: unknown instruction '{token}' at line {lineno} "
+                    "(likely a multi-line RUN block spilled code onto new Dockerfile lines)"
+                )
+            continuation = stripped.endswith("\\")
+        return errors
+
+    @staticmethod
+    def _dockerfile_tmp_db_artifacts(dockerfile_text: str) -> List[str]:
+        if not dockerfile_text:
+            return []
+        pattern = re.compile(r"/tmp/[^\s'\"\\]+?\.(?:db|sqlite|sqlite3)", re.IGNORECASE)
+        offenders: List[str] = []
+        continuation = False
+        current_token: str | None = None
+        for line in dockerfile_text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if continuation:
+                token = current_token or ""
+                continuation = stripped.endswith("\\")
+            else:
+                token = stripped.split(None, 1)[0].upper()
+                current_token = token
+                continuation = stripped.endswith("\\")
+            if token not in {"RUN", "COPY", "ADD"}:
+                continue
+            offenders.extend(pattern.findall(stripped))
+
+        return sorted(set(offenders))
+
+    @staticmethod
+    def _format_dockerfile_tmp_db_error(matches: Sequence[str]) -> str:
+        sample = ", ".join(list(matches)[:3])
+        more = f" (+{len(matches) - 3} more)" if len(matches) > 3 else ""
+        return (
+            "executor constraint violation: Dockerfile appears to create DB artifacts under /tmp "
+            f"({sample}{more}). /tmp is mounted as tmpfs at runtime and starts empty, so build-time /tmp DBs "
+            "will not exist. Store seed/schema under /app and create /tmp DB at service startup (or keep a read-only "
+            "DB under /app when no writes are required)."
+        )
+
+    def _manifest_has_sqlite_init(self, manifest: Dict[str, Any]) -> bool:
+        init_markers = [
+            "executescript",
+            "create table",
+            "schema.sql",
+            "seed_data.sql",
+            "create_all(",
+            "db.create_all(",
+            "init_sqlite",
+        ]
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or "").strip().lower()
+            if not path.endswith(".py"):
+                continue
+            text = self._read_text_content(entry)
+            if not text:
+                continue
+            lowered = text.lower()
+            if any(marker in lowered for marker in init_markers):
+                return True
+        return False
 
     @staticmethod
     def _contains_sqlite3_cli_runtime(service_text: str) -> bool:
@@ -955,7 +1104,30 @@ class SynthesisEngine:
         reason = "; ".join(sorted(set(guard_notes))) or "guard violations"
         fix_hint = "Add the missing dependencies to manifest.deps and requirements*.txt, then re-run synthesis."
         lowered_reason = reason.lower()
-        if "executor constraint violation" in lowered_reason or "read-only" in lowered_reason or "sqlite3" in lowered_reason:
+        if "dockerfile syntax risk" in lowered_reason or "unknown instruction" in lowered_reason:
+            fix_hint = (
+                "Dockerfile syntax issue detected. Ensure every Dockerfile line starts with a valid instruction "
+                "(FROM/RUN/COPY/...) or is a continuation line ending with '\\'. Avoid multi-line `RUN python -c` "
+                "blocks that spill Python code onto new Dockerfile lines."
+            )
+        elif "before_first_request" in lowered_reason:
+            fix_hint = (
+                "Flask 3 removed before_first_request. Do not use that decorator; run initialization explicitly "
+                "at startup (call init_db() before app.run) or use before_request with a one-time guard."
+            )
+        elif "dockerfile appears to create db artifacts under /tmp" in lowered_reason:
+            fix_hint = (
+                "Do not build SQLite DB state under /tmp (it is tmpfs at runtime and starts empty). "
+                "Keep schema.sql/seed_data.sql under /app and initialize the /tmp DB at service startup "
+                "(executescript(schema.sql) / CREATE TABLE / db.create_all)."
+            )
+        elif "sqlite db is under /tmp but no runtime schema/init code detected" in lowered_reason:
+            fix_hint = (
+                "SQLite under /tmp requires runtime initialization because /tmp starts empty each run. "
+                "Add init_db()/init_sqlite_db() at service startup to create tables (schema.sql -> executescript) "
+                "and optional seed data."
+            )
+        elif "executor constraint violation" in lowered_reason or "read-only" in lowered_reason or "sqlite3" in lowered_reason:
             fix_hint = (
                 "Executor runs containers with --read-only and only /tmp writable. "
                 "Store runtime state under /tmp and avoid runtime OS binaries (ex: sqlite3 CLI) unless installed at build time."

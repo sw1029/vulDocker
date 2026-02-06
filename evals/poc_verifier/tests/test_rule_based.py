@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import tempfile
 import uuid
 from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from evals.poc_verifier import rule_based
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from evals.poc_verifier import rule_based
 
 
 class RuleBasedVerifierTests(TestCase):
