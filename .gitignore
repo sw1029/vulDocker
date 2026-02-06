@@ -2,10 +2,7 @@ __pycache__/
 *.pyc
 artifacts/
 metadata/
-workspaces/*
-!workspaces/.gitignore
-!workspaces/templates/
-!workspaces/templates/**
+workspaces/
 config/api_keys.ini
 
 # Runtime-generated memories/logs (do not commit)
