@@ -1,13 +1,42 @@
 cwe: CWE-89
+version: 2
+scenario_type: web-poc
+
+verification:
+  # runtime spec(Researcher/Generator가 생성한 verification_spec)을 우선 사용한다.
+  source: runtime
+  require_flag: true
+  flag_mode: strict
+  exit_code: zero
+
+output:
+  # 기존 v1 스키마와 호환을 위해 mode/format과 JSON 키 정보를 모두 제공한다.
+  mode: auto
+  format: auto
+  json_success_key: success
+  json_success_value: true
+  json_flag_key: flag
+  json:
+    success_key: success
+    success_value: true
+    flag_key: flag
+
+llm:
+  assist_default: true
+  assertion_budget: 8
+
+# legacy 필드는 load_rule() 및 기존 가드/패턴 로직과의 호환을 위해 유지한다.
 success_signature: SQLi SUCCESS
 flag_token: FLAG-sqli-demo-token
 requires_external_db: false
 strict_flag: false
-output:
-  format: auto
+
 patterns:
   - type: file_contains
-    path: app.py
+    # 템플릿 메타데이터의 service_entry로 치환될 placeholder
+    path: "{{service_entry}}"
     contains: "SELECT"
   - type: poc_contains
+    # 템플릿 메타데이터의 poc_entry로 치환될 placeholder
+    path: "{{poc_entry}}"
     contains: "SQLi SUCCESS"

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +12,8 @@ from common.logging import get_logger
 from common.paths import ensure_dir
 from common.plan import load_plan
 from common.prompts import build_reviewer_prompt
+from common.rules import load_rule
+from common.contracts import load_generator_contract
 from common.run_matrix import (
     VulnBundle,
     artifacts_dir_for_bundle,
@@ -28,7 +29,6 @@ from evals.poc_verifier import csrf as _verifier_csrf  # noqa: F401
 from evals.poc_verifier import mvp_sqli as _verifier_sqli  # noqa: F401
 
 LOGGER = get_logger(__name__)
-SQLI_PATTERN = re.compile(r"SELECT.+\{.+\}", re.IGNORECASE | re.DOTALL)
 
 
 @dataclass
@@ -241,17 +241,106 @@ class ReviewerService:
         workspace = workspace_dir_for_bundle(self.plan, bundle)
         if not workspace.exists():
             return issues
-        for path in workspace.rglob("*.py"):
-            text = path.read_text(encoding="utf-8")
-            for match in SQLI_PATTERN.finditer(text):
-                line = text[: match.start()].count("\n") + 1
+        rule = load_rule(bundle.vuln_id)
+        patterns = rule.get("patterns") if isinstance(rule, dict) else None
+        if not isinstance(patterns, list) or not patterns:
+            return issues
+
+        service_entry = "app.py"
+        poc_entry = "poc.py"
+        meta_dir = metadata_dir_for_bundle(self.plan, bundle)
+
+        contract = load_generator_contract(meta_dir)
+        if isinstance(contract, dict):
+            candidate = contract.get("service_entry")
+            if isinstance(candidate, str) and candidate.strip():
+                service_entry = candidate.strip()
+            candidate = contract.get("poc_entry")
+            if isinstance(candidate, str) and candidate.strip():
+                poc_entry = candidate.strip()
+
+        manifest_path = meta_dir / "generator_manifest.json"
+        if manifest_path.exists():
+            try:
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+            manifest = payload.get("manifest") if isinstance(payload, dict) else None
+            if isinstance(manifest, dict):
+                for entry in manifest.get("files") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    role = str(entry.get("role") or "").strip().lower()
+                    path = entry.get("path")
+                    if not isinstance(path, str) or not path.strip():
+                        continue
+                    if role == "service_main":
+                        service_entry = path.strip()
+                    elif role == "poc_entry":
+                        poc_entry = path.strip()
+
+        template_path = meta_dir / "generator_template.json"
+        if template_path.exists():
+            try:
+                template = json.loads(template_path.read_text(encoding="utf-8"))
+            except Exception:
+                template = {}
+            if isinstance(template, dict):
+                if service_entry == "app.py":
+                    candidate = template.get("service_entry")
+                    if isinstance(candidate, str) and candidate.strip():
+                        service_entry = candidate.strip()
+                if poc_entry == "poc.py":
+                    candidate = template.get("poc_entry")
+                    if isinstance(candidate, str) and candidate.strip():
+                        poc_entry = candidate.strip()
+
+        for pattern in patterns:
+            if not isinstance(pattern, dict):
+                continue
+            ptype = str(pattern.get("type") or "").strip().lower()
+            if ptype not in {"file_contains", "poc_contains"}:
+                continue
+            needle = pattern.get("contains")
+            if not isinstance(needle, str) or not needle:
+                continue
+            path = pattern.get("path")
+            if not isinstance(path, str) or not path.strip():
+                continue
+            resolved = (
+                path.strip()
+                .replace("{{service_entry}}", service_entry)
+                .replace("{{poc_entry}}", poc_entry)
+            )
+            # Unknown placeholders: skip to avoid false positives.
+            if "{{" in resolved and "}}" in resolved:
+                continue
+            target = workspace / resolved
+            if not target.exists():
                 issues.append(
                     self._issue_stub(
                         bundle=bundle,
-                        file=str(path.relative_to(workspace)),
-                        line=line,
-                        issue="Raw SQL string interpolation detected",
-                        fix_hint="Switch to parameterized queries or ORM bind parameters",
+                        file=resolved,
+                        line=1,
+                        issue=f"Rule pattern target missing: {resolved}",
+                        fix_hint="Ensure generator writes the expected entry file or update docs/evals/rules patterns",
+                        severity="high",
+                    )
+                )
+                continue
+            try:
+                text = target.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if needle not in text:
+                issues.append(
+                    self._issue_stub(
+                        bundle=bundle,
+                        file=resolved,
+                        line=1,
+                        issue=f"Rule pattern miss: expected '{needle}' in {resolved}",
+                        fix_hint="Align generator output with rule patterns or update runtime_rules for this SID",
+                        severity="high",
                     )
                 )
         return issues

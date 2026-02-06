@@ -1,0 +1,28 @@
+base_requirement: inputs/base_requirement.yml
+
+options:
+  multi_vuln_opt_in: false
+
+overrides:
+  requirement_id: E2E-UNKNOWN-0001
+  intent: "E2E 회귀: 레포에 없는 CWE도 synthesis 기반으로 end-to-end 검증"
+  vuln_ids:
+    - CWE-9999
+  multi_vuln: false
+  seed: 4242
+  variation_key:
+    mode: deterministic
+    self_consistency_k: 1
+    pattern_pool_seed: 4242
+  generator_mode: synthesis
+  executor:
+    allow_network: false
+    network_mode: none
+    sidecars: []
+  runtime:
+    allow_external_db: false
+  policy:
+    verifier:
+      prefer_rule: true
+      strict_flag_default: false
+

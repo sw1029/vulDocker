@@ -17,14 +17,14 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from common.deps.stdlib import load_stdlib_spec
 from common.logging import get_logger
 from common.prompts import build_synthesis_prompt
 from common.paths import ensure_dir
-from evals.static_signatures import analyze_sql_injection_signals
-from common.rules import load_rule
+from evals.static_signatures import analyze_static_signals
+from common.rules import RuleSpec, load_rule, load_rulespec
 
 from agents.generator.deps import (
     detect_node_installs,
@@ -41,37 +41,11 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for older interpreter
 
 LOGGER = get_logger(__name__)
 DEFAULT_POC_TEMPLATE = {
-    "cmd": "python poc.py",
+    # Prefer passing base-url explicitly so executor-resolved ports work even
+    # when the generated PoC script uses a different default port.
+    "cmd": "python poc.py --base-url {{base_url}}",
     "success_signature": "Exploit SUCCESS",
     "notes": "Auto-injected fallback PoC block",
-}
-
-DEFAULT_SUCCESS_SIGNATURES = {
-    "cwe-89": "SQLi SUCCESS",
-    "cwe-352": "CSRF SUCCESS",
-}
-
-DEFAULT_FLAG_TOKENS = {
-    "cwe-89": "FLAG-sqli-demo-token",
-    "cwe-352": "FLAG-csrf-demo-token",
-}
-
-FALLBACK_POC_ENDPOINTS = {
-    "cwe-89": {
-        "method": "get",
-        "path": "/login",
-        "payload": {
-            "username": "' OR '1'='1",
-            "password": "' OR '1'='1",
-        },
-    },
-    "cwe-352": {
-        "method": "post",
-        "path": "/transfer",
-        "payload": {
-            "amount": "250",
-        },
-    },
 }
 
 
@@ -250,6 +224,7 @@ class SynthesisEngine:
         self._auto_patch_denylist = {"logging", "sqlite3"}
         self._stdlib_aliases_loaded = False
         self._rule: Dict[str, Any] = {}
+        self._rulespec: Optional[RuleSpec] = None
 
     def run(
         self,
@@ -259,6 +234,7 @@ class SynthesisEngine:
         hints: str,
         failure_context: str,
         candidate_k: int,
+        researcher_report: str = "",
         poc_template: Dict[str, Any] | None = None,
     ) -> SynthesisOutcome:
         """Generate k candidates, select the best, and materialize it."""
@@ -269,7 +245,12 @@ class SynthesisEngine:
         self._load_stdlib_spec()
         self._dep_guard_config = requirement.get("dep_guard") or {}
         self._auto_patch_enabled = bool(self._dep_guard_config.get("auto_patch"))
-        self._rule = load_rule(requirement.get("vuln_id"))
+        vuln_id = requirement.get("vuln_id")
+        self._rule = load_rule(vuln_id)
+        try:
+            self._rulespec = load_rulespec(vuln_id)
+        except Exception:  # pragma: no cover - defensive fallback
+            self._rulespec = None
         poc_template = self._normalize_poc_template(poc_template)
 
         for idx in range(1, candidate_k + 1):
@@ -277,6 +258,7 @@ class SynthesisEngine:
                 requirement,
                 rag_context,
                 hints=hints,
+                researcher_report=researcher_report,
                 failure_context=failure_context,
                 limits=self.limits.to_dict(),
                 candidate_index=idx,
@@ -355,9 +337,9 @@ class SynthesisEngine:
 
     def _analyze_static_signals(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
         vuln = str((self._requirement or {}).get("vuln_id") or "").strip().lower()
-        if vuln in {"cwe-89", "sqli"}:
-            return analyze_sql_injection_signals(manifest)
-        return {"signals": {}, "hit_count": 0, "score": 0.0, "keywords_found": []}
+        if not vuln:
+            return {"signals": {}, "hit_count": 0, "score": 0.0, "keywords_found": []}
+        return analyze_static_signals(vuln, manifest)
 
     def _normalize_poc_template(self, template: Dict[str, Any] | None) -> Dict[str, Any]:
         normalized = dict(DEFAULT_POC_TEMPLATE)
@@ -365,14 +347,29 @@ class SynthesisEngine:
             for key, value in template.items():
                 if value:
                     normalized[key] = value
-        vuln = str(self._requirement.get("vuln_id") or "").strip().lower()
+        # Prefer RuleSpec.runtime markers when available so that the
+        # success/flag contracts are driven by the evaluation policy
+        # rather than hard-coded defaults for specific CWE templates.
+        runtime: Dict[str, Any] = {}
+        if isinstance(self._rulespec, RuleSpec) and isinstance(self._rulespec.runtime, dict):
+            runtime = self._rulespec.runtime
+        markers = runtime.get("success_text_markers") or []
+        runtime_sig = markers[0] if isinstance(markers, list) and markers else None
         rule_sig = (self._rule or {}).get("success_signature") if hasattr(self, "_rule") else None
-        success_signature = rule_sig or DEFAULT_SUCCESS_SIGNATURES.get(vuln, normalized.get("success_signature") or "Exploit SUCCESS")
+        success_signature = runtime_sig or rule_sig or normalized.get("success_signature") or "Exploit SUCCESS"
         normalized["success_signature"] = success_signature
+        runtime_flag = runtime.get("flag_token")
         rule_flag = (self._rule or {}).get("flag_token") if hasattr(self, "_rule") else None
-        flag_token = rule_flag or DEFAULT_FLAG_TOKENS.get(vuln, "FLAG-demo-token")
-        normalized["flag_token"] = flag_token
-        flag_note = f"On exploit success, print '{success_signature}' and '{flag_token}'."
+        template_flag = normalized.get("flag_token")
+        flag_token = runtime_flag or rule_flag or template_flag
+        if flag_token:
+            normalized["flag_token"] = flag_token
+        else:
+            normalized.pop("flag_token", None)
+        if flag_token:
+            flag_note = f"On exploit success, print '{success_signature}' and '{flag_token}'."
+        else:
+            flag_note = f"On exploit success, print '{success_signature}'."
         notes = normalized.get("notes", "").strip()
         normalized["notes"] = f"{notes} {flag_note}".strip()
         return normalized
@@ -414,16 +411,23 @@ class SynthesisEngine:
         files = manifest.get("files")
         if not isinstance(files, list):
             manifest["files"] = files = []
-        has_poc_file = any(isinstance(entry, dict) and (entry.get("path") or "").lower() == "poc.py" for entry in files)
+        has_poc_file = any(
+            isinstance(entry, dict)
+            and (
+                str(entry.get("role") or "").strip().lower() == "poc_entry"
+                or Path(str(entry.get("path") or "")).name.strip().lower().startswith("poc.")
+            )
+            for entry in files
+        )
         if has_poc_file:
             return manifest
-        vuln = str(self._requirement.get("vuln_id") or "").strip().lower()
-        success_signature = template.get("success_signature") or DEFAULT_SUCCESS_SIGNATURES.get(vuln, "Exploit SUCCESS")
-        flag_token = template.get("flag_token") or DEFAULT_FLAG_TOKENS.get(vuln, "FLAG-demo-token")
-        content = self._build_fallback_poc_content(vuln, success_signature, flag_token)
+        success_signature = str(template.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
+        flag_token = str(template.get("flag_token") or "").strip()
+        content = self._build_fallback_poc_content(manifest, success_signature, flag_token)
         files.append(
             {
                 "path": "poc.py",
+                "role": "poc_entry",
                 "description": "Fallback PoC used when the LLM omits poc.py",
                 "content": content,
             }
@@ -452,97 +456,135 @@ class SynthesisEngine:
     def _fallback_manifest(self) -> Dict[str, Any]:
         """Deterministic manifest used when the LLM stub is active."""
 
+        vuln_id = self._requirement.get("vuln_id", "CWE-UNKNOWN")
         stack = self._requirement.get("framework") or self._requirement.get("language", "python")
         notes = (
-            "Fallback manifest auto-generated because the LLM response was not valid JSON. "
-            "The layout still passes guard rails for deterministic testing."
+            "Fallback manifest auto-generated because the LLM response was not valid JSON or the LLM call failed. "
+            "The layout is intentionally minimal and passes guard rails for deterministic testing."
         )
+        poc_template = self._normalize_poc_template(None)
+        success_signature = str(poc_template.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
+        flag_token = poc_template.get("flag_token")
+        if not isinstance(flag_token, str) or not flag_token.strip():
+            flag_token = ""
+
+        port = 8000
+        reflect_path = "/reflect"
+        default_payload = "<script>alert(1)</script>"
+
+        poc_block: Dict[str, Any] = {
+            "cmd": "python poc.py --base-url {{base_url}}",
+            "success_signature": success_signature,
+        }
+        if flag_token:
+            poc_block["flag_token"] = flag_token
+        if isinstance(poc_template.get("notes"), str) and poc_template.get("notes").strip():
+            poc_block["notes"] = poc_template.get("notes")
+
         return {
-            "intent": f"{self._requirement.get('vuln_id', 'CWE-89')} fallback synthesis",
-            "pattern_tags": ["sqli", "string-concat"],
+            "intent": f"{vuln_id} fallback synthesis",
+            "pattern_tags": ["fallback", "stub", str(vuln_id).strip().lower()],
             "files": [
                 {
                     "path": "Dockerfile",
-                    "description": "Build Python image and seed SQLite DB.",
+                    "role": "helper",
+                    "description": "Build Python image for fallback bundle.",
                     "content": (
                         "FROM python:3.11-slim\n"
                         "WORKDIR /app\n"
                         "COPY . /app\n"
-                        "RUN pip install -r requirements.txt && sqlite3 app.db < schema.sql && sqlite3 app.db < seed_data.sql\n"
+                        "RUN pip install --no-cache-dir -r requirements.txt\n"
+                        f"EXPOSE {port}\n"
                         "CMD [\"python\", \"app.py\"]\n"
                     ),
                 },
                 {
                     "path": "requirements.txt",
+                    "role": "helper",
                     "description": "Pinned deps for SBOM.",
-                    "content": "Flask==2.3.3\nJinja2==3.1.4\n",
+                    "content": "Flask==3.0.0\n",
                 },
                 {
                     "path": "app.py",
-                    "description": f"{stack} vulnerable endpoint.",
+                    "role": "service_main",
+                    "description": f"{stack} fallback vulnerable endpoint (reflect).",
                     "content": (
-                        "from flask import Flask, request\n"
-                        "import sqlite3\n"
+                        "from flask import Flask, request\n\n"
                         "app = Flask(__name__)\n\n"
-                        "@app.route('/login')\n"
-                        "def login():\n"
-                        "    username = request.args.get('username', '')\n"
-                        "    password = request.args.get('password', '')\n"
-                        "    query = f\"SELECT username FROM users WHERE username = '{username}' AND password = '{password}'\"\n"
-                        "    conn = sqlite3.connect('app.db')\n"
-                        "    cursor = conn.cursor()\n"
-                        "    rows = cursor.execute(query).fetchall()\n"
-                        "    conn.close()\n"
-                        "    if rows:\n"
-                        "        return 'SQLi SUCCESS'\n"
-                        "    return 'Invalid credentials'\n"
-                        "\n"
+                        "@app.get('/health')\n"
+                        "def health():\n"
+                        "    return {'ok': True}\n\n"
+                        f"@app.get('{reflect_path}')\n"
+                        "def reflect():\n"
+                        "    # Intentionally unsafe reflection: demonstrates a generic input-handling flaw.\n"
+                        "    value = request.args.get('q', '')\n"
+                        "    return f\"<p>{value}</p>\"  # no escaping\n\n"
                         "if __name__ == '__main__':\n"
-                        "    app.run(host='0.0.0.0', port=8000)\n"
+                        f"    app.run(host='0.0.0.0', port={port})\n"
                     ),
                 },
                 {
-                    "path": "schema.sql",
-                    "description": "User table schema.",
-                    "content": "CREATE TABLE IF NOT EXISTS users (username TEXT, password TEXT);\n",
-                },
-                {
-                    "path": "seed_data.sql",
-                    "description": "Baseline records.",
-                    "content": "INSERT INTO users VALUES ('admin', 'admin');\n",
-                },
-                {
                     "path": "poc.py",
-                    "description": "Simple UNION-based exploit.",
+                    "role": "poc_entry",
+                    "description": "Fallback PoC that triggers reflect and prints the success marker.",
                     "content": (
-                        "import requests\n"
-                        "payload = \"admin' OR '1'='1\"\n"
-                        "resp = requests.get('http://127.0.0.1:8000/login', params={'username': payload, 'password': 'x'})\n"
-                        "print(resp.text)\n"
+                        "import argparse\n"
+                        "import sys\n"
+                        "from urllib.parse import quote\n"
+                        "from urllib.request import urlopen\n"
+                        "from urllib.error import URLError, HTTPError\n\n"
+                        f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+                        f"FLAG_TOKEN = {flag_token!r}\n"
+                        f"DEFAULT_PAYLOAD = {default_payload!r}\n"
+                        f"PATH = {reflect_path!r}\n\n"
+                        "def exploit(base_url: str, payload: str) -> bool:\n"
+                        "    url = base_url.rstrip('/') + PATH + '?q=' + quote(payload)\n"
+                        "    try:\n"
+                        "        with urlopen(url, timeout=5) as resp:\n"
+                        "            body = resp.read().decode('utf-8', errors='ignore')\n"
+                        "    except (HTTPError, URLError) as exc:\n"
+                        "        print(f'[fallback] request failed: {exc}', file=sys.stderr)\n"
+                        "        return False\n"
+                        "    return payload in body\n\n"
+                        "def main() -> None:\n"
+                        "    parser = argparse.ArgumentParser(description='Fallback PoC')\n"
+                        f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+                        "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)\n"
+                        "    args = parser.parse_args()\n"
+                        "    if exploit(args.base_url, args.payload):\n"
+                        "        print(SUCCESS_SIGNATURE)\n"
+                        "        if FLAG_TOKEN:\n"
+                        "            print(FLAG_TOKEN)\n"
+                        "        sys.exit(0)\n"
+                        "    print('[fallback] exploit did not succeed', file=sys.stderr)\n"
+                        "    sys.exit(1)\n\n"
+                        "if __name__ == '__main__':\n"
+                        "    main()\n"
                     ),
                 },
                 {
                     "path": "README.md",
-                    "description": "Usage instructions.",
+                    "role": "helper",
+                    "description": "Quickstart instructions.",
                     "content": (
-                        "# CWE-89 fallback bundle\n"
+                        f"# {vuln_id} fallback bundle\n"
                         "```bash\n"
-                        "docker build -t cwe-89 .\n"
-                        "docker run -p 8000:8000 cwe-89\n"
-                        "python poc.py\n"
+                        "docker build -t fallback-bundle .\n"
+                        f"docker run -p {port}:{port} fallback-bundle\n"
+                        f"python poc.py --base-url http://127.0.0.1:{port}\n"
                         "```\n"
                     ),
                 },
             ],
-            "deps": ["Flask==2.3.3", "requests==2.32.2"],
-            "build": {"command": "pip install -r requirements.txt"},
-            "run": {"command": "python app.py", "port": 8000},
-            "poc": {"cmd": "python poc.py", "success_signature": "SQLi SUCCESS"},
+            "deps": ["Flask==3.0.0"],
+            "build": {"command": "pip install --no-cache-dir -r requirements.txt"},
+            "run": {"command": "python app.py", "port": port},
+            "poc": poc_block,
             "notes": notes,
             "metadata": {
                 "sid": self.sid,
                 "stack": stack,
-                "cwe": self._requirement.get("vuln_id", "CWE-89"),
+                "cwe": vuln_id,
             },
         }
 
@@ -581,21 +623,52 @@ class SynthesisEngine:
             if byte_len > self.limits.max_bytes_per_file:
                 errors.append(f"{path} exceeds byte limit ({byte_len})")
 
+        errors.extend(self._guard_executor_constraints(manifest))
+
         poc = manifest.get("poc", {})
         if not isinstance(poc, dict) or "cmd" not in poc or "success_signature" not in poc:
             errors.append("poc section incomplete")
         else:
-            signature = poc.get("success_signature", "")
-            vuln = str((self._requirement or {}).get("vuln_id") or "").strip().lower()
-            rule_sig = (self._rule or {}).get("success_signature") if hasattr(self, "_rule") else None
-            expected_signature = rule_sig or DEFAULT_SUCCESS_SIGNATURES.get(vuln, "Exploit SUCCESS")
-            if expected_signature and expected_signature not in signature:
-                errors.append(f"success_signature must include '{expected_signature}'")
-            expected_flag = None
-            if hasattr(self, "_rule"):
-                expected_flag = (self._rule or {}).get("flag_token")
-            expected_flag = expected_flag or DEFAULT_FLAG_TOKENS.get(vuln)
-            strict_flag = bool((self._rule or {}).get("strict_flag")) if hasattr(self, "_rule") else False
+            signature = str(poc.get("success_signature") or "")
+
+            # --- success signature handling --------------------------------
+            runtime: Dict[str, Any] = {}
+            if isinstance(self._rulespec, RuleSpec) and isinstance(self._rulespec.runtime, dict):
+                runtime = self._rulespec.runtime
+            markers = runtime.get("success_text_markers") or []
+            primary_marker = markers[0] if isinstance(markers, list) and markers else None
+
+            if primary_marker:
+                # Runtime marker: keep manifest and PoC code aligned.
+                if primary_marker not in signature:
+                    errors.append(f"poc.success_signature must include runtime marker '{primary_marker}'")
+                if not self._poc_contains(manifest, primary_marker):
+                    errors.append(f"PoC entry must contain runtime marker '{primary_marker}'")
+            else:
+                # Legacy behaviour: fall back to the legacy rule signature or
+                # a generic marker when no runtime marker exists.
+                rule_sig = (self._rule or {}).get("success_signature") if hasattr(self, "_rule") else None
+                expected_signature = rule_sig or "Exploit SUCCESS"
+                if expected_signature and expected_signature not in signature:
+                    errors.append(f"success_signature must include '{expected_signature}'")
+                if expected_signature and not self._poc_contains(manifest, expected_signature):
+                    errors.append(f"PoC entry must contain success signature '{expected_signature}'")
+
+            # --- flag token handling ---------------------------------------
+            runtime_flag = runtime.get("flag_token")
+            rule_flag = (self._rule or {}).get("flag_token") if hasattr(self, "_rule") else None
+            expected_flag = runtime_flag or rule_flag
+
+            # Prefer RuleSpec policy when available; otherwise fall back to
+            # legacy strict_flag semantics.
+            strict_flag = False
+            if isinstance(self._rulespec, RuleSpec):
+                strict_flag = bool(self._rulespec.require_flag) and str(
+                    getattr(self._rulespec, "flag_required_mode", "") or ""
+                ).lower() == "strict"
+            else:
+                strict_flag = bool((self._rule or {}).get("strict_flag")) if hasattr(self, "_rule") else False
+
             if strict_flag and expected_flag:
                 if not self._manifest_contains_literal(manifest, expected_flag):
                     errors.append(f"flag token '{expected_flag}' missing from manifest")
@@ -653,8 +726,9 @@ class SynthesisEngine:
             if ptype == "file_contains":
                 path = pattern.get("path")
                 needle = pattern.get("contains")
-                if path and needle and not self._file_contains(manifest, path, needle):
-                    errors.append(f"rule violation: file {path} missing '{needle}'")
+                resolved_path = self._resolve_rule_path(path, manifest)
+                if resolved_path and needle and not self._file_contains(manifest, resolved_path, needle):
+                    errors.append(f"rule violation: file {resolved_path} missing '{needle}'")
             elif ptype == "poc_contains":
                 needle = pattern.get("contains")
                 if needle and not self._poc_contains(manifest, needle):
@@ -710,6 +784,78 @@ class SynthesisEngine:
 
         return errors, dep_guard
 
+    def _guard_executor_constraints(self, manifest: Dict[str, Any]) -> List[str]:
+        """Guardrails for executor runtime constraints (read-only container, /tmp writable)."""
+
+        errors: List[str] = []
+        service_path = self._resolve_rule_path("{{service_entry}}", manifest) or "app.py"
+        service_entry: Dict[str, Any] | None = None
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or "").strip()
+            if not path:
+                continue
+            if path == service_path or path.endswith(service_path):
+                service_entry = entry
+                break
+        if not service_entry:
+            return errors
+
+        service_text = self._read_text_content(service_entry)
+        if not service_text:
+            return errors
+
+        lowered = service_text.lower()
+        if self._contains_sqlite3_cli_runtime(service_text):
+            errors.append(
+                "executor constraint violation: service_main must not invoke sqlite3 CLI at runtime "
+                "(container is --read-only); use python sqlite3 module or initialize DB at build time"
+            )
+
+        sqlite_used = "import sqlite3" in lowered or "sqlite3.connect" in lowered
+        if sqlite_used and self._contains_sql_write_operations(service_text):
+            if not self._sqlite_db_path_is_tmp_writable(service_text):
+                errors.append(
+                    "executor constraint violation: SQLite writes detected but DB path is not under /tmp; "
+                    "store runtime DB/state under /tmp (ex: APP_DB_PATH default '/tmp/app.db')"
+                )
+
+        return errors
+
+    @staticmethod
+    def _contains_sqlite3_cli_runtime(service_text: str) -> bool:
+        if not service_text:
+            return False
+        patterns = [
+            r"subprocess\.(?:run|call|check_call|check_output|Popen)\s*\(\s*\[\s*['\"]sqlite3['\"]",
+            r"os\.system\s*\(\s*['\"][^'\"]*\bsqlite3\b",
+        ]
+        return any(re.search(pattern, service_text, flags=re.IGNORECASE) for pattern in patterns)
+
+    @staticmethod
+    def _contains_sql_write_operations(service_text: str) -> bool:
+        if not service_text:
+            return False
+        write_ops = r"(?:insert|update|delete|replace|create|drop|alter)"
+        patterns = [
+            rf"execute(?:many)?\s*\(\s*['\"][^'\"]*\b{write_ops}\b",
+            rf"executescript\s*\(\s*['\"][^'\"]*\b{write_ops}\b",
+        ]
+        return any(re.search(pattern, service_text, flags=re.IGNORECASE) for pattern in patterns)
+
+    @staticmethod
+    def _sqlite_db_path_is_tmp_writable(service_text: str) -> bool:
+        if not service_text:
+            return False
+        # Accept explicit /tmp paths, :memory:, or env var defaults pointing to /tmp.
+        patterns = [
+            r"(?m)^\s*(?:DATABASE|DB_PATH|APP_DB_PATH)\s*=\s*['\"](?:/tmp/|:memory:)",
+            r"os\.environ\.get\s*\(\s*['\"][^'\"]*DB[^'\"]*['\"]\s*,\s*['\"](?:/tmp/|:memory:)",
+            r"sqlite3\.connect\s*\(\s*['\"](?:/tmp/|:memory:)",
+        ]
+        return any(re.search(pattern, service_text, flags=re.IGNORECASE) for pattern in patterns)
+
     def _materialize(self, manifest: Dict[str, Any]) -> List[str]:
         if self.workspace.exists():
             shutil.rmtree(self.workspace)
@@ -760,6 +906,10 @@ class SynthesisEngine:
             "sid": self.sid,
             "mode": self.mode,
             "limits": self.limits.to_dict(),
+            # Absolute workspace root on disk for this synthesis run.
+            # This allows downstream evaluators to locate the materialized
+            # files without relying on hard-coded workspace/<sid>/app patterns.
+            "workspace_root": str(self.workspace),
             "selected_candidate": selected.to_summary(),
             "manifest": selected.manifest,
             "failure_context": failure_context,
@@ -785,6 +935,8 @@ class SynthesisEngine:
         auto_patch_entries: List[Dict[str, Any]] = []
         for report in reports:
             guard = report.guard_report or {}
+            if report.violations:
+                guard_notes.extend(report.violations)
             missing_static.update(guard.get("missing_static") or [])
             missing_from_requirements.update(guard.get("missing_from_requirements") or [])
             missing_from_build.update(guard.get("missing_from_build") or [])
@@ -802,6 +954,12 @@ class SynthesisEngine:
         timestamp = datetime.now(timezone.utc).isoformat()
         reason = "; ".join(sorted(set(guard_notes))) or "guard violations"
         fix_hint = "Add the missing dependencies to manifest.deps and requirements*.txt, then re-run synthesis."
+        lowered_reason = reason.lower()
+        if "executor constraint violation" in lowered_reason or "read-only" in lowered_reason or "sqlite3" in lowered_reason:
+            fix_hint = (
+                "Executor runs containers with --read-only and only /tmp writable. "
+                "Store runtime state under /tmp and avoid runtime OS binaries (ex: sqlite3 CLI) unless installed at build time."
+            )
         entry = {
             "stage": "GENERATOR",
             "timestamp": timestamp,
@@ -1037,10 +1195,11 @@ class SynthesisEngine:
         )
 
     def _detect_required_dependencies(self, manifest: Dict[str, Any]) -> set[str]:
-        return {
+        detected = {
             self._canonicalize_package_name(name)
             for name in detect_python_required(manifest, self._read_text_content)
         }
+        return {name for name in detected if name and not self._is_stdlib_module(name)}
 
     def _llm_infer_dependencies(
         self,
@@ -1118,20 +1277,49 @@ class SynthesisEngine:
         return False
 
     @staticmethod
+    def _resolve_rule_path(path: str | None, manifest: Dict[str, Any]) -> Optional[str]:
+        """Resolve rule pattern paths, handling template placeholders.
+
+        - "{{service_entry}}" → first file with role "service_main" or "app.py" fallback.
+        - other values are returned as-is.
+        """
+        if not path:
+            return None
+        token = path.strip()
+        if not token:
+            return None
+        if token.startswith("{{") and "service_entry" in token:
+            # Prefer explicit service_main role, then a conventional app.py path.
+            files = manifest.get("files") or []
+            service_path: Optional[str] = None
+            for entry in files:
+                if not isinstance(entry, dict):
+                    continue
+                role = str(entry.get("role") or "").strip().lower()
+                entry_path = entry.get("path") or ""
+                if role == "service_main" and isinstance(entry_path, str) and entry_path:
+                    service_path = entry_path
+                    break
+            if service_path:
+                return service_path
+            # Fallback: keep behaviour compatible with legacy templates.
+            return "app.py"
+        return path
+
+    @staticmethod
     def _poc_contains(manifest: Dict[str, Any], needle: str) -> bool:
         if not needle:
             return False
-        poc = manifest.get("poc")
-        if isinstance(poc, dict):
-            for key in ("cmd", "notes", "success_signature"):
-                value = poc.get(key)
-                if isinstance(value, str) and needle in value:
-                    return True
+        # Inspect files explicitly marked as the PoC entry (or named poc.*).
         for entry in manifest.get("files", []):
             if not isinstance(entry, dict):
                 continue
-            path = str(entry.get("path") or "").strip().lower()
-            if path.endswith("poc.py"):
+            role = str(entry.get("role") or "").strip().lower()
+            path = str(entry.get("path") or "").strip()
+            if not path:
+                continue
+            name = Path(path).name.strip().lower()
+            if role == "poc_entry" or name.startswith("poc."):
                 content = entry.get("content")
                 if isinstance(content, str) and needle in content:
                     return True
@@ -1154,49 +1342,152 @@ class SynthesisEngine:
                 return True
         return False
 
-    def _build_fallback_poc_content(self, vuln: str, success_signature: str, flag_token: str) -> str:
-        endpoint = FALLBACK_POC_ENDPOINTS.get(vuln) or FALLBACK_POC_ENDPOINTS.get("cwe-89")
-        method = (endpoint.get("method") or "get").lower()
-        path = endpoint.get("path", "/")
-        payload = endpoint.get("payload") or {}
-        payload_literal = json.dumps(payload)
+    def _manifest_file_text(self, manifest: Dict[str, Any], path: str) -> str:
+        target = (path or "").strip().lstrip("./").lower()
+        if not target:
+            return ""
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            current = str(entry.get("path") or "").strip().lstrip("./").lower()
+            if not current:
+                continue
+            if current == target or current.endswith(target):
+                content = entry.get("content")
+                if isinstance(content, str):
+                    return content
+        return ""
+
+    def _infer_fallback_endpoint(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        """Infer a basic endpoint for fallback PoCs without CWE-specific tables.
+
+        - Prefer reflection-style endpoints (e.g., `/reflect`) when detected.
+        - Otherwise, pick the first non-health Flask route found in the service entry.
+        - Fall back to `/` when nothing can be inferred.
+        """
+
+        service_path = self._resolve_rule_path("{{service_entry}}", manifest) or "app.py"
+        content = self._manifest_file_text(manifest, service_path)
+        lowered = content.lower()
+
+        param_key = "q"
+        for pattern in (
+            r"request\.args\.get\(\s*['\"]([^'\"]+)['\"]",
+            r"request\.form\.get\(\s*['\"]([^'\"]+)['\"]",
+        ):
+            match = re.search(pattern, content)
+            if match and match.group(1):
+                param_key = match.group(1)
+                break
+
+        if "/reflect" in lowered:
+            return {"method": "get", "path": "/reflect", "param": param_key, "expect_reflection": True}
+
+        routes: List[Tuple[str, str]] = []
+        for match in re.finditer(
+            r"@app\.(get|post|put|delete|patch)\(\s*['\"]([^'\"]+)['\"]",
+            content,
+        ):
+            routes.append((match.group(1).lower(), match.group(2)))
+        for match in re.finditer(
+            r"@app\.route\(\s*['\"]([^'\"]+)['\"]\s*(?:,\s*methods\s*=\s*\[([^\]]+)\])?",
+            content,
+        ):
+            path = match.group(1)
+            methods_blob = match.group(2)
+            methods: List[str] = []
+            if methods_blob:
+                for token in methods_blob.split(","):
+                    token = token.strip().strip("'\"")
+                    if token:
+                        methods.append(token.lower())
+            if not methods:
+                methods = ["get"]
+            for method in methods:
+                routes.append((method, path))
+
+        for method, path in routes:
+            if not path or path in {"/health", "/favicon.ico"}:
+                continue
+            if path == "/":
+                continue
+            return {"method": method, "path": path, "param": param_key, "expect_reflection": False}
+
+        return {"method": "get", "path": "/", "param": param_key, "expect_reflection": False}
+
+    def _build_fallback_poc_content(self, manifest: Dict[str, Any], success_signature: str, flag_token: str) -> str:
+        endpoint = self._infer_fallback_endpoint(manifest)
+        method = str(endpoint.get("method") or "get").lower()
+        path = str(endpoint.get("path") or "/")
+        param = str(endpoint.get("param") or "q")
+        expect_reflection = bool(endpoint.get("expect_reflection"))
+
+        default_payload = "<script>alert(1)</script>"
+        if "login" in path.lower() or "username" in param.lower():
+            default_payload = "' OR '1'='1"
+        elif "transfer" in path.lower() or method == "post":
+            default_payload = "250"
+
         lines = [
             "import argparse",
             "import sys",
-            "import requests",
+            "from urllib.parse import urlencode",
+            "from urllib.request import Request, urlopen",
+            "from urllib.error import URLError, HTTPError",
             "",
             "DEFAULT_BASE = 'http://127.0.0.1:5000'",
-            "PAYLOAD = " + payload_literal,
-            "SUCCESS_SIGNATURE = " + repr(success_signature),
-            "FLAG_TOKEN = " + repr(flag_token),
+            f"METHOD = {method!r}",
+            f"PATH = {path!r}",
+            f"PARAM = {param!r}",
+            f"EXPECT_REFLECTION = {expect_reflection!r}",
+            f"SUCCESS_SIGNATURE = {success_signature!r}",
+            f"FLAG_TOKEN = {flag_token!r}",
+            f"DEFAULT_PAYLOAD = {default_payload!r}",
             "",
-            "def exploit(base_url: str) -> bool:",
-            "    url = base_url.rstrip('/') + '" + path + "'",
+            "def _request(base_url: str, payload: str) -> tuple[int, str]:",
+            "    url = base_url.rstrip('/') + PATH",
+            "    params = {PARAM: payload} if PARAM else {}",
+            "    data = None",
+            "    headers = {}",
+            "    if METHOD == 'post':",
+            "        data = urlencode(params).encode('utf-8')",
+            "        headers['Content-Type'] = 'application/x-www-form-urlencoded'",
+            "    elif params:",
+            "        url = url + ('?' + urlencode(params))",
+            "    req = Request(url, data=data, method=METHOD.upper(), headers=headers)",
+            "    with urlopen(req, timeout=5) as resp:",
+            "        status = getattr(resp, 'status', None) or resp.getcode()",
+            "        body = resp.read().decode('utf-8', errors='ignore')",
+            "    return int(status), body",
+            "",
+            "def exploit(base_url: str, payload: str) -> bool:",
+            "    try:",
+            "        status, body = _request(base_url, payload)",
+            "    except (HTTPError, URLError, ValueError) as exc:",
+            "        print(f'[fallback] request failed: {exc}', file=sys.stderr)",
+            "        return False",
+            "    if status >= 400:",
+            "        return False",
+            "    if EXPECT_REFLECTION and payload not in body:",
+            "        return False",
+            "    return True",
+            "",
+            "def main() -> None:",
+            "    parser = argparse.ArgumentParser(description='Fallback PoC executor')",
+            "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+            "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
+            "    args = parser.parse_args()",
+            "    if exploit(args.base_url, args.payload):",
+            "        print(SUCCESS_SIGNATURE)",
+            "        if FLAG_TOKEN:",
+            "            print(FLAG_TOKEN)",
+            "        sys.exit(0)",
+            "    sys.exit(1)",
+            "",
+            "if __name__ == '__main__':",
+            "    main()",
+            "",
         ]
-        if method == "post":
-            lines.append("    response = requests.post(url, data=PAYLOAD, timeout=5)")
-        else:
-            lines.append("    response = requests.get(url, params=PAYLOAD, timeout=5)")
-        lines.extend(
-            [
-                "    if response.status_code < 400:",
-                "        print(SUCCESS_SIGNATURE)",
-                "        print(FLAG_TOKEN)",
-                "        return True",
-                "    return False",
-                "",
-                "def main():",
-                "    parser = argparse.ArgumentParser(description='Fallback PoC executor')",
-                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
-                "    args = parser.parse_args()",
-                "    if not exploit(args.base_url):",
-                "        print('Exploit failed; signature not emitted')",
-                "        sys.exit(1)",
-                "",
-                "if __name__ == '__main__':",
-                "    main()",
-            ]
-        )
         return "\n".join(lines) + "\n"
 
     def _build_dep_guard_messages(

@@ -10,15 +10,21 @@
 ## 빠른 시작(실행 가이드)
 1) PLAN: `python orchestrator/plan.py --input inputs/mvp_sqli.yml`
    - 산출: `metadata/<SID>/plan.json` (+ 기본 디렉토리)
-2) DRAFT: `python agents/generator/main.py --sid <SID> --mode deterministic`
-   - 산출: `workspaces/<SID>/app/`, `metadata/<SID>/generator_llm_plan.md`
-3) BUILD: `python executor/runtime/docker_local.py --sid <SID> --build`
+   - (권장) E2E 루프 실행: `python orchestrator/run_pipeline.py --sid <SID> --mode deterministic`
+2) (권장) RESEARCH: `python agents/researcher/main.py --sid <SID> --mode deterministic`
+   - 산출: `metadata/<SID>/researcher_report.json`, `metadata/<SID>/runtime_rules/`, `metadata/<SID>/runtime_templates/`
+   - 참고: `docs/evals/rules/`에 룰이 없는 CWE를 입력했거나, 검증 기준/포트를 동적으로 맞추고 싶다면 선행 권장
+3) GENERATE: `python agents/generator/main.py --sid <SID> --mode deterministic`
+   - 산출(공통): `workspaces/<SID>/...`, `metadata/<SID>/generator_runs.json`
+   - 산출(템플릿 경로): `metadata/<SID>/generator_llm_plan.md` (+ 템플릿 보강)
+   - 산출(합성 경로): `metadata/<SID>/generator_manifest.json`, `metadata/<SID>/generator_candidates.json` (실패 시 `generator_failures.jsonl`)
+4) BUILD: `python executor/runtime/docker_local.py --sid <SID> --build`
    - Docker build + SBOM(`artifacts/<SID>/build/`)
-4) RUN: `python executor/runtime/docker_local.py --sid <SID> --run`
-   - 컨테이너 내부 `python poc.py` 실행(`artifacts/<SID>/run/run.log`)
-5) VERIFY: `python evals/poc_verifier/main.py --sid <SID>`
+5) RUN: `python executor/runtime/docker_local.py --sid <SID> --run`
+   - 컨테이너 내부 `poc.cmd`(없으면 `python <poc_entry>`) 실행(`artifacts/<SID>/run/run.log`)
+6) VERIFY: `python evals/poc_verifier/main.py --sid <SID>`
    - `docs/evals/rules/*.yaml`에 정의된 성공 시그니처/FLAG 토큰을 기준으로 자동 평가 → `artifacts/<SID>/reports/evals.json`
-6) PACK: `python orchestrator/pack.py --sid <SID>`
+7) PACK: `python orchestrator/pack.py --sid <SID>`
    - 스냅샷/메타(`metadata/<SID>/manifest.json`)
 
 LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합니다.
@@ -26,7 +32,7 @@ LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합�
 ## 요구/출력/성공 기준
 - 입력 스펙: 취약군(CWE), 스택, 변이키(temperature/top-p/k), RAG 스냅샷, 정책.
 - 출력물: workspace, 이미지/SBOM, 로그/트레이스, 평가 결과, 패키징 메타.
-- 성공 기준: `docs/evals/rules/*.yaml`에 정의된 성공 시그니처/FLAG 토큰 검출, 보안 위반 0, 재현율 목표 충족.
+- 성공 기준: `docs/evals/rules/*.yaml`(정적) 및 `metadata/<SID>/runtime_rules/*.yaml`(런타임)에서 정의된 성공 시그니처/FLAG 토큰 검출, 보안 위반 0, 재현율 목표 충족.
 
 ## 아키텍처(상태·에이전트·메타스토어)
 - 상태 전이: PLAN → PACK, 단계별 Span(`plan`, `draft.generator`, `build.executor`, `run.executor`, `verify.pipeline`, `review.reviewer`, `pack.orchestrator`).
@@ -34,9 +40,12 @@ LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합�
 - 메타스토어 & SID: `SID = H(model_ver | prompt_hash | seed | retriever_commit | corpus_snapshot | pattern_id | deps_digest | base_image_digest)` (+옵션 vuln_ids_digest).
 
 ## 동적 취약 삽입(LLM+RAG)
-- 기본 전략: 합성(synthesis) 우선 + 템플릿 보강(LLM 패치). CWE/DB/패턴 불일치 시 합성으로 전환.
-- 증거 일관성: 검증 플러그인 요구(FLAG/서명)와 생성물/PoC 로그를 정렬.
-- 실패 맥락: Reflexion 메모리를 다음 프롬프트에 주입하여 수렴.
+- 기본 전략: `generator_mode=hybrid`에서 합성(synthesis) 우선 시도 후 실패 시 템플릿으로 폴백(또는 `generator_mode=template|synthesis`로 고정).
+- 증거 일관성: RuleSpec(정적/런타임 룰)의 성공 조건(서명/FLAG/JSON 키)을 Generator/PoC/Verifier가 동일하게 따르도록 정렬.
+- 실패 맥락: Reflexion 메모리를 다음 프롬프트에 주입하여 수렴(Generator/Verifier feedback loop).
+
+## 로드맵(동적화 TODO)
+- 하드코딩 제거 및 “새 CWE 입력 → 생성/실행/검증” end-to-end 안정화 로드맵: `docs/final_solution.md`
 
 ## RAG 설계·스냅샷
 - 코퍼스 층위: 공용(CWE/OWASP/Juliet) / 최신 PoC(CVE/PoC) / 사내(로그/메모).
@@ -63,7 +72,7 @@ LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합�
 - 규칙 파일: `docs/evals/rules/*.yaml` (유지).
 
 ## 스키마(요약)
-- generator_manifest: `intent`, `pattern_tags[]`, `files[]`, `deps[]`, `build`, `run`, `poc{cmd, success_signature}`, `notes`, `metadata`.
+- generator_manifest: 합성(synthesis) 경로의 메타 래퍼. `sid`, `mode`, `workspace_root`, `selected_candidate`, `manifest{files[], deps[], build/run, poc{cmd, success_signature, flag_token}}` 등.
 - packaging_metadata: 단계 타임스탬프/버전/스냅샷/이미지/리포트 레퍼런스.
 - researcher_report / reviewer_report / executor_result: 각 에이전트 출력 구조.
 

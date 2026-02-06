@@ -11,6 +11,10 @@ def load_static_context(snapshot_name: str = "mvp-sample") -> str:
     """Return concatenated Markdown snippets for a processed snapshot."""
 
     base = get_repo_root() / "rag" / "corpus" / "processed" / snapshot_name
+    if not base.exists() and snapshot_name != "mvp-sample":
+        fallback = get_repo_root() / "rag" / "corpus" / "processed" / "mvp-sample"
+        if fallback.exists():
+            base = fallback
     if not base.exists():
         return ""
     chunks: List[str] = []
@@ -72,5 +76,45 @@ def load_hints(cwe_id: str, stack: str | None = None, *, limit: int | None = Non
             break
     return "\n\n".join(snippets)
 
+def load_boilerplate(stack: str | None = None, *, limit: int | None = None) -> str:
+    """Return stack-level boilerplate hints (executor constraints, DB init patterns, etc.).
 
-__all__ = ["load_static_context", "load_hints"]
+    Unlike ``load_hints`` (CWE-specific), boilerplate is *stack* oriented so it
+    can be reused across vulnerabilities without adding per-CWE templates.
+    """
+
+    base = get_repo_root() / "rag" / "boilerplate"
+    if not base.exists():
+        return ""
+
+    def _slug(value: str) -> str:
+        cleaned = "".join(ch if ch.isalnum() else "-" for ch in value.lower())
+        return "-".join(filter(None, cleaned.split("-")))
+
+    prioritized: List[Path] = []
+    if stack:
+        stack_slug = _slug(stack)
+        if stack_slug:
+            prioritized.append(base / f"{stack_slug}.md")
+            if "-" in stack_slug:
+                for token in stack_slug.split("-"):
+                    prioritized.append(base / f"{token}.md")
+    prioritized.append(base / "default.md")
+
+    for path in sorted(base.glob("*.md")):
+        if path not in prioritized:
+            prioritized.append(path)
+
+    snippets: List[str] = []
+    for path in prioritized:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8").strip()
+        if text:
+            snippets.append(f"# Boilerplate: {path.stem}\n{text}")
+        if limit is not None and len(snippets) >= limit:
+            break
+    return "\n\n".join(snippets)
+
+
+__all__ = ["load_static_context", "load_hints", "load_boilerplate"]

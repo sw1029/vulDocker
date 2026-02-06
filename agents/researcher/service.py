@@ -11,6 +11,7 @@ from common.logging import get_logger
 from common.paths import ensure_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_researcher_prompt
+from common.rules import load_rule, load_static_rule
 from common.run_matrix import (
     VulnBundle,
     bundle_requirement,
@@ -58,6 +59,7 @@ class ResearcherService:
         self.react_loop = ReactLoop(sid)
         self.search_tool = WebSearchTool()
         self.search_limit = max(1, search_limit)
+        self._last_report: Dict[str, Any] | None = None
 
     def run(self) -> Path:
         snapshot = self._snapshot_id()
@@ -71,6 +73,7 @@ class ResearcherService:
             report.setdefault("retrieval_snapshot_id", snapshot)
             report.setdefault("failure_context", self.react_loop.failure_context)
             report["created_at"] = datetime.now(timezone.utc).isoformat()
+            self._last_report = report
             candidates = self._synthesize_candidates()
             if candidates["rules"]:
                 report["candidate_rules"] = candidates["rules"]
@@ -146,6 +149,21 @@ class ResearcherService:
         path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         return path
 
+    def _load_latest_report(self) -> Dict[str, Any]:
+        if isinstance(self._last_report, dict):
+            return self._last_report
+        path = self.metadata_dir / "researcher_report.json"
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(data, dict):
+            self._last_report = data
+            return data
+        return {}
+
     def _synthesize_candidates(self) -> Dict[str, List[Dict[str, Any]]]:
         targets = [self.bundle] if self.bundle else load_vuln_bundles(self.plan)
         output = {"rules": [], "templates": []}
@@ -216,50 +234,212 @@ class ResearcherService:
         except json.JSONDecodeError:
             return {}
 
-    def _generate_candidate_rule(self, bundle: VulnBundle) -> Dict[str, Any] | None:
-        vuln = (bundle.vuln_id or "").upper()
-        if vuln == "CWE-89":
-            return {
-                "cwe": "CWE-89",
-                "success_signature": "SQLi SUCCESS",
-                "flag_token": "FLAG-sqli-demo-token",
-                "strict_flag": True,
-                "output": {"format": "auto"},
-                "patterns": [
-                    {"type": "file_contains", "path": "app.py", "contains": "SELECT"},
-                    {"type": "poc_contains", "contains": "SQLi SUCCESS"},
-                ],
-            }
-        if vuln == "CWE-352":
-            return {
-                "cwe": "CWE-352",
-                "success_signature": "CSRF SUCCESS",
-                "flag_token": "FLAG-csrf-demo-token",
-                "strict_flag": True,
-                "output": {"format": "auto"},
-                "patterns": [
-                    {"type": "file_contains", "path": "app.py", "contains": "@app.route('/transfer"},
-                    {"type": "poc_contains", "contains": "CSRF SUCCESS"},
-                ],
-            }
-        return {
-            "cwe": bundle.vuln_id or "UNKNOWN",
-            "success_signature": "Exploit SUCCESS",
-            "flag_token": "FLAG-auto-token",
-            "strict_flag": True,
-            "output": {"format": "text"},
+    def _extract_verification_spec(self, bundle: VulnBundle) -> Dict[str, Any] | None:
+        """Extract a verification_spec block for the given bundle, if present.
+
+        The primary location is a top-level `verification_spec` field inside
+        the most recent researcher_report.json. This keeps the schema simple
+        while still allowing per-vuln overrides in future by switching to a
+        mapping structure.
+        """
+        report = self._load_latest_report()
+        if not isinstance(report, dict):
+            return None
+        spec = report.get("verification_spec")
+        if isinstance(spec, dict):
+            return spec
+        # Optional extension: support per-vuln mapping under verification_specs.
+        mapping = report.get("verification_specs")
+        if isinstance(mapping, dict):
+            key_candidates = [
+                (bundle.vuln_id or "").upper(),
+                (bundle.vuln_id or "").lower(),
+            ]
+            for key in key_candidates:
+                value = mapping.get(key)
+                if isinstance(value, dict):
+                    return value
+        return None
+
+    def _rule_from_verification_spec(self, bundle: VulnBundle, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Construct a v2 rule mapping from a compact verification_spec."""
+
+        vuln_id = bundle.vuln_id or "UNKNOWN"
+        cwe = vuln_id.upper()
+
+        success_mode = str(spec.get("success_mode") or "text")
+        raw_markers = spec.get("success_text_markers") or []
+        markers: List[str] = []
+        if isinstance(raw_markers, list):
+            for entry in raw_markers:
+                if isinstance(entry, str) and entry:
+                    markers.append(entry)
+        elif isinstance(raw_markers, str) and raw_markers:
+            markers.append(raw_markers)
+
+        flag_token = spec.get("flag_token")
+        flag_mode = str(spec.get("flag_mode") or "strict").lower()
+
+        json_success_key = spec.get("json_success_key")
+        json_success_value = spec.get("json_success_value")
+        json_flag_key = spec.get("json_flag_key")
+
+        assertion_program = spec.get("assertion_program") or []
+        if isinstance(assertion_program, str):
+            # Lightweight compatibility: accept a single "assert ..." string and
+            # try to turn it into a contains() operation so runtime verifiers
+            # can leverage it.
+            import re
+
+            matches = re.findall(r"['\"]([^'\"]+)['\"]", assertion_program)
+            assertion_program = [{"op": "contains", "string": matches[0]}] if matches else []
+        elif not isinstance(assertion_program, list):
+            assertion_program = []
+
+        runtime: Dict[str, Any] = {
+            "success_mode": success_mode,
+            "success_text_markers": markers,
+            "flag_token": flag_token,
+            "assertion_program": assertion_program,
         }
+        if json_success_key:
+            runtime["json_success_key"] = json_success_key
+            runtime["json_success_value"] = json_success_value
+        if json_flag_key:
+            runtime["json_flag_key"] = json_flag_key
+
+        output: Dict[str, Any] = {
+            "mode": "json" if success_mode == "json" else "auto",
+        }
+        json_cfg: Dict[str, Any] = {}
+        if json_success_key:
+            json_cfg["success_key"] = json_success_key
+            if "json_success_value" in spec:
+                json_cfg["success_value"] = json_success_value
+        if json_flag_key:
+            json_cfg["flag_key"] = json_flag_key
+        if json_cfg:
+            output["json"] = json_cfg
+
+        rule: Dict[str, Any] = {
+            "cwe": cwe,
+            "version": 2,
+            "scenario_type": "web-poc",
+            "verification": {
+                "source": "runtime",
+                "require_flag": bool(flag_token) and flag_mode != "none",
+                "flag_mode": flag_mode,
+                "exit_code": "zero",
+            },
+            "output": output,
+            "llm": {
+                "assist_default": True,
+                "assertion_budget": 8,
+            },
+            "runtime": runtime,
+        }
+        # Guard rails should not hardcode template-specific endpoints. Instead,
+        # enforce that the PoC carries the success marker so synthesis-mode
+        # bundles remain template-agnostic.
+        if markers:
+            rule["patterns"] = [
+                {
+                    "type": "poc_contains",
+                    "path": "{{poc_entry}}",
+                    "contains": markers[0],
+                }
+            ]
+        # Legacy compatibility fields: used by generator augmentation and
+        # rule_based fallback logic when runtime assertions are absent/disabled.
+        if markers:
+            rule["success_signature"] = markers[0]
+        if isinstance(flag_token, str) and flag_token:
+            rule["flag_token"] = flag_token
+        rule["strict_flag"] = flag_mode == "strict"
+        return rule
+
+    def _generate_candidate_rule(self, bundle: VulnBundle) -> Dict[str, Any] | None:
+        static_rule = load_static_rule(bundle.vuln_id) or {}
+        has_static = bool(static_rule)
+
+        spec = self._extract_verification_spec(bundle)
+        if has_static and isinstance(spec, dict) and not bool(spec.get("override_static")):
+            # Avoid overriding stable, repo-maintained rule contracts unless
+            # the report explicitly opts into it.
+            spec = None
+
+        if spec:
+            try:
+                return self._rule_from_verification_spec(bundle, spec)
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.warning("Failed to build rule from verification_spec for %s: %s", bundle.vuln_id, exc)
+
+        raw_rule = static_rule if has_static else (load_rule(bundle.vuln_id) or {})
+        success_signature = str(raw_rule.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
+        flag_token = str(raw_rule.get("flag_token") or "").strip()
+        strict_flag = bool(raw_rule.get("strict_flag", True)) if flag_token else False
+        output_cfg = raw_rule.get("output") or {}
+        json_cfg = output_cfg.get("json") if isinstance(output_cfg, dict) else None
+        if not isinstance(json_cfg, dict):
+            json_cfg = {}
+        spec: Dict[str, Any] = {
+            "success_mode": "text",
+            "success_text_markers": [success_signature],
+            "flag_mode": "strict" if strict_flag else ("loose" if flag_token else "none"),
+            "json_success_key": output_cfg.get("json_success_key") if isinstance(output_cfg, dict) else None,
+            "json_success_value": output_cfg.get("json_success_value") if isinstance(output_cfg, dict) else None,
+            "json_flag_key": output_cfg.get("json_flag_key") if isinstance(output_cfg, dict) else None,
+            "assertion_program": [
+                {"op": "contains", "string": success_signature},
+            ],
+        }
+        if flag_token:
+            spec["flag_token"] = flag_token
+            spec["assertion_program"].append({"op": "contains", "string": flag_token})
+        if json_cfg:
+            spec.setdefault("json_success_key", json_cfg.get("success_key"))
+            spec.setdefault("json_success_value", json_cfg.get("success_value"))
+            spec.setdefault("json_flag_key", json_cfg.get("flag_key"))
+        return self._rule_from_verification_spec(bundle, spec)
 
     def _generate_candidate_template(self, bundle: VulnBundle) -> Path | None:
-        vuln = (bundle.vuln_id or "").upper()
-        mapping = {
-            "CWE-89": Path("workspaces/templates/sqli/flask_sqlite_raw"),
-            "CWE-352": Path("workspaces/templates/csrf/flask_sqlite_csrf"),
-        }
-        base = mapping.get(vuln)
-        if not base:
+        vuln_id = (bundle.vuln_id or "").strip().lower()
+        if not vuln_id:
             return None
-        return self._write_candidate_template(bundle, base)
+        if vuln_id.startswith("cwe_"):
+            vuln_id = vuln_id.replace("_", "-", 1)
+        if not vuln_id.startswith("cwe-") and "cwe" in vuln_id:
+            vuln_id = vuln_id.replace("cwe", "cwe-", 1)
+
+        repo_root = get_repo_root()
+        template_root = repo_root / "workspaces" / "templates"
+        if not template_root.exists():
+            return None
+
+        best: tuple[float, Path] | None = None
+        for meta_path in template_root.rglob("template.json"):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(meta, dict):
+                continue
+            tags = meta.get("tags") or []
+            if not isinstance(tags, list):
+                continue
+            normalized_tags = [str(tag).strip().lower() for tag in tags if isinstance(tag, str) and tag.strip()]
+            if vuln_id not in normalized_tags:
+                continue
+            try:
+                score = float(meta.get("stability_score", 0.0))
+            except Exception:
+                score = 0.0
+            if best is None or score > best[0]:
+                best = (score, meta_path.parent)
+
+        if not best:
+            return None
+        return self._write_candidate_template(bundle, best[1])
 
 
 __all__ = ["ResearcherService"]

@@ -45,38 +45,17 @@ PY
 echo "[CASE] SID=${SID}"
 export SID
 
-python agents/researcher/main.py --sid "${SID}" --mode "${MODE}"
-python agents/generator/main.py --sid "${SID}" --mode "${MODE}"
-python executor/runtime/docker_local.py --sid "${SID}" --build
-python executor/runtime/docker_local.py --sid "${SID}" --run
-python evals/poc_verifier/main.py --sid "${SID}"
-python agents/reviewer/main.py --sid "${SID}" --mode "${MODE}"
-python evals/diversity_metrics.py --sid "${SID}"
-PLAN_PATH="metadata/${SID}/plan.json"
-ALLOW_INTENTIONAL=$(python - "${PLAN_PATH}" <<'PY'
-import json, sys
-plan_path = sys.argv[1] if len(sys.argv) > 1 else ""
-allow = False
-try:
-    with open(plan_path, "r", encoding="utf-8") as handle:
-        plan = json.load(handle)
-        allow = bool((plan.get("policy") or {}).get("allow_intentional_vuln"))
-except Exception:
-    allow = False
-print("true" if allow else "false")
-PY
-)
-if [[ "${ALLOW_INTENTIONAL}" == "true" ]]; then
-  python orchestrator/pack.py --sid "${SID}" --allow-intentional-vuln
-else
-  python orchestrator/pack.py --sid "${SID}"
-fi
+PIPE_RC=0
+python orchestrator/run_pipeline.py --sid "${SID}" --mode "${MODE}" || PIPE_RC=$?
 
 python - <<'PY'
-import json, os, pathlib
+import json, os, pathlib, sys
 sid = os.environ["SID"]
 root = pathlib.Path(".")
 manifest_path = root / f"metadata/{sid}/manifest.json"
+if not manifest_path.exists():
+    print("[CASE] Summary: manifest missing at", manifest_path, file=sys.stderr)
+    raise SystemExit(0)
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 bundles = []
 for entry in manifest.get("bundles", []):
@@ -104,3 +83,4 @@ PY
 
 echo "[CASE] Artifacts -> artifacts/${SID}"
 echo "[CASE] Metadata  -> metadata/${SID}"
+exit "${PIPE_RC}"

@@ -4,15 +4,16 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-DEFAULT_SUCCESS_SIGNATURES = {
-    "cwe-89": "SQLi SUCCESS",
-    "cwe-352": "CSRF SUCCESS",
-}
+from common.rules import load_rule
 
 
 def _success_signature(requirement: Dict[str, object]) -> str:
     vuln = str((requirement or {}).get("vuln_id") or "").strip().lower()
-    return DEFAULT_SUCCESS_SIGNATURES.get(vuln, "Exploit SUCCESS")
+    rule = load_rule(vuln)
+    signature = rule.get("success_signature") if isinstance(rule, dict) else None
+    if isinstance(signature, str) and signature.strip():
+        return signature.strip()
+    return "Exploit SUCCESS"
 
 
 def build_generator_prompt(
@@ -49,6 +50,7 @@ def build_synthesis_prompt(
     rag_context: str,
     *,
     hints: str = "",
+    researcher_report: str = "",
     failure_context: str = "",
     limits: Optional[Dict[str, object]] = None,
     candidate_index: int = 1,
@@ -64,17 +66,36 @@ def build_synthesis_prompt(
     requirement_payload = json.dumps(requirement, indent=2, ensure_ascii=False)
     limits_payload = json.dumps(limits or {}, indent=2, ensure_ascii=False)
     success_signature = _success_signature(requirement)
+    execution_constraints = (
+        "- Container is executed with `--read-only` and a tmpfs mount at `/tmp` (writable). "
+        "Do NOT write to the working directory (commonly `/app`) or other paths at runtime; "
+        "store all runtime state under `/tmp` (or in-memory).\n"
+        "- Do NOT rely on external OS binaries at runtime (ex: `sqlite3`, `psql`, `mysql`, `curl`). "
+        "Prefer pure language libraries. If an OS binary is truly required, install it in the Dockerfile "
+        "at build time and keep it (do not purge it if used at runtime).\n"
+        "- If your service uses SQLite and performs writes (INSERT/UPDATE/DELETE), the DB file path MUST be under `/tmp` "
+        "(ex: `APP_DB_PATH=os.environ.get('APP_DB_PATH', '/tmp/app.db')`).\n"
+        "- The service MUST bind to `0.0.0.0` and listen on the declared port (default 5000)."
+    )
     sections = [
         "Synthesize candidate #{idx} for the request below. The manifest must be JSON "
         "and contain files[], deps[], build, run, poc, notes, pattern_tags[]. "
-        "Respect the file/path limits verbatim, ensure the PoC prints the {sig} success signature (or the requirement-specific equivalent), and do not add standard library modules (e.g., logging, sqlite3) to deps[]."
-        "\n\n# Requirement\n{req}\n\n# Synthesis Limits\n{limits}"
-        "\n\n# Internal Hints\n{hints}\n\n# RAG Context\n{rag}".format(
+        "Respect the file/path limits verbatim and do not add standard library modules (e.g., logging, sqlite3) to deps[]. "
+        "When a Researcher Report is provided, prefer it over guessing (endpoints, exploit steps, success markers). "
+        "Each files[] entry SHOULD also include a role field (for example: 'service_main', 'poc_entry', 'helper', 'schema', 'seed_data'), "
+        "and the PoC MUST print the exact manifest.poc.success_signature string on success and exit with code 0. "
+        "If a PoC Template is provided, you MUST copy its success_signature (and flag_token if present) verbatim into manifest.poc and the PoC code MUST print them on success. "
+        "The PoC script SHOULD accept --base-url (default http://127.0.0.1:<port>) and optionally --payload so the executor can run it against "
+        "the service inside the container."
+        "\n\n# Execution Constraints (MUST)\n{constraints}\n\n# Requirement\n{req}\n\n# Synthesis Limits\n{limits}"
+        "\n\n# Internal Hints\n{hints}\n\n# Researcher Report (JSON)\n{researcher}\n\n# RAG Context\n{rag}".format(
             idx=candidate_index,
             sig=success_signature,
+            constraints=execution_constraints,
             req=requirement_payload,
             limits=limits_payload,
             hints=hints or "(none provided)",
+            researcher=researcher_report or "(none provided)",
             rag=rag_context or "(snapshot empty)",
         )
     ]
@@ -125,7 +146,11 @@ def build_researcher_prompt(
         "Create a researcher report JSON covering vuln_id, intent, preconditions, "
         "tech_stack_candidates, minimal_repro_steps, references, pocs, deps, risks, "
         "retrieval_snapshot_id, and optionally failure_context. "
-        "Cite relevant references and align with docs/handbook.md (아키텍처)."
+        "Cite relevant references and align with docs/handbook.md (아키텍처). "
+        "Execution constraint: the generated bundle will be executed in a container with `--read-only` and only `/tmp` writable, "
+        "so prefer designs that keep runtime state under `/tmp` and avoid runtime OS binaries.\n"
+        "If relevant, you MAY also include an optional verification_spec field describing success_text_markers, flag_token, and a short assertion_program. "
+        "Only override repo-maintained rule contracts when necessary; if you must, set verification_spec.override_static=true."
         "\n\n# Requirement\n{req}"
         "\n\n# Search Findings\n{search}"
         "\n\n# RAG Context\n{rag}".format(

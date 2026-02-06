@@ -1,13 +1,37 @@
 cwe: CWE-352
+version: 2
+scenario_type: web-poc
+
+verification:
+  source: runtime
+  require_flag: true
+  flag_mode: strict
+  exit_code: zero
+
+output:
+  mode: auto
+  format: auto
+  json_success_key: success
+  json_success_value: true
+  json_flag_key: flag
+  json:
+    success_key: success
+    success_value: true
+    flag_key: flag
+
+llm:
+  assist_default: true
+  assertion_budget: 8
+
 success_signature: CSRF SUCCESS
 flag_token: FLAG-csrf-demo-token
 requires_external_db: false
 strict_flag: true
-output:
-  format: auto
+
 patterns:
   - type: file_contains
-    path: app.py
-    contains: "@app.route('/transfer" 
+    path: "{{service_entry}}"
+    contains: "@app.route('/transfer"
   - type: poc_contains
+    path: "{{poc_entry}}"
     contains: "CSRF SUCCESS"

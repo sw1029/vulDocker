@@ -32,3 +32,34 @@ def test_load_rule_from_runtime_dir(tmp_path: Path) -> None:
             os.environ.pop(env_key, None)
         else:
             os.environ[env_key] = original
+
+
+def test_runtime_rule_overrides_static_rule_without_cache_clear(tmp_path: Path) -> None:
+    """Ensure runtime overrides win even when a static rule exists."""
+    runtime_dir = tmp_path / "runtime_rules"
+    runtime_dir.mkdir()
+    # Override a known static rule (cwe-89.yaml exists under docs/evals/rules).
+    (runtime_dir / "cwe-89.yaml").write_text(
+        "cwe: CWE-89\nsuccess_signature: OVERRIDE SIG\nflag_token: OVERRIDE FLAG\n",
+        encoding="utf-8",
+    )
+    env_key = "VULD_RUNTIME_RULE_DIRS"
+    original = os.environ.get(env_key)
+    try:
+        os.environ.pop(env_key, None)
+        load_rule.cache_clear()
+        baseline = load_rule("CWE-89")
+        assert baseline.get("success_signature") != "OVERRIDE SIG"
+
+        # Apply runtime override and re-load without clearing caches. The
+        # implementation should key caches by runtime signature.
+        os.environ[env_key] = str(runtime_dir)
+        overridden = load_rule("CWE-89")
+        assert overridden.get("success_signature") == "OVERRIDE SIG"
+        assert overridden.get("flag_token") == "OVERRIDE FLAG"
+    finally:
+        load_rule.cache_clear()
+        if original is None:
+            os.environ.pop(env_key, None)
+        else:
+            os.environ[env_key] = original

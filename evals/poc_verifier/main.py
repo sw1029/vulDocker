@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+try:  # pragma: no cover - optional dependency
+    import yaml
+except Exception:  # pragma: no cover
+    yaml = None
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -16,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir
 from common.plan import load_plan
+from common.rules import load_rule, list_rules, load_static_rule
 from common.run_matrix import (
     artifacts_dir_for_bundle,
     bundle_requirement,
@@ -102,6 +108,8 @@ def _evaluate_all(sid: str) -> Dict[str, Any]:
                     plan_policy=plan.get("policy"),
                 )
                 entry.setdefault("status", "evaluated")
+                if entry.get("status") == "unsupported":
+                    entry = _retry_with_runtime_rule(plan, bundle, log_path, requirement, run_record, entry)
             except FileNotFoundError:
                 entry = {
                     "verify_pass": False,
@@ -147,6 +155,122 @@ def _register_runtime_rules(plan: Dict[str, Any]) -> None:
     if path_str not in parts:
         parts.append(path_str)
         os.environ[env_key] = os.pathsep.join(parts)
+
+
+def _retry_with_runtime_rule(
+    plan: Dict[str, Any],
+    bundle: "VulnBundle",
+    log_path: Path,
+    requirement: Dict[str, Any],
+    run_record: Dict[str, Any],
+    original: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Option B: generate runtime rule then retry verification."""
+    if yaml is None:
+        return original
+    vuln_id = str(bundle.vuln_id or "").strip().lower()
+    if not vuln_id:
+        return original
+    # Avoid overriding repo-maintained static rule contracts by default.
+    if load_static_rule(vuln_id):
+        return original
+
+    metadata_root = Path(plan["paths"]["metadata"])
+    meta_dir = metadata_root / "bundles" / bundle.slug if bundle.slug else metadata_root
+    contract = _load_json(meta_dir / "generator_contract.json")
+    manifest = _load_json(meta_dir / "generator_manifest.json")
+    sig = _string_or_none((contract or {}).get("poc_success_signature"))
+    if not sig and isinstance(manifest, dict):
+        inner = manifest.get("manifest")
+        if isinstance(inner, dict):
+            sig = _string_or_none(((inner.get("poc") or {}) if isinstance(inner.get("poc"), dict) else {}).get("success_signature"))
+    if not sig:
+        sig = "Exploit SUCCESS"
+
+    flag_token = _string_or_none((contract or {}).get("poc_flag_token"))
+    if not flag_token and isinstance(manifest, dict):
+        inner = manifest.get("manifest")
+        if isinstance(inner, dict):
+            flag_token = _string_or_none(
+                ((inner.get("poc") or {}) if isinstance(inner.get("poc"), dict) else {}).get("flag_token")
+            )
+
+    assertion_program: List[Dict[str, Any]] = [{"op": "contains", "string": sig}]
+    if flag_token:
+        assertion_program.append({"op": "contains", "string": flag_token})
+
+    rule = {
+        "cwe": vuln_id.upper(),
+        "version": 2,
+        "scenario_type": "web-poc",
+        "verification": {
+            "source": "runtime",
+            "require_flag": bool(flag_token),
+            "flag_mode": "strict" if flag_token else "none",
+            "exit_code": "zero",
+        },
+        "output": {"mode": "auto"},
+        "llm": {"assist_default": True, "assertion_budget": 8},
+        "runtime": {
+            "success_mode": "text",
+            "success_text_markers": [sig],
+            "flag_token": flag_token,
+            "assertion_program": assertion_program,
+        },
+        "patterns": [{"type": "poc_contains", "path": "{{poc_entry}}", "contains": sig}],
+        "success_signature": sig,
+        "strict_flag": bool(flag_token),
+    }
+    if flag_token:
+        rule["flag_token"] = flag_token
+
+    runtime_rules = metadata_root / "runtime_rules"
+    runtime_rules.mkdir(parents=True, exist_ok=True)
+    rule_path = runtime_rules / f"{vuln_id}.yaml"
+    rule_path.write_text(yaml.safe_dump(rule, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    # Clear in-process caches so the retry sees the newly written rule.
+    try:
+        load_rule.cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        list_rules.cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    retry = evaluate_with_vuln(
+        bundle.vuln_id,
+        log_path,
+        requirement=requirement,
+        run_summary=run_record,
+        plan_policy=plan.get("policy"),
+    )
+    retry.setdefault("status", "evaluated")
+    retry["verifier_retry"] = {
+        "attempted": True,
+        "reason": "unsupported",
+        "runtime_rule_path": str(rule_path),
+        "success_signature": sig,
+        "flag_token": flag_token,
+    }
+    return retry
+
+
+def _load_json(path: Path) -> Dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _string_or_none(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _record_verifier_feedback(plan: Dict[str, Any], results: List[Dict[str, Any]]) -> None:

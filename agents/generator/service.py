@@ -16,10 +16,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from common.config import DecodingProfile
 from common.llm import LLMClient
 from common.logging import get_logger
+from common.contracts import build_generator_contract, write_generator_contract
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_generator_prompt
-from common.rules import load_rule
+from common.rules import load_rule, load_static_rule
 from common.run_matrix import (
     VulnBundle,
     bundle_requirement,
@@ -27,17 +28,12 @@ from common.run_matrix import (
     workspace_dir_for_bundle,
 )
 from common.variability import VariationManager
-from rag import latest_failure_context, load_hints, load_static_context
+from rag import latest_failure_context, load_boilerplate, load_hints, load_static_context
 from orchestrator.loop_controller import LoopController
 
 from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits, SynthesisOutcome
 
 LOGGER = get_logger(__name__)
-
-DEFAULT_TEMPLATE_ENDPOINTS = {
-    "cwe-89": {"method": "GET", "path": "/profile"},
-    "cwe-352": {"method": "POST", "path": "/transfer"},
-}
 
 MYSQL_DRIVERS = {
     "pymysql",
@@ -92,6 +88,24 @@ class TemplateSpec:
             return []
         return [str(x).strip().lower() for x in raw if isinstance(x, str) and x.strip()]
 
+    @property
+    def scenario_type(self) -> str:
+        return str(self.metadata.get("scenario_type") or "web-poc")
+
+    @property
+    def service_entry(self) -> str | None:
+        value = self.metadata.get("service_entry")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    @property
+    def poc_entry(self) -> str | None:
+        value = self.metadata.get("poc_entry")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
 
 @dataclass
 class TemplateCandidate:
@@ -118,6 +132,7 @@ class GeneratorContext:
     rag: str
     failure: str
     hints: str
+    researcher_report: str
 
 
 class TemplateRegistry:
@@ -354,6 +369,43 @@ class GeneratorService:
         path = self.metadata_dir / "user_deps.json"
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def _researcher_report_for_prompt(self) -> str:
+        path = self.metadata_dir / "researcher_report.json"
+        if not path.exists():
+            return ""
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(report, dict):
+            return ""
+        static_rule = load_static_rule(self.requirement.get("vuln_id") or "") or {}
+        has_static = bool(static_rule)
+        keep_keys = [
+            "vuln_id",
+            "intent",
+            "preconditions",
+            "tech_stack_candidates",
+            "minimal_repro_steps",
+            "pocs",
+            "deps",
+            "risks",
+            "verification_spec",
+        ]
+        trimmed: Dict[str, Any] = {}
+        for key in keep_keys:
+            value = report.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if key == "verification_spec" and has_static and isinstance(value, dict) and not bool(value.get("override_static")):
+                # Prevent conflicting success markers from confusing synthesis prompts
+                # when a stable static rule exists.
+                continue
+            trimmed[key] = value
+        if not trimmed:
+            return ""
+        return json.dumps(trimmed, indent=2, ensure_ascii=False)
+
     def _build_context(self) -> GeneratorContext:
         rag_snapshot = (
             self.requirement.get("rag_snapshot")
@@ -369,7 +421,16 @@ class GeneratorService:
         if self.generator_mode in {"synthesis", "hybrid"}:
             cwe = self.requirement.get("vuln_id") or ""
             hints = load_hints(cwe, stack=self._stack_descriptor()) if cwe else ""
-        return GeneratorContext(rag=rag_context, failure=failure_context, hints=hints)
+            boilerplate = load_boilerplate(stack=self._stack_descriptor())
+            if boilerplate:
+                hints = (hints + "\n\n" + boilerplate).strip() if hints else boilerplate
+        researcher_report = self._researcher_report_for_prompt()
+        return GeneratorContext(
+            rag=rag_context,
+            failure=failure_context,
+            hints=hints,
+            researcher_report=researcher_report,
+        )
 
     def _candidate_k(self) -> int:
         return self.variation_manager.self_consistency_k("generator")
@@ -417,6 +478,7 @@ class GeneratorService:
                 outcome = self._run_synthesis_once(context)
                 added_user_deps = self._apply_user_deps_to_workspace()
                 self._record_user_deps_metadata(added_user_deps)
+                self._write_generator_contract(mode_label="synthesis")
                 self.loop_controller.record_success(stage="GENERATOR", note="synthesis succeeded")
                 LOGGER.info(
                     "Synthesis candidate #%s materialized %s files for %s",
@@ -460,6 +522,7 @@ class GeneratorService:
             requirement=self.requirement,
             rag_context=context.rag,
             hints=context.hints,
+            researcher_report=context.researcher_report,
             failure_context=context.failure,
             candidate_k=self._candidate_k(),
             poc_template=self.requirement.get("poc_template"),
@@ -486,7 +549,22 @@ class GeneratorService:
             mode_label=mode_label,
             user_deps_added=added_user_deps,
         )
+        self._write_generator_contract(mode_label=mode_label)
         self.loop_controller.record_success(stage="GENERATOR", note=f"template mode: {mode_label}")
+
+    def _write_generator_contract(self, *, mode_label: str) -> None:
+        vuln_id = str(self.requirement.get("vuln_id") or "").strip() or "UNKNOWN"
+        slug = self.bundle.slug if self.bundle else ""
+        payload = build_generator_contract(
+            sid=self.sid,
+            vuln_id=vuln_id,
+            metadata_dir=self.metadata_dir,
+            workspace_dir=self.workspace,
+            generator_mode=mode_label,
+            bundle_slug=slug,
+        )
+        path = write_generator_contract(self.metadata_dir, payload)
+        LOGGER.info("Generator contract written to %s", path)
 
     def _latest_generator_failure(self) -> Dict[str, Any]:
         path = self.metadata_dir / "generator_failures.jsonl"
@@ -632,7 +710,16 @@ class GeneratorService:
             "sid": self.sid,
             "template_id": selection.id,
             "pattern_id": selection.pattern_id,
+            "scenario_type": selection.scenario_type,
             "requires_external_db": selection.requires_external_db,
+            "ports": selection.metadata.get("ports") if isinstance(selection.metadata, dict) else {},
+            "service_entry": selection.service_entry,
+            "poc_entry": selection.poc_entry,
+            "flag_token": (
+                selection.metadata.get("flag_token")
+                if isinstance(selection.metadata, dict) and isinstance(selection.metadata.get("flag_token"), str)
+                else None
+            ),
             "variation_key": self.variation,
             "loop_index": self.loop_index,
             "failure_context": failure_context,
@@ -691,36 +778,45 @@ class GeneratorService:
             readme_path.write_text(updated, encoding="utf-8")
             LOGGER.info("Appended verification markers to %s", readme_path)
 
-        self._ensure_poc_scaffold(vuln_id, success_signature, flag_token)
+        self._ensure_poc_scaffold(selection, success_signature, flag_token)
 
     def _ensure_poc_scaffold(
-        self, vuln_id: str, success_signature: str, flag_token: str
+        self, selection: TemplateSpec, success_signature: str, flag_token: str
     ) -> None:
-        poc_path = self.workspace / "poc.py"
+        poc_entry = selection.poc_entry or "poc.py"
+        poc_path = self.workspace / poc_entry
         if poc_path.exists():
             return
 
-        endpoint = DEFAULT_TEMPLATE_ENDPOINTS.get(vuln_id, {"method": "GET", "path": "/"})
-        method = endpoint.get("method", "GET").upper()
-        path = endpoint.get("path", "/")
+        method, path = self._infer_poc_endpoint(selection)
+        default_base_url = self._infer_default_base_url(selection)
 
         content_lines = [
             "import argparse",
             "import sys",
             "from urllib.request import Request, urlopen",
             "from urllib.error import URLError, HTTPError",
+            "from urllib.parse import urlencode",
             "",
             "SUCCESS_SIGNATURE = " + repr(success_signature or "Exploit SUCCESS"),
             "FLAG_TOKEN = " + repr(flag_token or ""),
             "PATH = " + repr(path),
             "METHOD = " + repr(method),
             "",
-            "def exploit(base_url: str) -> bool:",
+            "def exploit(base_url: str, payload: str | None = None) -> bool:",
             "    url = base_url.rstrip('/') + PATH",
             "    data = None",
             "    status = 0",
             "    try:",
-            "        req = Request(url, method=METHOD)",
+            "        if payload:",
+            "            if METHOD in ('GET', 'HEAD'):",
+            "                sep = '&' if '?' in url else '?'",
+            "                url = url + sep + urlencode({'payload': payload})",
+            "            else:",
+            "                data = urlencode({'payload': payload}).encode('utf-8')",
+            "        req = Request(url, data=data, method=METHOD)",
+            "        if data is not None:",
+            "            req.add_header('Content-Type', 'application/x-www-form-urlencoded')",
             "        with urlopen(req, timeout=5) as resp:",
             "            data = resp.read()",
             "            status = resp.status",
@@ -738,9 +834,11 @@ class GeneratorService:
             "",
             "def main() -> None:",
             "    parser = argparse.ArgumentParser(description='Auto-generated PoC scaffold')",
-            "    parser.add_argument('--base-url', default='http://127.0.0.1:5000')",
+            f"    parser.add_argument('--base-url', default={default_base_url!r})",
+            "    parser.add_argument('--payload', default='', help='Optional payload string')",
             "    args = parser.parse_args()",
-            "    if exploit(args.base_url):",
+            "    payload = args.payload or None",
+            "    if exploit(args.base_url, payload):",
             "        sys.exit(0)",
             "    print('[auto] scaffold did not trigger exploit', file=sys.stderr)",
             "    sys.exit(1)",
@@ -748,8 +846,80 @@ class GeneratorService:
             "if __name__ == '__main__':",
             "    main()",
         ]
+        ensure_dir(poc_path.parent)
         poc_path.write_text("\n".join(content_lines) + "\n", encoding="utf-8")
-        LOGGER.info("Created scaffold poc.py for %s", self.sid)
+        LOGGER.info("Created scaffold %s for %s", poc_entry, self.sid)
+
+    def _infer_default_base_url(self, selection: TemplateSpec) -> str:
+        ports = selection.metadata.get("ports") if isinstance(selection.metadata, dict) else {}
+        port = None
+        if isinstance(ports, dict):
+            for key in ("app", "service", "http"):
+                candidate = ports.get(key)
+                try:
+                    value = int(candidate)
+                except Exception:
+                    value = None
+                if value and value > 0:
+                    port = value
+                    break
+        if not port:
+            port = 5000
+        return f"http://127.0.0.1:{port}"
+
+    def _infer_poc_endpoint(self, selection: TemplateSpec) -> tuple[str, str]:
+        """Infer a (method, path) pair from the service entrypoint source.
+
+        This intentionally avoids CWE-specific endpoint tables; it scans the
+        template's service_entry file for common Flask routing decorators.
+        """
+        service_entry = selection.service_entry or "app.py"
+        rel = Path(service_entry)
+        if rel.is_absolute() or ".." in rel.parts:
+            return "GET", "/"
+        service_path = self.workspace / rel
+        if not service_path.exists():
+            return "GET", "/"
+        try:
+            text = service_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return "GET", "/"
+
+        candidates: List[tuple[int, str, str]] = []
+        route_pattern = re.compile(
+            r"@(?P<obj>[A-Za-z0-9_\\.]+)\\.route\\(\\s*(?P<q>['\\\"])(?P<path>[^'\\\"]+)(?P=q)"
+            r"(?:\\s*,\\s*methods\\s*=\\s*(?P<methods>\\[[^\\]]*\\]|\\([^\\)]*\\)))?",
+            re.MULTILINE,
+        )
+        verb_pattern = re.compile(
+            r"@(?P<obj>[A-Za-z0-9_\\.]+)\\.(?P<verb>get|post|put|delete|patch)\\(\\s*(?P<q>['\\\"])(?P<path>[^'\\\"]+)(?P=q)",
+            re.MULTILINE | re.IGNORECASE,
+        )
+
+        for match in route_pattern.finditer(text):
+            raw_path = match.group("path")
+            methods_blob = match.group("methods") or ""
+            method = "GET"
+            if methods_blob:
+                method_tokens = re.findall(r"['\\\"]([A-Za-z]+)['\\\"]", methods_blob)
+                allowed = [m.upper() for m in method_tokens if m and m.upper() in {"GET", "POST", "PUT", "DELETE", "PATCH"}]
+                if allowed:
+                    method = allowed[0]
+            candidates.append((match.start(), method, raw_path))
+
+        for match in verb_pattern.finditer(text):
+            raw_path = match.group("path")
+            method = str(match.group("verb") or "GET").upper()
+            candidates.append((match.start(), method, raw_path))
+
+        if not candidates:
+            return "GET", "/"
+        candidates.sort(key=lambda item: item[0])
+        for _, method, raw_path in candidates:
+            if raw_path and raw_path != "/" and not raw_path.startswith("/static"):
+                return method, raw_path
+        _, method, raw_path = candidates[0]
+        return method, raw_path or "/"
 
 
 __all__ = ["GeneratorService", "TemplateRegistry", "TemplateSpec"]

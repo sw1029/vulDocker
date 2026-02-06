@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
+import shlex
 import subprocess
 import sys
 import time
@@ -30,6 +32,16 @@ from common.run_matrix import (
 LOGGER = get_logger(__name__)
 DOCKER_BIN = shutil.which("docker")
 SYFT_BIN = shutil.which("syft")
+DEFAULT_APP_PORT = 5000
+DEFAULT_POC_ENTRY_SUFFIXES = {
+    ".py",
+    ".sh",
+    ".js",
+    ".ts",
+    ".rb",
+    ".php",
+    ".pl",
+}
 
 
 class ExecutorError(RuntimeError):
@@ -42,6 +54,7 @@ def run_command(cmd: List[str], log_path: Path, check: bool = True, cwd: Path | 
     LOGGER.info("Running command: %s", " ".join(cmd))
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write("$ " + " ".join(cmd) + "\n")
+        handle.flush()
         proc = subprocess.run(
             cmd,
             cwd=cwd,
@@ -106,6 +119,7 @@ def run_container_with_poc(
     bundle: VulnBundle,
     image_tag: str,
     workspace: Path,
+    metadata_dir: Path,
     run_dir: Path,
     executor_policy: Dict[str, Any],
     network_alias: "NetworkHandle",
@@ -117,11 +131,12 @@ def run_container_with_poc(
     run_log.write_text("", encoding="utf-8")
     container_name = f"{sid}-{bundle.slug}-runtime"
     network_mode = network_alias.mode
+    service_port = _resolve_service_port(metadata_dir, workspace)
+    base_url = _resolve_base_url(executor_policy, service_port)
     start_cmd = [
         DOCKER_BIN,
         "run",
         "-d",
-        "--rm",
         "--name",
         container_name,
         "--read-only",
@@ -142,25 +157,31 @@ def run_container_with_poc(
         run_command(start_cmd, run_log)
         time.sleep(1)
         logs_cmd = [DOCKER_BIN, "logs", container_name]
-        _push_poc_script(workspace, container_name, run_log)
         try:
-            _wait_for_app_ready(container_name, run_log)
+            _wait_for_app_ready(container_name, run_log, port=service_port)
+        except ExecutorError:
+            run_command(logs_cmd, run_log, check=False)
+            raise
+        try:
+            poc_container_path = _push_poc_script(
+                workspace,
+                metadata_dir,
+                container_name,
+                run_log,
+                executor_policy=executor_policy,
+            )
         except ExecutorError:
             run_command(logs_cmd, run_log, check=False)
             raise
         payload_list = payloads or [None]
         for index, payload in enumerate(payload_list, start=1):
-            exec_cmd = [
-                DOCKER_BIN,
-                "exec",
+            exec_cmd = _build_poc_exec_cmd(
                 container_name,
-                "python",
-                "/tmp/poc.py",
-                "--base-url",
-                "http://127.0.0.1:5000",
-            ]
-            if payload:
-                exec_cmd.extend(["--payload", payload])
+                metadata_dir,
+                poc_container_path,
+                base_url,
+                payload=payload,
+            )
             if len(payload_list) > 1:
                 with run_log.open("a", encoding="utf-8") as handle:
                     handle.write(f"\n# Payload {index}: {payload or 'default'}\n")
@@ -175,7 +196,7 @@ def run_container_with_poc(
         run_command(logs_cmd, run_log, check=False)
         return last_exit_code if last_exit_code is not None else 0
     finally:
-        subprocess.run([DOCKER_BIN, "stop", container_name], check=False)
+        subprocess.run([DOCKER_BIN, "rm", "-f", container_name], check=False)
 
 
 def parse_args() -> argparse.Namespace:
@@ -195,33 +216,36 @@ def main() -> None:
     executor_policy = (policy.get("executor") or {})
     stop_on_first_failure = bool(policy.get("stop_on_first_failure"))
     network_pool = NetworkPool(plan["sid"], executor_policy)
-    summaries: List[Dict[str, str]] = []
-    had_error = False
-    for bundle in bundles:
-        summary = _run_bundle(
-            args,
-            plan,
-            bundle,
-            multi,
-            stop_on_first_failure,
-            executor_policy,
-            network_pool,
-        )
-        summaries.append(summary)
-        if summary.get("error"):
-            had_error = True
-            LOGGER.error(
-                "Executor recorded failure for %s (%s): %s",
-                plan["sid"],
-                bundle.vuln_id,
-                summary["error"],
+    try:
+        summaries: List[Dict[str, str]] = []
+        had_error = False
+        for bundle in bundles:
+            summary = _run_bundle(
+                args,
+                plan,
+                bundle,
+                multi,
+                stop_on_first_failure,
+                executor_policy,
+                network_pool,
             )
-            if stop_on_first_failure:
-                LOGGER.info("stop_on_first_failure policy engaged; halting remaining bundles.")
-                break
-    _write_index(args.sid, summaries)
-    if had_error:
-        raise SystemExit(1)
+            summaries.append(summary)
+            if summary.get("error"):
+                had_error = True
+                LOGGER.error(
+                    "Executor recorded failure for %s (%s): %s",
+                    plan["sid"],
+                    bundle.vuln_id,
+                    summary["error"],
+                )
+                if stop_on_first_failure:
+                    LOGGER.info("stop_on_first_failure policy engaged; halting remaining bundles.")
+                    break
+        _write_index(args.sid, summaries)
+        if had_error:
+            raise SystemExit(1)
+    finally:
+        network_pool.close()
 
 
 def _run_bundle(
@@ -267,6 +291,9 @@ def _run_bundle(
         "build_attempted": False,
         "run_attempted": False,
         "exit_code": None,
+        "service_port": None,
+        "service_base_url": None,
+        "poc_cmd": None,
     }
 
     current_stage: Optional[str] = None
@@ -291,6 +318,9 @@ def _run_bundle(
         if do_run:
             current_stage = "run"
             summary["run_attempted"] = True
+            service_port = _resolve_service_port(metadata_dir_for_bundle(plan, bundle), workspace)
+            summary["service_port"] = service_port
+            summary["service_base_url"] = _resolve_base_url(executor_policy, service_port)
             if needs_sidecars:
                 sidecars = _start_sidecars(sid, bundle, executor_policy, run_dir, network_handle)
             else:
@@ -301,6 +331,7 @@ def _run_bundle(
                 bundle,
                 image_tag,
                 workspace,
+                metadata_dir_for_bundle(plan, bundle),
                 run_dir,
                 executor_policy,
                 network_handle,
@@ -415,13 +446,186 @@ def _bundle_requires_external_db(plan: Dict[str, Any], bundle: VulnBundle) -> bo
     return db in {"mysql", "postgres", "postgresql", "mariadb"}
 
 
-def _push_poc_script(workspace: Path, container_name: str, log_path: Path) -> None:
+def _resolve_base_url(executor_policy: Dict[str, Any], port: int) -> str:
+    """Resolve base URL for PoC scripts executed *inside* the container."""
+    override = (executor_policy or {}).get("base_url")
+    if isinstance(override, str) and override.strip():
+        return override.strip()
+    return f"http://127.0.0.1:{port}"
+
+
+def _resolve_service_port(metadata_dir: Path, workspace: Path) -> int:
+    """Resolve service port from generator metadata, manifest, or Dockerfile."""
+    contract = _load_generator_contract(metadata_dir)
+    if isinstance(contract, dict):
+        try:
+            value = int(contract.get("service_port"))
+        except Exception:
+            value = None
+        if value:
+            return value
+    port = _port_from_generator_template(metadata_dir)
+    if port:
+        return port
+    port = _port_from_generator_manifest(metadata_dir)
+    if port:
+        return port
+    port = _port_from_dockerfile(workspace)
+    if port:
+        return port
+    return DEFAULT_APP_PORT
+
+
+def _port_from_generator_template(metadata_dir: Path) -> int | None:
+    data = _load_json(metadata_dir / "generator_template.json")
+    if not isinstance(data, dict):
+        return None
+    ports = data.get("ports")
+    if isinstance(ports, dict):
+        candidate = ports.get("app") or ports.get("service") or ports.get("web")
+        try:
+            value = int(candidate)
+        except Exception:
+            value = None
+        if value:
+            return value
+    candidate = data.get("service_port") or data.get("port")
+    try:
+        value = int(candidate)
+    except Exception:
+        value = None
+    return value or None
+
+
+def _port_from_generator_manifest(metadata_dir: Path) -> int | None:
+    payload = _load_json(metadata_dir / "generator_manifest.json")
+    if not isinstance(payload, dict):
+        return None
+    manifest = payload.get("manifest")
+    if not isinstance(manifest, dict):
+        return None
+    run_section = manifest.get("run")
+    if isinstance(run_section, dict):
+        port = run_section.get("port")
+        try:
+            value = int(port)
+        except Exception:
+            value = None
+        if value:
+            return value
+        command = run_section.get("command")
+        if isinstance(command, str):
+            return _parse_port_from_run_command(command)
+    if isinstance(run_section, str):
+        return _parse_port_from_run_command(run_section)
+    return None
+
+
+def _parse_port_from_run_command(command: str) -> int | None:
+    text = (command or "").strip()
+    if not text:
+        return None
+    # docker run -p HOST:CONTAINER, or --publish HOST:CONTAINER
+    pattern = re.compile(r"(?:-p|--publish)\s*(\d+)\s*:\s*(\d+)")
+    match = pattern.search(text)
+    if match:
+        try:
+            return int(match.group(2))
+        except Exception:
+            return None
+    return None
+
+
+def _port_from_dockerfile(workspace: Path) -> int | None:
+    dockerfile = workspace / "Dockerfile"
+    if not dockerfile.exists():
+        return None
+    try:
+        lines = dockerfile.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.upper().startswith("EXPOSE"):
+            continue
+        parts = stripped.split()
+        for token in parts[1:]:
+            raw = token.split("/")[0].strip()
+            if raw.isdigit():
+                value = int(raw)
+                if value > 0:
+                    return value
+    return None
+
+
+def _resolve_poc_entry_relpath(metadata_dir: Path) -> str:
+    """Resolve poc entry path relative to workspace."""
+    contract = _load_generator_contract(metadata_dir)
+    if isinstance(contract, dict):
+        poc_entry = contract.get("poc_entry")
+        if isinstance(poc_entry, str) and poc_entry.strip():
+            return poc_entry.strip()
+    manifest = _load_json(metadata_dir / "generator_manifest.json")
+    if isinstance(manifest, dict):
+        inner = manifest.get("manifest")
+        if isinstance(inner, dict):
+            files = inner.get("files") or []
+            if isinstance(files, list):
+                for entry in files:
+                    if not isinstance(entry, dict):
+                        continue
+                    role = str(entry.get("role") or "").strip().lower()
+                    path = entry.get("path")
+                    if role == "poc_entry" and isinstance(path, str) and path.strip():
+                        return path.strip()
+    template = _load_json(metadata_dir / "generator_template.json")
+    if isinstance(template, dict):
+        poc_entry = template.get("poc_entry")
+        if isinstance(poc_entry, str) and poc_entry.strip():
+            return poc_entry.strip()
+    return "poc.py"
+
+
+def _push_poc_script(
+    workspace: Path,
+    metadata_dir: Path,
+    container_name: str,
+    log_path: Path,
+    *,
+    executor_policy: Dict[str, Any] | None = None,
+) -> str:
     if DOCKER_BIN is None:
         raise ExecutorError("Docker binary not available for copying PoC script")
-    poc_path = workspace / "poc.py"
-    if not poc_path.exists():
-        raise ExecutorError(f"PoC script missing at {poc_path}")
-    data = poc_path.read_bytes()
+    rel = _resolve_poc_entry_relpath(metadata_dir)
+    rel_path = Path(rel)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        raise ExecutorError(f"Invalid poc_entry path: {rel}")
+    source_path = workspace / rel_path
+    if not source_path.exists():
+        raise ExecutorError(f"PoC script missing at {source_path}")
+    entry_name = rel_path.name
+    allowed_suffixes = list(DEFAULT_POC_ENTRY_SUFFIXES)
+    policy_allow = (executor_policy or {}).get("poc_entry_suffixes")
+    if isinstance(policy_allow, list) and policy_allow:
+        allowed_suffixes = []
+        for entry in policy_allow:
+            if not isinstance(entry, str):
+                continue
+            suffix = entry.strip()
+            if not suffix:
+                continue
+            if not suffix.startswith("."):
+                suffix = f".{suffix}"
+            allowed_suffixes.append(suffix.lower())
+        if not allowed_suffixes:
+            allowed_suffixes = list(DEFAULT_POC_ENTRY_SUFFIXES)
+    if Path(entry_name).suffix.lower() not in set(allowed_suffixes):
+        raise ExecutorError(
+            f"Unsupported poc_entry filename: {entry_name} (allowed: {', '.join(sorted(set(allowed_suffixes)))})"
+        )
+    data = source_path.read_bytes()
+    dest_path = f"/tmp/{entry_name}"
+    quoted_dest = shlex.quote(dest_path)
     cmd = [
         DOCKER_BIN,
         "exec",
@@ -429,13 +633,132 @@ def _push_poc_script(workspace: Path, container_name: str, log_path: Path) -> No
         container_name,
         "sh",
         "-c",
-        "cat > /tmp/poc.py && chmod 0644 /tmp/poc.py",
+        f"cat > {quoted_dest} && chmod 0644 {quoted_dest}",
     ]
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write("$ " + " ".join(cmd) + "\n")
+        handle.flush()
         proc = subprocess.run(cmd, input=data, stdout=handle, stderr=subprocess.STDOUT, check=False)
     if proc.returncode != 0:
         raise ExecutorError(f"Command failed ({proc.returncode}): {' '.join(cmd)}")
+    return dest_path
+
+
+def _build_poc_exec_cmd(
+    container_name: str,
+    metadata_dir: Path,
+    poc_path: str,
+    base_url: str,
+    *,
+    payload: str | None,
+) -> List[str]:
+    cmd = _resolve_poc_cmd(metadata_dir)
+    if cmd is None:
+        suffix = Path(poc_path).suffix.lower()
+        interpreter = "python"
+        if suffix == ".sh":
+            interpreter = "sh"
+        elif suffix == ".js":
+            interpreter = "node"
+        elif suffix == ".ts":
+            interpreter = "ts-node"
+        elif suffix == ".rb":
+            interpreter = "ruby"
+        elif suffix == ".php":
+            interpreter = "php"
+        elif suffix == ".pl":
+            interpreter = "perl"
+        args = [interpreter, poc_path, "--base-url", base_url]
+        if payload:
+            args.extend(["--payload", payload])
+        return [DOCKER_BIN, "exec", container_name, *args]
+
+    if _needs_shell(cmd):
+        rendered = _render_poc_cmd_shell(cmd, poc_path=poc_path, base_url=base_url, payload=payload)
+        return [DOCKER_BIN, "exec", container_name, "sh", "-lc", rendered]
+
+    tokens = shlex.split(cmd)
+    rendered_tokens: List[str] = []
+    for token in tokens:
+        token = _rewrite_poc_token(token, poc_path)
+        token = token.replace("{{poc_path}}", poc_path).replace("{{base_url}}", base_url)
+        if payload is not None and "{{payload}}" in token:
+            token = token.replace("{{payload}}", payload)
+        rendered_tokens.append(token)
+
+    if payload and "--payload" in rendered_tokens:
+        # If the template declared a --payload switch but didn't include a value,
+        # append the payload as the next argument.
+        try:
+            idx = rendered_tokens.index("--payload")
+        except ValueError:
+            idx = -1
+        if idx != -1 and idx == len(rendered_tokens) - 1:
+            rendered_tokens.append(payload)
+
+    return [DOCKER_BIN, "exec", container_name, *rendered_tokens]
+
+
+def _resolve_poc_cmd(metadata_dir: Path) -> str | None:
+    contract = _load_generator_contract(metadata_dir)
+    if isinstance(contract, dict):
+        cmd = contract.get("poc_cmd")
+        if isinstance(cmd, str) and cmd.strip():
+            return cmd.strip()
+    payload = _load_json(metadata_dir / "generator_manifest.json")
+    if isinstance(payload, dict):
+        manifest = payload.get("manifest")
+        if isinstance(manifest, dict):
+            poc = manifest.get("poc")
+            if isinstance(poc, dict):
+                cmd = poc.get("cmd")
+                if isinstance(cmd, str) and cmd.strip():
+                    return cmd.strip()
+    return None
+
+
+def _render_poc_cmd_shell(
+    cmd: str,
+    *,
+    poc_path: str,
+    base_url: str,
+    payload: str | None,
+) -> str:
+    raw = (cmd or "").strip()
+    raw = raw.replace("{{poc_path}}", poc_path).replace("{{base_url}}", shlex.quote(base_url))
+    # Backwards compat: map common relative poc paths to the injected path.
+    raw = re.sub(r"(?:(?:\\./)?poc\\.py)\\b", poc_path, raw)
+    if payload is not None and "{{payload}}" in raw:
+        raw = raw.replace("{{payload}}", shlex.quote(payload))
+    return raw
+
+
+def _needs_shell(cmd: str) -> bool:
+    tokens = ["&&", ";", "|", ">", "<", "$(", "`"]
+    return any(token in cmd for token in tokens)
+
+
+def _rewrite_poc_token(token: str, poc_path: str) -> str:
+    entry_name = Path(poc_path).name
+    if token in {entry_name, f"./{entry_name}"}:
+        return poc_path
+    if token.endswith(f"/{entry_name}") and not token.startswith("/tmp/"):
+        return poc_path
+    return token
+
+
+def _load_json(path: Path) -> Dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _load_generator_contract(metadata_dir: Path) -> Dict[str, Any] | None:
+    return _load_json(metadata_dir / "generator_contract.json")
 
 
 def _start_sidecars(
@@ -528,19 +851,49 @@ def _probe_mysql_sidecar(
     raise ExecutorError(f"mysql sidecar did not become ready: {container_name}")
 
 
-def _wait_for_app_ready(container_name: str, log_path: Path, port: int = 5000, retries: int = 10, delay: float = 1.5) -> None:
+def _wait_for_app_ready(
+    container_name: str,
+    log_path: Path,
+    *,
+    port: int,
+    retries: int = 10,
+    delay: float = 1.5,
+) -> None:
     if DOCKER_BIN is None:
         raise ExecutorError("Docker binary not available for app readiness probe")
-    script = "import socket,sys;s=socket.socket();s.settimeout(1);s.connect(('127.0.0.1', int(sys.argv[1])));s.close()"
+    host = "127.0.0.1"
+    py_script = (
+        "import socket,sys;"
+        "s=socket.socket();"
+        "s.settimeout(1);"
+        f"s.connect(('{host}', int(sys.argv[1])));"
+        "s.close()"
+    )
+    bash_tcp = f"cat < /dev/null > /dev/tcp/{host}/{port}"
+    nc_tcp = f"nc -z -w1 {shlex.quote(host)} {port}"
+    busybox_tcp = f"busybox nc -z -w1 {shlex.quote(host)} {port}"
+    url = f"http://{host}:{port}/"
+    curl_http = f"curl --max-time 1 -sS -o /dev/null {shlex.quote(url)}"
+    wget_http = f"wget -qO- --timeout=1 {shlex.quote(url)} >/dev/null"
+    strategies: List[List[str]] = [
+        ["python", "-c", py_script, str(port)],
+        ["python3", "-c", py_script, str(port)],
+        ["bash", "-lc", bash_tcp],
+        ["sh", "-c", nc_tcp],
+        ["sh", "-c", busybox_tcp],
+        ["sh", "-c", curl_http],
+        ["sh", "-c", wget_http],
+    ]
     for attempt in range(1, retries + 1):
-        proc = subprocess.run(
-            [DOCKER_BIN, "exec", container_name, "python", "-c", script, str(port)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        if proc.returncode == 0:
-            return
+        for strategy in strategies:
+            proc = subprocess.run(
+                [DOCKER_BIN, "exec", container_name, *strategy],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if proc.returncode == 0:
+                return
         time.sleep(delay)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(f"application readiness probe failed for {container_name}\n")
@@ -568,13 +921,29 @@ class NetworkPool:
         self.allow_network = bool(policy.get("allow_network"))
         self.sidecars = policy.get("sidecars") or []
         self.explicit_name = (policy.get("network_name") or "").strip() or None
+        self._ephemeral_network: str | None = None
         self.mode = self._resolve_mode()
 
     def acquire(self, bundle: VulnBundle) -> NetworkHandle:
         return NetworkHandle(self.mode)
 
     def release(self, handle: NetworkHandle) -> None:
-        pass
+        # No-op: network lifecycle is managed per executor run via close().
+        # In multi-vuln mode we reuse the same network across bundles; removing
+        # it after each bundle breaks subsequent docker runs.
+        return
+
+    def close(self) -> None:
+        if DOCKER_BIN is None:
+            return
+        if not self._ephemeral_network:
+            return
+        subprocess.run(
+            [DOCKER_BIN, "network", "rm", self._ephemeral_network],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
 
     def _resolve_mode(self) -> str:
         if not self.allow_network:
@@ -584,6 +953,7 @@ class NetworkPool:
             return self.explicit_name
         if any(entry.get("aliases") for entry in self.sidecars):
             name = f"{self.sid}-net"
+            self._ephemeral_network = name
             self._ensure_network(name)
             return name
         return self.policy.get("network_mode") or "bridge"
