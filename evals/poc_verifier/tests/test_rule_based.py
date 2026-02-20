@@ -138,3 +138,26 @@ class RuleBasedVerifierTests(TestCase):
                 run_summary={"sid": sid, "slug": slug},
             )
         self.assertIn("poc.py contains 'Exploit SUCCESS'", result["evidence"])
+
+    def test_semantic_mismatch_forces_failure_even_when_rule_markers_match(self) -> None:
+        log_path = self._write_log("SIG")
+        rule = {
+            "cwe": "CWE-352",
+            "success_signature": "SIG",
+            "flag_token": "",
+            "strict_flag": False,
+        }
+        semantic_report = {
+            "supported": True,
+            "semantic_match": False,
+            "errors": ["missing state-changing endpoint"],
+            "signals": {},
+        }
+        with patch.object(rule_based, "load_rule", return_value=rule), patch.object(
+            rule_based,
+            "_evaluate_semantic_consistency",
+            return_value=semantic_report,
+        ):
+            result = rule_based.verify_with_rule("CWE-352", log_path)
+        self.assertFalse(result["verify_pass"])
+        self.assertIn("semantic mismatch", result["evidence"])

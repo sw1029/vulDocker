@@ -144,6 +144,15 @@ def _rule_known(vuln_id: str) -> bool:
 def _resolve_verifier_policy(
     requirement: Optional[Dict[str, Any]], plan_policy: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    req_policy = ((requirement or {}).get("policy") or {}).get("verifier") or {}
+    req_root_policy = (requirement or {}).get("policy") or {}
+    req_policy = req_root_policy.get("verifier") or {}
     plan_verifier = (plan_policy or {}).get("verifier") or {}
-    return {**plan_verifier, **req_policy}
+    resolved = {**plan_verifier, **req_policy}
+    plan_guard = (plan_policy or {}).get("guard")
+    req_guard = req_root_policy.get("guard")
+    if isinstance(plan_guard, dict) or isinstance(req_guard, dict):
+        resolved["guard"] = {
+            **(plan_guard if isinstance(plan_guard, dict) else {}),
+            **(req_guard if isinstance(req_guard, dict) else {}),
+        }
+    return resolved

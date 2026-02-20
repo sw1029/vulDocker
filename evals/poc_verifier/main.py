@@ -145,6 +145,8 @@ def main() -> None:
 
 def _register_runtime_rules(plan: Dict[str, Any]) -> None:
     metadata_root = Path(plan["paths"]["metadata"])
+    allow_override = bool((plan.get("policy") or {}).get("allow_runtime_rule_override_static", False))
+    os.environ["VULD_ALLOW_RUNTIME_RULE_OVERRIDE_STATIC"] = "true" if allow_override else "false"
     runtime_dir = metadata_root / "runtime_rules"
     if not runtime_dir.exists():
         return
@@ -203,6 +205,8 @@ def _retry_with_runtime_rule(
         "cwe": vuln_id.upper(),
         "version": 2,
         "scenario_type": "web-poc",
+        "origin": "runtime",
+        "override_scope": "none",
         "verification": {
             "source": "runtime",
             "require_flag": bool(flag_token),

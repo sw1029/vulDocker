@@ -51,7 +51,7 @@ def _prompt_hash() -> str:
 
 def _default_components(requirement: Dict[str, Any]) -> Dict[str, str]:
     components = {
-        "model_version": requirement.get("model_version", "gpt-4.1-mini"),
+        "model_version": requirement.get("model_version", "gpt-5.2"),
         "prompt_hash": _prompt_hash(),
         "seed": str(requirement.get("seed", 0)),
         "retriever_commit": requirement.get("retriever_commit", "unknown"),
@@ -81,9 +81,24 @@ def _policy_config(normalization: RequirementNormalization) -> Dict[str, Any]:
     stop_on_first_failure = bool(
         policy_section.get("stop_on_first_failure", requirement.get("stop_on_first_failure", False))
     )
+    verifier_policy = policy_section.get("verifier") if isinstance(policy_section.get("verifier"), dict) else {}
+    researcher_cfg = requirement.get("researcher") or {}
+    search_policy = "remote_prefer"
+    if isinstance(researcher_cfg, dict):
+        candidate = str(researcher_cfg.get("search_policy") or "").strip().lower()
+        if candidate:
+            search_policy = candidate
+    guard_policy = policy_section.get("guard") if isinstance(policy_section.get("guard"), dict) else {}
     return {
         "allow_intentional_vuln": allow_intentional,
         "stop_on_first_failure": stop_on_first_failure,
+        "allow_runtime_rule_override_static": bool(
+            policy_section.get("allow_runtime_rule_override_static", False)
+        ),
+        "require_researcher_evidence": bool(policy_section.get("require_researcher_evidence", False)),
+        "guard": guard_policy,
+        "researcher": {"search_policy": search_policy},
+        "verifier": verifier_policy,
         "executor": normalization.executor_policy,
     }
 

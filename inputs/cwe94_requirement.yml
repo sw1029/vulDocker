@@ -1,0 +1,44 @@
+# Ad-hoc verification: "unknown" CWE (no static rule/template) path.
+# Goal: ensure synthesis-only pipeline can still build/run/verify and then
+# inspect whether the generated bundle truly matches CWE-94 semantics.
+
+requirement_id: ADHOC-CWE94-0001
+intent: "CWE-94(Code Injection) - template 없이 동적 합성 검증"
+vuln_id: CWE-94
+
+language: python
+framework: flask
+seed: 9400
+
+# Optional SID components (kept explicit for reproducibility)
+retriever_commit: stub
+corpus_snapshot: mvp-sample
+pattern_id: code-injection
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+allow_intentional_vuln: true
+
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+
+generator_mode: synthesis
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+
+dep_guard:
+  llm_assist: true
+  auto_patch: true
+
+policy:
+  stop_on_first_failure: false
+  verifier:
+    require_exit_code_zero: true
+    strict_flag_default: true
+    prefer_rule: true
+    llm_assist: true
+
+executor:
+  allow_network: false
+

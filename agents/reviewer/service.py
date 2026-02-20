@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from common.guardrails import GuardEngine, load_guard_spec
 from common.llm import LLMClient
 from common.logging import get_logger
 from common.paths import ensure_dir
@@ -14,6 +15,7 @@ from common.plan import load_plan
 from common.prompts import build_reviewer_prompt
 from common.rules import load_rule
 from common.contracts import load_generator_contract
+from common.vuln_semantics import evaluate_workspace_semantics, semantic_error_summary
 from common.run_matrix import (
     VulnBundle,
     artifacts_dir_for_bundle,
@@ -57,7 +59,7 @@ class ReviewerService:
         self.variation_manager = VariationManager(self.plan.get("variation_key"), seed=self.plan["requirement"].get("seed"))
         profile = self.variation_manager.profile_for("reviewer", override_mode=mode)
         reviewer_model = self.plan["requirement"].get("reviewer_model") or self.plan["requirement"].get(
-            "model_version", "gpt-4.1-mini"
+            "model_version", "gpt-5.2"
         )
         self.llm = LLMClient(reviewer_model, profile)
         self.bundles = load_vuln_bundles(self.plan)
@@ -243,8 +245,8 @@ class ReviewerService:
             return issues
         rule = load_rule(bundle.vuln_id)
         patterns = rule.get("patterns") if isinstance(rule, dict) else None
-        if not isinstance(patterns, list) or not patterns:
-            return issues
+        if not isinstance(patterns, list):
+            patterns = []
 
         service_entry = "app.py"
         poc_entry = "poc.py"
@@ -343,6 +345,47 @@ class ReviewerService:
                         severity="high",
                     )
                 )
+        semantic_report = evaluate_workspace_semantics(bundle.vuln_id, workspace)
+        if semantic_report.get("supported") and not semantic_report.get("semantic_match"):
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="app.py",
+                    line=1,
+                    issue=f"Semantic mismatch for {bundle.vuln_id}: {semantic_error_summary(semantic_report)}",
+                    fix_hint=(
+                        "Align generated code/PoC with the requested vuln_id semantics before passing REVIEW "
+                        "(ex: CWE-352 requires state-changing endpoint and missing CSRF validation)."
+                    ),
+                    severity="critical",
+                )
+            )
+
+        guard_spec = load_guard_spec(meta_dir)
+        guard_engine = GuardEngine(bundle.vuln_id, guard_spec.to_dict() if guard_spec else None)
+        guard_eval = guard_engine.evaluate_workspace([workspace])
+        if (not guard_engine.available) and guard_engine.should_fail_when_missing_spec():
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file=service_entry or "app.py",
+                    line=1,
+                    issue="Dynamic guard spec missing under failure_policy",
+                    fix_hint="Ensure RESEARCH stage emits guard_spec.json for this bundle.",
+                    severity="critical",
+                )
+            )
+        elif not guard_eval.passed:
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file=service_entry or "app.py",
+                    line=1,
+                    issue="Dynamic guard mismatch: " + "; ".join(guard_eval.violations or ["unknown violation"]),
+                    fix_hint="Apply guard autofix hints and regenerate bundle to satisfy semantic/assertion constraints.",
+                    severity="critical",
+                )
+            )
         return issues
 
     def _check_exit_code_policy(
@@ -431,6 +474,8 @@ class ReviewerService:
     def _register_runtime_rules(self) -> None:
         import os
 
+        allow_override = bool((self.plan.get("policy") or {}).get("allow_runtime_rule_override_static", False))
+        os.environ["VULD_ALLOW_RUNTIME_RULE_OVERRIDE_STATIC"] = "true" if allow_override else "false"
         runtime_dir = self.metadata_root / "runtime_rules"
         if not runtime_dir.exists():
             return

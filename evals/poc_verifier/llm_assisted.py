@@ -108,7 +108,7 @@ def llm_assisted_verify(
         cfg.get("llm_model")
         or (requirement or {}).get("reviewer_model")
         or (requirement or {}).get("model_version")
-        or "gpt-4.1-mini"
+        or "gpt-5.2"
     )
     decoding = get_decoding_profile(cfg.get("llm_decoding") or "deterministic")
     client = LLMClient(model_name, decoding)

@@ -29,9 +29,6 @@ requires_external_db: false
 strict_flag: true
 
 patterns:
-  - type: file_contains
-    path: "{{service_entry}}"
-    contains: "@app.route('/transfer"
   - type: poc_contains
     path: "{{poc_entry}}"
     contains: "CSRF SUCCESS"

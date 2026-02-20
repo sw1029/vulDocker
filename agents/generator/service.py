@@ -6,6 +6,7 @@ docs/handbook.md (아키텍처/스키마 섹션).
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import shutil
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from common.config import DecodingProfile
+from common.guardrails import SUPPORTED_GENERATOR_ASSERTION_OPS, load_guard_spec
+from common.hints import normalize_hint_payload
 from common.llm import LLMClient
 from common.logging import get_logger
 from common.contracts import build_generator_contract, write_generator_contract
@@ -133,6 +136,8 @@ class GeneratorContext:
     failure: str
     hints: str
     researcher_report: str
+    guard_spec: str
+    guard_spec_dict: Dict[str, Any]
 
 
 class TemplateRegistry:
@@ -199,6 +204,7 @@ class GeneratorService:
         *,
         plan: Dict[str, Any] | None = None,
         bundle: VulnBundle | None = None,
+        single_attempt: bool = False,
     ) -> None:
         self.sid = sid
         self.plan = plan or load_plan(sid)
@@ -219,10 +225,13 @@ class GeneratorService:
         self.user_deps = self._normalize_user_deps()
         self.loop_index = self._read_loop_index()
         self.profile: DecodingProfile = self.variation_manager.profile_for("generator", override_mode=mode)
-        model = self.requirement.get("model_version", "gpt-4.1-mini")
+        model = self.requirement.get("model_version", "gpt-5.2")
         self.llm = LLMClient(model, self.profile)
-        self.generator_mode = (self.requirement.get("generator_mode") or "hybrid").lower()
+        self.generator_mode = (self.requirement.get("generator_mode") or "synthesis").lower()
         self.synthesis_limits = SynthesisLimits.from_requirement(self.requirement)
+        internal_loops_env = os.environ.get("VULD_GENERATOR_INTERNAL_LOOPS", "true").strip().lower()
+        internal_loops_enabled = internal_loops_env not in {"0", "false", "no", "off"}
+        self.single_attempt = bool(single_attempt) or not internal_loops_enabled
         self._template_root = template_root
         self._registry: Optional[TemplateRegistry] = None
         loop_cfg = self.plan.get("loop", {"max_loops": 3})
@@ -247,10 +256,15 @@ class GeneratorService:
         if path_str not in parts:
             parts.append(path_str)
             os.environ[env_key] = os.pathsep.join(parts)
+        override_key = "VULD_ALLOW_RUNTIME_RULE_OVERRIDE_STATIC"
+        allow_override = bool((self.plan.get("policy") or {}).get("allow_runtime_rule_override_static", False))
+        os.environ[override_key] = "true" if allow_override else "false"
 
     def _get_registry(self) -> TemplateRegistry:
         if self._registry is None:
-            extras = [self.runtime_templates_dir] if self.runtime_templates_dir.exists() else []
+            extras: List[Path] = []
+            if self.generator_mode in {"template", "hybrid"} and self.runtime_templates_dir.exists():
+                extras = [self.runtime_templates_dir]
             self._registry = TemplateRegistry(self._template_root, extra_roots=extras)
         return self._registry
 
@@ -397,10 +411,13 @@ class GeneratorService:
             value = report.get(key)
             if value in (None, "", [], {}):
                 continue
-            if key == "verification_spec" and has_static and isinstance(value, dict) and not bool(value.get("override_static")):
-                # Prevent conflicting success markers from confusing synthesis prompts
-                # when a stable static rule exists.
-                continue
+            if key == "verification_spec" and has_static and isinstance(value, dict):
+                allow_full_override = bool(
+                    (self.plan.get("policy") or {}).get("allow_runtime_rule_override_static", False)
+                )
+                if (not allow_full_override) or (not bool(value.get("override_static"))):
+                    # Prevent static contract drift in synthesis prompts unless policy explicitly allows full override.
+                    continue
             trimmed[key] = value
         if not trimmed:
             return ""
@@ -425,11 +442,15 @@ class GeneratorService:
             if boilerplate:
                 hints = (hints + "\n\n" + boilerplate).strip() if hints else boilerplate
         researcher_report = self._researcher_report_for_prompt()
+        guard_spec_dict = self._load_guard_spec_dict()
+        guard_spec_text = json.dumps(guard_spec_dict, indent=2, ensure_ascii=False) if guard_spec_dict else ""
         return GeneratorContext(
             rag=rag_context,
             failure=failure_context,
             hints=hints,
             researcher_report=researcher_report,
+            guard_spec=guard_spec_text,
+            guard_spec_dict=guard_spec_dict,
         )
 
     def _candidate_k(self) -> int:
@@ -473,6 +494,44 @@ class GeneratorService:
             self.loop_controller.start_loop()
 
     def _run_synthesis_with_loops(self, context: GeneratorContext) -> None:
+        if self.single_attempt:
+            try:
+                outcome = self._run_synthesis_once(context)
+                added_user_deps = self._apply_user_deps_to_workspace()
+                self._record_user_deps_metadata(added_user_deps)
+                self._write_generator_contract(mode_label="synthesis")
+                self.loop_controller.record_success(stage="GENERATOR", note="synthesis succeeded")
+                LOGGER.info(
+                    "Synthesis candidate #%s materialized %s files for %s",
+                    outcome.selected.index,
+                    len(outcome.written_files),
+                    self.sid,
+                )
+                return
+            except ManifestValidationError as exc:
+                failure_meta = self._latest_generator_failure()
+                reason = failure_meta.get("reason") or str(exc)
+                fix_hint = failure_meta.get("fix_hint") or "Review generator_failures.jsonl and add missing deps."
+                metadata = {
+                    "missing_dependencies": failure_meta.get("missing_dependencies", []),
+                    "suggested_dependencies": failure_meta.get("suggested_dependencies", []),
+                    "guard_error_code": failure_meta.get("guard_error_code"),
+                    "guard_error_subcode": failure_meta.get("guard_error_subcode"),
+                    "unsupported_ops": failure_meta.get("unsupported_ops", []),
+                    "schema_errors": failure_meta.get("schema_errors", []),
+                    "schema_normalizations": failure_meta.get("schema_normalizations", []),
+                    "failure_fingerprint": failure_meta.get("failure_fingerprint", ""),
+                    "hint_payload": failure_meta.get("hint_payload", {}),
+                }
+                self.loop_controller.record_failure(
+                    stage="GENERATOR",
+                    reason=reason,
+                    fix_hint=fix_hint,
+                    blocking=True,
+                    metadata=metadata,
+                )
+                raise
+
         while True:
             try:
                 outcome = self._run_synthesis_once(context)
@@ -494,6 +553,8 @@ class GeneratorService:
                 metadata = {
                     "missing_dependencies": failure_meta.get("missing_dependencies", []),
                     "suggested_dependencies": failure_meta.get("suggested_dependencies", []),
+                    "guard_error_code": failure_meta.get("guard_error_code"),
+                    "unsupported_ops": failure_meta.get("unsupported_ops", []),
                 }
                 self.loop_controller.record_failure(
                     stage="GENERATOR",
@@ -523,10 +584,16 @@ class GeneratorService:
             rag_context=context.rag,
             hints=context.hints,
             researcher_report=context.researcher_report,
+            guard_spec=context.guard_spec,
+            guard_spec_payload=context.guard_spec_dict,
             failure_context=context.failure,
             candidate_k=self._candidate_k(),
             poc_template=self.requirement.get("poc_template"),
         )
+
+    def _load_guard_spec_dict(self) -> Dict[str, Any]:
+        spec = load_guard_spec(self.metadata_dir)
+        return spec.to_dict() if spec else {}
 
     def _run_template(self, context: GeneratorContext, *, mode_label: str) -> None:
         prompt_messages = build_generator_prompt(
@@ -567,29 +634,87 @@ class GeneratorService:
         LOGGER.info("Generator contract written to %s", path)
 
     def _latest_generator_failure(self) -> Dict[str, Any]:
-        path = self.metadata_dir / "generator_failures.jsonl"
-        if not path.exists():
-            return {}
-        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        if not lines:
-            return {}
-        try:
-            return json.loads(lines[-1])
-        except json.JSONDecodeError:
-            return {}
+        candidate_paths = [self.metadata_dir / "generator_failures.jsonl"]
+        if self.metadata_dir != self.metadata_root:
+            candidate_paths.append(self.metadata_root / "generator_failures.jsonl")
+        latest_entry: Dict[str, Any] = {}
+        latest_ts = ""
+        for path in candidate_paths:
+            if not path.exists():
+                continue
+            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if not lines:
+                continue
+            try:
+                entry = json.loads(lines[-1])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            timestamp = str(entry.get("timestamp") or "")
+            if timestamp >= latest_ts:
+                latest_entry = entry
+                latest_ts = timestamp
+        return latest_entry
 
     def _guard_prompt_hint(self) -> str:
         entry = self._latest_generator_failure()
+        if not entry:
+            return ""
+        hint_payload_raw = ((self.plan.get("policy") or {}).get("guard") or {}).get("hint_payload_enabled", True)
+        if isinstance(hint_payload_raw, str):
+            hint_payload_enabled = hint_payload_raw.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            hint_payload_enabled = bool(hint_payload_raw)
+        if hint_payload_enabled and isinstance(entry.get("hint_payload"), dict):
+            payload = normalize_hint_payload(entry.get("hint_payload"))
+            payload_text = json.dumps(payload, indent=2, ensure_ascii=False)
+            supported_ops = ", ".join(sorted(SUPPORTED_GENERATOR_ASSERTION_OPS))
+            return (
+                "# Failure Hint Payload (JSON)\n"
+                "```json\n"
+                f"{payload_text}\n"
+                "```\n"
+                "# Supported Guard Ops\n"
+                f"{supported_ops}"
+            )
+
         missing = entry.get("missing_dependencies") or []
         suggested = entry.get("suggested_dependencies") or []
+        unsupported_ops = entry.get("unsupported_ops") or []
+        guard_error_code = str(entry.get("guard_error_code") or "").strip().lower()
         auto_patch = entry.get("auto_patch") or {}
         skipped = auto_patch.get("skipped") or []
         stdlib_skipped = [item.get("name") for item in skipped if item.get("reason") == "stdlib"]
-        if not missing and not suggested:
+        notes = entry.get("notes") or []
+        semantic_notes = []
+        if isinstance(notes, list):
+            semantic_notes = [
+                str(item).strip()
+                for item in notes
+                if isinstance(item, str) and "semantic mismatch:" in item.lower()
+            ]
+        reason = str(entry.get("reason") or "").strip()
+        if reason and "semantic mismatch:" in reason.lower():
+            semantic_notes.append(reason)
+        semantic_notes = sorted(set(note for note in semantic_notes if note))
+        if not missing and not suggested and not semantic_notes and not unsupported_ops and not guard_error_code:
             return ""
         unique_missing = sorted({dep for dep in missing if dep})
         unique_suggested = sorted({dep for dep in suggested if dep})
         parts: List[str] = []
+        if guard_error_code:
+            parts.append(f"Latest guard failure code: {guard_error_code}")
+        if unsupported_ops:
+            parts.append("Unsupported guard ops from last run: " + ", ".join(sorted({str(op) for op in unsupported_ops if op})))
+            parts.append(
+                "Regenerate GuardSpec with supported generator ops only: "
+                "file_exists, role_exists, file_contains, file_not_contains, file_regex_contains, "
+                "file_regex_not_contains, file_regex_any, dep_declared, any_dep_declared, "
+                "pattern_tag_present, manifest_field_equals, manifest_field_contains."
+            )
+        if semantic_notes:
+            parts.append("Semantic guard failures to fix: " + " | ".join(semantic_notes))
         if unique_missing:
             parts.append(
                 "Generator guard hint: declare and install the following dependencies in deps[] and requirements*.txt -> "

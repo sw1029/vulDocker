@@ -1,6 +1,7 @@
 """Fallback-friendly web search helper for the Researcher agent."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,8 @@ class SearchResult:
     snippet: str
     source: str = "local"
     published: Optional[str] = None
+    query: Optional[str] = None
+    retrieved_at: Optional[str] = None
 
     def to_payload(self) -> Dict[str, str]:
         payload: Dict[str, str] = {
@@ -36,6 +39,10 @@ class SearchResult:
         }
         if self.published:
             payload["published"] = self.published
+        if self.query:
+            payload["query"] = self.query
+        if self.retrieved_at:
+            payload["retrieved_at"] = self.retrieved_at
         return payload
 
 
@@ -54,19 +61,41 @@ class WebSearchTool:
         self.max_local_files = max_local_files
         self.local_root = get_repo_root() / "rag" / "corpus"
 
-    def search(self, query: str, limit: int = 3) -> List[SearchResult]:
+    def search(self, query: str, limit: int = 3, policy: str = "remote_prefer") -> List[SearchResult]:
         """Return up to ``limit`` results for a query."""
 
         query = (query or "").strip()
         if not query:
             return []
+        policy = (policy or "remote_prefer").strip().lower()
+        if policy not in {"remote_required", "remote_prefer", "local_only"}:
+            policy = "remote_prefer"
 
+        if policy == "local_only":
+            return self._annotate_hits(self._local_search(query, limit), query)
+
+        remote_hits: List[SearchResult] = []
         if self.endpoint:
             remote_hits = self._remote_search(query, limit)
-            if remote_hits:
-                return remote_hits
+        elif policy == "remote_required":
+            LOGGER.warning("search_policy=remote_required but VUL_WEB_SEARCH_ENDPOINT is not configured")
 
-        return self._local_search(query, limit)
+        if policy == "remote_required":
+            return self._annotate_hits(remote_hits, query)
+
+        if remote_hits:
+            return self._annotate_hits(remote_hits, query)
+        return self._annotate_hits(self._local_search(query, limit), query)
+
+    @staticmethod
+    def _annotate_hits(hits: List[SearchResult], query: str) -> List[SearchResult]:
+        retrieved_at = datetime.now(timezone.utc).isoformat()
+        for hit in hits:
+            if not hit.query:
+                hit.query = query
+            if not hit.retrieved_at:
+                hit.retrieved_at = retrieved_at
+        return hits
 
     # Remote search helpers -------------------------------------------------
 

@@ -1,0 +1,647 @@
+"""Execution engine for dynamic GuardSpec assertions."""
+from __future__ import annotations
+
+import re
+import fnmatch
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from common.rules import load_static_rule
+from common.vuln_semantics import (
+    evaluate_manifest_semantics,
+    evaluate_workspace_semantics,
+    normalize_vuln_id,
+    semantic_error_summary,
+)
+from evals.assertions import run_assertions
+
+from .types import GuardSpec, default_guard_policy_snapshot, parse_guard_spec
+
+
+@dataclass
+class GuardEvaluation:
+    passed: bool
+    blocking: bool
+    violations: List[str]
+    warnings: List[str]
+    details: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "passed": self.passed,
+            "blocking": self.blocking,
+            "violations": self.violations,
+            "warnings": self.warnings,
+            "details": self.details,
+        }
+
+
+class GuardEngine:
+    """Evaluate dynamic guard assertions across generator/verifier/reviewer."""
+
+    def __init__(self, vuln_id: str, guard_spec: Optional[GuardSpec | Dict[str, Any]]) -> None:
+        self.vuln_id = str(vuln_id or "").strip()
+        self.normalized_vuln_id = normalize_vuln_id(self.vuln_id)
+        self.is_known = bool(load_static_rule(self.vuln_id))
+        self.spec = self._parse_spec(guard_spec)
+        self.policy_snapshot = default_guard_policy_snapshot(
+            self.spec.policy_snapshot if isinstance(self.spec, GuardSpec) else None
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.spec is not None
+
+    def should_block(self) -> bool:
+        enforcement = str(self.policy_snapshot.get("enforcement") or "block_both").strip().lower()
+        if enforcement == "warn_only":
+            return False
+        if enforcement == "block_unknown":
+            return not self.is_known
+        return True
+
+    def should_fail_when_missing_spec(self) -> bool:
+        failure_policy = str(self.policy_snapshot.get("failure_policy") or "closed_unknown").strip().lower()
+        if failure_policy == "closed_all":
+            return True
+        if failure_policy == "closed_unknown":
+            return not self.is_known
+        return False
+
+    def evaluate_manifest(self, manifest: Dict[str, Any]) -> GuardEvaluation:
+        if not self.available:
+            return GuardEvaluation(
+                passed=True,
+                blocking=False,
+                violations=[],
+                warnings=["guard spec unavailable; manifest guard skipped"],
+                details={"available": False},
+            )
+
+        spec = self.spec
+        assert spec is not None
+        violations: List[str] = []
+        warnings: List[str] = []
+        assertion_details: List[Dict[str, Any]] = []
+        downgraded_assertions: List[Dict[str, Any]] = []
+        scope = str(self.policy_snapshot.get("dynamic_scope") or "assertions_semantics").strip().lower()
+        semantic_detail = self._evaluate_manifest_semantics(manifest)
+        builtin_semantics_passed = bool(
+            scope == "assertions_semantics"
+            and isinstance(semantic_detail, dict)
+            and isinstance(semantic_detail.get("builtin"), dict)
+            and semantic_detail.get("builtin", {}).get("supported")
+            and semantic_detail.get("builtin", {}).get("semantic_match")
+        )
+
+        for assertion in spec.generator_assertions:
+            ok, detail = _evaluate_generator_assertion(manifest, assertion)
+            intent = str(assertion.get("intent") or "semantic_anchor").strip().lower()
+            stability = str(assertion.get("stability") or "medium").strip().lower()
+            severity = str(assertion.get("severity") or "block").strip().lower()
+            if severity not in {"block", "warn"}:
+                severity = "block"
+            downgraded = False
+            downgrade_reason = ""
+            if not ok and severity == "warn":
+                downgraded = True
+                downgrade_reason = "assertion marked as warn"
+            elif (
+                not ok
+                and builtin_semantics_passed
+                and scope == "assertions_semantics"
+                and (intent == "syntax_hint" or stability == "low")
+            ):
+                downgraded = True
+                downgrade_reason = "syntax_hint/low-stability downgraded under semantics-first policy"
+            assertion_details.append(
+                {
+                    "assertion": assertion,
+                    "ok": ok,
+                    "detail": detail,
+                    "severity": severity,
+                    "intent": intent,
+                    "stability": stability,
+                    "downgraded": downgraded,
+                    "downgrade_reason": downgrade_reason,
+                }
+            )
+            if not ok:
+                if downgraded:
+                    warnings.append(f"guard assertion warning: {detail}")
+                    downgraded_assertions.append(
+                        {
+                            "op": str(assertion.get("op") or ""),
+                            "detail": detail,
+                            "reason": downgrade_reason,
+                        }
+                    )
+                else:
+                    violations.append(f"guard assertion failed: {detail}")
+
+        if semantic_detail["errors"]:
+            violations.extend(f"guard semantic mismatch: {item}" for item in semantic_detail["errors"])
+        semantic_warnings = semantic_detail.get("warnings")
+        if isinstance(semantic_warnings, list):
+            for item in semantic_warnings:
+                if isinstance(item, str) and item.strip():
+                    warnings.append(f"guard semantic warning: {item.strip()}")
+
+        blocking = self.should_block() and bool(violations)
+        passed = not blocking
+        if violations and not self.should_block():
+            warnings.extend(violations)
+            violations = []
+            passed = True
+            blocking = False
+
+        return GuardEvaluation(
+            passed=passed,
+            blocking=blocking,
+            violations=violations,
+            warnings=warnings,
+            details={
+                "available": True,
+                "policy_snapshot": self.policy_snapshot,
+                "assertions": assertion_details,
+                "downgraded_assertions": downgraded_assertions,
+                "semantic": semantic_detail,
+            },
+        )
+
+    def evaluate_verifier_log(self, log_text: str) -> GuardEvaluation:
+        if not self.available:
+            return GuardEvaluation(
+                passed=True,
+                blocking=False,
+                violations=[],
+                warnings=["guard spec unavailable; verifier guard skipped"],
+                details={"available": False},
+            )
+        spec = self.spec
+        assert spec is not None
+        normalized_assertions = [_normalize_verifier_assertion(assertion) for assertion in spec.verifier_assertions]
+        success, outcomes = run_assertions(log_text, normalized_assertions)
+        violations: List[str] = []
+        details: List[Dict[str, Any]] = []
+        for outcome in outcomes:
+            details.append({"op": outcome.op, "success": outcome.success, "details": outcome.details})
+            if not outcome.success:
+                violations.append(f"verifier assertion failed ({outcome.op}): {outcome.details}")
+        if not success and not violations:
+            violations.append("verifier assertion program failed")
+        deferred = spec.verifier_assertions_deferred if isinstance(spec.verifier_assertions_deferred, list) else []
+
+        blocking = self.should_block() and bool(violations)
+        passed = not blocking
+        warnings: List[str] = []
+        if deferred:
+            warnings.append(f"{len(deferred)} verifier assertions deferred (non-blocking)")
+        if violations and not self.should_block():
+            warnings.extend(violations)
+            violations = []
+            passed = True
+            blocking = False
+        return GuardEvaluation(
+            passed=passed,
+            blocking=blocking,
+            violations=violations,
+            warnings=warnings,
+            details={
+                "available": True,
+                "policy_snapshot": self.policy_snapshot,
+                "assertions": details,
+                "deferred_assertions": deferred,
+            },
+        )
+
+    def evaluate_workspace(self, workspace_dirs: Sequence[Path]) -> GuardEvaluation:
+        if not self.available:
+            return GuardEvaluation(
+                passed=True,
+                blocking=False,
+                violations=[],
+                warnings=["guard spec unavailable; workspace guard skipped"],
+                details={"available": False},
+            )
+        spec = self.spec
+        assert spec is not None
+        text, scanned_files = _collect_workspace_text(workspace_dirs)
+        signature_report = _evaluate_semantic_signature(spec.semantic_signature, text)
+        builtin_report = _evaluate_builtin_workspace_semantics(self.vuln_id, workspace_dirs)
+
+        violations: List[str] = []
+        if signature_report["errors"]:
+            violations.extend(f"semantic signature mismatch: {item}" for item in signature_report["errors"])
+        if builtin_report.get("supported") and not builtin_report.get("semantic_match"):
+            violations.append(f"semantic mismatch: {semantic_error_summary(builtin_report)}")
+
+        blocking = self.should_block() and bool(violations)
+        passed = not blocking
+        warnings: List[str] = []
+        if violations and not self.should_block():
+            warnings.extend(violations)
+            violations = []
+            passed = True
+            blocking = False
+
+        return GuardEvaluation(
+            passed=passed,
+            blocking=blocking,
+            violations=violations,
+            warnings=warnings,
+            details={
+                "available": True,
+                "policy_snapshot": self.policy_snapshot,
+                "scanned_files": scanned_files,
+                "semantic_signature": signature_report,
+                "builtin_semantics": builtin_report,
+            },
+        )
+
+    def _evaluate_manifest_semantics(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        spec = self.spec
+        if spec is None:
+            return {"errors": [], "warnings": [], "signature": {}, "builtin": {}}
+        text = _collect_manifest_text(manifest)
+        signature_report = _evaluate_semantic_signature(spec.semantic_signature, text)
+        builtin_report = evaluate_manifest_semantics(self.vuln_id, manifest)
+        errors: List[str] = []
+        warnings: List[str] = []
+        scope = str(self.policy_snapshot.get("dynamic_scope") or "assertions_semantics").strip().lower()
+
+        signature_errors = list(signature_report.get("errors") or [])
+        # When builtin semantic evaluator already confirms a semantic match, do not
+        # hard-fail on token-level signature misses in assertions_semantics mode.
+        if (
+            signature_errors
+            and scope == "assertions_semantics"
+            and builtin_report.get("supported")
+            and builtin_report.get("semantic_match")
+        ):
+            warnings.extend(signature_errors)
+        elif signature_errors:
+            errors.extend(signature_errors)
+
+        if scope in {"assertions_semantics", "full"} and builtin_report.get("supported") and not builtin_report.get(
+            "semantic_match"
+        ):
+            errors.append(semantic_error_summary(builtin_report))
+        return {
+            "errors": errors,
+            "warnings": warnings,
+            "signature": signature_report,
+            "builtin": builtin_report,
+        }
+
+    @staticmethod
+    def _parse_spec(guard_spec: Optional[GuardSpec | Dict[str, Any]]) -> Optional[GuardSpec]:
+        if guard_spec is None:
+            return None
+        if isinstance(guard_spec, GuardSpec):
+            return guard_spec
+        if not isinstance(guard_spec, dict):
+            return None
+        try:
+            return parse_guard_spec(guard_spec)
+        except Exception:
+            return None
+
+
+def _collect_manifest_text(manifest: Dict[str, Any]) -> str:
+    body = manifest.get("manifest") if isinstance(manifest.get("manifest"), dict) else manifest
+    files = body.get("files") if isinstance(body, dict) else []
+    if not isinstance(files, list):
+        return ""
+    chunks: List[str] = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        content = entry.get("content")
+        if isinstance(content, str) and content:
+            chunks.append(content)
+    notes = body.get("notes")
+    if isinstance(notes, str) and notes.strip():
+        chunks.append(notes)
+    return "\n".join(chunks)
+
+
+def _collect_workspace_text(workspace_dirs: Sequence[Path]) -> Tuple[str, int]:
+    chunks: List[str] = []
+    count = 0
+    exts = {".py", ".js", ".ts", ".php", ".rb", ".java", ".go", ".sql", ".md", ".txt"}
+    for root in workspace_dirs:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in exts:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            count += 1
+            chunks.append(content)
+    return "\n".join(chunks), count
+
+
+def _evaluate_builtin_workspace_semantics(vuln_id: str, workspace_dirs: Sequence[Path]) -> Dict[str, Any]:
+    # Use the first existing workspace for the built-in semantic helper.
+    for root in workspace_dirs:
+        if root.exists() and root.is_dir():
+            return evaluate_workspace_semantics(vuln_id, root)
+    return {
+        "supported": False,
+        "semantic_match": True,
+        "errors": [],
+        "signals": {},
+        "vuln_id": normalize_vuln_id(vuln_id),
+        "scanned_files": 0,
+    }
+
+
+def _evaluate_semantic_signature(signature: Dict[str, List[str]], text: str) -> Dict[str, Any]:
+    lowered_text = (text or "").lower()
+    errors: List[str] = []
+    bucket_signals: Dict[str, Dict[str, Any]] = {}
+    for bucket in ("input_vector", "sink", "exploit_precondition"):
+        terms = signature.get(bucket) if isinstance(signature, dict) else []
+        if not isinstance(terms, list):
+            terms = []
+        normalized_terms = [str(term).strip() for term in terms if isinstance(term, str) and term.strip()]
+        if not normalized_terms:
+            bucket_signals[bucket] = {"required": [], "matched": []}
+            continue
+        matched = [term for term in normalized_terms if _semantic_token_present(lowered_text, term.lower())]
+        bucket_signals[bucket] = {"required": normalized_terms, "matched": matched}
+        if not matched:
+            errors.append(f"{bucket} terms were not observed in generated artifacts")
+    return {
+        "semantic_match": not errors,
+        "errors": errors,
+        "signals": bucket_signals,
+    }
+
+
+def _semantic_token_present(text: str, token: str) -> bool:
+    token = (token or "").strip().lower()
+    if not token:
+        return False
+    if token in text:
+        return True
+    words = [part for part in re.split(r"[^a-z0-9]+", token) if part]
+    if not words:
+        return False
+    return all(word in text for word in words)
+
+
+def _evaluate_generator_assertion(manifest: Dict[str, Any], assertion: Dict[str, Any]) -> Tuple[bool, str]:
+    op = _normalize_generator_assertion_op(str(assertion.get("op") or "").strip().lower())
+    files = _manifest_files(manifest)
+    deps = _manifest_deps(manifest)
+    if op == "file_exists":
+        path = str(assertion.get("path") or "").strip()
+        if not path:
+            return False, "file_exists requires path"
+        for entry in files:
+            if entry["path"] == path:
+                return True, f"file exists: {path}"
+        return False, f"missing file: {path}"
+    if op == "role_exists":
+        role = str(assertion.get("role") or "").strip().lower()
+        if not role:
+            return False, "role_exists requires role"
+        if any((entry["role"] or "").lower() == role for entry in files):
+            return True, f"role exists: {role}"
+        return False, f"missing role: {role}"
+    if op in {"file_contains", "file_not_contains"}:
+        path = str(assertion.get("path") or "").strip()
+        needle = str(assertion.get("string") or assertion.get("contains") or assertion.get("needle") or "").strip()
+        if not path or not needle:
+            return False, f"{op} requires path and string"
+        target = next((entry for entry in files if entry["path"] == path), None)
+        if target is None:
+            return False, f"{op}: missing file {path}"
+        hit = needle in (target["content"] or "")
+        if op == "file_contains":
+            return hit, f"{path} contains '{needle}'" if hit else f"{path} missing '{needle}'"
+        return (not hit), f"{path} does not contain '{needle}'" if not hit else f"{path} unexpectedly contains '{needle}'"
+    if op in {"file_regex_contains", "file_regex_not_contains"}:
+        path = str(assertion.get("path") or "").strip()
+        pattern = str(assertion.get("regex") or assertion.get("pattern") or "").strip()
+        if not path or not pattern:
+            return False, f"{op} requires path and regex"
+        target = next((entry for entry in files if entry["path"] == path), None)
+        if target is None:
+            return False, f"{op}: missing file {path}"
+        regex, err = _compile_regex(pattern, assertion.get("flags"))
+        if regex is None:
+            return False, err
+        hit = bool(regex.search(target["content"] or ""))
+        if op == "file_regex_contains":
+            return hit, f"{path} matches /{pattern}/" if hit else f"{path} missing regex /{pattern}/"
+        return (not hit), f"{path} does not match /{pattern}/" if not hit else f"{path} unexpectedly matches /{pattern}/"
+    if op == "file_regex_any":
+        globs = assertion.get("globs") or assertion.get("paths") or assertion.get("glob")
+        pattern = str(assertion.get("regex") or assertion.get("pattern") or "").strip()
+        if isinstance(globs, str):
+            globs = [globs]
+        if not isinstance(globs, list) or not pattern:
+            return False, "file_regex_any requires globs[] and regex"
+        normalized_globs = [str(item).strip() for item in globs if isinstance(item, str) and str(item).strip()]
+        if not normalized_globs:
+            return False, "file_regex_any requires non-empty globs[]"
+        regex, err = _compile_regex(pattern, assertion.get("flags"))
+        if regex is None:
+            return False, err
+        matched_paths: List[str] = []
+        for entry in files:
+            rel = entry["path"]
+            if any(fnmatch.fnmatch(rel, glob) for glob in normalized_globs):
+                if regex.search(entry["content"] or ""):
+                    matched_paths.append(rel)
+        if matched_paths:
+            return True, f"regex /{pattern}/ matched file(s): {', '.join(sorted(matched_paths)[:3])}"
+        return False, f"regex /{pattern}/ not found under globs: {', '.join(normalized_globs)}"
+    if op == "dep_declared":
+        dep = str(assertion.get("dep") or assertion.get("name") or assertion.get("package") or "").strip().lower()
+        if not dep:
+            return False, "dep_declared requires dep"
+        if dep in deps:
+            return True, f"dep declared: {dep}"
+        return False, f"missing dep declaration: {dep}"
+    if op == "any_dep_declared":
+        candidates = assertion.get("deps")
+        if candidates is None:
+            candidates = assertion.get("names")
+        if candidates is None:
+            candidates = assertion.get("packages")
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        if not isinstance(candidates, list):
+            return False, "any_dep_declared requires deps[]"
+        normalized = [str(item).strip().lower() for item in candidates if isinstance(item, str) and item.strip()]
+        if not normalized:
+            return False, "any_dep_declared requires non-empty deps[]"
+        hit = next((dep for dep in normalized if dep in deps), None)
+        if hit:
+            return True, f"one of deps declared: {hit}"
+        return False, f"none of deps declared: {', '.join(normalized)}"
+    if op == "pattern_tag_present":
+        tag = str(assertion.get("tag") or "").strip().lower()
+        tags = assertion.get("tags")
+        manifest_tags = _manifest_pattern_tags(manifest)
+        if tag:
+            hit = tag in manifest_tags
+            return hit, f"pattern tag '{tag}' present" if hit else f"missing pattern tag '{tag}'"
+        if isinstance(tags, list):
+            normalized = [str(item).strip().lower() for item in tags if isinstance(item, str) and item.strip()]
+            for candidate in normalized:
+                if candidate in manifest_tags:
+                    return True, f"pattern tag '{candidate}' present"
+            return False, f"none of pattern tags present: {', '.join(normalized)}"
+        return False, "pattern_tag_present requires tag or tags"
+    if op in {"manifest_field_equals", "manifest_field_contains"}:
+        pointer = str(assertion.get("field") or "").strip()
+        if not pointer:
+            return False, f"{op} requires field"
+        value = _resolve_field(manifest, pointer)
+        if op == "manifest_field_equals":
+            expected = assertion.get("value")
+            ok = value == expected
+            return ok, f"{pointer} == {expected!r}" if ok else f"{pointer} expected {expected!r}, got {value!r}"
+        needle = str(assertion.get("string") or "").strip()
+        if not needle:
+            return False, "manifest_field_contains requires string"
+        haystack = str(value or "")
+        ok = needle in haystack
+        return ok, f"{pointer} contains '{needle}'" if ok else f"{pointer} missing '{needle}'"
+    return False, f"unsupported guard assertion op: {op or 'unknown'}"
+
+
+def _manifest_files(manifest: Dict[str, Any]) -> List[Dict[str, str]]:
+    body = manifest.get("manifest") if isinstance(manifest.get("manifest"), dict) else manifest
+    files = body.get("files") if isinstance(body, dict) else []
+    output: List[Dict[str, str]] = []
+    if not isinstance(files, list):
+        return output
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        path = str(entry.get("path") or "").strip()
+        if not path:
+            continue
+        output.append(
+            {
+                "path": path,
+                "role": str(entry.get("role") or "").strip(),
+                "content": str(entry.get("content") or ""),
+            }
+        )
+    return output
+
+
+def _normalize_generator_assertion_op(op: str) -> str:
+    if op == "file_contains_regex":
+        return "file_regex_contains"
+    if op == "not_file_contains_regex":
+        return "file_regex_not_contains"
+    if op == "regex_any_file":
+        return "file_regex_any"
+    return op
+
+
+def _normalize_verifier_assertion(assertion: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(assertion)
+    op = str(normalized.get("op") or "").strip().lower()
+    if op == "stdout_contains":
+        normalized["op"] = "contains"
+    else:
+        normalized["op"] = op
+    return normalized
+
+
+def _compile_regex(pattern: str, flags_value: Any) -> Tuple[Optional[re.Pattern[str]], str]:
+    flags = _regex_flags_from_value(flags_value)
+    try:
+        return re.compile(pattern, flags), ""
+    except re.error as exc:
+        return None, f"invalid regex '{pattern}': {exc}"
+
+
+def _regex_flags_from_value(value: Any) -> int:
+    if value is None:
+        return 0
+    tokens: List[str]
+    if isinstance(value, str):
+        tokens = [value]
+    elif isinstance(value, list):
+        tokens = [str(item) for item in value]
+    else:
+        return 0
+    merged = "".join(token.strip().lower() for token in tokens if token)
+    flags = 0
+    if "i" in merged:
+        flags |= re.IGNORECASE
+    if "m" in merged:
+        flags |= re.MULTILINE
+    if "s" in merged:
+        flags |= re.DOTALL
+    if "x" in merged:
+        flags |= re.VERBOSE
+    return flags
+
+
+def _manifest_deps(manifest: Dict[str, Any]) -> set[str]:
+    body = manifest.get("manifest") if isinstance(manifest.get("manifest"), dict) else manifest
+    deps = body.get("deps") if isinstance(body, dict) else []
+    result: set[str] = set()
+    if not isinstance(deps, list):
+        return result
+    for dep in deps:
+        if not isinstance(dep, str):
+            continue
+        token = dep.strip().lower()
+        if not token:
+            continue
+        result.add(token.split("==")[0].strip())
+        result.add(token)
+    return result
+
+
+def _manifest_pattern_tags(manifest: Dict[str, Any]) -> set[str]:
+    body = manifest.get("manifest") if isinstance(manifest.get("manifest"), dict) else manifest
+    tags = body.get("pattern_tags") if isinstance(body, dict) else []
+    result: set[str] = set()
+    if not isinstance(tags, list):
+        return result
+    for tag in tags:
+        if isinstance(tag, str) and tag.strip():
+            result.add(tag.strip().lower())
+    return result
+
+
+def _resolve_field(payload: Dict[str, Any], field: str) -> Any:
+    current: Any = payload.get("manifest") if isinstance(payload.get("manifest"), dict) else payload
+    for token in field.split("."):
+        token = token.strip()
+        if not token:
+            continue
+        if isinstance(current, dict):
+            current = current.get(token)
+            continue
+        if isinstance(current, list):
+            try:
+                index = int(token)
+            except Exception:
+                return None
+            if index < 0 or index >= len(current):
+                return None
+            current = current[index]
+            continue
+        return None
+    return current
+
+
+__all__ = ["GuardEngine", "GuardEvaluation"]

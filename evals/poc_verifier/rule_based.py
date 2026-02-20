@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from common.guardrails import GuardEngine, load_guard_spec_for_sid
 from common.rules import RuleSpec, load_rule, load_rulespec
+from common.vuln_semantics import evaluate_manifest_semantics, evaluate_workspace_semantics, semantic_error_summary
 
 DEFAULT_FLAG_MARKER = "FLAG"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -88,6 +90,36 @@ def verify_with_rule(
     pattern_evidence = _evaluate_patterns(rule, workspace_dirs, generator_manifest, rulespec)
     evidence.extend(pattern_evidence)
 
+    semantic_report = _evaluate_semantic_consistency(vuln_id, workspace_dirs, generator_manifest)
+    if semantic_report.get("supported"):
+        if semantic_report.get("semantic_match"):
+            evidence.append("Semantic consistency check passed")
+        else:
+            success = False
+            evidence.append(f"semantic mismatch: {semantic_error_summary(semantic_report)}")
+
+    guard_consistency = _evaluate_guard_consistency(
+        vuln_id=vuln_id,
+        log_text=log_text,
+        workspace_dirs=workspace_dirs,
+        run_summary=run_summary or summary_data,
+        policy=policy,
+    )
+    if guard_consistency.get("required_but_missing"):
+        success = False
+        evidence.append(str(guard_consistency.get("reason") or "dynamic guard spec missing"))
+    else:
+        verifier_guard = guard_consistency.get("verifier") or {}
+        workspace_guard = guard_consistency.get("workspace") or {}
+        violations = []
+        if isinstance(verifier_guard, dict):
+            violations.extend(verifier_guard.get("violations") or [])
+        if isinstance(workspace_guard, dict):
+            violations.extend(workspace_guard.get("violations") or [])
+        if violations:
+            success = False
+            evidence.append("guard mismatch: " + "; ".join(str(item) for item in violations))
+
     if not evidence:
         evidence.append("Signature missing")
 
@@ -97,6 +129,49 @@ def verify_with_rule(
         "log_path": str(log_path),
         "status": "evaluated",
         "rule": rule.get("cwe") or vuln_id,
+        "semantic_consistency": semantic_report,
+        "guard_consistency": guard_consistency,
+    }
+
+
+def _evaluate_guard_consistency(
+    *,
+    vuln_id: str,
+    log_text: str,
+    workspace_dirs: List[Path],
+    run_summary: Optional[Dict[str, Any]],
+    policy: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    sid = ""
+    slug = ""
+    if isinstance(run_summary, dict):
+        sid = str(run_summary.get("sid") or "").strip()
+        slug = str(run_summary.get("slug") or "").strip()
+    guard_spec = load_guard_spec_for_sid(sid, slug=slug) if sid else None
+    engine = GuardEngine(vuln_id, guard_spec.to_dict() if guard_spec else None)
+
+    # Requirement/plan policy may override missing-spec behavior in edge cases.
+    guard_policy = (policy or {}).get("guard") if isinstance(policy, dict) else {}
+    guard_policy_explicit = isinstance(guard_policy, dict) and bool(guard_policy)
+    if isinstance(guard_policy, dict) and guard_policy:
+        engine.policy_snapshot.update(guard_policy)
+
+    if not engine.available and engine.should_fail_when_missing_spec() and guard_policy_explicit:
+        return {
+            "available": False,
+            "required_but_missing": True,
+            "reason": "dynamic guard spec missing under failure_policy",
+            "policy_snapshot": engine.policy_snapshot,
+        }
+
+    verifier_eval = engine.evaluate_verifier_log(log_text)
+    workspace_eval = engine.evaluate_workspace(workspace_dirs)
+    return {
+        "available": engine.available,
+        "required_but_missing": False,
+        "policy_snapshot": engine.policy_snapshot,
+        "verifier": verifier_eval.to_dict(),
+        "workspace": workspace_eval.to_dict(),
     }
 
 
@@ -619,3 +694,27 @@ def _apply_exit_policy(
             evidence.append(f"exit_code={exit_code} (expected 0)")
             return False, evidence
     return success, evidence
+
+
+def _evaluate_semantic_consistency(
+    vuln_id: str,
+    workspace_dirs: Iterable[Path],
+    generator_manifest: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if isinstance(generator_manifest, dict):
+        report = evaluate_manifest_semantics(vuln_id, generator_manifest)
+        if report.get("supported"):
+            report["source"] = "generator_manifest"
+            return report
+    for workspace in workspace_dirs:
+        report = evaluate_workspace_semantics(vuln_id, workspace)
+        if report.get("supported"):
+            report["source"] = str(workspace)
+            return report
+    return {
+        "supported": False,
+        "semantic_match": True,
+        "errors": [],
+        "signals": {},
+        "source": None,
+    }

@@ -34,19 +34,28 @@ def test_load_rule_from_runtime_dir(tmp_path: Path) -> None:
             os.environ[env_key] = original
 
 
-def test_runtime_rule_overrides_static_rule_without_cache_clear(tmp_path: Path) -> None:
-    """Ensure runtime overrides win even when a static rule exists."""
+def test_runtime_rule_does_not_override_static_rule_by_default(tmp_path: Path) -> None:
+    """Known CWE must keep static contract unless explicit policy enables full override."""
     runtime_dir = tmp_path / "runtime_rules"
     runtime_dir.mkdir()
     # Override a known static rule (cwe-89.yaml exists under docs/evals/rules).
     (runtime_dir / "cwe-89.yaml").write_text(
-        "cwe: CWE-89\nsuccess_signature: OVERRIDE SIG\nflag_token: OVERRIDE FLAG\n",
+        (
+            "cwe: CWE-89\n"
+            "origin: runtime\n"
+            "override_scope: full\n"
+            "success_signature: OVERRIDE SIG\n"
+            "flag_token: OVERRIDE FLAG\n"
+        ),
         encoding="utf-8",
     )
     env_key = "VULD_RUNTIME_RULE_DIRS"
+    allow_key = "VULD_ALLOW_RUNTIME_RULE_OVERRIDE_STATIC"
     original = os.environ.get(env_key)
+    original_allow = os.environ.get(allow_key)
     try:
         os.environ.pop(env_key, None)
+        os.environ[allow_key] = "false"
         load_rule.cache_clear()
         baseline = load_rule("CWE-89")
         assert baseline.get("success_signature") != "OVERRIDE SIG"
@@ -55,11 +64,53 @@ def test_runtime_rule_overrides_static_rule_without_cache_clear(tmp_path: Path) 
         # implementation should key caches by runtime signature.
         os.environ[env_key] = str(runtime_dir)
         overridden = load_rule("CWE-89")
-        assert overridden.get("success_signature") == "OVERRIDE SIG"
-        assert overridden.get("flag_token") == "OVERRIDE FLAG"
+        assert overridden.get("success_signature") == baseline.get("success_signature")
+        assert overridden.get("flag_token") == baseline.get("flag_token")
+        assert overridden.get("override_scope") == "assertions_only" or overridden.get("override_scope") == "none"
     finally:
         load_rule.cache_clear()
         if original is None:
             os.environ.pop(env_key, None)
         else:
             os.environ[env_key] = original
+        if original_allow is None:
+            os.environ.pop(allow_key, None)
+        else:
+            os.environ[allow_key] = original_allow
+
+
+def test_runtime_rule_full_override_applies_when_policy_enabled(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime_rules"
+    runtime_dir.mkdir()
+    (runtime_dir / "cwe-89.yaml").write_text(
+        (
+            "cwe: CWE-89\n"
+            "origin: runtime\n"
+            "override_scope: full\n"
+            "success_signature: OVERRIDE SIG\n"
+            "flag_token: OVERRIDE FLAG\n"
+        ),
+        encoding="utf-8",
+    )
+    env_key = "VULD_RUNTIME_RULE_DIRS"
+    allow_key = "VULD_ALLOW_RUNTIME_RULE_OVERRIDE_STATIC"
+    original = os.environ.get(env_key)
+    original_allow = os.environ.get(allow_key)
+    try:
+        os.environ[env_key] = str(runtime_dir)
+        os.environ[allow_key] = "true"
+        load_rule.cache_clear()
+        overridden = load_rule("CWE-89")
+        assert overridden.get("success_signature") == "OVERRIDE SIG"
+        assert overridden.get("flag_token") == "OVERRIDE FLAG"
+        assert overridden.get("override_scope") == "full"
+    finally:
+        load_rule.cache_clear()
+        if original is None:
+            os.environ.pop(env_key, None)
+        else:
+            os.environ[env_key] = original
+        if original_allow is None:
+            os.environ.pop(allow_key, None)
+        else:
+            os.environ[allow_key] = original_allow

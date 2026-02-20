@@ -19,10 +19,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from common.guardrails import GuardEngine, SUPPORTED_GENERATOR_ASSERTION_OPS
+from common.hints import build_hint_payload
 from common.deps.stdlib import load_stdlib_spec
 from common.logging import get_logger
-from common.prompts import build_synthesis_prompt
+from common.prompts import build_guard_autofix_prompt, build_synthesis_prompt
 from common.paths import ensure_dir
+from common.vuln_semantics import evaluate_manifest_semantics, semantic_error_summary
 from evals.static_signatures import analyze_static_signals
 from common.rules import RuleSpec, load_rule, load_rulespec
 
@@ -103,6 +106,18 @@ EXTERNAL_DB_KEYWORDS = {
     "asyncpg",
     "mysql-connector",
     "mysql.connector",
+}
+MYSQL_DRIVERS = {
+    "pymysql",
+    "mysqlclient",
+    "mysql-connector",
+    "mysql-connector-python",
+}
+POSTGRES_DRIVERS = {
+    "psycopg2",
+    "psycopg2-binary",
+    "pg8000",
+    "asyncpg",
 }
 
 
@@ -225,6 +240,10 @@ class SynthesisEngine:
         self._stdlib_aliases_loaded = False
         self._rule: Dict[str, Any] = {}
         self._rulespec: Optional[RuleSpec] = None
+        self._guard_engine: Optional[GuardEngine] = None
+        self._guard_spec_payload: Dict[str, Any] = {}
+        self._guard_autofix_level: str = "none"
+        self._guard_autofix_max_attempts: int = 0
 
     def run(
         self,
@@ -235,6 +254,8 @@ class SynthesisEngine:
         failure_context: str,
         candidate_k: int,
         researcher_report: str = "",
+        guard_spec: str = "",
+        guard_spec_payload: Optional[Dict[str, Any]] = None,
         poc_template: Dict[str, Any] | None = None,
     ) -> SynthesisOutcome:
         """Generate k candidates, select the best, and materialize it."""
@@ -251,6 +272,20 @@ class SynthesisEngine:
             self._rulespec = load_rulespec(vuln_id)
         except Exception:  # pragma: no cover - defensive fallback
             self._rulespec = None
+        self._guard_spec_payload = guard_spec_payload if isinstance(guard_spec_payload, dict) else {}
+        self._guard_engine = GuardEngine(str(vuln_id or ""), self._guard_spec_payload or None)
+        guard_autofix = (
+            (self._guard_engine.policy_snapshot.get("autofix") or {})
+            if isinstance(self._guard_engine, GuardEngine)
+            else {}
+        )
+        self._guard_autofix_level = str(guard_autofix.get("level") or "none").strip().lower()
+        try:
+            self._guard_autofix_max_attempts = int(guard_autofix.get("max_attempts", 0))
+        except Exception:
+            self._guard_autofix_max_attempts = 0
+        if self._guard_autofix_max_attempts < 0:
+            self._guard_autofix_max_attempts = 0
         poc_template = self._normalize_poc_template(poc_template)
 
         for idx in range(1, candidate_k + 1):
@@ -263,6 +298,7 @@ class SynthesisEngine:
                 limits=self.limits.to_dict(),
                 candidate_index=idx,
                 poc_template=poc_template,
+                guard_spec=guard_spec,
             )
             raw = self.llm.generate(messages)
             manifest = self._parse_manifest(raw, idx)
@@ -281,7 +317,7 @@ class SynthesisEngine:
             )
             if auto_patch_info.get("patched") or auto_patch_info.get("synced_requirements"):
                 declared = self._extract_declared_dependencies(manifest)
-            violations, guard_report = self._guard_manifest(
+            violations, guard_report = self._guard_manifest_with_autofix(
                 manifest,
                 precomputed_llm=llm_section,
                 auto_patch=auto_patch_info,
@@ -384,10 +420,21 @@ class SynthesisEngine:
             or "3.11"
         )
         spec = load_stdlib_spec(language=language, version=str(version))
-        self._stdlib_modules = {self._canonicalize_package_name(name) for name in spec.stdlib_modules}
-        # Merge aliases/defaults with fallbacks to preserve canonical names.
+        # Merge aliases before canonicalizing stdlib names so alias-based
+        # lookups (ex: sqlite3 -> pysqlite3-binary) are consistent.
         self._module_alias_map = dict(PYTHON_MODULE_PACKAGE_MAP)
         self._module_alias_map.update({k.lower(): v for k, v in spec.aliases.items()})
+        raw_stdlib = {
+            (name or "").strip().lower().replace("_", "-")
+            for name in spec.stdlib_modules
+            if (name or "").strip()
+        }
+        canonical_stdlib = {
+            self._canonicalize_package_name(name)
+            for name in spec.stdlib_modules
+            if self._canonicalize_package_name(name)
+        }
+        self._stdlib_modules = raw_stdlib | canonical_stdlib
         self._default_versions = {
             "requests": "2.32.2",
             "pysqlite3-binary": "0.5.2",
@@ -588,6 +635,207 @@ class SynthesisEngine:
             },
         }
 
+    def _guard_manifest_with_autofix(
+        self,
+        manifest: Dict[str, Any],
+        *,
+        precomputed_llm: Dict[str, Any] | None = None,
+        auto_patch: Dict[str, Any] | None = None,
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        violations, report = self._guard_manifest(
+            manifest,
+            precomputed_llm=precomputed_llm,
+            auto_patch=auto_patch,
+        )
+        trace: List[Dict[str, Any]] = []
+        max_attempts = self._guard_autofix_max_attempts
+        if not violations or max_attempts <= 0 or self._guard_autofix_level == "none":
+            if trace:
+                report["guard_autofix_trace"] = trace
+            return violations, report
+
+        if self._has_unsupported_guard_op(violations):
+            trace.append(
+                {
+                    "attempt": 0,
+                    "patched": False,
+                    "effective": False,
+                    "detail": {
+                        "mode": "skip",
+                        "reason": "guard_dsl_unsupported_op",
+                        "message": "autofix skipped because guard DSL mismatch must be resolved in researcher guard spec",
+                    },
+                }
+            )
+            report["guard_autofix_trace"] = trace
+            return violations, report
+
+        for attempt in range(1, max_attempts + 1):
+            before_digest = self._manifest_digest(manifest)
+            patched, detail = self._attempt_guard_autofix(
+                manifest=manifest,
+                violations=violations,
+                level=self._guard_autofix_level,
+            )
+            after_digest = self._manifest_digest(manifest)
+            effective = bool(patched and before_digest != after_digest)
+            trace.append(
+                {
+                    "attempt": attempt,
+                    "patched": patched,
+                    "effective": effective,
+                    "detail": detail,
+                    "before_digest": before_digest,
+                    "after_digest": after_digest,
+                }
+            )
+            if not patched:
+                break
+            if not effective:
+                break
+            violations, report = self._guard_manifest(
+                manifest,
+                precomputed_llm=precomputed_llm,
+                auto_patch=auto_patch,
+            )
+            if not violations:
+                break
+
+        if trace:
+            report["guard_autofix_trace"] = trace
+        return violations, report
+
+    def _attempt_guard_autofix(
+        self,
+        *,
+        manifest: Dict[str, Any],
+        violations: List[str],
+        level: str,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        if level == "manifest":
+            patched = self._apply_manifest_autofix_hints(manifest, violations)
+            return patched, {"mode": "manifest", "violations": violations[:6]}
+        if level == "code":
+            patched = self._apply_code_autofix_with_llm(manifest, violations)
+            return patched, {"mode": "code", "violations": violations[:6]}
+        return False, {"mode": "none"}
+
+    @staticmethod
+    def _manifest_digest(manifest: Dict[str, Any]) -> str:
+        serialized = json.dumps(manifest, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _has_unsupported_guard_op(violations: List[str]) -> bool:
+        for violation in violations:
+            if not isinstance(violation, str):
+                continue
+            if "unsupported guard assertion op:" in violation.lower():
+                return True
+        return False
+
+    def _apply_manifest_autofix_hints(self, manifest: Dict[str, Any], violations: List[str]) -> bool:
+        # Lightweight deterministic autofix: ensure deps from guard hints are present.
+        payload = self._guard_spec_payload if isinstance(self._guard_spec_payload, dict) else {}
+        hints = payload.get("autofix_hints") if isinstance(payload, dict) else []
+        if not isinstance(hints, list):
+            hints = []
+        changed = False
+        deps = manifest.get("deps")
+        if not isinstance(deps, list):
+            deps = []
+            manifest["deps"] = deps
+        dep_names = {str(item).strip().lower() for item in deps if isinstance(item, str)}
+
+        for hint in hints:
+            if not isinstance(hint, dict):
+                continue
+            suggested = hint.get("add_deps")
+            if isinstance(suggested, str):
+                suggested = [suggested]
+            if not isinstance(suggested, list):
+                continue
+            for dep in suggested:
+                if not isinstance(dep, str):
+                    continue
+                token = dep.strip()
+                if not token:
+                    continue
+                key = token.lower()
+                if key in dep_names:
+                    continue
+                deps.append(token)
+                dep_names.add(key)
+                changed = True
+        if changed:
+            manifest["deps"] = deps
+            manifest = self._sync_requirements_with_deps(manifest, dep_names) or manifest
+        return changed
+
+    def _apply_code_autofix_with_llm(self, manifest: Dict[str, Any], violations: List[str]) -> bool:
+        if not isinstance(self._guard_spec_payload, dict) or not self._guard_spec_payload:
+            return False
+        prompt = build_guard_autofix_prompt(
+            requirement=self._requirement,
+            manifest=manifest,
+            violations=violations,
+            guard_spec=self._guard_spec_payload,
+        )
+        raw = self.llm.generate(prompt)
+        text = (raw or "").strip()
+        if text.startswith("```"):
+            segments = [segment.strip() for segment in text.split("```") if segment.strip()]
+            if segments:
+                candidate = segments[0]
+                if candidate.lower().startswith("json"):
+                    candidate = candidate[4:].strip()
+                text = candidate
+        try:
+            patched = json.loads(text)
+        except Exception:
+            return False
+        if not isinstance(patched, dict) or not patched:
+            return False
+        files = patched.get("files")
+        if not isinstance(files, list) or not files:
+            return False
+        manifest.clear()
+        manifest.update(patched)
+        return True
+
+    def _sync_requirements_with_deps(self, manifest: Dict[str, Any], dep_names: set[str]) -> Dict[str, Any]:
+        files = manifest.get("files")
+        if not isinstance(files, list):
+            return manifest
+        req_entry = None
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or "").strip().lower()
+            if path == "requirements.txt":
+                req_entry = entry
+                break
+        if req_entry is None:
+            req_entry = {
+                "path": "requirements.txt",
+                "role": "helper",
+                "description": "Auto-generated requirements from guard autofix",
+                "content": "",
+            }
+            files.append(req_entry)
+        existing = []
+        content = str(req_entry.get("content") or "")
+        if content:
+            existing = [line.strip() for line in content.splitlines() if line.strip()]
+        seen = {line.split("==")[0].strip().lower() for line in existing if line}
+        for dep in sorted(dep_names):
+            if dep in seen:
+                continue
+            existing.append(dep)
+            seen.add(dep)
+        req_entry["content"] = "\n".join(existing).strip() + ("\n" if existing else "")
+        return manifest
+
     def _guard_manifest(
         self,
         manifest: Dict[str, Any],
@@ -680,6 +928,22 @@ class SynthesisEngine:
         pattern_tags = manifest.get("pattern_tags")
         if not isinstance(pattern_tags, list) or not pattern_tags:
             errors.append("pattern_tags required")
+
+        semantic_report = evaluate_manifest_semantics(
+            str((self._requirement or {}).get("vuln_id") or ""),
+            manifest,
+        )
+        if semantic_report.get("supported") and not semantic_report.get("semantic_match"):
+            errors.append(f"semantic mismatch: {semantic_error_summary(semantic_report)}")
+
+        dynamic_guard: Dict[str, Any] = {"available": False}
+        if isinstance(self._guard_engine, GuardEngine):
+            guard_eval = self._guard_engine.evaluate_manifest(manifest)
+            dynamic_guard = guard_eval.to_dict()
+            if guard_eval.violations:
+                errors.extend(guard_eval.violations)
+            if (not self._guard_engine.available) and self._guard_engine.should_fail_when_missing_spec():
+                errors.append("dynamic guard spec missing under failure_policy")
 
         declared = self._extract_declared_dependencies(manifest)
         required_deps = self._detect_required_dependencies(manifest)
@@ -780,6 +1044,8 @@ class SynthesisEngine:
                 "missing_install": missing_node_build,
             },
             "os_packages": os_packages,
+            "semantics": semantic_report,
+            "dynamic_guard": dynamic_guard,
         }
 
         return errors, dep_guard
@@ -1068,24 +1334,30 @@ class SynthesisEngine:
             else "",
             "user_deps": self._user_deps,
             "requires_external_db": requires_external_db,
+            "guard_spec_available": bool(self._guard_spec_payload),
+            "guard_policy": self._guard_engine.policy_snapshot if isinstance(self._guard_engine, GuardEngine) else {},
         }
         manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
         self._write_candidate_log(reports)
 
     def _record_guard_failure(self, reports: List[CandidateReport]) -> None:
-        failure_path = self.metadata_dir / "generator_failures.jsonl"
-        ensure_dir(failure_path.parent)
+        failure_paths = self._failure_paths()
+        for path in failure_paths:
+            ensure_dir(path.parent)
         missing_static: set[str] = set()
         missing_from_requirements: set[str] = set()
         missing_from_build: set[str] = set()
         llm_high_conf: set[str] = set()
         guard_notes: List[str] = []
+        guard_violations: List[str] = []
         auto_patched: set[str] = set()
         auto_patch_entries: List[Dict[str, Any]] = []
+        autofix_trace: List[Dict[str, Any]] = []
         for report in reports:
             guard = report.guard_report or {}
             if report.violations:
                 guard_notes.extend(report.violations)
+                guard_violations.extend(report.violations)
             missing_static.update(guard.get("missing_static") or [])
             missing_from_requirements.update(guard.get("missing_from_requirements") or [])
             missing_from_build.update(guard.get("missing_from_build") or [])
@@ -1096,15 +1368,77 @@ class SynthesisEngine:
             auto_patch = guard.get("auto_patch") or {}
             auto_patch_entries.append(auto_patch)
             auto_patched.update(auto_patch.get("patched_canonicals") or [])
+            trace_entries = guard.get("guard_autofix_trace") or []
+            if isinstance(trace_entries, list):
+                autofix_trace.extend(trace_entries)
         suggested = sorted(llm_high_conf or missing_static)
         if auto_patched:
             suggested = sorted(set(suggested) | auto_patched)
         missing_all = sorted(missing_static | missing_from_requirements | missing_from_build | llm_high_conf)
         timestamp = datetime.now(timezone.utc).isoformat()
         reason = "; ".join(sorted(set(guard_notes))) or "guard violations"
-        fix_hint = "Add the missing dependencies to manifest.deps and requirements*.txt, then re-run synthesis."
+        unsupported_ops = self._extract_unsupported_ops(guard_notes)
+        schema_errors = self._extract_schema_errors(guard_notes)
+        schema_normalizations: List[str] = []
+        guard_normalization = (
+            self._guard_spec_payload.get("normalization")
+            if isinstance(self._guard_spec_payload, dict)
+            else {}
+        )
+        if isinstance(guard_normalization, dict):
+            raw_schema_normalizations = guard_normalization.get("schema_mismatches")
+            if isinstance(raw_schema_normalizations, list):
+                schema_normalizations.extend(
+                    item for item in raw_schema_normalizations if isinstance(item, str) and item.strip()
+                )
+        schema_normalizations = sorted(
+            set(item.strip() for item in schema_normalizations if isinstance(item, str) and item.strip())
+        )
+        schema_errors = sorted(set(item.strip() for item in schema_errors if isinstance(item, str) and item.strip()))
+        guard_error_code = self._guard_error_code(
+            guard_notes,
+            unsupported_ops=unsupported_ops,
+            schema_errors=schema_errors,
+        )
+        guard_error_subcode = self._guard_error_subcode(guard_notes, guard_error_code)
+        autofix_effective = any(
+            bool(item.get("effective"))
+            for item in autofix_trace
+            if isinstance(item, dict)
+        )
+        fix_hint = "Resolve generator guard violations and re-run synthesis."
         lowered_reason = reason.lower()
-        if "dockerfile syntax risk" in lowered_reason or "unknown instruction" in lowered_reason:
+        if guard_error_code == "guard_dsl_unsupported_op":
+            fix_hint = (
+                "GuardSpec DSL mismatch detected. Regenerate/normalize guard assertions using supported ops only "
+                "(file_exists/role_exists/file_contains/file_not_contains/file_regex_contains/"
+                "file_regex_not_contains/file_regex_any/dep_declared/any_dep_declared/pattern_tag_present/"
+                "manifest_field_equals/manifest_field_contains)."
+            )
+        if guard_error_code == "guard_assertion_schema_error":
+            fix_hint = (
+                "Guard assertion schema mismatch detected. Normalize assertion parameters "
+                "(dep/name/package, deps/names/packages, string/contains/needle, regex/pattern) and retry."
+            )
+        if "semantic mismatch: missing input-to-sql composition path for cwe-89" in lowered_reason:
+            fix_hint = (
+                "CWE-89 requires a clear input-to-SQL flow. Build SQL using user-controlled input "
+                "(request.args/form/json) via string concat/interpolation and pass that query string to "
+                "cursor.execute(query). Do not parameterize this path in the intentionally vulnerable bundle."
+            )
+        elif "semantic mismatch: missing state-changing endpoint" in lowered_reason:
+            fix_hint = (
+                "CWE-352 requires at least one state-changing endpoint (POST/PUT/DELETE/PATCH). "
+                "Add a state-changing route (ex: POST /change_email) that mutates server-side state."
+            )
+        elif "semantic mismatch: csrf token validation detected" in lowered_reason:
+            fix_hint = (
+                "CWE-352 scenario must intentionally omit CSRF defenses. Remove CSRF token/origin checks "
+                "from the vulnerable endpoint while keeping session/cookie-based authentication."
+            )
+        elif missing_all:
+            fix_hint = "Add the missing dependencies to manifest.deps and requirements*.txt, then re-run synthesis."
+        elif "dockerfile syntax risk" in lowered_reason or "unknown instruction" in lowered_reason:
             fix_hint = (
                 "Dockerfile syntax issue detected. Ensure every Dockerfile line starts with a valid instruction "
                 "(FROM/RUN/COPY/...) or is a continuation line ending with '\\'. Avoid multi-line `RUN python -c` "
@@ -1132,7 +1466,44 @@ class SynthesisEngine:
                 "Executor runs containers with --read-only and only /tmp writable. "
                 "Store runtime state under /tmp and avoid runtime OS binaries (ex: sqlite3 CLI) unless installed at build time."
             )
+
+        guard_spec_digest = ""
+        if isinstance(self._guard_spec_payload, dict) and self._guard_spec_payload:
+            serialized = json.dumps(self._guard_spec_payload, sort_keys=True, ensure_ascii=False)
+            guard_spec_digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        normalized_notes = self._normalize_failure_notes(guard_notes)
+        semantic_missing_buckets = self._extract_semantic_missing_buckets(guard_notes)
+        builtin_semantic_errors = self._extract_builtin_semantic_errors(guard_notes)
+        failure_fingerprint = self._build_failure_fingerprint(
+            guard_error_code=guard_error_code,
+            guard_error_subcode=guard_error_subcode,
+            normalized_notes=normalized_notes,
+            guard_spec_digest=guard_spec_digest,
+            unsupported_ops=unsupported_ops,
+            schema_errors=schema_errors,
+            missing_dependencies=missing_all,
+            semantic_missing_buckets=semantic_missing_buckets,
+            builtin_semantic_errors=builtin_semantic_errors,
+            vuln_id=str((self._requirement or {}).get("vuln_id") or ""),
+        )
+
+        vuln_id = str((self._requirement or {}).get("vuln_id") or "").strip() or "UNKNOWN"
+        slug = self._bundle_slug(vuln_id)
+        hint_payload = self._build_failure_hint_payload(
+            vuln_id=vuln_id,
+            slug=slug,
+            guard_error_code=guard_error_code,
+            fix_hint=fix_hint,
+            missing_dependencies=missing_all,
+            unsupported_ops=unsupported_ops,
+            schema_errors=schema_errors,
+            schema_normalizations=schema_normalizations,
+            notes=guard_notes,
+        )
         entry = {
+            "sid": self.sid,
+            "vuln_id": vuln_id,
+            "slug": slug,
             "stage": "GENERATOR",
             "timestamp": timestamp,
             "reason": reason,
@@ -1141,9 +1512,383 @@ class SynthesisEngine:
             "suggested_dependencies": suggested,
             "notes": guard_notes,
             "auto_patch": auto_patch_entries[-1] if auto_patch_entries else {},
+            "guard_violations": guard_violations,
+            "guard_error_code": guard_error_code,
+            "guard_error_subcode": guard_error_subcode,
+            "unsupported_ops": unsupported_ops,
+            "schema_errors": schema_errors,
+            "schema_normalizations": schema_normalizations,
+            # Backward compatibility for older loop readers.
+            "schema_mismatches": schema_errors,
+            "failure_fingerprint": failure_fingerprint,
+            "hint_payload": hint_payload,
+            "autofix_effective": autofix_effective,
+            "autofix_trace": autofix_trace,
         }
-        with failure_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        for failure_path in failure_paths:
+            with failure_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def _failure_paths(self) -> List[Path]:
+        bundle_path = self.metadata_dir / "generator_failures.jsonl"
+        paths: List[Path] = [bundle_path]
+        metadata_root = self._metadata_root()
+        root_path = metadata_root / "generator_failures.jsonl"
+        if root_path != bundle_path:
+            paths.append(root_path)
+        unique: List[Path] = []
+        seen: set[Path] = set()
+        for path in paths:
+            if path in seen:
+                continue
+            seen.add(path)
+            unique.append(path)
+        return unique
+
+    def _metadata_root(self) -> Path:
+        if self.metadata_dir.parent.name == "bundles":
+            return self.metadata_dir.parent.parent
+        return self.metadata_dir
+
+    def _bundle_slug(self, vuln_id: str) -> str:
+        if self.metadata_dir.parent.name == "bundles":
+            return self.metadata_dir.name
+        token = re.sub(r"[^a-z0-9]+", "-", vuln_id.lower()).strip("-")
+        return token or "vuln"
+
+    @staticmethod
+    def _normalize_failure_notes(notes: List[str]) -> List[str]:
+        normalized: List[str] = []
+        for note in notes:
+            if not isinstance(note, str):
+                continue
+            compact = re.sub(r"\s+", " ", note.strip().lower())
+            if compact:
+                normalized.append(compact)
+        return sorted(set(normalized))
+
+    @staticmethod
+    def _build_failure_fingerprint(
+        *,
+        guard_error_code: str,
+        guard_error_subcode: str,
+        normalized_notes: List[str],
+        guard_spec_digest: str,
+        unsupported_ops: List[str],
+        schema_errors: List[str],
+        missing_dependencies: List[str],
+        semantic_missing_buckets: List[str],
+        builtin_semantic_errors: List[str],
+        vuln_id: str,
+    ) -> str:
+        normalized_code = str(guard_error_code or "").strip().lower()
+        payload: Dict[str, Any] = {
+            "guard_error_code": normalized_code,
+            "guard_error_subcode": str(guard_error_subcode or "").strip().lower(),
+        }
+        if normalized_code == "guard_assertion_schema_error":
+            payload.update(
+                {
+                    "schema_errors": sorted(set(schema_errors)),
+                    "guard_spec_digest": guard_spec_digest,
+                }
+            )
+        elif normalized_code == "guard_semantic_mismatch":
+            payload.update(
+                {
+                    "semantic_missing_buckets": sorted(set(semantic_missing_buckets)),
+                    "builtin_semantic_errors": sorted(set(builtin_semantic_errors)),
+                    "vuln_id": str(vuln_id or "").strip().upper(),
+                }
+            )
+        elif normalized_code == "guard_dsl_unsupported_op":
+            payload.update(
+                {
+                    "unsupported_ops": sorted(set(unsupported_ops)),
+                    "guard_spec_digest": guard_spec_digest,
+                }
+            )
+        elif normalized_code == "guard_dependency_missing":
+            payload.update(
+                {
+                    "missing_dependencies": sorted(set(missing_dependencies)),
+                    "vuln_id": str(vuln_id or "").strip().upper(),
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "notes": normalized_notes,
+                    "guard_spec_digest": guard_spec_digest,
+                }
+            )
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _build_failure_hint_payload(
+        self,
+        *,
+        vuln_id: str,
+        slug: str,
+        guard_error_code: str,
+        fix_hint: str,
+        missing_dependencies: List[str],
+        unsupported_ops: List[str],
+        schema_errors: List[str],
+        schema_normalizations: List[str],
+        notes: List[str],
+    ) -> Dict[str, Any]:
+        must_fix: List[Dict[str, Any]] = []
+        for mismatch in schema_errors:
+            must_fix.append(
+                {
+                    "kind": "assertion_schema",
+                    "target": "guard_spec.generator_assertions",
+                    "expected": "canonical assertion parameters",
+                    "observed": mismatch,
+                    "evidence": mismatch,
+                }
+            )
+        for op in unsupported_ops:
+            must_fix.append(
+                {
+                    "kind": "unsupported_op",
+                    "target": f"generator_assertion.op={op}",
+                    "expected": "supported generator op",
+                    "observed": op,
+                    "evidence": "unsupported guard assertion op",
+                }
+            )
+        for dep in missing_dependencies:
+            must_fix.append(
+                {
+                    "kind": "dependency",
+                    "target": dep,
+                    "expected": "declared and installed dependency",
+                    "observed": "missing",
+                    "evidence": dep,
+                }
+            )
+
+        semantic_gaps: List[Dict[str, Any]] = []
+        signature = self._guard_spec_payload.get("semantic_signature") if isinstance(self._guard_spec_payload, dict) else {}
+        if not isinstance(signature, dict):
+            signature = {}
+        for bucket in ("input_vector", "sink", "exploit_precondition"):
+            if not any(bucket in str(note).lower() and "not observed" in str(note).lower() for note in notes):
+                continue
+            required_terms = signature.get(bucket) if isinstance(signature.get(bucket), list) else []
+            semantic_gaps.append(
+                {
+                    "bucket": bucket,
+                    "required_terms": [str(item).strip() for item in required_terms if str(item).strip()],
+                    "observed_signals": [],
+                }
+            )
+
+        loop_index = self._current_loop_index()
+        normalization_suggestions = []
+        if schema_errors:
+            normalization_suggestions.append(
+                "Normalize assertion keys: dep/name/package, deps/names/packages, string/contains/needle, regex/pattern."
+            )
+        if schema_normalizations:
+            normalization_suggestions.append(
+                "Apply prior normalization mappings from guard_spec.normalization.schema_mismatches before retry."
+            )
+        if unsupported_ops:
+            normalization_suggestions.append("Replace unsupported guard ops with supported generator ops.")
+        next_action = self._next_action_for_error_code(guard_error_code)
+        prompt_instructions = [fix_hint]
+        if unsupported_ops:
+            prompt_instructions.append("Use only supported generator guard ops listed in supported_ops.")
+        return build_hint_payload(
+            sid=self.sid,
+            vuln_id=vuln_id,
+            slug=slug,
+            loop=loop_index,
+            guard_error_code=guard_error_code,
+            must_fix=must_fix,
+            semantic_gaps=semantic_gaps,
+            supported_ops=sorted(SUPPORTED_GENERATOR_ASSERTION_OPS),
+            normalization_suggestions=normalization_suggestions,
+            next_action=next_action,
+            prompt_instructions=prompt_instructions,
+        )
+
+    def _current_loop_index(self) -> int:
+        loop_state_path = self._metadata_root() / "loop_state.json"
+        if not loop_state_path.exists():
+            return 0
+        try:
+            payload = json.loads(loop_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return 0
+        try:
+            return int(payload.get("current_loop", 0))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _next_action_for_error_code(code: str) -> Dict[str, Any]:
+        normalized = str(code or "").strip().lower()
+        if normalized == "guard_dsl_unsupported_op":
+            return {
+                "retry_stage": "RESEARCH",
+                "researcher_refresh": True,
+                "rationale": "unsupported guard DSL op requires GuardSpec regeneration",
+            }
+        if normalized == "guard_assertion_schema_error":
+            return {
+                "retry_stage": "GENERATOR",
+                "researcher_refresh": False,
+                "rationale": "normalize assertion parameters locally before researcher refresh",
+            }
+        if normalized == "guard_semantic_mismatch":
+            return {
+                "retry_stage": "GENERATOR",
+                "researcher_refresh": False,
+                "rationale": "attempt synthesis repair first; refresh researcher on repeated fingerprint",
+            }
+        if normalized == "guard_dependency_missing":
+            return {
+                "retry_stage": "GENERATOR",
+                "researcher_refresh": False,
+                "rationale": "dependency hints can be applied in synthesis/autofix before researcher refresh",
+            }
+        return {
+            "retry_stage": "GENERATOR",
+            "researcher_refresh": False,
+            "rationale": "retry generation with updated guard hints",
+        }
+
+    @staticmethod
+    def _extract_unsupported_ops(notes: List[str]) -> List[str]:
+        pattern = re.compile(r"unsupported guard assertion op:\s*([a-zA-Z0-9_\-]+)", flags=re.IGNORECASE)
+        detected: set[str] = set()
+        for note in notes:
+            if not isinstance(note, str):
+                continue
+            for match in pattern.findall(note):
+                token = str(match).strip().lower()
+                if token:
+                    detected.add(token)
+        return sorted(detected)
+
+    @staticmethod
+    def _extract_schema_errors(notes: List[str]) -> List[str]:
+        matched: set[str] = set()
+        patterns = [
+            (r"dep_declared requires dep", "dep_declared.dep missing"),
+            (r"any_dep_declared requires deps\[\]", "any_dep_declared.deps missing"),
+            (r"file_contains requires path and string", "file_contains.string missing"),
+            (r"file_not_contains requires path and string", "file_not_contains.string missing"),
+            (r"file_regex_contains requires path and regex", "file_regex_contains.regex missing"),
+            (r"file_regex_not_contains requires path and regex", "file_regex_not_contains.regex missing"),
+            (r"file_regex_any requires globs\[\] and regex", "file_regex_any.globs/regex missing"),
+        ]
+        for note in notes:
+            if not isinstance(note, str):
+                continue
+            lowered = note.strip().lower()
+            for pattern, label in patterns:
+                if re.search(pattern, lowered):
+                    matched.add(label)
+        return sorted(matched)
+
+    @classmethod
+    def _guard_error_code(
+        cls,
+        notes: List[str],
+        *,
+        unsupported_ops: Optional[List[str]] = None,
+        schema_errors: Optional[List[str]] = None,
+    ) -> str:
+        unsupported = unsupported_ops if isinstance(unsupported_ops, list) else cls._extract_unsupported_ops(notes)
+        schema_error_list = schema_errors if isinstance(schema_errors, list) else cls._extract_schema_errors(notes)
+        joined = " ".join(note.lower() for note in notes if isinstance(note, str))
+        if unsupported:
+            return "guard_dsl_unsupported_op"
+        if "guard semantic mismatch" in joined or "semantic mismatch" in joined:
+            return "guard_semantic_mismatch"
+        if schema_error_list:
+            return "guard_assertion_schema_error"
+        if "missing dependency" in joined or "not installed by build commands" in joined:
+            return "guard_dependency_missing"
+        if "executor constraint violation" in joined:
+            return "guard_executor_constraint"
+        return "guard_violation"
+
+    @staticmethod
+    def _guard_error_subcode(notes: List[str], code: str) -> str:
+        normalized_code = str(code or "").strip().lower()
+        joined = " ".join(str(note).strip().lower() for note in notes if isinstance(note, str))
+        if normalized_code == "guard_semantic_mismatch":
+            if "missing input-to-sql composition path for cwe-89" in joined:
+                return "cwe89_input_sql_path_missing"
+            if "missing state-changing endpoint" in joined:
+                return "cwe352_state_change_missing"
+            if "csrf token validation detected" in joined:
+                return "cwe352_csrf_protection_present"
+            if "input_vector terms were not observed" in joined:
+                return "semantic_signature_input_vector_missing"
+            if "sink terms were not observed" in joined:
+                return "semantic_signature_sink_missing"
+            if "exploit_precondition terms were not observed" in joined:
+                return "semantic_signature_precondition_missing"
+            return "semantic_mismatch"
+        if normalized_code == "guard_assertion_schema_error":
+            if "dep_declared requires dep" in joined:
+                return "dep_declared_dep_missing"
+            if "any_dep_declared requires deps" in joined:
+                return "any_dep_declared_deps_missing"
+            if "requires path and regex" in joined:
+                return "regex_assertion_params_missing"
+            if "requires path and string" in joined:
+                return "string_assertion_params_missing"
+            return "assertion_schema_error"
+        if normalized_code == "guard_dsl_unsupported_op":
+            match = re.search(r"unsupported guard assertion op:\s*([a-z0-9_\-]+)", joined, flags=re.IGNORECASE)
+            if match:
+                return f"unsupported_op_{match.group(1).lower()}"
+            return "unsupported_op"
+        if normalized_code == "guard_dependency_missing":
+            if "missing from requirements files" in joined:
+                return "dependency_requirements_missing"
+            if "not installed by build commands" in joined:
+                return "dependency_build_install_missing"
+            if "missing dependency" in joined:
+                return "dependency_decl_missing"
+            return "dependency_missing"
+        if normalized_code == "guard_executor_constraint":
+            return "executor_constraint"
+        return ""
+
+    @staticmethod
+    def _extract_semantic_missing_buckets(notes: List[str]) -> List[str]:
+        buckets: set[str] = set()
+        for note in notes:
+            lowered = str(note or "").strip().lower()
+            if "input_vector terms were not observed" in lowered:
+                buckets.add("input_vector")
+            if "sink terms were not observed" in lowered:
+                buckets.add("sink")
+            if "exploit_precondition terms were not observed" in lowered:
+                buckets.add("exploit_precondition")
+        return sorted(buckets)
+
+    @staticmethod
+    def _extract_builtin_semantic_errors(notes: List[str]) -> List[str]:
+        errors: set[str] = set()
+        for note in notes:
+            lowered = str(note or "").strip().lower()
+            if lowered.startswith("semantic mismatch:"):
+                errors.add(lowered)
+            if lowered.startswith("guard semantic mismatch: missing"):
+                # Keep only builtin evaluator messages; signature bucket misses are tracked separately.
+                if "terms were not observed" not in lowered:
+                    errors.add(lowered)
+        return sorted(errors)
 
     def _detect_node_required(self, manifest: Dict[str, Any]) -> set[str]:
         return {
@@ -1303,7 +2048,9 @@ class SynthesisEngine:
         return packages
 
     def _is_stdlib_module(self, name: str) -> bool:
-        return self._canonicalize_package_name(name) in self._stdlib_modules
+        normalized = (name or "").strip().lower().replace("_", "-")
+        canonical = self._canonicalize_package_name(name)
+        return normalized in self._stdlib_modules or canonical in self._stdlib_modules
     def _extract_declared_dependencies(self, manifest: Dict[str, Any]) -> DeclaredDependencies:
         combined: set[str] = set()
         from_deps_field: set[str] = set()
@@ -1984,12 +2731,63 @@ class SynthesisEngine:
         return token.strip()
 
 
+    def _runtime_db(self) -> str:
+        runtime = self._requirement.get("runtime") or {}
+        if isinstance(runtime, dict):
+            for key in ("db", "database"):
+                value = runtime.get(key)
+                if value:
+                    return str(value).strip().lower()
+        value = self._requirement.get("db") or self._requirement.get("database")
+        if value:
+            return str(value).strip().lower()
+        return ""
+
+    def _allow_external_db(self) -> bool:
+        runtime = self._requirement.get("runtime") or {}
+        if isinstance(runtime, dict) and "allow_external_db" in runtime:
+            return bool(runtime["allow_external_db"])
+        if "allow_external_db" in self._requirement:
+            return bool(self._requirement["allow_external_db"])
+        return False
+
+    def _should_include_user_dep(self, dep: str) -> bool:
+        dep_norm = self._canonicalize_package_name(self._strip_version(dep))
+        if not dep_norm:
+            return False
+        runtime_db = self._runtime_db()
+        if dep_norm in MYSQL_DRIVERS:
+            if runtime_db in {"mysql", "mariadb"}:
+                return True
+            if not runtime_db:
+                return self._allow_external_db()
+            LOGGER.info(
+                "Skipping MySQL driver dependency '%s' during synthesis for runtime db=%s",
+                dep,
+                runtime_db or "unknown",
+            )
+            return False
+        if dep_norm in POSTGRES_DRIVERS:
+            if runtime_db in {"postgres", "postgresql"}:
+                return True
+            if not runtime_db:
+                return self._allow_external_db()
+            LOGGER.info(
+                "Skipping PostgreSQL driver dependency '%s' during synthesis for runtime db=%s",
+                dep,
+                runtime_db or "unknown",
+            )
+            return False
+        return True
+
     def _inject_user_deps(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
         if not self._user_deps:
             return manifest
         deps = [dep for dep in (manifest.get("deps") or []) if isinstance(dep, str) and dep.strip()]
         lower_seen = {dep.lower() for dep in deps}
         for dep in self._user_deps:
+            if not self._should_include_user_dep(dep):
+                continue
             key = dep.lower()
             if key in lower_seen:
                 continue

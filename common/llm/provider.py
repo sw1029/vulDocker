@@ -77,12 +77,32 @@ class LLMClient:
             "messages": messages,
             **self.decoding.to_kwargs(),
         }
+        if self._model_disallows_sampling_params(self.model_name):
+            payload.pop("temperature", None)
+            payload.pop("top_p", None)
         if tools:
             payload["tools"] = tools
 
         LOGGER.debug("Invoking litellm with payload keys: %s", list(payload))
         try:
             response = litellm_completion(**payload)  # pragma: no cover - network call
+        except Exception as exc:  # pragma: no cover - provider compatibility retry
+            if self._is_unsupported_params_error(exc):
+                retry_payload = dict(payload)
+                retry_payload.pop("top_p", None)
+                retry_payload.pop("temperature", None)
+                LOGGER.info(
+                    "Retrying LLM call without sampling params for model=%s due to unsupported parameter",
+                    self.model_name,
+                )
+                response = litellm_completion(**retry_payload)
+            else:
+                if not self._fallback_on_error:
+                    raise
+                LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
+                self.use_stub = True
+                return self._stub_response(messages)
+        try:
             self._last_usage = getattr(response, "usage", None)
             return response["choices"][0]["message"]["content"]
         except Exception as exc:  # pragma: no cover - network failure fallback
@@ -91,6 +111,17 @@ class LLMClient:
             LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
             self.use_stub = True
             return self._stub_response(messages)
+
+    @staticmethod
+    def _is_unsupported_params_error(exc: Exception) -> bool:
+        text = str(exc or "")
+        lowered = text.lower()
+        return "unsupportedparamserror" in lowered
+
+    @staticmethod
+    def _model_disallows_sampling_params(model_name: str) -> bool:
+        token = (model_name or "").strip().lower()
+        return token.startswith("gpt-5")
 
     def _stub_response(self, messages: List[Dict[str, str]]) -> str:
         """Return a deterministic stub when the real model is unavailable."""

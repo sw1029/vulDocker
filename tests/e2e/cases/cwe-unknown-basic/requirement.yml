@@ -22,7 +22,9 @@ overrides:
   runtime:
     allow_external_db: false
   policy:
+    require_researcher_evidence: true
     verifier:
       prefer_rule: true
       strict_flag_default: false
-
+  researcher:
+    search_policy: remote_required

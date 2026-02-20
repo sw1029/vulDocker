@@ -65,11 +65,9 @@ def test_unknown_cwe_synthesis_case(tmp_path: Path) -> None:
         "--output-dir",
         str(tmp_path),
     ]
-    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
-    if result.returncode != 0:
-        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
-    summary_path = tmp_path / "summary.json"
-    assert summary_path.exists(), "summary.json was not created"
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert summary["sid"].startswith("sid-"), "SID was not recorded"
-    assert any(bundle["slug"] == "cwe-9999" and bundle.get("verify_pass") for bundle in summary["bundles"])
+    env = os.environ.copy()
+    env.pop("VUL_WEB_SEARCH_ENDPOINT", None)
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, env=env)
+    assert result.returncode != 0, "run_case unexpectedly succeeded without remote evidence endpoint"
+    combined = f"{result.stdout}\n{result.stderr}"
+    assert "Insufficient researcher evidence" in combined

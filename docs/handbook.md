@@ -43,6 +43,7 @@ LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합�
 - 기본 전략: `generator_mode=hybrid`에서 합성(synthesis) 우선 시도 후 실패 시 템플릿으로 폴백(또는 `generator_mode=template|synthesis`로 고정).
 - 증거 일관성: RuleSpec(정적/런타임 룰)의 성공 조건(서명/FLAG/JSON 키)을 Generator/PoC/Verifier가 동일하게 따르도록 정렬.
 - 실패 맥락: Reflexion 메모리를 다음 프롬프트에 주입하여 수렴(Generator/Verifier feedback loop).
+- GuardSpec: Researcher evidence 기반 동적 가드(`guard_spec.json`)를 생성하고 Generator/Verifier/Reviewer가 공통 소비(`docs/guardrails_dynamic.md`).
 
 ## 로드맵(동적화 TODO)
 - 하드코딩 제거 및 “새 CWE 입력 → 생성/실행/검증” end-to-end 안정화 로드맵: `docs/final_solution.md`

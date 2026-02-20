@@ -44,6 +44,21 @@ dep_guard:
 
 policy:
   stop_on_first_failure: false       # (선택) true일 경우 Executor가 첫 실패 번들에서 실행을 중단
+  guard:
+    enforcement: block_both          # known/unknown 모두 guard 위반 시 차단
+    failure_policy: closed_unknown   # unknown에서 guard/evidence 부재 시 실패
+    dynamic_scope: assertions_semantics
+    unsupported_op_policy: normalize_retry
+    refresh_researcher_on_guard_dsl_error: true
+    semantic_refresh_threshold: 2
+    hint_payload_enabled: true
+    failure_fingerprint_window: 3
+    call_budget:
+      mode: bundle_once              # 필요 시 bundle_ensemble 사용 가능
+      ensemble_runs: 3
+    autofix:
+      level: code                    # none|manifest|code
+      max_attempts: 1
   verifier:
     require_exit_code_zero: true     # 새 정책: run_summary.exit_code가 0이 아니면 실패 처리
     strict_flag_default: true        # 룰에 strict_flag가 없을 때 기본적으로 엄격 비교 실시

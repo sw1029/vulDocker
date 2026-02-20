@@ -40,6 +40,10 @@ def _load_json(path: Path) -> Dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def _tail_text(path: Path, limit_chars: int = 2200) -> str:
     if limit_chars <= 0 or not path.exists():
         return ""
@@ -50,6 +54,218 @@ def _tail_text(path: Path, limit_chars: int = 2200) -> str:
     if not text:
         return ""
     return text[-limit_chars:]
+
+
+def _latest_generator_failure(sid: str) -> Dict[str, Any] | None:
+    records = _load_generator_failure_records(sid, limit=1)
+    if not records:
+        return None
+    return records[0]
+
+
+def _guard_policy(plan: Dict[str, Any]) -> Dict[str, Any]:
+    policy = plan.get("policy") if isinstance(plan, dict) else {}
+    if not isinstance(policy, dict):
+        return {}
+    guard = policy.get("guard")
+    if isinstance(guard, dict):
+        return guard
+    return {}
+
+
+def _int_guard_policy(guard: Dict[str, Any], key: str, default: int) -> int:
+    try:
+        value = int(guard.get(key, default))
+    except Exception:
+        value = default
+    if value < 1:
+        return default
+    return value
+
+
+def _generator_failure_paths(sid: str) -> List[Path]:
+    root = get_metadata_dir(sid)
+    paths: List[Path] = [root / "generator_failures.jsonl"]
+    bundles_dir = root / "bundles"
+    if bundles_dir.exists():
+        paths.extend(sorted(bundles_dir.glob("*/generator_failures.jsonl")))
+    return paths
+
+
+def _load_generator_failure_records(sid: str, limit: int | None = None) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in _generator_failure_paths(sid):
+        if not path.exists():
+            continue
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            key = json.dumps(
+                {
+                    "timestamp": payload.get("timestamp", ""),
+                    "reason": payload.get("reason", ""),
+                    "guard_error_code": payload.get("guard_error_code", ""),
+                    "guard_error_subcode": payload.get("guard_error_subcode", ""),
+                    "failure_fingerprint": payload.get("failure_fingerprint", ""),
+                    "vuln_id": payload.get("vuln_id", ""),
+                    "slug": payload.get("slug", ""),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            payload["_failure_path"] = str(path)
+            records.append(payload)
+    records.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+    if limit is not None:
+        return records[: max(0, limit)]
+    return records
+
+
+def _failure_fingerprint_repeats(
+    sid: str,
+    fingerprint: str,
+    *,
+    window: int,
+    vuln_id: str = "",
+    slug: str = "",
+) -> int:
+    token = str(fingerprint or "").strip()
+    if not token:
+        return 0
+    records = _load_generator_failure_records(sid, limit=window)
+    count = 0
+    target_vuln_id = str(vuln_id or "").strip().upper()
+    target_slug = str(slug or "").strip().lower()
+    for record in records:
+        if str(record.get("failure_fingerprint") or "").strip() != token:
+            continue
+        if target_vuln_id:
+            record_vuln_id = str(record.get("vuln_id") or "").strip().upper()
+            if record_vuln_id and record_vuln_id != target_vuln_id:
+                continue
+        if target_slug:
+            record_slug = str(record.get("slug") or "").strip().lower()
+            if record_slug and record_slug != target_slug:
+                continue
+        count += 1
+    return count
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _refresh_researcher_on_dsl_error(plan: Dict[str, Any], failure: Dict[str, Any] | None) -> bool:
+    if not isinstance(failure, dict):
+        return False
+    code = str(failure.get("guard_error_code") or "").strip().lower()
+    if code != "guard_dsl_unsupported_op":
+        return False
+    guard = _guard_policy(plan)
+    refresh_value = guard.get("refresh_researcher_on_guard_dsl_error") if isinstance(guard, dict) else None
+    if refresh_value is None:
+        return True
+    return _as_bool(refresh_value)
+
+
+def _refresh_researcher_for_guard_failure(
+    plan: Dict[str, Any],
+    sid: str,
+    failure: Dict[str, Any] | None,
+) -> Tuple[bool, str]:
+    if not isinstance(failure, dict):
+        return False, ""
+    guard = _guard_policy(plan)
+    code = str(failure.get("guard_error_code") or "").strip().lower()
+    fingerprint = str(failure.get("failure_fingerprint") or "").strip()
+    failure_vuln_id = str(failure.get("vuln_id") or "").strip()
+    failure_slug = str(failure.get("slug") or "").strip()
+    window = _int_guard_policy(guard, "failure_fingerprint_window", 3)
+    repeat_count = (
+        _failure_fingerprint_repeats(
+            sid,
+            fingerprint,
+            window=window,
+            vuln_id=failure_vuln_id,
+            slug=failure_slug,
+        )
+        if fingerprint
+        else 1
+    )
+
+    hint_payload_enabled = _as_bool(guard.get("hint_payload_enabled", True))
+    if hint_payload_enabled:
+        hint_payload = failure.get("hint_payload")
+        if isinstance(hint_payload, dict):
+            next_action = hint_payload.get("next_action")
+            if isinstance(next_action, dict) and _as_bool(next_action.get("researcher_refresh")):
+                rationale = str(next_action.get("rationale") or "hint payload requested researcher refresh").strip()
+                return True, rationale
+
+    if code == "guard_dsl_unsupported_op":
+        should_refresh = _refresh_researcher_on_dsl_error(plan, failure)
+        reason = "guard DSL unsupported op" if should_refresh else ""
+        return should_refresh, reason
+    if code == "guard_assertion_schema_error":
+        if repeat_count >= 2:
+            return True, f"guard assertion schema mismatch repeated ({repeat_count})"
+        return False, ""
+    if code == "guard_semantic_mismatch":
+        threshold = _int_guard_policy(guard, "semantic_refresh_threshold", 2)
+        if repeat_count >= threshold:
+            return True, f"guard semantic mismatch repeated ({repeat_count}/{threshold})"
+        return False, ""
+    if code == "guard_dependency_missing":
+        if repeat_count >= 2:
+            return True, f"guard dependency mismatch repeated ({repeat_count})"
+        return False, ""
+    return False, ""
+
+
+def _record_deferred_refresh(
+    sid: str,
+    *,
+    reason: str,
+    planned_next_action: Dict[str, Any] | None = None,
+) -> None:
+    loop_state_path = get_metadata_dir(sid) / "loop_state.json"
+    state = _load_json(loop_state_path)
+    if not isinstance(state, dict):
+        return
+    history = state.get("history")
+    if not isinstance(history, list) or not history:
+        return
+    last = history[-1]
+    if not isinstance(last, dict):
+        return
+    metadata = last.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata["refresh_deferred_due_to_loop_limit"] = True
+    metadata["planned_next_action"] = planned_next_action or {
+        "retry_stage": "RESEARCH",
+        "researcher_refresh": True,
+        "rationale": reason,
+    }
+    if reason:
+        metadata["deferred_reason"] = reason
+    last["metadata"] = metadata
+    history[-1] = last
+    state["history"] = history
+    _write_json(loop_state_path, state)
 
 
 def _run_step(cmd: List[str]) -> int:
@@ -243,18 +459,74 @@ def main() -> None:
             controller.record_success(stage="RESEARCH", note="researcher succeeded")
             researcher_ran = True
 
-        rc = _run_step(_python_cmd("agents/generator/main.py", "--sid", sid, "--mode", args.mode))
+        rc = _run_step(
+            _python_cmd("agents/generator/main.py", "--sid", sid, "--mode", args.mode, "--single-attempt")
+        )
         if rc != 0:
+            latest_failure = _latest_generator_failure(sid)
+            reason = (
+                str((latest_failure or {}).get("reason") or "").strip()
+                or f"Generator failed with exit code {rc}"
+            )
+            fix_hint = (
+                str((latest_failure or {}).get("fix_hint") or "").strip()
+                or "Inspect metadata/<SID>/*generator*.json(l) for guard violations and remediation hints."
+            )
+            metadata: Dict[str, Any] = {"exit_code": rc}
+            planned_next_action: Dict[str, Any] | None = None
+            if isinstance(latest_failure, dict):
+                for key in (
+                    "guard_error_code",
+                    "guard_error_subcode",
+                    "unsupported_ops",
+                    "schema_errors",
+                    "schema_normalizations",
+                    "schema_mismatches",
+                    "missing_dependencies",
+                    "suggested_dependencies",
+                    "failure_fingerprint",
+                    "autofix_effective",
+                    "hint_payload",
+                ):
+                    if key in latest_failure:
+                        metadata[key] = latest_failure.get(key)
+                hint_payload = latest_failure.get("hint_payload")
+                if isinstance(hint_payload, dict):
+                    next_action = hint_payload.get("next_action")
+                    if isinstance(next_action, dict):
+                        planned_next_action = next_action
+                        metadata["planned_next_action"] = next_action
             controller.record_failure(
                 stage="GENERATOR",
-                reason=f"Generator failed with exit code {rc}",
-                fix_hint="Inspect metadata/<SID>/*generator*.json(l) for guard violations and remediation hints.",
+                reason=reason,
+                fix_hint=fix_hint,
                 blocking=True,
-                metadata={"exit_code": rc},
+                metadata=metadata,
             )
-            if controller.should_continue():
+            refresh_researcher, refresh_reason = _refresh_researcher_for_guard_failure(plan, sid, latest_failure)
+            if refresh_researcher:
+                if refresh_reason:
+                    LOGGER.info("Refreshing researcher on next loop: %s", refresh_reason)
+                else:
+                    LOGGER.info("Refreshing researcher on next loop due to guard failure policy.")
+                researcher_ran = False
+            can_continue = controller.should_continue()
+            if can_continue:
                 controller.start_loop()
                 continue
+            if refresh_researcher:
+                deferred_next_action = dict(planned_next_action or {})
+                deferred_next_action["researcher_refresh"] = True
+                deferred_next_action["retry_stage"] = "RESEARCH"
+                deferred_next_action["rationale"] = refresh_reason or str(
+                    deferred_next_action.get("rationale") or "refresh intended but loop limit reached"
+                )
+                _record_deferred_refresh(
+                    sid,
+                    reason=refresh_reason or "refresh intended but loop limit reached",
+                    planned_next_action=deferred_next_action,
+                )
+                LOGGER.info("Researcher refresh deferred: loop limit reached for %s", sid)
             break
 
         rc = _run_step(_python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--build"))

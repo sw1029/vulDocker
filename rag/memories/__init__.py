@@ -82,21 +82,42 @@ def load_memories(sid: Optional[str] = None, limit: Optional[int] = None) -> Lis
 
 
 def _load_generator_failures(sid: str) -> List[dict]:
-    path = get_metadata_dir(sid) / GENERATOR_FAILURE_FILENAME
-    if not path.exists():
-        return []
+    metadata_root = get_metadata_dir(sid)
+    paths = [metadata_root / GENERATOR_FAILURE_FILENAME]
+    bundles_dir = metadata_root / "bundles"
+    if bundles_dir.exists():
+        paths.extend(sorted(bundles_dir.glob(f"*/{GENERATOR_FAILURE_FILENAME}")))
     records: List[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
+    seen: set[str] = set()
+    for path in paths:
+        if not path.exists():
             continue
-        try:
-            entry = json.loads(line)
-            entry.setdefault("stage", "GENERATOR")
-            entry.setdefault("timestamp", "")
-            records.append(entry)
-        except json.JSONDecodeError as exc:  # pragma: no cover - corruption guard
-            LOGGER.warning("Skipping malformed generator failure line: %s", exc)
-            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                entry.setdefault("stage", "GENERATOR")
+                entry.setdefault("timestamp", "")
+                dedupe_key = json.dumps(
+                    {
+                        "timestamp": entry.get("timestamp"),
+                        "reason": entry.get("reason"),
+                        "guard_error_code": entry.get("guard_error_code"),
+                        "failure_fingerprint": entry.get("failure_fingerprint"),
+                        "vuln_id": entry.get("vuln_id"),
+                        "slug": entry.get("slug"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                records.append(entry)
+            except json.JSONDecodeError as exc:  # pragma: no cover - corruption guard
+                LOGGER.warning("Skipping malformed generator failure line: %s", exc)
+                continue
     records.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
     return records
 
@@ -132,6 +153,11 @@ def latest_failure_context(sid: str, limit: int = 3) -> str:
                 "reason": record.get("reason", "guard failure"),
                 "hint": record.get("fix_hint", ""),
                 "missing": record.get("missing_dependencies", []),
+                "guard_error_code": record.get("guard_error_code", ""),
+                "guard_error_subcode": record.get("guard_error_subcode", ""),
+                "unsupported_ops": record.get("unsupported_ops", []),
+                "schema_errors": record.get("schema_errors", []),
+                "hint_payload": record.get("hint_payload"),
             }
         )
     for record in reflexion_records:
@@ -162,8 +188,33 @@ def latest_failure_context(sid: str, limit: int = 3) -> str:
         if stage == "GENERATOR":
             missing = record.get("missing") or []
             missing_part = f" Missing deps: {', '.join(missing)}." if missing else ""
+            error_code = str(record.get("guard_error_code") or "").strip()
+            unsupported = record.get("unsupported_ops") or []
+            schema_errors = record.get("schema_errors") or []
+            unsupported_part = ""
+            if isinstance(unsupported, list) and unsupported:
+                unsupported_part = f" Unsupported ops: {', '.join(str(op) for op in unsupported if op)}."
+            schema_part = ""
+            if isinstance(schema_errors, list) and schema_errors:
+                schema_part = f" Schema errors: {', '.join(str(item) for item in schema_errors if item)}."
+            code_part = f" Error code: {error_code}." if error_code else ""
+            subcode = str(record.get("guard_error_subcode") or "").strip()
+            subcode_part = f" Subcode: {subcode}." if subcode else ""
+            hint_payload = record.get("hint_payload")
+            payload_part = ""
+            if isinstance(hint_payload, dict):
+                next_action = hint_payload.get("next_action")
+                if isinstance(next_action, dict):
+                    retry_stage = str(next_action.get("retry_stage") or "").strip()
+                    researcher_refresh = bool(next_action.get("researcher_refresh"))
+                    if retry_stage or researcher_refresh:
+                        payload_part = (
+                            f" Next action: stage={retry_stage or 'GENERATOR'}, "
+                            f"researcher_refresh={str(researcher_refresh).lower()}."
+                        )
             summary_lines.append(
-                f"- Generator guard: {record.get('reason')}.{missing_part} Hint: {record.get('hint')}"
+                f"- Generator guard: {record.get('reason')}.{missing_part}{unsupported_part}{schema_part}{code_part}{subcode_part}{payload_part} "
+                f"Hint: {record.get('hint')}"
             )
         else:
             log_excerpt = record.get("log_excerpt") or ""

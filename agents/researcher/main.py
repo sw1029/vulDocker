@@ -40,7 +40,11 @@ def main() -> None:
             plan=plan,
             bundle=bundle,
         )
-        path = service.run()
+        try:
+            path = service.run()
+        except Exception as exc:
+            LOGGER.error("Researcher failed for %s (%s): %s", args.sid, bundle.vuln_id, exc)
+            raise SystemExit(1) from exc
         reports.append({"vuln_id": bundle.vuln_id, "slug": bundle.slug, "report_path": str(path)})
         LOGGER.info("Researcher finished for %s (%s)", args.sid, bundle.vuln_id)
     _write_index(args.sid, reports)

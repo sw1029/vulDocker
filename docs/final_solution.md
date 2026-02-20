@@ -13,6 +13,8 @@
 ## 현재 상태(코드 기준 체크리스트)
 
 ### 동작 중(이미 구현)
+- [x] Researcher evidence 기반 GuardSpec(`guard_spec@1.0`) 생성 및 bundle 메타 저장 (`agents/researcher/service.py`)
+- [x] Generator/Verifier/Reviewer가 GuardSpec을 공통 소비하여 assertion+semantic 교차검증 (`common/guardrails/*`, `agents/generator/synthesis.py`, `evals/poc_verifier/rule_based.py`, `agents/reviewer/service.py`)
 - [x] Generator는 `generator_mode`로 `hybrid|synthesis|template`를 지원 (`agents/generator/service.py`)
 - [x] Synthesis는 LLM manifest(JSON) → workspace를 동적으로 materialize (`agents/generator/synthesis.py`)
 - [x] TemplateRegistry는 `workspaces/templates/` + `metadata/<SID>/runtime_templates/`를 스캔 (`agents/generator/service.py`)

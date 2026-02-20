@@ -143,7 +143,8 @@ def _runtime_rule_dirs() -> List[Path]:
 
 def _runtime_signature() -> str:
     roots = [str(RULES_ROOT)] + [str(path) for path in _runtime_rule_dirs()]
-    return os.pathsep.join(sorted(set(roots)))
+    allow_override = os.environ.get("VULD_ALLOW_RUNTIME_RULE_OVERRIDE_STATIC", "").strip().lower()
+    return os.pathsep.join(sorted(set(roots))) + f"|allow_override={allow_override}"
 
 
 def _iter_rule_paths() -> Iterable[Path]:
@@ -212,26 +213,106 @@ def _template_metadata_for_vuln(vuln_id: str) -> Dict[str, Any]:
 
 
 def _merged_rule_mapping(vuln_id: str) -> Dict[str, Any]:
-    """Merge static and runtime rule mappings for a vuln_id.
+    """Merge static/runtime rule mappings while protecting static contracts.
 
-    Later entries (typically runtime rules) override earlier ones.
+    Policy:
+    - Unknown CWE (no static rule): runtime rule is used as-is.
+    - Known CWE (static exists):
+      - default: keep static contract lock.
+      - runtime override_scope=assertions_only: only assertion-related fields are merged.
+      - runtime override_scope=full: allowed only when
+        VULD_ALLOW_RUNTIME_RULE_OVERRIDE_STATIC=true.
     """
     filename = _normalized_filename(vuln_id)
     if not filename:
         return {}
+    static_rule = _load_rule_yaml(RULES_ROOT / f"{filename}.yaml")
+    runtime_rule = _load_runtime_rule_yaml(filename)
+    if not static_rule:
+        if runtime_rule:
+            runtime_rule.setdefault("origin", "runtime")
+            runtime_rule.setdefault("override_scope", "none")
+        return runtime_rule
+    if not runtime_rule:
+        static_rule.setdefault("origin", "static")
+        static_rule.setdefault("override_scope", "none")
+        return static_rule
+    return _merge_static_and_runtime(static_rule, runtime_rule)
+
+
+def _load_rule_yaml(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_runtime_rule_yaml(filename: str) -> Dict[str, Any]:
     merged: Dict[str, Any] = {}
-    # RULES_ROOT first, then runtime dirs (override)
-    for root in [RULES_ROOT, *_runtime_rule_dirs()]:
-        path = root / f"{filename}.yaml"
-        if not path.exists():
-            continue
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue
-        if isinstance(data, dict):
-            merged.update(data)
+    for root in _runtime_rule_dirs():
+        payload = _load_rule_yaml(root / f"{filename}.yaml")
+        if payload:
+            merged.update(payload)
     return merged
+
+
+def _merge_static_and_runtime(static_rule: Dict[str, Any], runtime_rule: Dict[str, Any]) -> Dict[str, Any]:
+    scope = str(runtime_rule.get("override_scope") or "none").strip().lower()
+    if scope not in {"none", "assertions_only", "full"}:
+        scope = "none"
+    allow_full_override = _env_bool("VULD_ALLOW_RUNTIME_RULE_OVERRIDE_STATIC", False)
+    if scope == "full" and allow_full_override:
+        merged = dict(static_rule)
+        merged.update(runtime_rule)
+        merged["origin"] = "runtime"
+        merged["override_scope"] = "full"
+        return merged
+    if scope in {"assertions_only", "full"}:
+        merged = dict(static_rule)
+        merged = _apply_assertion_only_overrides(merged, runtime_rule)
+        merged["origin"] = "runtime"
+        merged["override_scope"] = "assertions_only"
+        return merged
+    merged = dict(static_rule)
+    merged["origin"] = "static"
+    merged["override_scope"] = "none"
+    return merged
+
+
+def _apply_assertion_only_overrides(
+    static_rule: Dict[str, Any],
+    runtime_rule: Dict[str, Any],
+) -> Dict[str, Any]:
+    merged = dict(static_rule)
+    runtime_section = runtime_rule.get("runtime")
+    if isinstance(runtime_section, dict):
+        base_runtime = merged.get("runtime") if isinstance(merged.get("runtime"), dict) else {}
+        next_runtime = dict(base_runtime)
+        assertion_program = runtime_section.get("assertion_program")
+        if isinstance(assertion_program, list):
+            next_runtime["assertion_program"] = assertion_program
+        extra_assertions = runtime_section.get("extra_assertions")
+        if isinstance(extra_assertions, list):
+            next_runtime["extra_assertions"] = extra_assertions
+        if next_runtime:
+            merged["runtime"] = next_runtime
+    runtime_llm = runtime_rule.get("llm")
+    if isinstance(runtime_llm, dict) and "assertion_budget" in runtime_llm:
+        base_llm = merged.get("llm") if isinstance(merged.get("llm"), dict) else {}
+        next_llm = dict(base_llm)
+        next_llm["assertion_budget"] = runtime_llm.get("assertion_budget")
+        merged["llm"] = next_llm
+    return merged
+
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _default_rulespec(vuln_id: str) -> RuleSpec:

@@ -45,3 +45,56 @@ def test_synthesis_dependency_detector_ignores_stdlib_imports(tmp_path: Path) ->
     assert "argparse" not in required
     assert "sys" not in required
     assert "urllib" not in required
+
+
+def test_synthesis_dependency_detector_treats_sqlite3_as_stdlib(tmp_path: Path) -> None:
+    engine = SynthesisEngine(
+        sid="sid-test",
+        llm=_DummyLLM(),
+        limits=SynthesisLimits(),
+        workspace=tmp_path / "workspace",
+        metadata_dir=tmp_path / "metadata",
+        mode="synthesis",
+    )
+    engine._requirement = {"language": "python", "runtime": {"language_version": "3.11"}}  # type: ignore[attr-defined]
+    engine._load_stdlib_spec()
+
+    manifest = {
+        "files": [
+            {
+                "path": "app.py",
+                "content": (
+                    "import sqlite3\n"
+                    "from flask import Flask\n"
+                    "app = Flask(__name__)\n"
+                ),
+            }
+        ]
+    }
+    required = engine._detect_required_dependencies(manifest)
+    assert "flask" in required
+    assert "sqlite3" not in required
+    assert "pysqlite3-binary" not in required
+
+
+def test_inject_user_deps_skips_mysql_driver_for_sqlite_runtime(tmp_path: Path) -> None:
+    engine = SynthesisEngine(
+        sid="sid-test",
+        llm=_DummyLLM(),
+        limits=SynthesisLimits(),
+        workspace=tmp_path / "workspace",
+        metadata_dir=tmp_path / "metadata",
+        mode="synthesis",
+        user_deps=["pymysql", "requests==2.31.0"],
+    )
+    engine._requirement = {  # type: ignore[attr-defined]
+        "language": "python",
+        "runtime": {"language_version": "3.11", "db": "sqlite"},
+    }
+    engine._load_stdlib_spec()
+
+    manifest = {"deps": ["Flask==3.0.0"], "files": []}
+    patched = engine._inject_user_deps(manifest)
+    deps = [str(item).lower() for item in (patched.get("deps") or [])]
+    assert "pymysql" not in deps
+    assert "requests==2.31.0" in deps

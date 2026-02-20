@@ -1,0 +1,43 @@
+# Control experiment: same CWE-94 but skip Researcher stage to avoid
+# runtime_rules being injected before synthesis. This helps isolate whether
+# Researcher-generated markers/contracts are causing PoC mismatch.
+
+requirement_id: ADHOC-CWE94-0002
+intent: "CWE-94(Code Injection) - Researcher 스킵 비교 실험"
+vuln_id: CWE-94
+
+language: python
+framework: flask
+seed: 9401
+
+retriever_commit: stub
+corpus_snapshot: mvp-sample
+pattern_id: code-injection-skip-researcher
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+allow_intentional_vuln: true
+
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+
+generator_mode: synthesis
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+
+dep_guard:
+  llm_assist: true
+  auto_patch: true
+
+policy:
+  stop_on_first_failure: false
+  verifier:
+    require_exit_code_zero: true
+    strict_flag_default: true
+    prefer_rule: true
+    llm_assist: true
+
+executor:
+  allow_network: false
+

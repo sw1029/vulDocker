@@ -19,6 +19,14 @@ from common.run_matrix import load_vuln_bundles
 LOGGER = get_logger(__name__)
 
 
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generator agent")
     parser.add_argument("--sid", required=True, help="Scenario ID to generate")
@@ -28,6 +36,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Override template root (defaults to workspaces/templates)",
     )
+    parser.add_argument(
+        "--single-attempt",
+        action="store_true",
+        help="Disable internal generator looping and run one synthesis attempt per invocation.",
+    )
     return parser.parse_args()
 
 
@@ -35,7 +48,10 @@ def main() -> None:
     args = parse_args()
     plan = load_plan(args.sid)
     bundles = load_vuln_bundles(plan)
+    policy = plan.get("policy") if isinstance(plan, dict) else {}
+    stop_on_first_failure = _as_bool((policy or {}).get("stop_on_first_failure", False))
     runs = []
+    had_failure = False
     for bundle in bundles:
         service = GeneratorService(
             args.sid,
@@ -43,11 +59,40 @@ def main() -> None:
             template_root=args.template_root,
             plan=plan,
             bundle=bundle,
+            single_attempt=args.single_attempt,
         )
-        service.run()
-        runs.append({"vuln_id": bundle.vuln_id, "slug": bundle.slug, "workspace": str(service.workspace)})
-        LOGGER.info("Generator completed for %s (%s)", args.sid, bundle.vuln_id)
+        try:
+            service.run()
+            runs.append(
+                {
+                    "vuln_id": bundle.vuln_id,
+                    "slug": bundle.slug,
+                    "workspace": str(service.workspace),
+                    "status": "success",
+                    "error": None,
+                    "failure_path": None,
+                }
+            )
+            LOGGER.info("Generator completed for %s (%s)", args.sid, bundle.vuln_id)
+        except Exception as exc:
+            had_failure = True
+            failure_path = service.metadata_dir / "generator_failures.jsonl"
+            runs.append(
+                {
+                    "vuln_id": bundle.vuln_id,
+                    "slug": bundle.slug,
+                    "workspace": str(service.workspace),
+                    "status": "failed",
+                    "error": str(exc),
+                    "failure_path": str(failure_path) if failure_path.exists() else None,
+                }
+            )
+            LOGGER.exception("Generator failed for %s (%s): %s", args.sid, bundle.vuln_id, exc)
+            if stop_on_first_failure:
+                break
     _write_index(args.sid, runs)
+    if had_failure:
+        raise SystemExit(1)
 
 
 def _write_index(sid: str, runs: list[dict]) -> None:
