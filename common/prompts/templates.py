@@ -17,6 +17,15 @@ def _success_signature(requirement: Dict[str, object]) -> str:
     return "Exploit SUCCESS"
 
 
+def _flag_token(requirement: Dict[str, object]) -> str:
+    vuln = str((requirement or {}).get("vuln_id") or "").strip().lower()
+    rule = load_rule(vuln)
+    token = rule.get("flag_token") if isinstance(rule, dict) else None
+    if isinstance(token, str) and token.strip():
+        return token.strip()
+    return ""
+
+
 def _semantic_contract(requirement: Dict[str, object]) -> str:
     vuln = str((requirement or {}).get("vuln_id") or "").strip().lower().replace("_", "-")
     if vuln == "89":
@@ -93,12 +102,18 @@ def build_synthesis_prompt(
     requirement_payload = json.dumps(requirement, indent=2, ensure_ascii=False)
     limits_payload = json.dumps(limits or {}, indent=2, ensure_ascii=False)
     success_signature = _success_signature(requirement)
+    flag_token = _flag_token(requirement)
     semantic_contract = _semantic_contract(requirement)
     if guard_spec:
         semantic_contract = (
             "- Primary semantic contract is defined by Guard Spec semantic_signature.\n"
             "- Generated code and PoC must satisfy Guard Spec generator_assertions without contradiction."
         )
+    contract_block = (
+        f"- Success signature: `{success_signature}`\n"
+        + (f"- Flag token: `{flag_token}`\n" if flag_token else "- Flag token: none\n")
+        + "- The PoC and runtime evidence must use these exact values."
+    )
     execution_constraints = (
         "- Container is executed with `--read-only` and `/tmp` is mounted as tmpfs (writable). "
         "`/tmp` starts EMPTY on every container run and masks anything written to `/tmp` at image build time. "
@@ -120,11 +135,13 @@ def build_synthesis_prompt(
         "When a Researcher Report is provided, prefer it over guessing (endpoints, exploit steps, success markers). "
         "Each files[] entry SHOULD also include a role field (for example: 'service_main', 'poc_entry', 'helper', 'schema', 'seed_data'), "
         "and the PoC MUST print the exact manifest.poc.success_signature string on success and exit with code 0. "
+        "If a flag token is defined below, the PoC MUST also print that exact token on success. "
         "If a PoC Template is provided, you MUST copy its success_signature (and flag_token if present) verbatim into manifest.poc and the PoC code MUST print them on success. "
         "The PoC script SHOULD accept --base-url (default http://127.0.0.1:<port>) and optionally --payload so the executor can run it against "
         "the service inside the container."
         "If Failure Hint Payload JSON is provided, you MUST satisfy must_fix/prompt_instructions first and avoid repeating the same failure fingerprint."
         "\n\n# Execution Constraints (MUST)\n{constraints}\n\n# Requirement\n{req}\n\n# Synthesis Limits\n{limits}"
+        "\n\n# Resolved Contract (MUST)\n{contract_block}"
         "\n\n# Supported Guard Ops\n{supported_ops}"
         "\n\n# Vulnerability Semantics (MUST)\n{semantic_contract}"
         "\n\n# Internal Hints\n{hints}\n\n# Researcher Report (JSON)\n{researcher}"
@@ -134,6 +151,7 @@ def build_synthesis_prompt(
             constraints=execution_constraints,
             req=requirement_payload,
             limits=limits_payload,
+            contract_block=contract_block,
             supported_ops=supported_ops,
             semantic_contract=semantic_contract,
             hints=hints or "(none provided)",
@@ -284,6 +302,11 @@ def build_guard_planner_prompt(
             "- Use ONLY supported generator ops: file_exists, role_exists, file_contains, file_not_contains, "
             "file_regex_contains, file_regex_not_contains, file_regex_any, dep_declared, any_dep_declared, "
             "pattern_tag_present, manifest_field_equals, manifest_field_contains.\n"
+            "- For generator assertions, use severity=block ONLY for role_exists, file_exists, dep_declared, "
+            "any_dep_declared, manifest_field_equals, manifest_field_contains.\n"
+            "- All regex/content/pattern generator assertions are advisory and MUST use severity=warn.\n"
+            "- `file_regex_any` MUST use `globs` (array of path globs) and `regex` (single regex string). "
+            "Do NOT persist `patterns`, `path`, `glob`, or `paths` for that op.\n"
             "- Use ONLY supported verifier ops: regex_contains, contains, not_contains, number_delta.\n"
             "- Semantics-first: assert semantic anchors first, syntax hints only as supporting checks.\n"
             "- Avoid brittle regex tied to exact payload literals or single line formatting; prefer resilient patterns.\n"

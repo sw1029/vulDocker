@@ -7,7 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from common.guardrails import build_guard_spec, default_guard_policy_snapshot, parse_guard_spec
+from common.guardrails import build_guard_spec, default_guard_policy_snapshot, parse_guard_spec, write_guard_spec
 
 
 def test_guard_spec_roundtrip() -> None:
@@ -81,3 +81,44 @@ def test_guard_spec_normalizes_assertion_metadata_fields() -> None:
     assert assertion["intent"] == "semantic_anchor"
     assert assertion["stability"] == "medium"
     assert assertion["evidence_ids"] == [0, 1]
+
+
+def test_guard_spec_canonicalizes_file_regex_any_before_persist() -> None:
+    payload = {
+        "schema_version": "guard_spec@1.0",
+        "sid": "sid-test",
+        "vuln_id": "CWE-89",
+        "slug": "cwe-89",
+        "generator_assertions": [
+            {
+                "op": "file_regex_any",
+                "patterns": ["request\\.args", "cursor\\.execute"],
+            }
+        ],
+        "verifier_assertions": [{"op": "stdout_contains", "string": "SQLi SUCCESS"}],
+    }
+
+    spec = parse_guard_spec(payload)
+    assertion = spec.generator_assertions[0]
+    assert assertion["globs"] == ["*"]
+    assert assertion["regex"] == "(?:request\\.args)|(?:cursor\\.execute)"
+    assert "patterns" not in assertion
+
+
+def test_write_guard_spec_persists_canonical_payload(tmp_path: Path) -> None:
+    path = write_guard_spec(
+        tmp_path,
+        {
+            "schema_version": "guard_spec@1.0",
+            "sid": "sid-test",
+            "vuln_id": "CWE-89",
+            "slug": "cwe-89",
+            "generator_assertions": [{"op": "regex_any_file", "patterns": ["request\\.args"]}],
+            "verifier_assertions": [{"op": "stdout_contains", "string": "SQLi SUCCESS"}],
+        },
+    )
+
+    raw = path.read_text(encoding="utf-8")
+    assert '"patterns"' not in raw
+    assert '"globs"' in raw
+    assert '"regex"' in raw

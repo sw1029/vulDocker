@@ -1,5 +1,12 @@
 """Search tool adapters consumed by the Researcher agent."""
 
-from .web_search import SearchResult, WebSearchTool
+from .providers import SearchExecution, SearchProvider, SearchRequest, SearchResult
+from .web_search import WebSearchTool
 
-__all__ = ["SearchResult", "WebSearchTool"]
+__all__ = [
+    "SearchExecution",
+    "SearchProvider",
+    "SearchRequest",
+    "SearchResult",
+    "WebSearchTool",
+]

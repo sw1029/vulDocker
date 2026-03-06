@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir
 from common.plan import load_plan
+from common.contracts import load_generator_contract
 from common.rules import load_rule, list_rules, load_static_rule
 from common.run_matrix import (
     artifacts_dir_for_bundle,
@@ -179,9 +180,11 @@ def _retry_with_runtime_rule(
 
     metadata_root = Path(plan["paths"]["metadata"])
     meta_dir = metadata_root / "bundles" / bundle.slug if bundle.slug else metadata_root
-    contract = _load_json(meta_dir / "generator_contract.json")
+    contract = load_generator_contract(meta_dir)
     manifest = _load_json(meta_dir / "generator_manifest.json")
-    sig = _string_or_none((contract or {}).get("poc_success_signature"))
+    sig = _string_or_none((contract or {}).get("success_signature")) or _string_or_none(
+        (contract or {}).get("poc_success_signature")
+    )
     if not sig and isinstance(manifest, dict):
         inner = manifest.get("manifest")
         if isinstance(inner, dict):
@@ -189,7 +192,9 @@ def _retry_with_runtime_rule(
     if not sig:
         sig = "Exploit SUCCESS"
 
-    flag_token = _string_or_none((contract or {}).get("poc_flag_token"))
+    flag_token = _string_or_none((contract or {}).get("flag_token")) or _string_or_none(
+        (contract or {}).get("poc_flag_token")
+    )
     if not flag_token and isinstance(manifest, dict):
         inner = manifest.get("manifest")
         if isinstance(inner, dict):

@@ -18,6 +18,19 @@ VALID_ASSERTION_INTENT = {"semantic_anchor", "syntax_hint", "contract", "depende
 VALID_ASSERTION_STABILITY = {"high", "medium", "low"}
 DEFAULT_SEMANTIC_REFRESH_THRESHOLD = 2
 DEFAULT_FAILURE_FINGERPRINT_WINDOW = 3
+BLOCKING_GENERATOR_ASSERTION_OPS = {
+    "role_exists",
+    "file_exists",
+    "dep_declared",
+    "any_dep_declared",
+    "manifest_field_equals",
+    "manifest_field_contains",
+}
+GENERATOR_REGEX_ASSERTION_OPS = {
+    "file_regex_contains",
+    "file_regex_not_contains",
+    "file_regex_any",
+}
 
 GENERATOR_OP_ALIASES = {
     "file_contains_regex": "file_regex_contains",
@@ -218,7 +231,7 @@ def build_guard_spec(
     if confidence_norm not in VALID_CONFIDENCE:
         confidence_norm = "medium"
     created = created_at or datetime.now(timezone.utc).isoformat()
-    return GuardSpec(
+    spec = GuardSpec(
         schema_version=SUPPORTED_SCHEMA_VERSION,
         sid=str(sid or "").strip(),
         vuln_id=str(vuln_id or "").strip(),
@@ -227,14 +240,17 @@ def build_guard_spec(
         policy_snapshot=default_guard_policy_snapshot(policy_snapshot),
         evidence_refs=_normalize_evidence_refs(evidence_refs or []),
         semantic_signature=normalize_semantic_signature(semantic_signature or {}),
-        generator_assertions=_normalize_assertions(generator_assertions or []),
-        verifier_assertions=_normalize_assertions(verifier_assertions or []),
-        verifier_assertions_deferred=_normalize_assertions(verifier_assertions_deferred or []),
+        generator_assertions=_normalize_assertions(generator_assertions or [], scope="generator"),
+        verifier_assertions=_normalize_assertions(verifier_assertions or [], scope="verifier"),
+        verifier_assertions_deferred=_normalize_assertions(verifier_assertions_deferred or [], scope="verifier"),
         autofix_hints=_normalize_autofix_hints(autofix_hints or []),
         normalization=_normalize_normalization_block(normalization or {}),
         confidence=confidence_norm,
         created_at=created,
     )
+    _validate_assertions(spec.generator_assertions, scope="generator")
+    _validate_assertions(spec.verifier_assertions, scope="verifier")
+    return spec
 
 
 def parse_guard_spec(payload: Dict[str, Any]) -> GuardSpec:
@@ -268,6 +284,46 @@ def parse_guard_spec(payload: Dict[str, Any]) -> GuardSpec:
     )
 
 
+def enforce_generator_assertion_trust_boundary(assertion: Dict[str, Any]) -> List[str]:
+    """Downgrade risky LLM-authored generator assertions to advisory checks."""
+
+    if not isinstance(assertion, dict):
+        return []
+    op = str(assertion.get("op") or "").strip().lower()
+    if not op:
+        return []
+
+    warnings: List[str] = []
+    severity = str(assertion.get("severity") or "block").strip().lower()
+    if severity not in VALID_ASSERTION_SEVERITY:
+        severity = "block"
+    assertion["severity"] = severity
+
+    if op in GENERATOR_REGEX_ASSERTION_OPS:
+        changed = False
+        if assertion.get("severity") != "warn":
+            assertion["severity"] = "warn"
+            changed = True
+        if assertion.get("intent") != "syntax_hint":
+            assertion["intent"] = "syntax_hint"
+            changed = True
+        if assertion.get("stability") != "low":
+            assertion["stability"] = "low"
+            changed = True
+        if changed:
+            warnings.append(
+                f"generator regex assertion {op} downgraded to warn/syntax_hint because regex checks are advisory"
+            )
+        return warnings
+
+    if op not in BLOCKING_GENERATOR_ASSERTION_OPS and assertion.get("severity") == "block":
+        assertion["severity"] = "warn"
+        warnings.append(
+            f"generator assertion {op} downgraded to warn because only structural/dependency assertions may block"
+        )
+    return warnings
+
+
 def _normalize_evidence_refs(raw_refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     refs: List[Dict[str, Any]] = []
     for item in raw_refs:
@@ -284,15 +340,15 @@ def _normalize_evidence_refs(raw_refs: List[Dict[str, Any]]) -> List[Dict[str, A
     return refs
 
 
-def _normalize_assertions(assertions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _normalize_assertions(assertions: List[Dict[str, Any]], *, scope: str) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for assertion in assertions:
         if not isinstance(assertion, dict):
             continue
-        op = str(assertion.get("op") or "").strip().lower()
+        op = _normalize_assertion_op(str(assertion.get("op") or "").strip().lower(), scope=scope)
         if not op:
             continue
-        entry = dict(assertion)
+        entry = _canonicalize_assertion_params(dict(assertion), op=op, scope=scope)
         entry["op"] = op
         severity = str(entry.get("severity") or "block").strip().lower()
         if severity not in VALID_ASSERTION_SEVERITY:
@@ -315,8 +371,146 @@ def _normalize_assertions(assertions: List[Dict[str, Any]]) -> List[Dict[str, An
         entry["intent"] = intent
         entry["stability"] = stability
         entry["evidence_ids"] = evidence_ids
+        for key in [item for item in entry if str(item).startswith("_")]:
+            entry.pop(key, None)
         normalized.append(entry)
     return normalized
+
+
+def _normalize_assertion_op(op: str, *, scope: str) -> str:
+    if scope == "generator":
+        return GENERATOR_OP_ALIASES.get(op, op)
+    return VERIFIER_OP_ALIASES.get(op, op)
+
+
+def _canonicalize_assertion_params(assertion: Dict[str, Any], *, op: str, scope: str) -> Dict[str, Any]:
+    entry = dict(assertion)
+
+    def _move_value(target: str, aliases: List[str]) -> Any:
+        value = entry.get(target)
+        if value is not None:
+            return value
+        for alias in aliases:
+            alias_value = entry.get(alias)
+            if alias_value is not None:
+                entry[target] = alias_value
+                return alias_value
+        return None
+
+    if op == "dep_declared":
+        value = _move_value("dep", ["name", "package"])
+        if isinstance(value, str):
+            entry["dep"] = value.strip()
+        for alias in ("name", "package"):
+            entry.pop(alias, None)
+    elif op == "any_dep_declared":
+        value = _move_value("deps", ["names", "packages"])
+        if isinstance(value, str):
+            value = [value]
+        if isinstance(value, list):
+            entry["deps"] = [str(item).strip() for item in value if isinstance(item, str) and str(item).strip()]
+        for alias in ("names", "packages"):
+            entry.pop(alias, None)
+    elif op in {"file_contains", "file_not_contains"}:
+        value = _move_value("string", ["contains", "needle"])
+        if isinstance(value, str):
+            entry["string"] = value.strip()
+        for alias in ("contains", "needle"):
+            entry.pop(alias, None)
+    elif op in {"file_regex_contains", "file_regex_not_contains", "file_regex_any", "regex_contains"}:
+        value = _move_value("regex", ["pattern"])
+        if isinstance(value, str):
+            entry["regex"] = value.strip()
+        entry.pop("pattern", None)
+        if op == "file_regex_any":
+            globs = _move_value("globs", ["paths", "glob"])
+            if globs is None and entry.get("path") is not None:
+                globs = [entry.get("path")]
+            if globs is None and isinstance(entry.get("patterns"), list):
+                globs = ["*"]
+            if isinstance(globs, str):
+                globs = [globs]
+            if isinstance(globs, list):
+                entry["globs"] = [
+                    str(item).strip()
+                    for item in globs
+                    if isinstance(item, str) and str(item).strip()
+                ]
+            patterns = entry.get("patterns")
+            if (not entry.get("regex")) and isinstance(patterns, list):
+                merged = _merge_regex_patterns(patterns)
+                if merged:
+                    entry["regex"] = merged
+            for alias in ("paths", "glob", "patterns", "path"):
+                entry.pop(alias, None)
+    elif scope == "verifier" and op in {"contains", "not_contains"}:
+        value = _move_value("string", ["contains", "needle"])
+        if isinstance(value, str):
+            entry["string"] = value.strip()
+        for alias in ("contains", "needle"):
+            entry.pop(alias, None)
+
+    return entry
+
+
+def _merge_regex_patterns(patterns: List[Any]) -> str:
+    normalized = [str(item).strip() for item in patterns if isinstance(item, str) and str(item).strip()]
+    if not normalized:
+        return ""
+    if len(normalized) == 1:
+        return normalized[0]
+    return "(?:" + ")|(?:".join(normalized) + ")"
+
+
+def _validate_assertions(assertions: List[Dict[str, Any]], *, scope: str) -> None:
+    supported = SUPPORTED_GENERATOR_ASSERTION_OPS if scope == "generator" else SUPPORTED_VERIFIER_ASSERTION_OPS
+    for assertion in assertions:
+        op = str(assertion.get("op") or "").strip().lower()
+        if not op:
+            raise ValueError(f"{scope} assertion missing op")
+        if op not in supported:
+            raise ValueError(f"unsupported {scope} assertion op: {op}")
+        if op == "file_exists" and not _non_empty_string(assertion.get("path")):
+            raise ValueError("file_exists requires path")
+        if op == "role_exists" and not _non_empty_string(assertion.get("role")):
+            raise ValueError("role_exists requires role")
+        if op in {"file_contains", "file_not_contains"}:
+            if not _non_empty_string(assertion.get("path")) or not _non_empty_string(assertion.get("string")):
+                raise ValueError(f"{op} requires path and string")
+        if op in {"file_regex_contains", "file_regex_not_contains"}:
+            if not _non_empty_string(assertion.get("path")) or not _non_empty_string(assertion.get("regex")):
+                raise ValueError(f"{op} requires path and regex")
+        if op == "file_regex_any":
+            if not _non_empty_string(assertion.get("regex")):
+                raise ValueError("file_regex_any requires regex")
+            globs = assertion.get("globs")
+            if not isinstance(globs, list) or not any(_non_empty_string(item) for item in globs):
+                raise ValueError("file_regex_any requires globs[]")
+        if op == "dep_declared" and not _non_empty_string(assertion.get("dep")):
+            raise ValueError("dep_declared requires dep")
+        if op == "any_dep_declared":
+            deps = assertion.get("deps")
+            if not isinstance(deps, list) or not any(_non_empty_string(item) for item in deps):
+                raise ValueError("any_dep_declared requires deps[]")
+        if op == "manifest_field_equals" and not _non_empty_string(assertion.get("field")):
+            raise ValueError("manifest_field_equals requires field")
+        if op == "manifest_field_contains":
+            if not _non_empty_string(assertion.get("field")) or not _non_empty_string(assertion.get("string")):
+                raise ValueError("manifest_field_contains requires field and string")
+        if op == "pattern_tag_present":
+            has_tag = _non_empty_string(assertion.get("tag"))
+            tags = assertion.get("tags")
+            has_tags = isinstance(tags, list) and any(_non_empty_string(item) for item in tags)
+            if not has_tag and not has_tags:
+                raise ValueError("pattern_tag_present requires tag or tags")
+        if op in {"contains", "not_contains"} and not _non_empty_string(assertion.get("string")):
+            raise ValueError(f"{op} requires string")
+        if op == "regex_contains" and not _non_empty_string(assertion.get("regex")):
+            raise ValueError("regex_contains requires regex")
+
+
+def _non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _normalize_autofix_hints(hints: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -382,7 +576,9 @@ def _normalize_normalization_block(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 __all__ = [
+    "BLOCKING_GENERATOR_ASSERTION_OPS",
     "GENERATOR_OP_ALIASES",
+    "GENERATOR_REGEX_ASSERTION_OPS",
     "GuardSpec",
     "SUPPORTED_GENERATOR_ASSERTION_OPS",
     "SUPPORTED_VERIFIER_ASSERTION_OPS",
@@ -391,6 +587,7 @@ __all__ = [
     "VERIFIER_OP_ALIASES",
     "build_guard_spec",
     "default_guard_policy_snapshot",
+    "enforce_generator_assertion_trust_boundary",
     "normalize_semantic_signature",
     "parse_guard_spec",
 ]

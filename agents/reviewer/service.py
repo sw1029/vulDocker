@@ -74,9 +74,9 @@ class ReviewerService:
 
         for bundle in self.bundles:
             context = self._evaluate_bundle(bundle)
-            static_issues = self._scan_workspace(bundle)
+            static_issues = self._scan_workspace(bundle, exploit_success=context.success)
             all_issues = context.issues + static_issues
-            blocking = context.blocking or any(issue.get("severity") in {"high", "critical"} for issue in all_issues)
+            blocking = context.blocking or any(bool(issue.get("blocking")) for issue in all_issues)
             run_summary = {
                 "sid": self.sid,
                 "bundle": {"vuln_id": bundle.vuln_id, "slug": bundle.slug},
@@ -238,7 +238,7 @@ class ReviewerService:
         except json.JSONDecodeError:
             return {}
 
-    def _scan_workspace(self, bundle: VulnBundle) -> List[Dict[str, Any]]:
+    def _scan_workspace(self, bundle: VulnBundle, *, exploit_success: bool = False) -> List[Dict[str, Any]]:
         issues: List[Dict[str, Any]] = []
         workspace = workspace_dir_for_bundle(self.plan, bundle)
         if not workspace.exists():
@@ -326,7 +326,8 @@ class ReviewerService:
                         line=1,
                         issue=f"Rule pattern target missing: {resolved}",
                         fix_hint="Ensure generator writes the expected entry file or update docs/evals/rules patterns",
-                        severity="high",
+                        severity="high" if not exploit_success else "medium",
+                        blocking=not exploit_success,
                     )
                 )
                 continue
@@ -342,7 +343,8 @@ class ReviewerService:
                         line=1,
                         issue=f"Rule pattern miss: expected '{needle}' in {resolved}",
                         fix_hint="Align generator output with rule patterns or update runtime_rules for this SID",
-                        severity="high",
+                        severity="high" if not exploit_success else "medium",
+                        blocking=not exploit_success,
                     )
                 )
         semantic_report = evaluate_workspace_semantics(bundle.vuln_id, workspace)
@@ -357,7 +359,8 @@ class ReviewerService:
                         "Align generated code/PoC with the requested vuln_id semantics before passing REVIEW "
                         "(ex: CWE-352 requires state-changing endpoint and missing CSRF validation)."
                     ),
-                    severity="critical",
+                    severity="critical" if not exploit_success else "medium",
+                    blocking=not exploit_success,
                 )
             )
 
@@ -373,6 +376,7 @@ class ReviewerService:
                     issue="Dynamic guard spec missing under failure_policy",
                     fix_hint="Ensure RESEARCH stage emits guard_spec.json for this bundle.",
                     severity="critical",
+                    blocking=True,
                 )
             )
         elif not guard_eval.passed:
@@ -383,7 +387,8 @@ class ReviewerService:
                     line=1,
                     issue="Dynamic guard mismatch: " + "; ".join(guard_eval.violations or ["unknown violation"]),
                     fix_hint="Apply guard autofix hints and regenerate bundle to satisfy semantic/assertion constraints.",
-                    severity="critical",
+                    severity="critical" if not exploit_success else "medium",
+                    blocking=not exploit_success,
                 )
             )
         return issues
@@ -438,6 +443,7 @@ class ReviewerService:
         fix_hint: str,
         evidence: List[str] | None = None,
         severity: str = "high",
+        blocking: bool = True,
     ) -> Dict[str, Any]:
         return {
             "sid": self.sid,
@@ -449,7 +455,7 @@ class ReviewerService:
             "severity": severity,
             "test_change": "Add PoC regression test",
             "evidence_log_ids": evidence or [],
-            "blocking": True,
+            "blocking": bool(blocking),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 

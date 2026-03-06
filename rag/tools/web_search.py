@@ -1,49 +1,24 @@
-"""Fallback-friendly web search helper for the Researcher agent."""
+"""Fallback-friendly search facade consumed by the Researcher agent."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
-from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from common.logging import get_logger
 from common.paths import get_repo_root
 
-try:  # pragma: no cover - optional dependency
-    import requests
-except Exception:  # pragma: no cover - optional dependency
-    requests = None
+from .providers import (
+    CustomSearchProvider,
+    SearchExecution,
+    SearchProvider,
+    SearchRequest,
+    SearchResult,
+    TavilySearchProvider,
+)
 
 LOGGER = get_logger(__name__)
-
-
-@dataclass
-class SearchResult:
-    """Normalized container for search hits."""
-
-    title: str
-    url: str
-    snippet: str
-    source: str = "local"
-    published: Optional[str] = None
-    query: Optional[str] = None
-    retrieved_at: Optional[str] = None
-
-    def to_payload(self) -> Dict[str, str]:
-        payload: Dict[str, str] = {
-            "title": self.title,
-            "url": self.url,
-            "snippet": self.snippet,
-            "source": self.source,
-        }
-        if self.published:
-            payload["published"] = self.published
-        if self.query:
-            payload["query"] = self.query
-        if self.retrieved_at:
-            payload["retrieved_at"] = self.retrieved_at
-        return payload
 
 
 class WebSearchTool:
@@ -52,40 +27,70 @@ class WebSearchTool:
     def __init__(
         self,
         *,
+        provider: Optional[str] = None,
         endpoint: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
         timeout: float = 8.0,
         max_local_files: int = 300,
     ) -> None:
-        self.endpoint = endpoint or os.environ.get("VUL_WEB_SEARCH_ENDPOINT")
+        self.provider_name = (provider or os.environ.get("VUL_WEB_SEARCH_PROVIDER") or "").strip().lower()
+        self.endpoint = (endpoint or os.environ.get("VUL_WEB_SEARCH_ENDPOINT") or "").strip()
+        self.base_url = (base_url or os.environ.get("VUL_WEB_SEARCH_BASE_URL") or "").strip()
+        self.api_key = (api_key or os.environ.get("VUL_WEB_SEARCH_API_KEY") or "").strip()
         self.timeout = timeout
         self.max_local_files = max_local_files
         self.local_root = get_repo_root() / "rag" / "corpus"
+        self._last_execution: Optional[SearchExecution] = None
 
     def search(self, query: str, limit: int = 3, policy: str = "remote_prefer") -> List[SearchResult]:
         """Return up to ``limit`` results for a query."""
 
         query = (query or "").strip()
         if not query:
+            self._last_execution = None
             return []
         policy = (policy or "remote_prefer").strip().lower()
         if policy not in {"remote_required", "remote_prefer", "local_only"}:
             policy = "remote_prefer"
 
+        request = SearchRequest(
+            query=query,
+            limit=max(1, int(limit)),
+            policy=policy,
+            include_raw_content=(policy == "remote_required"),
+        )
+
         if policy == "local_only":
-            return self._annotate_hits(self._local_search(query, limit), query)
+            local_hits = self._annotate_hits(self._local_search(query, limit), query)
+            self._last_execution = SearchExecution(
+                provider="local",
+                configured=True,
+                result_count=len(local_hits),
+                degraded=False,
+                request=request.to_payload(),
+            )
+            return local_hits
 
-        remote_hits: List[SearchResult] = []
-        if self.endpoint:
-            remote_hits = self._remote_search(query, limit)
-        elif policy == "remote_required":
-            LOGGER.warning("search_policy=remote_required but VUL_WEB_SEARCH_ENDPOINT is not configured")
-
+        remote_hits, execution = self._remote_search(request)
+        remote_hits = self._annotate_hits(remote_hits, query)
         if policy == "remote_required":
-            return self._annotate_hits(remote_hits, query)
+            self._last_execution = execution
+            return remote_hits
 
         if remote_hits:
-            return self._annotate_hits(remote_hits, query)
-        return self._annotate_hits(self._local_search(query, limit), query)
+            self._last_execution = execution
+            return remote_hits
+
+        local_hits = self._annotate_hits(self._local_search(query, limit), query)
+        execution.result_count = len(local_hits)
+        if execution.error or not execution.configured:
+            execution.degraded = True
+        self._last_execution = execution
+        return local_hits
+
+    def last_execution(self) -> Optional[SearchExecution]:
+        return self._last_execution
 
     @staticmethod
     def _annotate_hits(hits: List[SearchResult], query: str) -> List[SearchResult]:
@@ -99,56 +104,46 @@ class WebSearchTool:
 
     # Remote search helpers -------------------------------------------------
 
-    def _remote_search(self, query: str, limit: int) -> List[SearchResult]:
-        if requests is None:
-            LOGGER.warning("requests package unavailable; skipping remote search endpoint %s", self.endpoint)
-            return []
-        try:  # pragma: no cover - network calls are not exercised in tests
-            response = requests.get(
-                self.endpoint,
-                params={"q": query, "size": limit},
-                timeout=self.timeout,
+    def _remote_search(self, request: SearchRequest) -> Tuple[List[SearchResult], SearchExecution]:
+        provider = self._build_remote_provider()
+        if provider is None:
+            provider_name = self.provider_name or ("custom" if self.endpoint else "none")
+            execution = SearchExecution(
+                provider=provider_name,
+                configured=False,
+                error=self._remote_provider_error(provider_name),
+                endpoint_or_base_url=self.endpoint or self.base_url or None,
+                auth_present=bool(self.api_key) if provider_name == "tavily" else None,
+                request=request.to_payload(),
             )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:  # pragma: no cover - network code paths
-            LOGGER.warning("Remote search failed for '%s': %s", query, exc)
-            return []
-        return self._parse_remote_payload(payload, limit)
+            if request.policy == "remote_required":
+                LOGGER.warning(execution.error)
+            return [], execution
+        return provider.search(request)
 
-    def _parse_remote_payload(self, payload: Any, limit: int) -> List[SearchResult]:
-        candidates: List[Dict[str, Any]] = []
-        if isinstance(payload, dict):
-            for key in ("results", "items", "data"):
-                maybe = payload.get(key)
-                if isinstance(maybe, list):
-                    candidates = maybe
-                    break
-        elif isinstance(payload, list):
-            candidates = payload
+    def _build_remote_provider(self) -> Optional[SearchProvider]:
+        provider_name = self.provider_name
+        if provider_name:
+            if provider_name == "custom":
+                return CustomSearchProvider(endpoint=self.endpoint, timeout=self.timeout)
+            if provider_name == "tavily":
+                base_url = self.base_url or None
+                return TavilySearchProvider(base_url=base_url, api_key=self.api_key or None, timeout=self.timeout)
+            return None
+        if self.endpoint:
+            return CustomSearchProvider(endpoint=self.endpoint, timeout=self.timeout)
+        return None
 
-        hits: List[SearchResult] = []
-        for entry in candidates:
-            if not isinstance(entry, dict):
-                continue
-            title = entry.get("title") or entry.get("name") or "untitled"
-            url = entry.get("url") or entry.get("link")
-            snippet = entry.get("snippet") or entry.get("summary") or entry.get("body")
-            if not url or not snippet:
-                continue
-            published = entry.get("published") or entry.get("date")
-            hits.append(
-                SearchResult(
-                    title=str(title),
-                    url=str(url),
-                    snippet=str(snippet),
-                    source="remote",
-                    published=str(published) if published else None,
-                )
-            )
-            if len(hits) >= limit:
-                break
-        return hits
+    def _remote_provider_error(self, provider_name: str) -> str:
+        if provider_name == "tavily":
+            if not self.api_key:
+                return "search_policy requires Tavily remote search, but VUL_WEB_SEARCH_API_KEY is not configured"
+            return "search_policy requires Tavily remote search, but provider setup is incomplete"
+        if provider_name == "custom":
+            return "search_policy requires remote search, but VUL_WEB_SEARCH_ENDPOINT is not configured"
+        if provider_name in {"brave", "searxng"}:
+            return f"search provider '{provider_name}' is not implemented in this release"
+        return "search_policy requires remote search, but no remote provider is configured"
 
     # Local search helpers --------------------------------------------------
 
@@ -173,6 +168,7 @@ class WebSearchTool:
                     url=str(path),
                     snippet=snippet[:400],
                     source="local",
+                    provider="local",
                 )
             )
             if len(hits) >= limit:
@@ -195,4 +191,4 @@ class WebSearchTool:
                         return
 
 
-__all__ = ["SearchResult", "WebSearchTool"]
+__all__ = ["SearchExecution", "SearchRequest", "SearchResult", "WebSearchTool"]

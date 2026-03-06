@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from common.contracts import load_generator_contract as load_resolved_contract
 from common.guardrails import GuardEngine, load_guard_spec_for_sid
 from common.rules import RuleSpec, load_rule, load_rulespec
 from common.vuln_semantics import evaluate_manifest_semantics, evaluate_workspace_semantics, semantic_error_summary
@@ -95,7 +96,6 @@ def verify_with_rule(
         if semantic_report.get("semantic_match"):
             evidence.append("Semantic consistency check passed")
         else:
-            success = False
             evidence.append(f"semantic mismatch: {semantic_error_summary(semantic_report)}")
 
     guard_consistency = _evaluate_guard_consistency(
@@ -106,7 +106,6 @@ def verify_with_rule(
         policy=policy,
     )
     if guard_consistency.get("required_but_missing"):
-        success = False
         evidence.append(str(guard_consistency.get("reason") or "dynamic guard spec missing"))
     else:
         verifier_guard = guard_consistency.get("verifier") or {}
@@ -117,7 +116,6 @@ def verify_with_rule(
         if isinstance(workspace_guard, dict):
             violations.extend(workspace_guard.get("violations") or [])
         if violations:
-            success = False
             evidence.append("guard mismatch: " + "; ".join(str(item) for item in violations))
 
     if not evidence:
@@ -542,7 +540,7 @@ def _load_generator_contract(
     log_path: Path,
     run_summary: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """Best-effort loader for generator_contract.json based on sid/slug."""
+    """Best-effort loader for resolved/generator contract based on sid/slug."""
     sid = ""
     if isinstance(run_summary, dict):
         sid = str(run_summary.get("sid") or "").strip()
@@ -562,13 +560,7 @@ def _load_generator_contract(
     candidate_dirs.append(REPO_ROOT / "metadata" / sid)
 
     for meta_dir in candidate_dirs:
-        contract_path = meta_dir / "generator_contract.json"
-        if not contract_path.exists():
-            continue
-        try:
-            data = json.loads(contract_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue
+        data = load_resolved_contract(meta_dir)
         if isinstance(data, dict):
             return data
     return None

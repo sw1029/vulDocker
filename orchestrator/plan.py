@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.schema import RequirementNormalization, RequirementValidationError, normalize_requirement
-from common.sid import SID_FIELDS, compute_sid
+from common.sid import OPTIONAL_FIELDS, SID_FIELDS, compute_sid
 from common.variability import VariationManager
 
 LOGGER = get_logger(__name__)
@@ -105,14 +105,21 @@ def _policy_config(normalization: RequirementNormalization) -> Dict[str, Any]:
 
 def build_plan(normalization: RequirementNormalization) -> Dict[str, Any]:
     components = _default_components(normalization.requirement)
+    components["effective_vuln_ids_digest"] = normalization.effective_vuln_ids_digest
     if normalization.vuln_ids_digest:
         components["vuln_ids_digest"] = normalization.vuln_ids_digest
     sid = compute_sid(components)
     timestamp = datetime.now(timezone.utc).isoformat()
+    sid_inputs = {
+        "components": {key: components.get(key, "") for key in SID_FIELDS + OPTIONAL_FIELDS if components.get(key, "")},
+        "requested_vuln_ids": normalization.requested_vuln_ids,
+        "effective_vuln_ids": normalization.effective_vuln_ids,
+    }
     plan = {
         "sid": sid,
         "created_at": timestamp,
         "requirement": normalization.requirement,
+        "sid_inputs": sid_inputs,
         "variation_key": _normalize_variation_key(normalization.requirement),
         "loop": _loop_config(normalization.requirement),
         "policy": _policy_config(normalization),
@@ -120,6 +127,7 @@ def build_plan(normalization: RequirementNormalization) -> Dict[str, Any]:
         "features": {"multi_vuln": normalization.multi_vuln},
         "requested_vuln_ids": normalization.requested_vuln_ids,
         "vuln_ids": normalization.effective_vuln_ids,
+        "effective_vuln_ids_digest": normalization.effective_vuln_ids_digest,
         "paths": {
             "metadata": str(get_metadata_dir(sid)),
             "workspace": str(get_workspace_dir(sid)),

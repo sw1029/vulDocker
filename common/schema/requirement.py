@@ -57,6 +57,7 @@ class RequirementNormalization:
     requested_vuln_ids: List[str]
     effective_vuln_ids: List[str]
     multi_vuln: bool
+    effective_vuln_ids_digest: str
     vuln_ids_digest: Optional[str]
     warnings: List[str]
     ignored_vuln_ids: List[str]
@@ -92,10 +93,9 @@ def normalize_requirement(
     _normalize_research_policy(normalized_req, effective, warnings)
     _normalize_pipeline_policy(normalized_req, effective, warnings)
 
-    vuln_ids_digest: Optional[str] = None
-    if multi_vuln:
-        serialized = "\n".join(sorted(effective))
-        vuln_ids_digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    serialized = "\n".join(sorted(effective))
+    effective_vuln_ids_digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    vuln_ids_digest: Optional[str] = effective_vuln_ids_digest if multi_vuln else None
 
     bundles: List[Dict[str, str]] = []
     single_bundle = len(effective) == 1
@@ -115,6 +115,7 @@ def normalize_requirement(
         requested_vuln_ids=requested,
         effective_vuln_ids=effective,
         multi_vuln=multi_vuln,
+        effective_vuln_ids_digest=effective_vuln_ids_digest,
         vuln_ids_digest=vuln_ids_digest,
         warnings=warnings,
         ignored_vuln_ids=ignored,

@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from common.schema import normalize_requirement
+from orchestrator.plan import build_plan
+
+
+def _requirement(vuln_id: str) -> dict:
+    return {
+        "vuln_id": vuln_id,
+        "seed": 7,
+        "model_version": "gpt-5.2",
+        "corpus_snapshot": "snapshot-a",
+        "pattern_id": "dynamic-demo",
+        "deps_digest": "deps-a",
+        "base_image_digest": "base-a",
+    }
+
+
+def test_single_vuln_sid_changes_with_vuln_id() -> None:
+    plan_a = build_plan(normalize_requirement(_requirement("CWE-89")))
+    plan_b = build_plan(normalize_requirement(_requirement("CWE-9999")))
+
+    assert plan_a["sid"] != plan_b["sid"]
+    assert plan_a["effective_vuln_ids_digest"] != plan_b["effective_vuln_ids_digest"]
+
+
+def test_plan_records_sid_inputs_for_traceability() -> None:
+    plan = build_plan(normalize_requirement(_requirement("CWE-89")))
+
+    sid_inputs = plan["sid_inputs"]
+    assert sid_inputs["effective_vuln_ids"] == ["CWE-89"]
+    assert sid_inputs["components"]["effective_vuln_ids_digest"] == plan["effective_vuln_ids_digest"]

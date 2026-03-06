@@ -21,7 +21,8 @@ def guard_spec_ensemble_path(metadata_dir: Path) -> Path:
 def write_guard_spec(metadata_dir: Path, payload: Dict[str, Any]) -> Path:
     ensure_dir(metadata_dir)
     path = guard_spec_path(metadata_dir)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    canonical = parse_guard_spec(payload).to_dict()
+    path.write_text(json.dumps(canonical, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
 

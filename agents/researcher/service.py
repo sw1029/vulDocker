@@ -1,6 +1,7 @@
 """Researcher microservice orchestrating ReAct-style retrieval."""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from common.guardrails import (
     VALID_UNSUPPORTED_OP_POLICIES,
     build_guard_spec,
     default_guard_policy_snapshot,
+    enforce_generator_assertion_trust_boundary,
     parse_guard_spec,
     write_guard_spec,
     write_guard_spec_ensemble,
@@ -33,7 +35,7 @@ from common.run_matrix import (
 from common.variability import VariationManager
 from orchestrator.plugins import ReactLoop, ReactSpan
 from rag.static_loader import load_static_context
-from rag.tools import SearchResult, WebSearchTool
+from rag.tools import SearchExecution, SearchResult, SearchRequest, WebSearchTool
 
 LOGGER = get_logger(__name__)
 
@@ -73,6 +75,9 @@ class ResearcherService:
         self.search_limit = max(1, search_limit)
         self._last_report: Dict[str, Any] | None = None
         self._last_guard_spec: Dict[str, Any] | None = None
+        self._search_records: List[Dict[str, Any]] = []
+        self._search_health_path: Path | None = None
+        self._search_degraded = False
 
     def run(self) -> Path:
         snapshot = self._snapshot_id()
@@ -81,10 +86,12 @@ class ResearcherService:
         active_bundle = self.bundle
         with self.react_loop.span(queries=queries) as span:
             search_hits = self._collect_search_results(queries, span=span)
+            search_meta = self._write_search_artifacts(search_hits, policy=self._search_policy())
             evidence = self._build_evidence_payload(search_hits)
             quality, quality_reason = self._evaluate_evidence_quality(active_bundle, search_hits)
             guard_fallback = "guard fallback mode" in (quality_reason or "").lower()
             if quality == "insufficient":
+                failure_reason = self._format_search_failure_reason(quality_reason)
                 report = {
                     "sid": self.sid,
                     "vuln_id": active_bundle.vuln_id if active_bundle else self.requirement.get("vuln_id"),
@@ -92,6 +99,8 @@ class ResearcherService:
                     "retrieval_snapshot_id": snapshot,
                     "failure_context": self.react_loop.failure_context,
                     "search_policy": self._search_policy(),
+                    "search_health_path": str(search_meta["health_path"]) if search_meta.get("health_path") else None,
+                    "search_degraded": bool(search_meta.get("degraded")),
                     "evidence": evidence,
                     "semantic_signature": self._default_semantic_signature(active_bundle),
                     "quality": "insufficient",
@@ -102,8 +111,8 @@ class ResearcherService:
                 }
                 self._last_report = report
                 path = self._write_report(report)
-                span.event("research_insufficient", reason=quality_reason, path=str(path))
-                raise RuntimeError(quality_reason)
+                span.event("research_insufficient", reason=failure_reason, path=str(path))
+                raise RuntimeError(failure_reason)
             report = self._generate_report(rag_context, search_hits)
             report.setdefault("sid", self.sid)
             if active_bundle:
@@ -112,6 +121,10 @@ class ResearcherService:
             report.setdefault("retrieval_snapshot_id", snapshot)
             report.setdefault("failure_context", self.react_loop.failure_context)
             report["search_policy"] = self._search_policy()
+            report["search_health_path"] = (
+                str(search_meta["health_path"]) if search_meta.get("health_path") else None
+            )
+            report["search_degraded"] = bool(search_meta.get("degraded"))
             report["evidence"] = evidence
             report.setdefault("semantic_signature", self._default_semantic_signature(active_bundle))
             report["quality"] = quality
@@ -156,9 +169,29 @@ class ResearcherService:
     def _collect_search_results(self, queries: Iterable[str], span: ReactSpan) -> List[SearchResult]:
         hits: List[SearchResult] = []
         seen_urls: set[str] = set()
+        self._search_records = []
         search_policy = self._search_policy()
         for query in queries:
             new_hits = self.search_tool.search(query, limit=self.search_limit, policy=search_policy)
+            execution = self.search_tool.last_execution()
+            request_payload = (
+                execution.request
+                if isinstance(execution, SearchExecution) and isinstance(execution.request, dict)
+                else SearchRequest(query=query, limit=self.search_limit, policy=search_policy).to_payload()
+            )
+            self._search_records.append(
+                {
+                    "query": query,
+                    "provider": execution.provider if isinstance(execution, SearchExecution) else None,
+                    "policy": search_policy,
+                    "request": request_payload,
+                    "execution": execution.to_payload() if isinstance(execution, SearchExecution) else None,
+                    "results": [hit.to_payload(include_raw_content=True) for hit in new_hits],
+                    "raw_payload_digest": (
+                        execution.raw_payload_digest if isinstance(execution, SearchExecution) else None
+                    ),
+                }
+            )
             span.event("search", query=query, hits=len(new_hits))
             for hit in new_hits:
                 if hit.url in seen_urls:
@@ -166,6 +199,85 @@ class ResearcherService:
                 seen_urls.add(hit.url)
                 hits.append(hit)
         return hits
+
+    def _write_search_artifacts(self, search_hits: List[SearchResult], *, policy: str) -> Dict[str, Any]:
+        traces_dir = ensure_dir(self.metadata_dir / "search_traces")
+        for index, record in enumerate(self._search_records, start=1):
+            query = str(record.get("query") or "")
+            digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12] if query else f"{index:012d}"
+            trace_path = traces_dir / f"{index:02d}-{digest}.json"
+            payload = {
+                "query": query,
+                "provider": record.get("provider"),
+                "policy": policy,
+                "request": record.get("request") or {},
+                "execution": record.get("execution") or {},
+                "results": record.get("results") or [],
+                "raw_payload_digest": record.get("raw_payload_digest"),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            trace_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        last_execution_payload = (
+            self._search_records[-1].get("execution") if self._search_records else None
+        )
+        last_execution = (
+            SearchExecution.from_payload(last_execution_payload)
+            if isinstance(last_execution_payload, dict)
+            else None
+        )
+        degraded = any(
+            bool((record.get("execution") or {}).get("degraded"))
+            for record in self._search_records
+            if isinstance(record.get("execution"), dict)
+        )
+        remote_result_count = 0
+        local_result_count = 0
+        for record in self._search_records:
+            results = record.get("results") or []
+            if not isinstance(results, list):
+                continue
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                source = str(item.get("source") or "").strip().lower()
+                if source == "remote":
+                    remote_result_count += 1
+                elif source == "local":
+                    local_result_count += 1
+        health_path = self.metadata_dir / "search_health.json"
+        health_payload = {
+            "provider": (
+                last_execution.provider
+                if isinstance(last_execution, SearchExecution) and last_execution.provider
+                else self.search_tool.provider_name or ("custom" if self.search_tool.endpoint else "none")
+            ),
+            "configured": bool(last_execution.configured) if isinstance(last_execution, SearchExecution) else False,
+            "policy": policy,
+            "endpoint_or_base_url": (
+                last_execution.endpoint_or_base_url
+                if isinstance(last_execution, SearchExecution)
+                else (self.search_tool.endpoint or self.search_tool.base_url or None)
+            ),
+            "auth_present": last_execution.auth_present if isinstance(last_execution, SearchExecution) else None,
+            "request_count": len(self._search_records),
+            "remote_result_count": remote_result_count,
+            "local_result_count": local_result_count,
+            "degraded": degraded,
+            "last_error": last_execution.error if isinstance(last_execution, SearchExecution) else None,
+            "last_status_code": last_execution.status_code if isinstance(last_execution, SearchExecution) else None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        health_path.write_text(json.dumps(health_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._search_health_path = health_path
+        self._search_degraded = degraded
+        return {"health_path": health_path, "degraded": degraded}
+
+    def _format_search_failure_reason(self, reason: str) -> str:
+        text = str(reason or "").strip()
+        if self._search_health_path:
+            return f"{text} See {self._search_health_path}."
+        return text
 
     def _generate_report(self, rag_context: str, search_hits: List[SearchResult]) -> Dict[str, Any]:
         prompt = build_researcher_prompt(
@@ -470,15 +582,57 @@ class ResearcherService:
 
         if op == "dep_declared":
             _map_key("dep", ["name", "package"])
+            assertion.pop("name", None)
+            assertion.pop("package", None)
         elif op == "any_dep_declared":
             _map_key("deps", ["names", "packages"])
+            value = assertion.get("deps")
+            if isinstance(value, str):
+                assertion["deps"] = [value]
+            assertion.pop("names", None)
+            assertion.pop("packages", None)
         elif op in {"file_contains", "file_not_contains"}:
             _map_key("string", ["contains", "needle"])
+            assertion.pop("contains", None)
+            assertion.pop("needle", None)
         elif op in {"file_regex_contains", "file_regex_not_contains", "file_regex_any"}:
             _map_key("regex", ["pattern"])
             if op == "file_regex_any":
                 _map_key("globs", ["paths", "glob"])
+                patterns = assertion.get("patterns")
+                if not assertion.get("regex") and isinstance(patterns, list):
+                    merged = [
+                        str(item).strip()
+                        for item in patterns
+                        if isinstance(item, str) and str(item).strip()
+                    ]
+                    if merged:
+                        assertion["regex"] = merged[0] if len(merged) == 1 else "(?:" + ")|(?:".join(merged) + ")"
+                        assertion["_normalized_from_patterns"] = True
+                        mismatches.append("file_regex_any.regex missing, found patterns[]")
+                globs = assertion.get("globs")
+                if globs is None and assertion.get("path") is not None:
+                    globs = [assertion.get("path")]
+                    assertion["globs"] = globs
+                    assertion["_defaulted_globs"] = True
+                    mismatches.append("file_regex_any.globs missing, found path")
+                if globs is None:
+                    assertion["globs"] = ResearcherService._default_guard_globs()
+                    assertion["_defaulted_globs"] = True
+                    mismatches.append("file_regex_any.globs missing, defaulted to stack-aware globs")
+                elif isinstance(globs, str):
+                    assertion["globs"] = [globs]
+            assertion.pop("pattern", None)
+            assertion.pop("paths", None)
+            assertion.pop("glob", None)
+            assertion.pop("patterns", None)
+            if op == "file_regex_any":
+                assertion.pop("path", None)
         return mismatches
+
+    @staticmethod
+    def _default_guard_globs() -> List[str]:
+        return ["*.py", "*.js", "*.ts", "*.php", "*.rb", "*.java", "*.go", "*.sql"]
 
     @staticmethod
     def _normalize_assertion_metadata(assertion: Dict[str, Any], *, op: str, scope: str) -> List[str]:
@@ -516,9 +670,14 @@ class ResearcherService:
         assertion["stability"] = stability
         assertion["evidence_ids"] = evidence_ids
 
+        if scope == "generator":
+            warnings.extend(enforce_generator_assertion_trust_boundary(assertion))
+
         if scope == "generator" and op in {"file_regex_contains", "file_regex_not_contains", "file_regex_any"}:
             pattern = str(assertion.get("regex") or assertion.get("pattern") or "")
             alternations = pattern.count("|")
+            normalized_from_patterns = bool(assertion.pop("_normalized_from_patterns", False))
+            defaulted_globs = bool(assertion.pop("_defaulted_globs", False))
             if len(pattern) > 220 or alternations >= 8:
                 assertion["intent"] = "syntax_hint"
                 assertion["stability"] = "low"
@@ -526,6 +685,13 @@ class ResearcherService:
                     assertion["severity"] = "warn"
                 warnings.append(
                     f"brittle regex assertion downgraded ({op}) due to complexity/length; treated as syntax_hint warn"
+                )
+            elif op == "file_regex_any" and (normalized_from_patterns or defaulted_globs):
+                assertion["intent"] = "syntax_hint"
+                assertion["stability"] = "low"
+                assertion["severity"] = "warn"
+                warnings.append(
+                    "file_regex_any synthesized from non-canonical inputs; downgraded to syntax_hint warn"
                 )
         return warnings
 
@@ -952,7 +1118,8 @@ class ResearcherService:
                 "insufficient",
                 (
                     f"Insufficient researcher evidence for {vuln}: search_policy=remote_required requires at least "
-                    "one remote hit, but none were found. Configure VUL_WEB_SEARCH_ENDPOINT or relax "
+                    "one remote hit, but none were found. Configure the remote search provider "
+                    "(for example VUL_WEB_SEARCH_PROVIDER/VUL_WEB_SEARCH_API_KEY or VUL_WEB_SEARCH_ENDPOINT) or relax "
                     "researcher.search_policy."
                 ),
             )
@@ -962,7 +1129,7 @@ class ResearcherService:
                 "insufficient",
                 (
                     f"Insufficient researcher evidence for unknown CWE {vuln}: remote provenance is required, "
-                    "but only local/no evidence was collected. Configure VUL_WEB_SEARCH_ENDPOINT or set "
+                    "but only local/no evidence was collected. Configure the remote search provider or set "
                     "policy.require_researcher_evidence=false explicitly."
                 ),
             )

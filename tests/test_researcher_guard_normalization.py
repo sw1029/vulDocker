@@ -46,6 +46,8 @@ def test_researcher_normalizes_legacy_ops_and_defers_verifier_unknown() -> None:
     assert normalized is not None
     assert normalized["generator_assertions"][0]["op"] == "file_regex_any"
     assert normalized["generator_assertions"][1]["op"] == "file_regex_contains"
+    assert normalized["generator_assertions"][0]["severity"] == "warn"
+    assert normalized["generator_assertions"][0]["intent"] == "syntax_hint"
     assert normalized["verifier_assertions"][0]["op"] == "contains"
     deferred = normalized["verifier_assertions_deferred"]
     assert any(item.get("op") == "http_status" for item in deferred)
@@ -68,6 +70,91 @@ def test_researcher_fail_policy_rejects_unsupported_generator_op() -> None:
     )
 
     assert normalized is None
+
+
+def test_researcher_normalizes_file_regex_any_patterns_into_regex_and_globs() -> None:
+    service = _service_stub()
+    payload = {
+        "generator_assertions": [
+            {"op": "file_regex_any", "patterns": ["request\\.args", "cursor\\.execute"]},
+        ],
+        "verifier_assertions": [],
+    }
+
+    normalized = service._normalize_guard_payload_ops(  # type: ignore[attr-defined]
+        payload,
+        unsupported_policy="normalize_retry",
+        bundle=None,
+        report={},
+    )
+
+    assert normalized is not None
+    assertion = normalized["generator_assertions"][0]
+    assert assertion["globs"] == ["*.py", "*.js", "*.ts", "*.php", "*.rb", "*.java", "*.go", "*.sql"]
+    assert assertion["regex"] == "(?:request\\.args)|(?:cursor\\.execute)"
+    assert assertion["severity"] == "warn"
+    assert assertion["intent"] == "syntax_hint"
+    assert assertion["stability"] == "low"
+    assert "patterns" not in assertion
+
+
+def test_researcher_downgrades_contract_like_regex_generator_assertions() -> None:
+    service = _service_stub()
+    payload = {
+        "generator_assertions": [
+            {
+                "op": "file_regex_any",
+                "globs": ["**/*.py"],
+                "regex": "@app\\.(get|route)\\s*\\(\\s*['\\\"]/health['\\\"]",
+                "severity": "block",
+                "intent": "contract",
+                "stability": "high",
+            }
+        ],
+        "verifier_assertions": [],
+    }
+
+    normalized = service._normalize_guard_payload_ops(  # type: ignore[attr-defined]
+        payload,
+        unsupported_policy="normalize_retry",
+        bundle=None,
+        report={},
+    )
+
+    assert normalized is not None
+    assertion = normalized["generator_assertions"][0]
+    assert assertion["severity"] == "warn"
+    assert assertion["intent"] == "syntax_hint"
+    assert assertion["stability"] == "low"
+
+
+def test_researcher_downgrades_non_structural_blocking_generator_assertions() -> None:
+    service = _service_stub()
+    payload = {
+        "generator_assertions": [
+            {
+                "op": "file_contains",
+                "path": "app.py",
+                "contains": "request.args",
+                "severity": "block",
+                "intent": "semantic_anchor",
+                "stability": "high",
+            }
+        ],
+        "verifier_assertions": [],
+    }
+
+    normalized = service._normalize_guard_payload_ops(  # type: ignore[attr-defined]
+        payload,
+        unsupported_policy="normalize_retry",
+        bundle=None,
+        report={},
+    )
+
+    assert normalized is not None
+    assertion = normalized["generator_assertions"][0]
+    assert assertion["op"] == "file_contains"
+    assert assertion["severity"] == "warn"
 
 
 def test_known_cwe_low_relevance_uses_guard_fallback_mode() -> None:

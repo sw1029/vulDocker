@@ -47,6 +47,7 @@ LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합�
 
 ## 로드맵(동적화 TODO)
 - 하드코딩 제거 및 “새 CWE 입력 → 생성/실행/검증” end-to-end 안정화 로드맵: `docs/final_solution.md`
+- 현재 구현의 미비점/병목/개선안 분석: `docs/current_state_gap_analysis.md`
 
 ## RAG 설계·스냅샷
 - 코퍼스 층위: 공용(CWE/OWASP/Juliet) / 최신 PoC(CVE/PoC) / 사내(로그/메모).

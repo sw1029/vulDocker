@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir
 from common.plan import load_plan
+from common.contracts import load_generator_contract as load_resolved_contract
 from common.run_matrix import (
     VulnBundle,
     artifacts_dir_for_bundle,
@@ -758,7 +759,7 @@ def _load_json(path: Path) -> Dict[str, Any] | None:
 
 
 def _load_generator_contract(metadata_dir: Path) -> Dict[str, Any] | None:
-    return _load_json(metadata_dir / "generator_contract.json")
+    return load_resolved_contract(metadata_dir)
 
 
 def _start_sidecars(

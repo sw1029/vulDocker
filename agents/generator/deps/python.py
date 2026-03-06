@@ -10,6 +10,7 @@ ReadContent = Callable[[Dict[str, Any]], str]
 
 def detect_required(manifest: Manifest, read_content: ReadContent) -> Set[str]:
     required: Set[str] = set()
+    local_modules = _detect_local_modules(manifest)
     for entry in manifest.get("files", []):
         if not isinstance(entry, dict):
             continue
@@ -20,7 +21,7 @@ def detect_required(manifest: Manifest, read_content: ReadContent) -> Set[str]:
         if not content:
             continue
         required.update(_detect_imports(content))
-    return required
+    return {name for name in required if name not in local_modules}
 
 
 def _detect_imports(source: str) -> Set[str]:
@@ -48,6 +49,28 @@ def _detect_imports(source: str) -> Set[str]:
 def _is_python_path(path: str) -> bool:
     lowered = path.lower()
     return lowered.endswith(".py") or lowered.endswith(".pyw")
+
+
+def _detect_local_modules(manifest: Manifest) -> Set[str]:
+    modules: Set[str] = set()
+    for entry in manifest.get("files", []):
+        if not isinstance(entry, dict):
+            continue
+        path = (entry.get("path") or "").strip()
+        if not path or not _is_python_path(path):
+            continue
+        parts = [part for part in path.replace("\\", "/").split("/") if part]
+        if not parts:
+            continue
+        filename = parts[-1]
+        if filename == "__init__.py":
+            if len(parts) >= 2:
+                modules.add(parts[-2].split(".")[0])
+            continue
+        stem = filename.rsplit(".", 1)[0].strip()
+        if stem:
+            modules.add(stem)
+    return modules
 
 
 __all__ = ["detect_required"]

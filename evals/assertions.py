@@ -52,7 +52,7 @@ def _regex_flags(raw_flags: Sequence[str] | str | None) -> int:
 
 
 def _assert_regex_contains(log_text: str, entry: Dict[str, object]) -> Tuple[bool, str]:
-    pattern = entry.get("pattern")
+    pattern = entry.get("regex") or entry.get("pattern")
     if not isinstance(pattern, str) or not pattern:
         return False, "missing regex pattern"
     flags = _regex_flags(entry.get("flags"))
@@ -65,7 +65,7 @@ def _assert_contains(log_text: str, entry: Dict[str, object]) -> Tuple[bool, str
     if not isinstance(needle, str) or not needle:
         return False, "missing substring"
     success = needle in log_text
-    return success, f"substring={'found' if success else 'missing'}"
+    return success, f"substring={'found' if success else 'missing'}: {needle}"
 
 
 def _assert_not_contains(log_text: str, entry: Dict[str, object]) -> Tuple[bool, str]:
@@ -73,7 +73,7 @@ def _assert_not_contains(log_text: str, entry: Dict[str, object]) -> Tuple[bool,
     if not isinstance(needle, str) or not needle:
         return False, "missing substring"
     success = needle not in log_text
-    return success, f"substring={'absent' if success else 'present'}"
+    return success, f"substring={'absent' if success else 'present'}: {needle}"
 
 
 def _extract_numeric(match: re.Match[str] | None) -> float | None:
@@ -124,4 +124,3 @@ _ASSERTION_HANDLERS = {
 
 
 _NUMERIC_RE = re.compile(r"[-+]?[0-9]*\.?[0-9]+")
-

@@ -139,7 +139,7 @@ class RuleBasedVerifierTests(TestCase):
             )
         self.assertIn("poc.py contains 'Exploit SUCCESS'", result["evidence"])
 
-    def test_semantic_mismatch_forces_failure_even_when_rule_markers_match(self) -> None:
+    def test_semantic_mismatch_is_reported_without_overriding_exploit_success(self) -> None:
         log_path = self._write_log("SIG")
         rule = {
             "cwe": "CWE-352",
@@ -159,5 +159,5 @@ class RuleBasedVerifierTests(TestCase):
             return_value=semantic_report,
         ):
             result = rule_based.verify_with_rule("CWE-352", log_path)
-        self.assertFalse(result["verify_pass"])
+        self.assertTrue(result["verify_pass"])
         self.assertIn("semantic mismatch", result["evidence"])

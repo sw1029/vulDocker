@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Type
 
+from common.contracts import load_generator_contract
 from common.rules import RuleSpec, load_rulespec
 from evals.poc_verifier import rule_based as _rule_based
 from evals.assertions import run_assertions
@@ -192,7 +193,9 @@ def _load_runtime_generator_metadata(sid: str, slug: str) -> Optional[Dict[str, 
     """Load generator contract metadata for this run, if present.
 
     Supports both single-vuln and multi-vuln layouts by checking:
+    - metadata/<sid>/bundles/<slug>/resolved_contract.json
     - metadata/<sid>/bundles/<slug>/generator_contract.json
+    - metadata/<sid>/resolved_contract.json
     - metadata/<sid>/generator_contract.json
     - (fallback) generator_template.json in the same locations
     """
@@ -205,16 +208,18 @@ def _load_runtime_generator_metadata(sid: str, slug: str) -> Optional[Dict[str, 
         candidate_dirs.append(_rule_based.REPO_ROOT / "metadata" / sid / "bundles" / slug)
     candidate_dirs.append(_rule_based.REPO_ROOT / "metadata" / sid)
     for meta_dir in candidate_dirs:
-        for filename in ("generator_contract.json", "generator_template.json"):
-            path = meta_dir / filename
-            if not path.exists():
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
-            if isinstance(data, dict):
-                return data
+        contract = load_generator_contract(meta_dir)
+        if isinstance(contract, dict):
+            return contract
+        path = meta_dir / "generator_template.json"
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
     return None
 
 

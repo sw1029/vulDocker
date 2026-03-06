@@ -83,7 +83,9 @@ def write_manifest(sid: str, plan: dict) -> Path:
         "features": plan.get("features", {}),
         "policy": plan.get("policy", {}),
         "vuln_ids": plan.get("vuln_ids") or [plan.get("requirement", {}).get("vuln_id")],
+        "effective_vuln_ids_digest": plan.get("effective_vuln_ids_digest"),
         "vuln_ids_digest": plan.get("vuln_ids_digest"),
+        "sid_inputs": plan.get("sid_inputs", {}),
         "bundles": bundles,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {

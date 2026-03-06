@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from common.config import DecodingProfile
-from common.guardrails import SUPPORTED_GENERATOR_ASSERTION_OPS, load_guard_spec
+from common.guardrails import (
+    SUPPORTED_GENERATOR_ASSERTION_OPS,
+    enforce_generator_assertion_trust_boundary,
+    load_guard_spec,
+    write_guard_spec,
+)
 from common.hints import normalize_hint_payload
 from common.llm import LLMClient
 from common.logging import get_logger
@@ -591,9 +596,52 @@ class GeneratorService:
             poc_template=self.requirement.get("poc_template"),
         )
 
+    @staticmethod
+    def _sanitize_guard_spec_for_generation(payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        assertions = payload.get("generator_assertions")
+        if not isinstance(assertions, list):
+            return payload
+
+        warnings: List[str] = []
+        changed = False
+        for assertion in assertions:
+            if not isinstance(assertion, dict):
+                continue
+            before = json.dumps(assertion, sort_keys=True, ensure_ascii=False)
+            warnings.extend(enforce_generator_assertion_trust_boundary(assertion))
+            after = json.dumps(assertion, sort_keys=True, ensure_ascii=False)
+            if before != after:
+                changed = True
+
+        if not changed:
+            return payload
+
+        normalization = payload.get("normalization")
+        if not isinstance(normalization, dict):
+            normalization = {}
+        existing = normalization.get("warnings")
+        merged = list(existing) if isinstance(existing, list) else []
+        merged.extend(
+            item for item in warnings if isinstance(item, str) and item.strip()
+        )
+        normalization["warnings"] = list(dict.fromkeys(merged))
+        payload["normalization"] = normalization
+        return payload
+
     def _load_guard_spec_dict(self) -> Dict[str, Any]:
         spec = load_guard_spec(self.metadata_dir)
-        return spec.to_dict() if spec else {}
+        payload = spec.to_dict() if spec else {}
+        if not payload:
+            return {}
+        before = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        sanitized = self._sanitize_guard_spec_for_generation(payload)
+        after = json.dumps(sanitized, sort_keys=True, ensure_ascii=False)
+        if after != before:
+            write_guard_spec(self.metadata_dir, sanitized)
+            LOGGER.info("Sanitized guard spec for generation at %s", self.metadata_dir / "guard_spec.json")
+        return sanitized
 
     def _run_template(self, context: GeneratorContext, *, mode_label: str) -> None:
         prompt_messages = build_generator_prompt(

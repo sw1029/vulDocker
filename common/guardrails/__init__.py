@@ -10,8 +10,10 @@ from .io import (
     write_guard_spec_ensemble,
 )
 from .types import (
+    BLOCKING_GENERATOR_ASSERTION_OPS,
     GENERATOR_OP_ALIASES,
     GuardSpec,
+    GENERATOR_REGEX_ASSERTION_OPS,
     SUPPORTED_GENERATOR_ASSERTION_OPS,
     SUPPORTED_VERIFIER_ASSERTION_OPS,
     SUPPORTED_SCHEMA_VERSION,
@@ -19,6 +21,7 @@ from .types import (
     VERIFIER_OP_ALIASES,
     build_guard_spec,
     default_guard_policy_snapshot,
+    enforce_generator_assertion_trust_boundary,
     normalize_semantic_signature,
     parse_guard_spec,
 )
@@ -26,8 +29,10 @@ from .types import (
 __all__ = [
     "GuardEngine",
     "GuardEvaluation",
+    "BLOCKING_GENERATOR_ASSERTION_OPS",
     "GuardSpec",
     "GENERATOR_OP_ALIASES",
+    "GENERATOR_REGEX_ASSERTION_OPS",
     "SUPPORTED_GENERATOR_ASSERTION_OPS",
     "SUPPORTED_VERIFIER_ASSERTION_OPS",
     "SUPPORTED_SCHEMA_VERSION",
@@ -35,6 +40,7 @@ __all__ = [
     "VERIFIER_OP_ALIASES",
     "build_guard_spec",
     "default_guard_policy_snapshot",
+    "enforce_generator_assertion_trust_boundary",
     "normalize_semantic_signature",
     "parse_guard_spec",
     "guard_spec_path",

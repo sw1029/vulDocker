@@ -1,9 +1,10 @@
 """Shared contract helpers for generator/executor/verifier stages.
 
 This module centralizes how we resolve the *run contract* that downstream stages
-need (service_entry, poc_entry, service_port, base_url, poc.cmd). The generator
-should write the resolved contract into `metadata/<SID>/[bundles/<slug>/]generator_contract.json`
-so that executor/verifier/reviewer can consume a single source of truth.
+need (success/flag markers, service entry, poc entry, service port, base URL,
+PoC command). The generator writes the canonical payload to
+`resolved_contract.json` and mirrors it to `generator_contract.json` for
+backward compatibility.
 """
 
 from __future__ import annotations
@@ -14,24 +15,42 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from common.rules import load_rule
+
 DEFAULT_APP_PORT = 5000
+RESOLVED_CONTRACT_SCHEMA_VERSION = "resolved_contract@1.0"
+RESOLVED_CONTRACT_FILENAME = "resolved_contract.json"
+LEGACY_CONTRACT_FILENAME = "generator_contract.json"
+
+
+def _resolved_contract_path(metadata_dir: Path) -> Path:
+    return metadata_dir / RESOLVED_CONTRACT_FILENAME
+
+
+def _legacy_contract_path(metadata_dir: Path) -> Path:
+    return metadata_dir / LEGACY_CONTRACT_FILENAME
 
 
 def load_generator_contract(metadata_dir: Path) -> Optional[Dict[str, Any]]:
-    path = metadata_dir / "generator_contract.json"
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
+    for path in (_resolved_contract_path(metadata_dir), _legacy_contract_path(metadata_dir)):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 def write_generator_contract(metadata_dir: Path, payload: Dict[str, Any]) -> Path:
-    path = metadata_dir / "generator_contract.json"
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    return path
+    resolved_path = _resolved_contract_path(metadata_dir)
+    legacy_path = _legacy_contract_path(metadata_dir)
+    text = json.dumps(payload, indent=2, ensure_ascii=False)
+    resolved_path.write_text(text, encoding="utf-8")
+    legacy_path.write_text(text, encoding="utf-8")
+    return resolved_path
 
 
 def build_generator_contract(
@@ -45,17 +64,18 @@ def build_generator_contract(
 ) -> Dict[str, Any]:
     """Build a normalized generator contract for a single bundle.
 
-    Priority (when multiple sources exist):
-    - generator_manifest.json (synthesis path / most specific for this run)
-    - generator_template.json (template path)
-    - Dockerfile EXPOSE
-    - DEFAULT_APP_PORT
+    Contract priority:
+    - resolved rule contract (static/runtime merge via ``load_rule``)
+    - generator manifest PoC contract
+    - template metadata contract
+    - defaults
     """
 
     template = _load_json(metadata_dir / "generator_template.json") or {}
     manifest_payload = _load_json(metadata_dir / "generator_manifest.json") or {}
     manifest = _unwrap_manifest(manifest_payload)
     has_manifest = isinstance(manifest.get("files"), list) and bool(manifest.get("files"))
+    rule = load_rule(vuln_id) or {}
 
     sources: Dict[str, str] = {}
 
@@ -103,29 +123,55 @@ def build_generator_contract(
     if poc_cmd:
         sources["poc_cmd"] = "generator_manifest.manifest.poc.cmd"
 
+    success_signature = _string_or_none(rule.get("success_signature"))
+    if success_signature:
+        sources["success_signature"] = "rule.success_signature"
+    else:
+        success_signature = _string_or_none(_dig(manifest, "poc", "success_signature"))
+        if success_signature:
+            sources["success_signature"] = "generator_manifest.manifest.poc.success_signature"
+        else:
+            success_signature = _string_or_none(template.get("success_signature"))
+            if success_signature:
+                sources["success_signature"] = "generator_template.success_signature"
+
+    flag_token = _string_or_none(rule.get("flag_token"))
+    if flag_token:
+        sources["flag_token"] = "rule.flag_token"
+    else:
+        flag_token = _string_or_none(_dig(manifest, "poc", "flag_token"))
+        if flag_token:
+            sources["flag_token"] = "generator_manifest.manifest.poc.flag_token"
+        else:
+            flag_token = _string_or_none(template.get("flag_token"))
+            if flag_token:
+                sources["flag_token"] = "generator_template.flag_token"
+
+    output_mode = _contract_output_mode(rule)
+    if output_mode:
+        sources["output_mode"] = "rule.output"
+    else:
+        output_mode = "auto"
+        sources["output_mode"] = "default(auto)"
+
     payload: Dict[str, Any] = {
+        "schema_version": RESOLVED_CONTRACT_SCHEMA_VERSION,
         "sid": sid,
         "slug": bundle_slug,
         "vuln_id": vuln_id,
         "generator_mode": generator_mode,
         "resolved": {
+            "success_signature": success_signature,
+            "flag_token": flag_token,
             "service_entry": service_entry,
             "poc_entry": poc_entry,
             "service_port": service_port,
             "base_url": base_url,
             "poc_cmd": poc_cmd,
+            "output_mode": output_mode,
         },
         "sources": sources,
     }
-
-    poc_success_signature = _string_or_none(_dig(manifest, "poc", "success_signature"))
-    if poc_success_signature:
-        payload["poc_success_signature"] = poc_success_signature
-        sources.setdefault("poc_success_signature", "generator_manifest.manifest.poc.success_signature")
-    poc_flag_token = _string_or_none(_dig(manifest, "poc", "flag_token"))
-    if poc_flag_token:
-        payload["poc_flag_token"] = poc_flag_token
-        sources.setdefault("poc_flag_token", "generator_manifest.manifest.poc.flag_token")
 
     if not has_manifest:
         scenario_type = _string_or_none(template.get("scenario_type"))
@@ -140,14 +186,17 @@ def build_generator_contract(
         if pattern_id:
             payload["pattern_id"] = pattern_id
             sources.setdefault("pattern_id", "generator_template.pattern_id")
-        flag_token = _string_or_none(template.get("flag_token"))
-        if flag_token:
-            payload["flag_token"] = flag_token
-            sources.setdefault("flag_token", "generator_template.flag_token")
 
     payload["rule_resolution"] = _resolve_rule_sources(vuln_id)
 
     # Keep backward-compatible fields at the top-level for convenience.
+    if success_signature:
+        payload["success_signature"] = success_signature
+        payload["poc_success_signature"] = success_signature
+    if flag_token:
+        payload["flag_token"] = flag_token
+        payload["poc_flag_token"] = flag_token
+    payload["output_mode"] = output_mode
     payload["service_entry"] = service_entry
     payload["poc_entry"] = poc_entry
     payload["service_port"] = service_port
@@ -186,6 +235,18 @@ def _dig(mapping: Dict[str, Any], *keys: str) -> Any:
 def _string_or_none(value: Any) -> Optional[str]:
     if isinstance(value, str) and value.strip():
         return value.strip()
+    return None
+
+
+def _contract_output_mode(rule: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(rule, dict):
+        return None
+    output = rule.get("output")
+    if isinstance(output, dict):
+        value = output.get("format") or output.get("mode")
+        normalized = _string_or_none(value)
+        if normalized:
+            return normalized.lower()
     return None
 
 

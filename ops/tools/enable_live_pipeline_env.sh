@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Enable live (non-stub) LLM + remote search settings for the current shell.
 # Usage:
-#   source ./ops/tools/enable_live_pipeline_env.sh --web-endpoint https://search.example/api
-#   source ./ops/tools/enable_live_pipeline_env.sh --web-endpoint "$VUL_WEB_SEARCH_ENDPOINT"
+#   source ./ops/tools/enable_live_pipeline_env.sh --web-provider tavily --web-api-key "$VUL_WEB_SEARCH_API_KEY"
+#   source ./ops/tools/enable_live_pipeline_env.sh --web-provider custom --web-endpoint https://search.example/api
 
 set -euo pipefail
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "[ENV] This script must be sourced to affect the current shell." >&2
-  echo "      source ./ops/tools/enable_live_pipeline_env.sh --web-endpoint <URL>" >&2
+  echo "      source ./ops/tools/enable_live_pipeline_env.sh --web-provider <custom|tavily> [options]" >&2
   exit 1
 fi
 
@@ -19,10 +19,13 @@ CONFIG_PATH="${REPO_ROOT}/config/api_keys.ini"
 usage() {
   cat <<'USAGE'
 Usage:
-  source ./ops/tools/enable_live_pipeline_env.sh --web-endpoint <URL>
+  source ./ops/tools/enable_live_pipeline_env.sh --web-provider <custom|tavily> [options]
 
 Options:
-  --web-endpoint <URL>   Remote search endpoint URL for VUL_WEB_SEARCH_ENDPOINT
+  --web-provider <NAME>  Search provider name: custom or tavily
+  --web-endpoint <URL>   Remote search endpoint URL for custom provider
+  --web-base-url <URL>   Base URL for Tavily provider (default: https://api.tavily.com/search)
+  --web-api-key <KEY>    API key for Tavily provider (defaults to VUL_WEB_SEARCH_API_KEY)
   --help                 Show help
 
 Notes:
@@ -30,22 +33,52 @@ Notes:
   - It exports:
       OPENAI_API_KEY
       VUL_LLM_API_KEY
+      VUL_WEB_SEARCH_PROVIDER
       VUL_WEB_SEARCH_ENDPOINT
+      VUL_WEB_SEARCH_BASE_URL
+      VUL_WEB_SEARCH_API_KEY
       VUL_LLM_ENABLED=true
       VUL_REMOTE_SEARCH_ENABLED=true
 USAGE
 }
 
+WEB_PROVIDER="${VUL_WEB_SEARCH_PROVIDER:-}"
 WEB_ENDPOINT="${VUL_WEB_SEARCH_ENDPOINT:-}"
+WEB_BASE_URL="${VUL_WEB_SEARCH_BASE_URL:-https://api.tavily.com/search}"
+WEB_API_KEY="${VUL_WEB_SEARCH_API_KEY:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --web-provider)
+      if [[ $# -lt 2 ]]; then
+        echo "[ENV] --web-provider requires a value" >&2
+        return 1
+      fi
+      WEB_PROVIDER="$2"
+      shift 2
+      ;;
     --web-endpoint)
       if [[ $# -lt 2 ]]; then
         echo "[ENV] --web-endpoint requires a value" >&2
         return 1
       fi
       WEB_ENDPOINT="$2"
+      shift 2
+      ;;
+    --web-base-url)
+      if [[ $# -lt 2 ]]; then
+        echo "[ENV] --web-base-url requires a value" >&2
+        return 1
+      fi
+      WEB_BASE_URL="$2"
+      shift 2
+      ;;
+    --web-api-key)
+      if [[ $# -lt 2 ]]; then
+        echo "[ENV] --web-api-key requires a value" >&2
+        return 1
+      fi
+      WEB_API_KEY="$2"
       shift 2
       ;;
     --help|-h)
@@ -60,8 +93,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${WEB_ENDPOINT}" ]]; then
-  echo "[ENV] Missing remote endpoint. Provide --web-endpoint <URL>." >&2
+if [[ -z "${WEB_PROVIDER}" ]]; then
+  echo "[ENV] Missing provider. Provide --web-provider <custom|tavily>." >&2
+  return 1
+fi
+WEB_PROVIDER="$(printf '%s' "${WEB_PROVIDER}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${WEB_PROVIDER}" != "custom" && "${WEB_PROVIDER}" != "tavily" ]]; then
+  echo "[ENV] Unsupported provider: ${WEB_PROVIDER}. Use custom or tavily." >&2
+  return 1
+fi
+if [[ "${WEB_PROVIDER}" == "custom" && -z "${WEB_ENDPOINT}" ]]; then
+  echo "[ENV] custom provider requires --web-endpoint <URL>." >&2
+  return 1
+fi
+if [[ "${WEB_PROVIDER}" == "tavily" && -z "${WEB_API_KEY}" ]]; then
+  echo "[ENV] tavily provider requires --web-api-key <KEY> or VUL_WEB_SEARCH_API_KEY." >&2
   return 1
 fi
 
@@ -89,10 +135,18 @@ fi
 
 export OPENAI_API_KEY="${API_KEY}"
 export VUL_LLM_API_KEY="${API_KEY}"
+export VUL_WEB_SEARCH_PROVIDER="${WEB_PROVIDER}"
 export VUL_WEB_SEARCH_ENDPOINT="${WEB_ENDPOINT}"
+export VUL_WEB_SEARCH_BASE_URL="${WEB_BASE_URL}"
+export VUL_WEB_SEARCH_API_KEY="${WEB_API_KEY}"
 export VUL_LLM_ENABLED="true"
 export VUL_REMOTE_SEARCH_ENABLED="true"
 
 echo "[ENV] Enabled live pipeline env for current shell."
+echo "[ENV] VUL_WEB_SEARCH_PROVIDER=${VUL_WEB_SEARCH_PROVIDER}"
 echo "[ENV] VUL_WEB_SEARCH_ENDPOINT=${VUL_WEB_SEARCH_ENDPOINT}"
+echo "[ENV] VUL_WEB_SEARCH_BASE_URL=${VUL_WEB_SEARCH_BASE_URL}"
+if [[ -n "${VUL_WEB_SEARCH_API_KEY}" ]]; then
+  echo "[ENV] VUL_WEB_SEARCH_API_KEY exported (value hidden)"
+fi
 echo "[ENV] OPENAI_API_KEY/VUL_LLM_API_KEY exported (value hidden)"

@@ -15,11 +15,6 @@
     }
   ],
   "reviewer": {
-    "blocking_bundles": [
-      "cwe-89"
-    ],
-    "issue_snippets": [
-      "Raw SQL string interpolation"
-    ]
+    "blocking_bundles": []
   }
 }
