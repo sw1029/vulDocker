@@ -18,6 +18,7 @@ VALID_GUARD_AUTOFIX_LEVELS = {"none", "manifest", "code"}
 VALID_GUARD_UNSUPPORTED_OP_POLICIES = {"normalize_retry", "fail", "warn"}
 DEFAULT_GUARD_SEMANTIC_REFRESH_THRESHOLD = 2
 DEFAULT_GUARD_FAILURE_FINGERPRINT_WINDOW = 3
+VALID_SEARCH_FILTER_KEYS = {"include_domains", "exclude_domains", "time_range", "country", "search_lang"}
 
 
 def _as_bool(value: Any) -> bool:
@@ -225,7 +226,48 @@ def _normalize_research_policy(
         researcher["generate_candidate_templates"] = _as_bool(researcher.get("generate_candidate_templates"))
     else:
         researcher["generate_candidate_templates"] = False
+    researcher["search_filters"] = _normalize_search_filters(researcher.get("search_filters"), warnings)
     requirement["researcher"] = researcher
+
+
+def _normalize_search_filters(raw: Any, warnings: List[str]) -> Dict[str, Any]:
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict):
+        warnings.append("researcher.search_filters must be a mapping; ignoring invalid value")
+        return {}
+
+    normalized: Dict[str, Any] = {}
+    unknown_keys = sorted(set(str(key) for key in raw.keys()) - VALID_SEARCH_FILTER_KEYS)
+    if unknown_keys:
+        warnings.append(
+            "researcher.search_filters contains unknown keys: " + ", ".join(unknown_keys)
+        )
+
+    for key in ("include_domains", "exclude_domains"):
+        value = raw.get(key)
+        if value in (None, "", []):
+            continue
+        items = value if isinstance(value, list) else [value]
+        cleaned: List[str] = []
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            token = item.strip()
+            if token and token not in cleaned:
+                cleaned.append(token)
+        if cleaned:
+            normalized[key] = cleaned
+
+    for key in ("time_range", "country", "search_lang"):
+        value = raw.get(key)
+        if not isinstance(value, str):
+            continue
+        token = value.strip()
+        if token:
+            normalized[key] = token
+
+    return normalized
 
 
 def _normalize_pipeline_policy(

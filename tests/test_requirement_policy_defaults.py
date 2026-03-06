@@ -64,3 +64,30 @@ def test_known_cwe_defaults_to_remote_prefer_without_forced_evidence() -> None:
     assert guard.get("hint_payload_enabled") is True
     assert guard.get("failure_fingerprint_window") == 3
     assert researcher.get("search_policy") == "remote_prefer"
+
+
+def test_researcher_search_filters_are_normalized() -> None:
+    requirement = _base_requirement("CWE-9999")
+    requirement["researcher"] = {
+        "search_policy": "remote_required",
+        "search_filters": {
+            "include_domains": [" mitre.org ", "owasp.org", "mitre.org"],
+            "exclude_domains": "example.com",
+            "time_range": " 30d ",
+            "country": " us ",
+            "search_lang": " en ",
+            "unknown_key": "ignored",
+        },
+    }
+
+    normalized = normalize_requirement(requirement)
+    researcher = normalized.requirement.get("researcher") or {}
+    filters = researcher.get("search_filters") or {}
+
+    assert filters["include_domains"] == ["mitre.org", "owasp.org"]
+    assert filters["exclude_domains"] == ["example.com"]
+    assert filters["time_range"] == "30d"
+    assert filters["country"] == "us"
+    assert filters["search_lang"] == "en"
+    assert "unknown_key" not in filters
+    assert any("unknown keys" in warning for warning in normalized.warnings)

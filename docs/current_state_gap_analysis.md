@@ -1,537 +1,398 @@
 # CWE 일반화 중심 구현계획 및 현재 상태
 
-본 문서는 더 이상 "현재 상태 분석 메모"에 머무르지 않는다. 목적은 다음 네 가지를 동시에 만족하는 실행 문서가 되는 것이다.
+본 문서는 2026-03-07 KST 기준의 실행 문서다. 목적은 세 가지다.
 
-- 현재 구현 상태를 과장 없이 요약한다.
-- CWE 일반화 가능성을 구조적으로 평가한다.
-- 잔여 미비점과 우선순위를 명시한다.
-- 다음 구현 단계와 완료 기준을 decision-complete 수준으로 제시한다.
+- 현재 구현 상태를 코드와 실제 실행 결과 기준으로 다시 정리한다.
+- 이번 턴에서 실제로 보완한 항목과 그 효과를 기록한다.
+- 잔여 구현계획의 우선순위를 현재 증거에 맞게 재배치한다.
 
-기준 시점은 2026-03-06이며, 본 문서의 상태 판정은 가능한 한 현재 코드와 실제 실행 결과를 기준으로 한다.
+주의:
 
-## 1. 현재 상태 요약
+- 본 문서의 “이번 실행”은 2026-03-07 KST 기준이다.
+- 로그와 메타데이터 타임스탬프는 UTC라 일부 파일에는 2026-03-06으로 보인다.
+- historical artifact와 이번 턴 post-patch artifact를 구분해서 쓴다.
 
-현재 레포는 "동적 취약 Docker 생성"의 핵심 골격은 갖췄고, known CWE와 unknown CWE 모두에서 단발 end-to-end 성공 사례를 확보했다. 하지만 아직 반복 재현성, 초기 contract ownership, semantic generalization, 운영 자동화가 부족하므로 "안정적인 일반화 엔진"이라고 보기는 어렵다.
+## 1. 핵심 결론
 
-현재 코드에 이미 반영된 핵심 사항:
+현재 레포는 더 이상 `known path만 겨우 되는 프로토타입`은 아니다. `CWE-89` known path는 이번 턴 post-patch 재실행에서도 deterministic single-run pass를 유지했고, reviewer non-blocking semantic noise도 제거했다.
 
-- `effective_vuln_ids_digest` 기반 SID 격리
-- `resolved_contract.json` / `generator_contract.json` 계약 로더/미러링
-- GuardSpec canonicalization / validation
-- generator-facing Guard trust boundary 강화
-- reviewer non-blocking quality issue 정책
-- Python local module dependency false positive 제거
-- `custom|tavily` 기준 search provider abstraction 1차 구현
-- `search_health.json`, `search_traces/`, `search_degraded`, `search_health_path` 연동
+또한 `CWE-9999` unknown live path는 현재 워킹트리 기준으로 pass한다. 이번 턴 후속 패치에서는 unknown path에 대해 다음 세 가지가 추가로 개선됐다.
 
-현재 운영/일반화 측면의 핵심 잔여 문제:
+- wrapped `researcher_report`를 canonical top-level 스키마로 정규화
+- unknown evidence relevance를 raw CWE token 매칭이 아니라 semantic anchor / stack / exploit term 중심으로 재계산
+- `resolved_contract.json`에 `semantic_contract`를 승격하고, verifier의 `semantic_consistency`가 builtin rule 부재 시 이 계약을 직접 소비
 
-- known `cwe-89-basic`은 1회 pass했지만 반복 안정화는 아직 미검증
-- unknown `cwe-9999`는 live Tavily로 1회 pass했지만 운영 자동화와 regression gate는 없음
-- `resolved_contract.json`은 여전히 generator 성공 후에야 확정된다
-- semantic evaluator는 여전히 `CWE-89`, `CWE-352` 중심이다
-- Tavily 키는 `config/api_keys.ini`에 있어도 아직 자동 로드되지 않는다
-- `brave`, `searxng` adapter와 search filter surface는 아직 미구현이다
+그 결과 unknown run의 검증은 더 이상 generic `"Exploit SUCCESS"` 단일 문자열에만 기대지 않고, runtime rule과 verifier evidence가 researcher `verification_spec`에서 유도된 concrete marker/flag를 사용한다.
 
-상태를 한 줄로 요약하면 다음이 가장 정확하다.
+다만 이 성공을 곧바로 `취약점 이름만 제공` 수준의 일반화 달성으로 해석하면 안 된다. 현재 unknown success는 여전히 `pattern_id`, language/framework/runtime, runtime rule, self-authored verification contract에 강하게 의존한다. 즉, 현재 최상위 잔여 과제는 더 이상 `unknown live 1회 pass 재확보`가 아니라 다음 두 가지다.
 
-- "핵심 인프라는 더 갖춰졌지만, 반복 재현성과 운영 자동화, semantic generalization이 아직 부족한 프로토타입"
+1. unknown path의 semantic validity를 더 독립적으로 보장
+2. `취약점 이름만 제공`에 가까운 minimal-input 일반화 lane 확보
 
-## 2. 현재 구현 상태의 사실 정리
+## 2. 이번 턴에서 반영한 구현
 
-### 2.1 known path: `cwe-89-basic`
+이번 턴에서 실제로 반영한 보완은 다음 일곱 가지다.
 
-현재 확인된 사실:
+### 2.1 unknown semantics source-of-truth 보강
 
-- Guard trust boundary 보정 이후 deterministic known case 1회 end-to-end pass 사례가 있다.
-- 해당 실행에서는 Researcher, Generator, Executor, Verifier, Reviewer, Pack까지 완료되었다.
-- `metadata/sid-b36ff41a638a` 아래에 다음 산출물이 존재한다.
-  - `researcher_report.json`
-  - `guard_spec.json`
-  - `resolved_contract.json`
-  - `manifest.json`
+- Researcher 단계에서 `semantic_signature`를 후처리한다.
+- known CWE 기본 시그니처와 report payload를 그대로 쓰는 대신,
+  - report가 가진 시그니처
+  - pattern / verification_spec / preconditions / failure_context에서 추론한 heuristic 시그니처
+  - known CWE default 시그니처
+  를 merge한다.
+- 결과적으로 unknown run에서도 `semantic_signature`가 empty로 남지 않도록 보강했다.
+- `semantic_signature_source`를 researcher report에 남겨, default/heuristic/report 중 어디에서 채워졌는지 추적 가능하게 했다.
 
-현재 해석:
+효과:
 
-- known path는 더 이상 "구조적으로 막힌 상태"는 아니다.
-- 하지만 "안정화되었다"라고 쓰기에는 증거가 부족하다.
-- 단발 성공은 재현성의 증거가 아니라 가능성의 증거다.
+- `metadata/sid-d2ff12df4e6d/researcher_report.json`의 top-level `semantic_signature`가 더 이상 빈 값이 아니다.
+- same run의 `guard_spec.json`도 concrete anchor를 가진 semantic contract를 소비한다.
 
-### 2.2 unknown path: `cwe-unknown-basic`
+### 2.2 semantic matcher 현실화
 
-현재 확인된 사실:
+- Guard engine의 semantic token matcher에 alias / code-anchor 인식을 추가했다.
+- 예:
+  - `user-controlled request parameter` -> `request.args`, `request.form`, `request.json`, query/body parameter 흔적
+  - `SQL query execution` -> `cursor.execute`, `execute(`, `executescript(`, `sqlite3.connect`
+  - `input concatenated/interpolated into SQL sink` -> SQL string composition regex
+- 이 보완으로 known `CWE-89` bundle에서 실제 취약 구현이 있는데도 reviewer가 semantic mismatch를 내는 false positive를 줄였다.
 
-- provider 미구성 상태에서는 `remote_required` 정책 때문에 RESEARCHER 단계에서 hard fail한다.
-- live Tavily를 env로 주입하면 deterministic unknown case 1회 end-to-end pass 사례가 있다.
-- `metadata/sid-d2ff12df4e6d` 아래에 다음 산출물이 존재한다.
-  - `search_health.json`
-  - `researcher_report.json`
-  - `guard_spec.json`
-  - `resolved_contract.json`
-  - `manifest.json`
+효과:
 
-현재 해석:
+- post-patch known E2E에서 reviewer `issues_sample`이 0이 되었다.
 
-- unknown path는 더 이상 "search provider가 없어서 설계상 불가능"한 상태가 아니다.
-- 다만 "운영 가능한 기본 경로"라고 보기에는 자동 credential 로딩, live regression, 추가 provider, semantic validation이 부족하다.
+### 2.3 executor PoC 실행 컨텍스트 보강
 
-### 2.3 search/provider 상태
+- executor가 컨테이너 안에서 `/tmp/poc.py`를 실행할 때 `-w /app -e PYTHONPATH=/app`를 함께 준다.
+- 이 보완으로 generated PoC가 `from app import app` / Flask test_client 패턴을 사용해도 `/app/app.py`를 import할 수 있다.
 
-현재 구현 완료 범위:
+효과:
 
-- `VUL_WEB_SEARCH_PROVIDER=custom|tavily`
-- `VUL_WEB_SEARCH_API_KEY`
-- `VUL_WEB_SEARCH_BASE_URL`
-- `VUL_WEB_SEARCH_ENDPOINT`
-- `search_health.json`
-- `search_traces/*`
-- `search_degraded`
+- post-patch known run에서 한 번 드러난 `PoC import error: No module named 'app'` 유형의 flake를 즉시 해소했다.
 
-현재 미완료 범위:
+### 2.4 repeatability report 왜곡 수정
 
-- `config/api_keys.ini`의 `[tavily]` 섹션 자동 로딩
-- `brave`, `searxng` adapter
-- live provider 기반 CI/regression
-- `SearchRequest`의 고급 필터 필드 노출
-- raw payload full snapshot 저장 여부 확정
+- success attempt에서 `failure_stage`를 채우지 않도록 수정했다.
+- subprocess error만 있고 `latest_failure`가 없는 경우에는 에러 문자열에서 stage를 추론하도록 보강했다.
 
-### 2.4 현재 상태 판단 시 주의할 점
+효과:
 
-분석에는 시점이 다른 metadata가 섞여 있다. 따라서 다음 원칙을 따른다.
+- success report가 더 이상 `failure_stage=REVIEW`로 왜곡되지 않는다.
 
-- 현재 상태의 1차 근거는 최신 실행이 반영된 `metadata/sid-b36ff41a638a`, `metadata/sid-d2ff12df4e6d`
-- pre-fix artifact는 historical note로만 사용
-- "현재 구현"과 "당시 실패 상태"를 문장 단위로 분리해 쓴다
+### 2.5 researcher_report schema normalization
 
-## 3. CWE 일반화 가능성 평가
+- LLM이 `{"researcher_report": {...}}` 래퍼를 씌운 JSON을 반환해도 저장 직전 canonical top-level shape로 정규화한다.
+- downstream helper(`_extract_verification_spec`, `build_generator_contract`)도 wrapped/legacy payload를 모두 읽을 수 있게 했다.
 
-이 섹션은 "새 CWE를 레포에 추가하지 않고도 얼마나 일반화가 가능한가"를 구조적으로 평가한다.
+효과:
 
-### 3.1 Evidence Acquisition
+- unknown run에서 `researcher_report.json`의 핵심 필드(`verification_spec`, `semantic_signature`, `quality`, `evidence_relevance`)가 top-level에서 일관되게 보인다.
+- runtime rule 생성이 더 이상 wrapped payload를 놓쳐 generic fallback contract로 떨어지지 않는다.
 
-현재 상태:
+### 2.6 evidence relevance 점수식 1차 재설계
 
-- search/provider는 이제 unknown path를 여는 enabler 역할까지는 확보했다.
-- `custom|tavily` 기준으로 remote evidence 수집, health 기록, degraded fallback 기록이 가능하다.
-- live Tavily 기준 unknown full pipeline 1회 성공도 확인했다.
+- unknown/known 공통으로 relevance 계산에서 `hit.query`를 제거했다. 이제 query 문자열만으로 관련성이 부풀려지지 않는다.
+- 대신 다음 축을 사용한다.
+  - vulnerability family term
+  - stack affinity(language/framework/db)
+  - exploit term
+  - semantic anchor(`input_vector`, `sink`, `exploit_precondition`)
+- hit별 score/matched category를 `researcher_report.json.evidence_relevance`와 `resolved_contract.json.semantic_contract.evidence_relevance`에 기록한다.
 
-잔여 문제:
-
-- Tavily credential 자동 로딩이 없다.
-- live provider regression이 자동화돼 있지 않다.
-- `brave`, `searxng`가 없어 provider 다양성과 운영 선택지가 좁다.
-- domain/time/language filter가 call-site에서 적극 활용되지 않는다.
-
-평가:
-
-- Evidence acquisition은 일반화의 primary blocker에서 내려왔다.
-- 이제 이 영역은 "운영 자동화 부족" 문제에 가깝다.
-
-### 3.2 Semantic Representation
-
-현재 상태:
-
-- builtin semantics는 `CWE-89`, `CWE-352`에 편중되어 있다.
-- unknown CWE는 semantic_match가 사실상 bypass되며, contract/evidence 중심으로 판정되는 경향이 강하다.
-- Researcher는 `semantic_signature`를 생성하지만, unknown CWE에서 이것이 verifier/reviewer/generator 전반의 강한 shared semantics로 작동한다고 보기는 어렵다.
-
-잔여 문제:
-
-- `vuln_semantics.json` 또는 동등한 structured schema가 없다.
-- unknown CWE의 input/sink/unsafe-composition/effect를 stage 공통 언어로 고정할 수 없다.
-- 그 결과 unknown path는 "exploit contract만 맞으면 pass"에 가까워질 위험이 있다.
-
-평가:
-
-- 일반화의 핵심 구조적 병목이다.
-- search quality가 좋아져도 semantics가 비어 있으면 CWE 일반화 품질은 제한된다.
-
-### 3.3 Contract Ownership
-
-현재 상태:
-
-- downstream consumer는 `resolved_contract.json`을 잘 읽는다.
-- 그러나 authoritative contract는 generator 성공 후에야 확정된다.
-- Researcher는 여전히 raw `verification_spec`와 자체 `flag_token`/success marker를 제안할 수 있다.
-
-잔여 문제:
-
-- pipeline 초반에는 stage들이 완전히 동일한 성공 계약을 공유하지 못한다.
-- unknown CWE에서 provider가 열려도, success contract ownership이 늦게 확정되면 drift와 해석 차이가 다시 생긴다.
-
-평가:
-
-- 일반화 관점의 최상위 구조 병목이다.
-- evidence와 semantics보다 먼저, "무엇을 성공으로 볼 것인가"가 초반에 고정돼야 한다.
-
-### 3.4 Synthesis Strategy
-
-현재 상태:
-
-- full-app synthesis가 여전히 중심이다.
-- known/unknown 모두 end-to-end 성공 사례는 생겼지만, variance가 높다.
-- 앱 구조, Docker, state path, PoC, vuln pattern을 한 번에 맞추는 방식은 일반화 시 불안정성이 커진다.
-
-잔여 문제:
-
-- scaffold와 vuln insertion이 분리되어 있지 않다.
-- "취약점 삽입"보다 "전체 앱 생성"이 더 큰 search space를 만든다.
-- 일반화 대상 CWE가 늘수록 variance가 빠르게 커진다.
-
-평가:
-
-- 중장기 핵심 과제다.
-- 일반화 품질을 근본적으로 끌어올리려면 scaffold + vuln patch 구조로 가야 한다.
-
-### 3.5 Evaluation and Regression
-
-현재 상태:
-
-- known `cwe-89-basic` 1회 pass
-- unknown `cwe-9999` live Tavily 1회 pass
-- provider unit test / search artifact test는 존재
-
-잔여 문제:
-
-- known 반복 gate가 없다.
-- live unknown regression이 자동화되지 않았다.
-- CWE family별 smoke matrix가 없다.
-- "1회 성공"을 "일반화 가능"과 혼동할 여지가 있다.
-
-평가:
-
-- 일반화의 증명은 아직 부족하다.
-- 현재 수준은 "실험 가능"이지 "일반화 달성"이 아니다.
-
-### 3.6 일반화 관점 최종 결론
-
-현재 일반화 가능성은 다음처럼 표현하는 것이 맞다.
-
-- "현재 일반화 가능성은 실험 가능 수준이다."
-- "구조적 일반화의 핵심 병목은 provider 자체보다 contract/semantics/synthesis에 있다."
-
-## 4. 핵심 병목 및 우선순위
-
-현재 구현과 최근 실검증을 기준으로, 보완 우선순위는 다음 순서가 가장 합리적이다.
-
-### 4.1 1순위: authoritative contract를 pipeline 초반에 고정
+효과:
+
+- unknown run에서도 어떤 remote evidence가 실제로 관련 있고 어떤 hit가 low-signal인지 산출물에서 바로 식별할 수 있다.
+- query-only inflated relevance bug는 제거됐다.
+
+### 2.7 semantic contract 승격 및 verifier 소비
+
+- `resolved_contract.json`에 `semantic_contract`를 추가했다.
+- payload에는 다음이 포함된다.
+  - `semantic_signature`
+  - `semantic_signature_source`
+  - `quality`
+  - `quality_reason`
+  - `evidence_relevance`
+  - `guard_confidence`(available 시)
+- verifier의 `semantic_consistency`는 builtin semantics가 지원되지 않는 unknown CWE에서 `resolved_contract.semantic_contract`를 직접 사용하도록 보강했다.
+
+효과:
+
+- unknown eval 결과의 `semantic_consistency.supported`가 더 이상 `false`가 아니다.
+- `semantic_consistency.source="resolved_contract.semantic_contract"`로, verifier가 공통 semantic contract를 명시적으로 소비했음을 artifact에서 확인할 수 있다.
+
+## 3. 이번 턴 검증 결과
+
+이번 턴에서 직접 확인한 항목:
+
+- 전체 테스트
+  - `pytest -q tests`
+  - 결과: `80 passed, 4 skipped`
+- known deterministic E2E 재실행 (post-patch)
+  - `python tests/e2e/run_case.py --case tests/e2e/cases/cwe-89-basic --mode deterministic --no-snapshot --output-dir /tmp/vuld-postpatch2-cwe89`
+  - 결과: pass
+- unknown live E2E 재실행 (post-patch)
+  - `env VUL_WEB_SEARCH_PROVIDER=tavily python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --mode deterministic --no-snapshot --output-dir /tmp/vuld-postpatch3-unknown`
+  - 결과: pass
+- unknown artifact spot-check
+  - `metadata/sid-d2ff12df4e6d/runtime_rules/cwe-9999.yaml`
+  - 결과: success marker가 generic `Exploit SUCCESS`가 아니라 concrete `"count": 2`, `VULNERABLE_SQLI_CONFIRMED`
+- unknown semantic contract spot-check
+  - `metadata/sid-d2ff12df4e6d/resolved_contract.json`
+  - 결과: `semantic_contract` 포함
+- unknown verifier semantic consistency spot-check
+  - `artifacts/sid-d2ff12df4e6d/reports/evals.json`
+  - 결과: `semantic_consistency.supported=true`, `source=resolved_contract.semantic_contract`
+- unknown regeneration hardness spot-check
+  - same rerun에서 generator가 첫 시도 실패 후 loop 2에서 회복
+  - 실패 이유: `poc missing '"count": 2'`
+
+## 4. 현재 상태 판정
+
+### 4.1 known path: `cwe-89-basic`
+
+현재 사실:
+
+- deterministic single-run은 post-patch 재실행에서도 pass.
+- `/tmp/vuld-postpatch2-cwe89/summary.json` 기준:
+  - `overall_pass=true`
+  - `verify_pass=true`
+  - `run_passed=true`
+  - `exit_code=0`
+- `metadata/sid-b36ff41a638a/reviewer_report.json` 기준 reviewer issues는 0.
+
+해석:
+
+- known baseline의 기능 경로는 현재도 유지된다.
+- reviewer signal 품질은 이전보다 좋아졌다.
+- 다만 이번 follow-up patch 이후의 full 3회 repeatability를 다시 장시간 재실행하지는 않았다. 따라서 현재 증거는 `single-run 건강성 유지`까지다.
+
+### 4.2 unknown live path: `cwe-unknown-basic`
+
+현재 사실:
+
+- post-patch unknown live run은 pass.
+- `/tmp/vuld-postpatch3-unknown/summary.json` 기준:
+  - `overall_pass=true`
+  - `verify_pass=true`
+  - `run_passed=true`
+  - `blocking_bundles=[]`
+- same summary 기준 verify evidence:
+  - `Found signature: "count": 2`
+  - `Found flag token: VULNERABLE_SQLI_CONFIRMED`
+  - `Semantic consistency check passed`
+- `metadata/sid-d2ff12df4e6d/search_health.json` 기준:
+  - `provider=tavily`
+  - `configured=true`
+  - `auth_present=true`
+  - `policy=remote_required`
+  - `remote_result_count=9`
+  - `degraded=false`
+- `metadata/sid-d2ff12df4e6d/researcher_report.json` 기준:
+  - wrapped payload가 canonical top-level로 정규화됨
+  - `semantic_signature` non-empty
+  - `semantic_signature_source=["heuristic"]`
+  - `evidence_relevance.score=0.661`
+  - low-signal evidence도 hit-level score로 드러남(예: E2E tutorial hit `0.05`)
+- `metadata/sid-d2ff12df4e6d/runtime_rules/cwe-9999.yaml` 기준:
+  - `success_signature="count": 2`
+  - `flag_token=VULNERABLE_SQLI_CONFIRMED`
+  - `assertion_program`이 더 이상 free-form verifier code에서 첫 문자열 리터럴만 뽑은 약한 값으로 채워지지 않고, success marker / flag 기반 contains assertion으로 정규화됨
+- `metadata/sid-d2ff12df4e6d/resolved_contract.json` 기준:
+  - `semantic_contract` 존재
+  - `quality=sufficient`
+  - `evidence_relevance` 포함
+- `artifacts/sid-d2ff12df4e6d/reports/evals.json` 기준:
+  - `semantic_consistency.supported=true`
+  - `semantic_consistency.source=resolved_contract.semantic_contract`
+- `metadata/sid-d2ff12df4e6d/guard_spec.json`도 concrete anchor를 가진 semantic signature를 기록한다.
+
+해석:
+
+- unknown live path는 더 이상 `현재 유일한 hard failure`가 아니다.
+- unknown path의 verifier contract는 이전보다 명확해졌다. 즉, `generic fallback success marker` 의존도는 줄었다.
+- unknown path의 semantic validity는 여전히 완전히 독립적이지는 않지만, verifier가 shared `semantic_contract`를 소비하도록 보강되면서 `산출물 semantic 독립성`은 `낮음 -> 중하` 정도로 한 단계 개선됐다.
+- unknown evidence relevance는 query inflation bug가 제거됐지만, 아직 mixed evidence set를 완전히 억제하지는 못한다. 즉, 현재 문제는 `availability`보다 `validity + confidence calibration`이다.
+- follow-up rerun에서 stricter success marker 때문에 generator가 1회 재시도한 점은 남은 리스크다. 즉, quality bar는 올라갔지만 unknown lane의 deterministic margin은 아직 넉넉하지 않다.
+
+### 4.3 search/provider 상태
+
+현재 사실:
+
+- `custom|tavily` provider는 동작한다.
+- Tavily 키는 `config/api_keys.ini` fallback으로 자동 인식된다.
+- `researcher.search_filters`는 request layer까지 전달된다.
+- `ops/ci/run_e2e_tests.sh`는 Tavily preflight와 repeatability gate opt-in을 이미 지원한다.
+
+현재 한계:
+
+- `brave`, `searxng` adapter는 아직 없다.
+- provider 간 filter parity는 아직 완전하지 않다.
+- heavy E2E/live gate는 여전히 opt-in 운영이 맞다.
+
+해석:
+
+- search/provider는 primary blocker가 아니다.
+- 이 영역의 남은 과제는 기능 부재보다 운영 정책과 parity다.
+
+### 4.4 “일반화 / 취약점 이름만 제공” 관점
+
+현재 사실:
+
+- unknown case는 여전히 base requirement에서 다음을 강하게 상속한다.
+  - `pattern_id: sqli-string-concat`
+  - `language: python`
+  - `framework: flask`
+  - `runtime.db: sqlite`
+  - `base_image`
+  - `user_deps`
+- unknown researcher report도 실제로는 `CWE-89 유사 SQLi`를 재현하는 방향으로 bundle을 유도한다.
+- runtime rule 또한 researcher verification spec에서 파생되어 unknown verifier contract를 강화한다.
+- 현재 E2E case set은 여전히 `cwe-89-basic`, `cwe-unknown-basic` 두 개뿐이며, 별도 minimal-input lane은 없다.
+
+해석:
+
+- 현재 unknown success는 `vuln-name-only generalization`의 증거가 아니다.
+- 더 정확한 표현은 다음이다.
+  - `pattern-conditioned synthesis`
+  - `runtime rule + verification-contract aware generation`
+  - `semantic contract가 이전보다 나아졌고 verifier도 이를 소비하지만, 아직 input-minimal generalization은 아님`
+
+즉, 남은 구조적 갭은 `unknown pass/fail`보다 `얼마나 적은 입력으로도 올바른 취약 종류를 고를 수 있느냐`다.
+
+### 4.5 현재 등급 재판정
+
+- unknown pattern-conditioned lane: `중간 -> 중상`
+  - 이유: wrapped report normalization, concrete runtime verifier contract, semantic contract 소비까지 연결됐다.
+- 산출물 semantic 독립성: `낮음 -> 중하`
+  - 이유: builtin rule이 없는 unknown에서도 verifier가 shared semantic contract를 읽지만, 그 contract 자체는 아직 researcher-derived heuristic 비중이 높다.
+- 취약점 이름만 제공 generalization: `낮음 유지`
+  - 이유: minimal-input lane과 stack inference lane이 아직 없다.
+
+## 5. 잔여 구현계획 타당성 재검토
+
+### 5.1 그대로 유지할 가치가 높은 항목
+
+- dynamic semantics 강화
+  - 이번 턴에서 `resolved_contract.semantic_contract`와 verifier consumption까지 추가했지만, 아직 authoritative owner를 완전히 고정하지는 않았다.
+- repeatability / live artifact 보존 및 CI gate 승격
+  - 이번 턴에서 report 해석 품질을 고쳤으므로, 이제 artifact-driven gate 운영 가치가 더 높아졌다.
+- provider parity
+  - primary blocker는 아니지만, 운영 lane 다양화에는 여전히 필요하다.
+- scaffold + vuln patch 아키텍처
+  - 장기적으로 일반화 품질을 가장 크게 끌어올릴 수 있는 방향은 여전히 맞다.
+
+### 5.2 우선순위를 낮춰야 하는 항목
+
+- `unknown live 1회 pass 재확보`
+  - 현재 워킹트리 기준 이미 달성됐다.
+- `repeated-failure loop`를 immediate top priority로 두는 것
+  - unknown fail baseline이 더 이상 현재의 대표 상태가 아니므로, 이 항목은 한 단계 내려가야 한다.
+
+### 5.3 현재 기준 새 우선순위
+
+#### 1순위: unknown semantic validity hardening
 
 이유:
 
-- `resolved_contract.json`이 generator 성공 후에만 확정되면 early-stage drift를 막기 어렵다.
-- Researcher가 raw `verification_spec`를 제안하는 구조와 결합되면 generalization 시 success/flag ownership이 흔들린다.
-- 일반화 관점에서 search/provider보다 더 직접적인 병목이다.
+- unknown path는 pass하고 verifier도 shared semantic contract를 읽지만, 그 contract가 아직 researcher-derived heuristic에 가깝다.
+- 지금 가장 중요한 질문은 “이 취약점이 정말 요청한 취약점인가”다.
 
-### 4.2 2순위: known/unknown 반복 회귀 게이트 추가
+핵심 작업:
+
+- `semantic_signature`를 researcher / guard / verifier / contract 중 어디가 authoritative인지 명확히 고정
+- 현재 추가된 `resolved_contract.semantic_contract`를 진짜 source-of-truth로 승격
+- runtime rule / verification spec이 semantic contract와 모순되지 않는지 cross-check
+
+완료 기준:
+
+- unknown run에서 semantic contract가 empty가 아니고,
+- same contract를 researcher / guard / verifier가 공통 소비하며,
+- self-authored verifier contract만 맞추는 bundle이 semantic layer에서 차단된다.
+
+#### 2순위: evidence relevance 강화
 
 이유:
 
-- known 1회 pass와 unknown 1회 pass는 가능성만 보여준다.
-- 일반화 가능성을 주장하려면 최소한 known 반복 gate와 live unknown regression이 자동화되어야 한다.
-- 기준선이 없으면 이후 개선 효과를 측정할 수 없다.
+- 이번 턴에서 query inflation bug는 제거했지만, 현재 scoring은 여전히 `stack/sql/sqlite` hit 몇 개만으로 overall sufficient가 가능하다.
+- mixed evidence set에서 off-topic remote hit를 더 강하게 감점하는 2차 보정이 필요하다.
 
-### 4.3 3순위: dynamic semantics 도입
+핵심 작업:
+
+- unknown relevance를 raw CWE token match보다
+  - vulnerability family term
+  - sink/input/precondition anchor
+  - stack affinity
+  - exploit effect
+  중심으로 재계산
+- off-topic / wrong-family evidence에 negative weighting 추가
+- low-confidence unknown evidence에서는 runtime rule strength를 낮추거나 explicit fallback mode로 전환
+
+완료 기준:
+
+- unrelated evidence mix가 많은 unknown run은 quality가 낮게 판정되거나
+- 최소한 semantic contract confidence가 낮다고 명시된다.
+
+#### 3순위: minimal-input generalization lane 신설
 
 이유:
 
-- unknown CWE의 vuln-class alignment를 현재는 보장하지 못한다.
-- 일반화의 quality bottleneck은 evidence보다 semantic representation이다.
-- `vuln_semantics.json` 또는 동등 schema는 일반화의 핵심 토대가 된다.
+- 현재 repo는 `pattern-conditioned` lane에서는 점점 좋아지고 있다.
+- 하지만 사용자가 원하는 `취약점 이름만 제공` 수준은 아직 별도 검증 lane 자체가 없다.
 
-### 4.4 4순위: Tavily credential 자동 로딩 + live provider 운영 자동화
+핵심 작업:
+
+- 새 E2E case를 추가해 다음을 최소화한다.
+  - no explicit `pattern_id`
+  - no explicit framework hint
+  - no explicit DB hint
+  - only vuln_id + safe runtime defaults
+- 현재 lane과 분리해서 `pattern-conditioned lane` / `minimal-input lane`을 별도 지표로 관리
+
+완료 기준:
+
+- minimal-input lane에서 1회 이상 pass artifact 확보
+- 실패 시에도 어떤 missing semantic / stack inference 때문에 실패했는지 metadata에 남음
+
+#### 4순위: repeatability / CI gate 승격
 
 이유:
 
-- search/provider는 이미 1차 구현 완료 상태다.
-- 남은 문제는 기능 부재가 아니라 운영 편의와 regression 자동화다.
-- 이 영역을 보완하면 unknown path를 기본 운영 경로로 올릴 수 있다.
+- 이번 턴에서 repeatability report 왜곡이 수정됐다.
+- 이제 artifact 해석 가능성이 높아졌으므로 CI 승격을 논할 수 있다.
 
-### 4.5 5순위: repeated-failure aware loop 제어
+핵심 작업:
+
+- known repeatability gate를 CI 기본 lane으로 승격
+- unknown live gate는 Tavily key가 있는 lane/nightly에서 required
+- repeatability/live artifact를 long-lived artifact로 보존
+
+완료 기준:
+
+- success/failure stage, guard codes, report path가 CI artifact로 안정적으로 남음
+
+#### 5순위: provider 확장과 filter parity
 
 이유:
 
-- 같은 failure fingerprint가 반복될 때 전략 전환이 늦다.
-- 일반화 시도에서는 실패 양상이 다양해지므로 loop 효율이 더 중요해진다.
+- 여전히 useful하지만 primary blocker는 아니다.
 
-### 4.6 6순위: Brave/SearxNG + search filter surface
+핵심 작업:
 
-이유:
+- `brave.py`, `searxng.py` adapter
+- provider별 filter parity 정렬
 
-- provider 다양성과 filter surface는 가치가 있다.
-- 그러나 지금은 primary blocker가 아니다.
-- contract/semantics/automation이 먼저다.
+## 6. 지금 바로 이어서 할 다음 구현 단계
 
-### 4.7 7순위: scaffold + vuln patch 아키텍처
+현 시점에서 가장 타당한 다음 작업은 아래 순서다.
 
-이유:
+1. `semantic_contract` authority 고정 + runtime rule / verification spec contradiction check 추가
+2. unknown evidence relevance 2차 보정(negative weighting / confidence downgrade)
+3. minimal-input unknown E2E case 추가
+4. known repeatability 3회 post-follow-up 재측정 및 CI lane 연결
+5. provider parity 확장
 
-- 장기적으로는 가장 큰 품질 개선 포인트다.
-- 다만 현재는 baseline automation과 contract/semantics 정렬이 먼저다.
+## 7. 현재 상태를 한 문장으로 요약하면
 
-## 5. Track 기반 개선 로드맵
-
-Phase 단일 나열보다, 지금은 두 개의 독립 축으로 보는 편이 구현 우선순위를 더 명확하게 만든다.
-
-### Track A: 운영 안정화
-
-목표:
-
-- known/unknown 경로를 현재보다 더 일관되게 재현하고, 실사용 가능한 기본 운영 경로를 만든다.
-
-구성:
-
-1. 문서 정합화
-2. Tavily ini 자동 로딩
-3. live unknown regression 자동화
-4. known `cwe-89` 3회 gate
-
-운영 안정화 완료 기준:
-
-- Tavily 키가 env 수작업 없이 자동 인식된다.
-- live unknown regression이 자동 통과한다.
-- known `cwe-89-basic` 3회 연속 pass가 확보된다.
-
-### Track B: 구조적 일반화
-
-목표:
-
-- unknown CWE를 "evidence만 맞는 번들"이 아니라 "의미적으로 일치하는 번들"로 끌어올린다.
-
-구성:
-
-1. early contract seed
-2. `verification_spec -> proposed_verification_contract`로 의미 격하
-3. `vuln_semantics.json` 도입
-4. repeated-failure loop
-5. scaffold + vuln patch 아키텍처
-
-구조 일반화 완료 기준:
-
-- unknown CWE에서 semantic layer가 no-op가 아니다.
-- success/flag drift가 stage 간 0회다.
-- 동일 failure fingerprint 반복 빈도가 감소한다.
-
-## 6. 명시해야 할 인터페이스와 정책
-
-이 문서는 구현자가 추가 판단 없이 작업할 수 있도록, 현재/다음 인터페이스를 고정해서 기술한다.
-
-### 6.1 현재 구현 인터페이스
-
-- `VUL_WEB_SEARCH_PROVIDER=custom|tavily`
-- `VUL_WEB_SEARCH_API_KEY`
-- `VUL_WEB_SEARCH_BASE_URL`
-- `VUL_WEB_SEARCH_ENDPOINT`
-- `search_health.json`
-- `search_traces/*`
-- `search_degraded`
-- `search_health_path`
-
-### 6.2 다음 구현 인터페이스
-
-- `common/config/api_keys.py`에 Tavily key loader 추가
-- `resolved_contract.json` early seed
-- `proposed_verification_contract` 명명
-- `vuln_semantics.json` 스키마
-
-### 6.3 `vuln_semantics.json` 최소 필드
-
-문서에서 이 최소 스키마를 고정한다.
-
-- `input_sources`
-- `sink_patterns`
-- `unsafe_composition_patterns`
-- `required_effect`
-
-예시:
-
-```json
-{
-  "input_sources": ["request.args", "request.form", "stdin", "query string"],
-  "sink_patterns": ["cursor.execute", "subprocess.run", "open", "exec"],
-  "unsafe_composition_patterns": ["string concat", "f-string", "shell=True", "unescaped path join"],
-  "required_effect": ["multiple rows returned", "command output reflected", "file content disclosure"]
-}
-```
-
-## 7. 구현 단계별 상세 계획
-
-### 7.1 즉시 보완 1: Tavily credential 자동 로딩
-
-문제:
-
-- Tavily 키가 `config/api_keys.ini`에 있어도 자동 로드되지 않는다.
-
-구현:
-
-- `common/config/api_keys.py`에 `get_tavily_api_key()` 추가
-- `rag/tools/web_search.py`에서 env에 `VUL_WEB_SEARCH_API_KEY`가 없으면 ini fallback 사용
-- `ops/tools/enable_live_pipeline_env.sh`도 ini 기반 Tavily 기본값을 읽을 수 있게 정리
-
-완료 기준:
-
-- `config/api_keys.ini`의 `[tavily] api_key`만 있어도 `WebSearchTool(provider='tavily')`가 live 호출 가능
-
-### 7.2 즉시 보완 2: live unknown regression 자동화
-
-문제:
-
-- unknown live pass는 수동 검증만 존재한다.
-
-구현:
-
-- `tests/e2e/`에 provider-aware unknown live smoke 추가
-- Tavily key 없으면 skip, 있으면 실행
-- summary에서 `verify_pass`, `run_passed`, `blocking_bundles`를 검증
-
-완료 기준:
-
-- live unknown regression이 pytest/CI에서 자동 검증 가능
-
-### 7.3 즉시 보완 3: known 반복 재현성 gate
-
-문제:
-
-- known path는 pass 사례만 있고 반복 gate가 없다.
-
-구현:
-
-- `ops/ci/` 또는 `tests/e2e/`에 `cwe-89-basic` 3회 반복 스크립트/테스트 추가
-- 실행마다 `failure stage`, `failure_fingerprint`, `guard mismatch`를 수집
-
-완료 기준:
-
-- known path 3회 연속 pass 또는 failure fingerprint가 명시적으로 집계됨
-
-### 7.4 구조 보완 1: early contract seed
-
-문제:
-
-- 현재 성공 계약의 authoritative owner가 너무 늦게 정해진다.
-
-구현:
-
-- PLAN 또는 RESEARCH 직후 `resolved_contract.json` seed 생성
-- 최소 필드:
-  - `success_signature`
-  - `flag_token`
-  - `output_mode`
-  - `service_entry`
-  - `poc_entry`
-  - `service_port`
-  - `base_url`
-- Researcher의 `verification_spec`는 authoritative field가 아니라 proposal로 격하
-
-완료 기준:
-
-- generator 실패 전 단계에서도 contract artifact가 존재
-- stage 간 success/flag drift 축소
-
-### 7.5 구조 보완 2: dynamic semantics
-
-문제:
-
-- unknown CWE는 semantic no-op에 가깝다.
-
-구현:
-
-- Researcher가 `vuln_semantics.json` 생성
-- generator guard, verifier, reviewer가 동일 semantics payload를 사용
-- known CWE는 builtin semantics 유지, unknown은 dynamic fallback 사용
-
-완료 기준:
-
-- unknown CWE의 semantic 판정이 exploit-contract-only가 아님
-
-### 7.6 구조 보완 3: repeated-failure aware loop
-
-문제:
-
-- 동일 failure fingerprint 반복 시 전략 전환이 늦다.
-
-구현:
-
-- 최근 fingerprint window를 보고 same failure 반복 시:
-  - guard relaxation
-  - researcher refresh
-  - fallback spec
-  중 하나로 전환
-- "autofix applied but same fingerprint repeated"를 metadata에 기록
-
-완료 기준:
-
-- 동일 fingerprint 3연속 반복 감소
-
-### 7.7 확장 보완: Brave/SearxNG + filter surface
-
-문제:
-
-- provider 다양성과 search precision이 제한된다.
-
-구현:
-
-- `brave.py`, `searxng.py` adapter 추가
-- `SearchRequest`의 `include_domains`, `exclude_domains`, `time_range`, `country`, `search_lang`를 Researcher query generation 또는 provider request build 쪽에 노출
-
-완료 기준:
-
-- provider 선택 폭 확대
-- search precision 제어 가능
-
-## 8. Test / Validation
-
-### 8.1 이미 수행된 검증
-
-- provider unit tests
-- search artifact tests
-- known `cwe-89-basic` 1회 pass
-- unknown `cwe-9999` live Tavily 1회 pass
-
-### 8.2 앞으로 필요한 검증
-
-- known `cwe-89-basic` 3회 연속 pass
-- live Tavily unknown regression CI
-- early contract seed 적용 후 success/flag drift regression
-- unknown CWE 3종 이상 family smoke
-
-### 8.3 정량 기준
-
-단기 기준:
-
-- known `cwe-89-basic` 3회 연속 pass
-- live unknown regression 1회 이상 자동 통과
-- provider 미구성 시 health artifact 경로 포함 실패
-- Tavily ini 자동 로딩 성공
-
-중기 기준:
-
-- unknown smoke 3종 이상
-- semantic no-op 제거
-- contract drift 0회
-- 동일 failure fingerprint 반복 감소
-
-## 9. 최종 정리
-
-현재 구현은 CWE 일반화에 대해 다음 수준까지는 올라왔다.
-
-- known/unknown 각각 단발 end-to-end 성공 사례 확보
-- search/provider 1차 구현 완료
-- unknown path를 설계상 불가능 상태에서 실험 가능 상태로 전환
-
-하지만 아직 다음 수준에는 도달하지 못했다.
-
-- 반복적으로 재현 가능한 일반화
-- semantic alignment가 내장된 일반화
-- 초기 contract ownership이 보장된 일반화
-- 운영 자동화가 갖춰진 일반화
-
-따라서 다음 구현은 search provider 자체를 더 붙이는 것보다, 아래 순서를 따르는 것이 합리적이다.
-
-1. early contract seed
-2. known/unknown 회귀 gate
-3. dynamic semantics
-4. Tavily 자동 로딩 및 운영 자동화
-5. repeated-failure loop
-6. Brave/SearxNG + filter surface
-7. scaffold + vuln patch
-
-이 문서는 이후 구현 작업의 기준 문서로 유지한다.
+2026-03-07 KST 기준 이 레포는 `known/unknown live path 모두 현재는 실제 pass 가능하고, follow-up patch에서 unknown verifier contract / evidence relevance / semantic contract 공유를 한 단계 강화했지만, 아직 “취약점 이름만 제공” 수준의 일반화 엔진으로 보기는 이르다`가 가장 정확하다.

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from common.contracts import build_generator_contract, write_generator_contract
 from common.guardrails import (
     GENERATOR_OP_ALIASES,
     SUPPORTED_GENERATOR_ASSERTION_OPS,
@@ -16,6 +17,7 @@ from common.guardrails import (
     build_guard_spec,
     default_guard_policy_snapshot,
     enforce_generator_assertion_trust_boundary,
+    normalize_semantic_signature,
     parse_guard_spec,
     write_guard_spec,
     write_guard_spec_ensemble,
@@ -25,6 +27,7 @@ from common.logging import get_logger
 from common.paths import ensure_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_guard_planner_prompt, build_researcher_prompt
+from common.researcher_report import extract_verification_spec, normalize_researcher_report_payload
 from common.rules import load_rule, load_static_rule
 from common.run_matrix import (
     VulnBundle,
@@ -78,6 +81,7 @@ class ResearcherService:
         self._search_records: List[Dict[str, Any]] = []
         self._search_health_path: Path | None = None
         self._search_degraded = False
+        self._last_evidence_relevance: Dict[str, Any] | None = None
 
     def run(self) -> Path:
         snapshot = self._snapshot_id()
@@ -89,6 +93,12 @@ class ResearcherService:
             search_meta = self._write_search_artifacts(search_hits, policy=self._search_policy())
             evidence = self._build_evidence_payload(search_hits)
             quality, quality_reason = self._evaluate_evidence_quality(active_bundle, search_hits)
+            relevance_report = self._last_evidence_relevance or {
+                "score": 0.0,
+                "threshold": self._relevance_threshold(active_bundle),
+                "profile": {},
+                "hits": [],
+            }
             guard_fallback = "guard fallback mode" in (quality_reason or "").lower()
             if quality == "insufficient":
                 failure_reason = self._format_search_failure_reason(quality_reason)
@@ -102,18 +112,25 @@ class ResearcherService:
                     "search_health_path": str(search_meta["health_path"]) if search_meta.get("health_path") else None,
                     "search_degraded": bool(search_meta.get("degraded")),
                     "evidence": evidence,
-                    "semantic_signature": self._default_semantic_signature(active_bundle),
+                    "semantic_signature": {},
+                    "evidence_relevance": relevance_report,
                     "quality": "insufficient",
                     "quality_reason": quality_reason,
                     "guard_fallback": False,
                     "guard_spec_path": None,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 }
+                report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
+                    report,
+                    active_bundle,
+                )
+                contract_path = self._write_resolved_contract_seed(report, active_bundle)
+                report["resolved_contract_path"] = str(contract_path)
                 self._last_report = report
                 path = self._write_report(report)
                 span.event("research_insufficient", reason=failure_reason, path=str(path))
                 raise RuntimeError(failure_reason)
-            report = self._generate_report(rag_context, search_hits)
+            report = normalize_researcher_report_payload(self._generate_report(rag_context, search_hits))
             report.setdefault("sid", self.sid)
             if active_bundle:
                 report.setdefault("vuln_id", active_bundle.vuln_id)
@@ -126,7 +143,11 @@ class ResearcherService:
             )
             report["search_degraded"] = bool(search_meta.get("degraded"))
             report["evidence"] = evidence
-            report.setdefault("semantic_signature", self._default_semantic_signature(active_bundle))
+            report["evidence_relevance"] = relevance_report
+            report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
+                report,
+                active_bundle,
+            )
             report["quality"] = quality
             report["quality_reason"] = quality_reason or "sufficient evidence"
             report["guard_fallback"] = guard_fallback
@@ -146,6 +167,8 @@ class ResearcherService:
                 report["candidate_rules"] = candidates["rules"]
             if candidates["templates"]:
                 report["candidate_templates"] = candidates["templates"]
+            contract_path = self._write_resolved_contract_seed(report, active_bundle)
+            report["resolved_contract_path"] = str(contract_path)
             path = self._write_report(report)
             span.event("report_written", path=str(path))
         self.react_loop.record_researcher_report(
@@ -172,12 +195,31 @@ class ResearcherService:
         self._search_records = []
         search_policy = self._search_policy()
         for query in queries:
-            new_hits = self.search_tool.search(query, limit=self.search_limit, policy=search_policy)
+            filters = self._search_filters()
+            new_hits = self.search_tool.search_with_filters(
+                query,
+                limit=self.search_limit,
+                policy=search_policy,
+                include_domains=filters.get("include_domains"),
+                exclude_domains=filters.get("exclude_domains"),
+                time_range=filters.get("time_range"),
+                country=filters.get("country"),
+                search_lang=filters.get("search_lang"),
+            )
             execution = self.search_tool.last_execution()
             request_payload = (
                 execution.request
                 if isinstance(execution, SearchExecution) and isinstance(execution.request, dict)
-                else SearchRequest(query=query, limit=self.search_limit, policy=search_policy).to_payload()
+                else SearchRequest(
+                    query=query,
+                    limit=self.search_limit,
+                    policy=search_policy,
+                    include_domains=list(filters.get("include_domains") or []),
+                    exclude_domains=list(filters.get("exclude_domains") or []),
+                    time_range=str(filters.get("time_range") or "") or None,
+                    country=str(filters.get("country") or "") or None,
+                    search_lang=str(filters.get("search_lang") or "") or None,
+                ).to_payload()
             )
             self._search_records.append(
                 {
@@ -309,12 +351,26 @@ class ResearcherService:
             ) from exc
         if not isinstance(report, dict):
             raise RuntimeError("Researcher output must be a JSON object per schema.")
-        return report
+        return normalize_researcher_report_payload(report)
 
     def _write_report(self, report: Dict[str, Any]) -> Path:
         path = self.metadata_dir / "researcher_report.json"
         path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         return path
+
+    def _write_resolved_contract_seed(self, report: Dict[str, Any], bundle: VulnBundle | None) -> Path:
+        vuln_id = str(bundle.vuln_id if bundle else self.requirement.get("vuln_id") or "UNKNOWN")
+        slug = bundle.slug if bundle else ""
+        payload = build_generator_contract(
+            sid=self.sid,
+            vuln_id=vuln_id,
+            metadata_dir=self.metadata_dir,
+            workspace_dir=None,
+            generator_mode="research_seed",
+            bundle_slug=slug,
+            researcher_report=report,
+        )
+        return write_generator_contract(self.metadata_dir, payload)
 
     def _load_latest_report(self) -> Dict[str, Any]:
         if isinstance(self._last_report, dict):
@@ -327,8 +383,8 @@ class ResearcherService:
         except json.JSONDecodeError:
             return {}
         if isinstance(data, dict):
-            self._last_report = data
-            return data
+            self._last_report = normalize_researcher_report_payload(data)
+            return self._last_report
         return {}
 
     def _search_policy(self) -> str:
@@ -343,6 +399,29 @@ class ResearcherService:
             if policy in {"remote_required", "remote_prefer", "local_only"}:
                 return policy
         return "remote_prefer"
+
+    def _search_filters(self) -> Dict[str, Any]:
+        researcher_cfg = self.requirement.get("researcher") or {}
+        if not isinstance(researcher_cfg, dict):
+            return {}
+        raw = researcher_cfg.get("search_filters")
+        if not isinstance(raw, dict):
+            return {}
+        filters: Dict[str, Any] = {}
+        for key in ("include_domains", "exclude_domains"):
+            values = raw.get(key)
+            if isinstance(values, str):
+                values = [values]
+            if not isinstance(values, list):
+                continue
+            cleaned = [str(value).strip() for value in values if isinstance(value, str) and str(value).strip()]
+            if cleaned:
+                filters[key] = list(dict.fromkeys(cleaned))
+        for key in ("time_range", "country", "search_lang"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                filters[key] = value.strip()
+        return filters
 
     def _allow_candidate_templates(self) -> bool:
         researcher_cfg = self.requirement.get("researcher") or {}
@@ -897,7 +976,10 @@ class ResearcherService:
         policy_snapshot: Dict[str, Any],
         bundle: VulnBundle | None,
     ) -> Dict[str, Any]:
-        verification_spec = report.get("verification_spec") if isinstance(report, dict) else {}
+        verification_spec = extract_verification_spec(
+            report,
+            vuln_id=bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or ""),
+        )
         if not isinstance(verification_spec, dict):
             verification_spec = {}
         vuln_id = bundle.vuln_id if bundle else self.requirement.get("vuln_id")
@@ -1139,14 +1221,17 @@ class ResearcherService:
                 "insufficient",
                 f"Insufficient researcher evidence for {vuln}: no search evidence was collected.",
             )
-        relevance_score = self._estimate_evidence_relevance(bundle, search_hits)
-        if relevance_score < 0.35:
+        relevance_report = self._score_evidence_relevance(bundle, search_hits)
+        self._last_evidence_relevance = relevance_report
+        relevance_score = float(relevance_report.get("score") or 0.0)
+        threshold = float(relevance_report.get("threshold") or self._relevance_threshold(bundle))
+        if relevance_score < threshold:
             vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
             if unknown and require_evidence:
                 return (
                     "insufficient",
                     (
-                        f"Insufficient researcher evidence for {vuln}: low relevance score ({relevance_score:.2f}). "
+                        f"Insufficient researcher evidence for {vuln}: low relevance score ({relevance_score:.2f} < {threshold:.2f}). "
                         "Evidence does not align with requested vulnerability semantics."
                     ),
                 )
@@ -1154,63 +1239,191 @@ class ResearcherService:
                 return (
                     "sufficient",
                     (
-                        f"Low evidence relevance for {vuln} ({relevance_score:.2f}); using guard fallback mode "
+                        f"Low evidence relevance for {vuln} ({relevance_score:.2f} < {threshold:.2f}); using guard fallback mode "
                         "with static/minimal assertions."
                     ),
                 )
         return "sufficient", ""
+
+    def _score_evidence_relevance(
+        self,
+        bundle: VulnBundle | None,
+        search_hits: List[SearchResult],
+    ) -> Dict[str, Any]:
+        if not search_hits:
+            return {
+                "score": 0.0,
+                "threshold": self._relevance_threshold(bundle),
+                "profile": {},
+                "coverage": 0.0,
+                "remote_hit_count": 0,
+                "hits": [],
+            }
+
+        profile = self._relevance_profile(bundle)
+        overall_matches = {
+            "family": False,
+            "stack": False,
+            "exploit": False,
+            "input_vector": False,
+            "sink": False,
+            "exploit_precondition": False,
+        }
+        per_hit: List[Dict[str, Any]] = []
+        remote_hits = 0
+        for hit in search_hits:
+            text = self._search_hit_text(hit)
+            matched = {
+                "family_terms": self._matched_terms(text, profile.get("family_terms") or []),
+                "stack_terms": self._matched_terms(text, profile.get("stack_terms") or []),
+                "exploit_terms": self._matched_terms(text, profile.get("exploit_terms") or []),
+                "input_vector": self._matched_terms(
+                    text,
+                    profile.get("semantic_terms", {}).get("input_vector") or [],
+                ),
+                "sink": self._matched_terms(
+                    text,
+                    profile.get("semantic_terms", {}).get("sink") or [],
+                ),
+                "exploit_precondition": self._matched_terms(
+                    text,
+                    profile.get("semantic_terms", {}).get("exploit_precondition") or [],
+                ),
+            }
+            score = 0.0
+            if matched["family_terms"]:
+                score += 0.35
+                overall_matches["family"] = True
+            if matched["stack_terms"]:
+                score += 0.15
+                overall_matches["stack"] = True
+            if matched["exploit_terms"]:
+                score += 0.10
+                overall_matches["exploit"] = True
+            for bucket in ("input_vector", "sink", "exploit_precondition"):
+                if matched[bucket]:
+                    score += 0.10
+                    overall_matches[bucket] = True
+            if str(hit.source or "").strip().lower() == "remote":
+                remote_hits += 1
+                score += 0.05
+            per_hit.append(
+                {
+                    "title": str(hit.title or ""),
+                    "url": str(hit.url or ""),
+                    "source": str(hit.source or ""),
+                    "score": round(min(1.0, score), 3),
+                    "matched": matched,
+                }
+            )
+
+        ranked_scores = sorted((float(item["score"]) for item in per_hit), reverse=True)
+        strongest = ranked_scores[0] if ranked_scores else 0.0
+        support = sum(ranked_scores[:2]) / min(2, len(ranked_scores)) if ranked_scores else 0.0
+        active_categories = [
+            key
+            for key, enabled in (
+                ("family", bool(profile.get("family_terms"))),
+                ("stack", bool(profile.get("stack_terms"))),
+                ("exploit", bool(profile.get("exploit_terms"))),
+                ("input_vector", bool(profile.get("semantic_terms", {}).get("input_vector"))),
+                ("sink", bool(profile.get("semantic_terms", {}).get("sink"))),
+                (
+                    "exploit_precondition",
+                    bool(profile.get("semantic_terms", {}).get("exploit_precondition")),
+                ),
+            )
+            if enabled
+        ]
+        coverage = (
+            sum(1 for key in active_categories if overall_matches.get(key)) / len(active_categories)
+            if active_categories
+            else 0.0
+        )
+        remote_bonus = 0.05 if remote_hits else 0.0
+        overall = min(1.0, (0.55 * strongest) + (0.20 * support) + (0.20 * coverage) + remote_bonus)
+        return {
+            "score": round(overall, 3),
+            "threshold": self._relevance_threshold(bundle),
+            "profile": profile,
+            "coverage": round(coverage, 3),
+            "remote_hit_count": remote_hits,
+            "hits": per_hit,
+        }
 
     def _estimate_evidence_relevance(
         self,
         bundle: VulnBundle | None,
         search_hits: List[SearchResult],
     ) -> float:
-        if not search_hits:
-            return 0.0
-        terms = self._relevance_terms(bundle)
-        if not terms:
-            return 1.0
-        matches = 0
-        remote_hits = 0
-        for hit in search_hits:
-            text = " ".join(
-                [
-                    str(hit.query or ""),
-                    str(hit.snippet or ""),
-                    str(hit.url or ""),
-                ]
-            ).lower()
-            if any(term in text for term in terms):
-                matches += 1
-            if str(hit.source or "").strip().lower() == "remote":
-                remote_hits += 1
-        base = matches / max(1, len(search_hits))
-        diversity_bonus = 0.1 if remote_hits and (len(search_hits) - remote_hits) > 0 else 0.0
-        remote_bonus = 0.1 if remote_hits else 0.0
-        return min(1.0, base + diversity_bonus + remote_bonus)
+        return float(self._score_evidence_relevance(bundle, search_hits).get("score") or 0.0)
 
     def _relevance_terms(self, bundle: VulnBundle | None) -> List[str]:
+        return list(self._relevance_profile(bundle).get("family_terms") or [])
+
+    def _relevance_profile(self, bundle: VulnBundle | None) -> Dict[str, Any]:
         vuln_id = str(bundle.vuln_id if bundle else self.requirement.get("vuln_id") or "").strip().lower()
+        family_terms: List[str] = []
+        exploit_terms: List[str] = []
         if vuln_id in {"cwe-89", "cwe_89"}:
-            return [
-                "sql injection",
-                "sqli",
-                "sql query",
-                "union select",
-                "cursor.execute",
-            ]
-        if vuln_id in {"cwe-352", "cwe_352"}:
-            return [
-                "csrf",
-                "cross-site request forgery",
-                "anti-csrf",
-                "csrf token",
-                "same-site",
-            ]
-        tokens = [token for token in vuln_id.replace("_", "-").split("-") if token]
-        if len(tokens) >= 2 and tokens[0] == "cwe":
-            return [f"cwe-{tokens[1]}", f"cwe {tokens[1]}"]
-        return tokens
+            family_terms.extend(["sql injection", "sqli", "union select", "where id =", "or 1=1"])
+            exploit_terms.extend(["or 1=1", "union select", "boolean-based"])
+        elif vuln_id in {"cwe-352", "cwe_352"}:
+            family_terms.extend(["csrf", "cross-site request forgery", "anti-csrf", "csrf token"])
+            exploit_terms.extend(["same-site", "cross-site", "forgery"])
+        else:
+            pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
+            if "sqli" in pattern_id or "sql" in pattern_id:
+                family_terms.extend(["sql injection", "sqli", "sql", "sqlite"])
+                exploit_terms.extend(["or 1=1", "union select", "string concat", "concatenation"])
+            if "csrf" in pattern_id:
+                family_terms.extend(["csrf", "cross-site request forgery"])
+                exploit_terms.extend(["same-site", "csrf token"])
+
+        stack_terms: List[str] = []
+        runtime = self.requirement.get("runtime") or {}
+        runtime_db = runtime.get("db") if isinstance(runtime, dict) else None
+        for value in (self.requirement.get("language"), self.requirement.get("framework"), runtime_db):
+            if isinstance(value, str) and value.strip():
+                stack_terms.append(value.strip())
+
+        semantic_signature, _ = self._resolve_semantic_signature({"semantic_signature": {}}, bundle)
+        return {
+            "family_terms": self._dedupe_strings(family_terms),
+            "stack_terms": self._dedupe_strings(stack_terms),
+            "exploit_terms": self._dedupe_strings(exploit_terms),
+            "semantic_terms": semantic_signature,
+        }
+
+    @staticmethod
+    def _search_hit_text(hit: SearchResult) -> str:
+        parts = [str(hit.title or ""), str(hit.snippet or ""), str(hit.url or "")]
+        raw_content = getattr(hit, "raw_content", None)
+        if isinstance(raw_content, str) and raw_content.strip():
+            parts.append(raw_content[:1200])
+        return " ".join(parts).lower()
+
+    @staticmethod
+    def _matched_terms(text: str, terms: List[str]) -> List[str]:
+        lowered = str(text or "").lower()
+        matched: List[str] = []
+        for term in terms:
+            token = str(term or "").strip().lower()
+            if token and token in lowered and token not in matched:
+                matched.append(token)
+        return matched
+
+    @staticmethod
+    def _dedupe_strings(values: List[str]) -> List[str]:
+        output: List[str] = []
+        for value in values:
+            token = str(value or "").strip().lower()
+            if token and token not in output:
+                output.append(token)
+        return output
+
+    def _relevance_threshold(self, bundle: VulnBundle | None) -> float:
+        return 0.30 if self._bundle_is_unknown(bundle) else 0.35
 
     def _build_evidence_payload(self, search_hits: List[SearchResult]) -> List[Dict[str, Any]]:
         payload: List[Dict[str, Any]] = []
@@ -1226,6 +1439,177 @@ class ResearcherService:
                 item["published"] = hit.published
             payload.append(item)
         return payload
+
+    def _resolve_semantic_signature(
+        self,
+        report: Dict[str, Any],
+        bundle: VulnBundle | None,
+    ) -> Tuple[Dict[str, List[str]], List[str]]:
+        report_signature = normalize_semantic_signature(
+            report.get("semantic_signature") if isinstance(report, dict) else {}
+        )
+        inferred_signature = self._infer_semantic_signature(report, bundle)
+        default_signature = normalize_semantic_signature(self._default_semantic_signature(bundle))
+        sources: List[str] = []
+        if self._signature_has_terms(report_signature):
+            sources.append("report")
+        if self._signature_has_terms(inferred_signature):
+            sources.append("heuristic")
+        if self._signature_has_terms(default_signature):
+            sources.append("default")
+
+        merged: Dict[str, List[str]] = {
+            "input_vector": [],
+            "sink": [],
+            "exploit_precondition": [],
+        }
+        for bucket in merged:
+            merged[bucket] = self._merge_semantic_bucket_values(
+                report_signature.get(bucket) or [],
+                inferred_signature.get(bucket) or [],
+                default_signature.get(bucket) or [],
+            )
+        return merged, (sources or ["empty"])
+
+    @staticmethod
+    def _signature_has_terms(signature: Dict[str, List[str]]) -> bool:
+        if not isinstance(signature, dict):
+            return False
+        return any(bool(signature.get(bucket)) for bucket in ("input_vector", "sink", "exploit_precondition"))
+
+    @staticmethod
+    def _merge_semantic_bucket_values(*groups: List[str]) -> List[str]:
+        merged: List[str] = []
+        for group in groups:
+            if not isinstance(group, list):
+                continue
+            for value in group:
+                if not isinstance(value, str):
+                    continue
+                token = value.strip()
+                if token and token not in merged:
+                    merged.append(token)
+        return merged
+
+    def _infer_semantic_signature(
+        self,
+        report: Dict[str, Any],
+        bundle: VulnBundle | None,
+    ) -> Dict[str, List[str]]:
+        result: Dict[str, List[str]] = {
+            "input_vector": [],
+            "sink": [],
+            "exploit_precondition": [],
+        }
+        corpus = self._semantic_inference_corpus(report)
+        lowered = corpus.lower()
+        pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
+        vuln_id = str(bundle.vuln_id if bundle else self.requirement.get("vuln_id") or "").strip().lower()
+
+        def add(bucket: str, *values: str) -> None:
+            bucket_values = result[bucket]
+            for value in values:
+                token = str(value or "").strip()
+                if token and token not in bucket_values:
+                    bucket_values.append(token)
+
+        def contains_any(tokens: List[str]) -> bool:
+            return any(token in lowered for token in tokens)
+
+        is_sqli = (
+            vuln_id in {"cwe-89", "cwe_89"}
+            or "sqli" in pattern_id
+            or "sql" in pattern_id
+            or contains_any(
+                [
+                    "sql injection",
+                    "sqli",
+                    "union select",
+                    "sqlite3",
+                    "cursor.execute",
+                    "sql query",
+                    "or 1=1",
+                ]
+            )
+        )
+        if is_sqli:
+            add("input_vector", "request.args", "query parameter", "user-controlled request parameter")
+            add("sink", "cursor.execute", "execute(", "SQL query execution")
+            add(
+                "exploit_precondition",
+                "string concatenation",
+                "input concatenated/interpolated into SQL sink",
+                "or 1=1",
+            )
+
+        is_csrf = (
+            vuln_id in {"cwe-352", "cwe_352"}
+            or "csrf" in pattern_id
+            or contains_any(
+                [
+                    "csrf",
+                    "cross-site request forgery",
+                    "cookie-authenticated session",
+                    "same-site",
+                ]
+            )
+        )
+        if is_csrf:
+            add("input_vector", "cross-site request", "cookie-authenticated session")
+            add("sink", "state-changing endpoint", "POST")
+            add("exploit_precondition", "missing CSRF token validation", "csrf token")
+
+        if contains_any(["request.args", "query parameter", "get parameter", "id query param"]):
+            add("input_vector", "request.args", "query parameter")
+        if contains_any(["request.form", "form parameter"]):
+            add("input_vector", "request.form", "form parameter")
+        if contains_any(["request.json", "json body", "request body", "body parameter"]):
+            add("input_vector", "request.json", "body parameter")
+        if contains_any(["cursor.execute", "execute(", "executescript(", "sql query", "sqlite3"]):
+            add("sink", "cursor.execute", "execute(")
+        if contains_any(["string concatenation", "concat", "interpolat", "f-string", ".format(", "or 1=1"]):
+            add("exploit_precondition", "string concatenation", "input concatenated/interpolated into SQL sink")
+
+        return normalize_semantic_signature(result)
+
+    def _semantic_inference_corpus(self, report: Dict[str, Any]) -> str:
+        fragments: List[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, str):
+                token = value.strip()
+                if token:
+                    fragments.append(token)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    collect(item)
+                return
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if str(key).strip().lower() in {"evidence", "references"}:
+                        continue
+                    collect(item)
+
+        collect(
+            {
+                "intent": report.get("intent") if isinstance(report, dict) else None,
+                "preconditions": report.get("preconditions") if isinstance(report, dict) else None,
+                "minimal_repro_steps": report.get("minimal_repro_steps") if isinstance(report, dict) else None,
+                "verification_spec": report.get("verification_spec") if isinstance(report, dict) else None,
+                "failure_context": report.get("failure_context") if isinstance(report, dict) else None,
+                "pocs": report.get("pocs") if isinstance(report, dict) else None,
+                "tech_stack_candidates": report.get("tech_stack_candidates") if isinstance(report, dict) else None,
+                "risks": report.get("risks") if isinstance(report, dict) else None,
+                "semantic_signature": report.get("semantic_signature") if isinstance(report, dict) else None,
+                "requirement_intent": self.requirement.get("intent"),
+                "pattern_id": self.requirement.get("pattern_id"),
+                "framework": self.requirement.get("framework"),
+                "language": self.requirement.get("language"),
+                "runtime": self.requirement.get("runtime"),
+            }
+        )
+        return "\n".join(fragments)
 
     def _default_semantic_signature(self, bundle: VulnBundle | None) -> Dict[str, Any]:
         vuln_id = (bundle.vuln_id if bundle else self.requirement.get("vuln_id")) or "UNKNOWN"
@@ -1333,21 +1717,7 @@ class ResearcherService:
         report = self._load_latest_report()
         if not isinstance(report, dict):
             return None
-        spec = report.get("verification_spec")
-        if isinstance(spec, dict):
-            return spec
-        # Optional extension: support per-vuln mapping under verification_specs.
-        mapping = report.get("verification_specs")
-        if isinstance(mapping, dict):
-            key_candidates = [
-                (bundle.vuln_id or "").upper(),
-                (bundle.vuln_id or "").lower(),
-            ]
-            for key in key_candidates:
-                value = mapping.get(key)
-                if isinstance(value, dict):
-                    return value
-        return None
+        return extract_verification_spec(report, vuln_id=bundle.vuln_id)
 
     def _rule_from_verification_spec(self, bundle: VulnBundle, spec: Dict[str, Any]) -> Dict[str, Any]:
         """Construct a v2 rule mapping from a compact verification_spec."""
@@ -1374,15 +1744,16 @@ class ResearcherService:
 
         assertion_program = spec.get("assertion_program") or []
         if isinstance(assertion_program, str):
-            # Lightweight compatibility: accept a single "assert ..." string and
-            # try to turn it into a contains() operation so runtime verifiers
-            # can leverage it.
-            import re
-
-            matches = re.findall(r"['\"]([^'\"]+)['\"]", assertion_program)
-            assertion_program = [{"op": "contains", "string": matches[0]}] if matches else []
+            # Treat free-form verifier code as an opaque hint. Pulling the first
+            # quoted literal out of a Python program produces weak assertions such
+            # as file paths, which harms runtime rule quality.
+            assertion_program = []
         elif not isinstance(assertion_program, list):
             assertion_program = []
+        if not assertion_program:
+            assertion_program = [{"op": "contains", "string": marker} for marker in markers if marker]
+            if isinstance(flag_token, str) and flag_token:
+                assertion_program.append({"op": "contains", "string": flag_token})
 
         runtime: Dict[str, Any] = {
             "success_mode": success_mode,

@@ -388,12 +388,57 @@ def _semantic_token_present(text: str, token: str) -> bool:
     token = (token or "").strip().lower()
     if not token:
         return False
+    if _semantic_token_alias_present(text, token):
+        return True
     if token in text:
         return True
     words = [part for part in re.split(r"[^a-z0-9]+", token) if part]
     if not words:
         return False
     return all(word in text for word in words)
+
+
+def _semantic_token_alias_present(text: str, token: str) -> bool:
+    if "user-controlled request parameter" in token or token in {"request parameter", "query parameter"}:
+        aliases = [
+            "request.args",
+            "request.form",
+            "request.values",
+            "request.json",
+            "get_json(",
+            "query parameter",
+            "get parameter",
+            "params={",
+            "params =",
+        ]
+        return any(alias in text for alias in aliases)
+    if "sql query execution" in token or token in {"sql sink", "cursor.execute"}:
+        aliases = [
+            "cursor.execute",
+            "execute(",
+            "executescript(",
+            "sqlite3.connect",
+            "select ",
+        ]
+        return any(alias in text for alias in aliases)
+    if ("concatenated" in token or "string concatenation" in token or "interpolated" in token) and "sql" in token:
+        return _looks_like_sql_string_composition(text)
+    if "cross-site request" in token:
+        return any(alias in text for alias in ["csrf", "@app.post", "methods=['post", 'methods=["post', "fetch(", "xmlhttprequest"])
+    if "state-changing endpoint" in token:
+        return any(alias in text for alias in ["@app.post", "@app.put", "@app.delete", "@app.patch", "methods=['post", 'methods=["post'])
+    if "cookie-authenticated session" in token:
+        return any(alias in text for alias in ["session", "cookie", "login_required", "set-cookie"])
+    return False
+
+
+def _looks_like_sql_string_composition(text: str) -> bool:
+    patterns = [
+        r"select[\s\S]{0,160}\+\s*[a-z_][a-z0-9_]*",
+        r"(select|insert|update|delete)[\s\S]{0,160}\.format\s*\(",
+        r"f[\"'][^\"']*(select|insert|update|delete)[^\"']*[\"']",
+    ]
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
 def _evaluate_generator_assertion(manifest: Dict[str, Any], assertion: Dict[str, Any]) -> Tuple[bool, str]:

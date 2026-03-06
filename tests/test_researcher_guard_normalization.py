@@ -15,6 +15,7 @@ def _service_stub(vuln_id: str = "CWE-89") -> ResearcherService:
     service = ResearcherService.__new__(ResearcherService)
     service.requirement = {"vuln_id": vuln_id}  # type: ignore[attr-defined]
     service.plan = {"policy": {"guard": {"failure_policy": "closed_unknown"}}}  # type: ignore[attr-defined]
+    service._last_evidence_relevance = None  # type: ignore[attr-defined]
     service._bundle_is_unknown = lambda bundle: False  # type: ignore[attr-defined]
     service._guard_missing_is_blocking = lambda bundle: False  # type: ignore[attr-defined]
     service._fallback_generator_assertions = lambda bundle: [  # type: ignore[attr-defined]
@@ -193,3 +194,101 @@ def test_unknown_cwe_low_relevance_is_insufficient_when_evidence_required() -> N
     quality, reason = service._evaluate_evidence_quality(None, hits)  # type: ignore[attr-defined]
     assert quality == "insufficient"
     assert "low relevance score" in reason.lower()
+
+
+def test_unknown_cwe_query_token_does_not_inflate_relevance() -> None:
+    service = _service_stub("CWE-9999")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-9999",
+        "pattern_id": "sqli-string-concat",
+        "language": "python",
+        "framework": "flask",
+        "runtime": {"db": "sqlite"},
+    }
+    hits = [
+        SearchResult(
+            title="generic devops note",
+            url="https://example.com/post",
+            snippet="Container hardening and deployment basics.",
+            source="remote",
+            query="CWE-9999 exploit writeup python flask",
+        )
+    ]
+
+    score = service._estimate_evidence_relevance(None, hits)  # type: ignore[attr-defined]
+
+    assert score < 0.30
+
+
+def test_unknown_semantic_signature_is_derived_from_pattern_and_verification_spec() -> None:
+    service = _service_stub("CWE-9999")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-9999",
+        "pattern_id": "sqli-string-concat",
+        "intent": "unknown sql injection style demo",
+    }
+    report = {
+        "intent": "Generate a Flask+SQLite endpoint with string concatenation SQL injection.",
+        "preconditions": [
+            "exploit_precondition: unauthenticated GET parameter",
+            "input_vector: id query parameter",
+            "sink: sqlite3 executes concatenated SQL query",
+        ],
+        "verification_spec": {
+            "assertion_program": {
+                "language": "python",
+                "code": (
+                    "user_id = request.args.get('id', '1')\n"
+                    "q = 'SELECT id FROM users WHERE id=' + user_id\n"
+                    "cur.execute(q)\n"
+                ),
+            }
+        },
+    }
+
+    signature, sources = service._resolve_semantic_signature(report, None)  # type: ignore[attr-defined]
+
+    assert "heuristic" in sources
+    assert "request.args" in signature["input_vector"]
+    assert any(token in signature["sink"] for token in ["cursor.execute", "execute("])
+    assert any("string concatenation" in token or "input concatenated/interpolated into SQL sink" in token for token in signature["exploit_precondition"])
+
+
+def test_extract_verification_spec_reads_wrapped_researcher_report() -> None:
+    service = _service_stub("CWE-9999")
+    service._load_latest_report = lambda: {  # type: ignore[attr-defined]
+        "researcher_report": {
+            "verification_spec": {
+                "success_text_markers": ["SQLI_OK"],
+                "flag_token": "FLAG_SQLI",
+            }
+        }
+    }
+    bundle = type("Bundle", (), {"vuln_id": "CWE-9999"})()
+
+    spec = service._extract_verification_spec(bundle)  # type: ignore[attr-defined]
+
+    assert spec is not None
+    assert spec["success_text_markers"] == ["SQLI_OK"]
+    assert spec["flag_token"] == "FLAG_SQLI"
+
+
+def test_rule_from_verification_spec_ignores_opaque_code_string_and_uses_markers() -> None:
+    service = _service_stub("CWE-9999")
+    bundle = type("Bundle", (), {"vuln_id": "CWE-9999"})()
+
+    rule = service._rule_from_verification_spec(  # type: ignore[attr-defined]
+        bundle,
+        {
+            "success_text_markers": ["SQLI_OK"],
+            "flag_token": "FLAG_SQLI",
+            "assertion_program": "print('/tmp/app.db')\nprint('SQLI_OK')\n",
+        },
+    )
+
+    runtime = rule["runtime"]
+    assert runtime["success_text_markers"] == ["SQLI_OK"]
+    assert runtime["assertion_program"] == [
+        {"op": "contains", "string": "SQLI_OK"},
+        {"op": "contains", "string": "FLAG_SQLI"},
+    ]

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
+from common.config import get_tavily_api_key
 from common.logging import get_logger
 from common.paths import get_repo_root
 
@@ -37,7 +38,10 @@ class WebSearchTool:
         self.provider_name = (provider or os.environ.get("VUL_WEB_SEARCH_PROVIDER") or "").strip().lower()
         self.endpoint = (endpoint or os.environ.get("VUL_WEB_SEARCH_ENDPOINT") or "").strip()
         self.base_url = (base_url or os.environ.get("VUL_WEB_SEARCH_BASE_URL") or "").strip()
-        self.api_key = (api_key or os.environ.get("VUL_WEB_SEARCH_API_KEY") or "").strip()
+        resolved_api_key = (api_key or os.environ.get("VUL_WEB_SEARCH_API_KEY") or "").strip()
+        if not resolved_api_key and self.provider_name == "tavily":
+            resolved_api_key = get_tavily_api_key() or ""
+        self.api_key = resolved_api_key
         self.timeout = timeout
         self.max_local_files = max_local_files
         self.local_root = get_repo_root() / "rag" / "corpus"
@@ -45,6 +49,21 @@ class WebSearchTool:
 
     def search(self, query: str, limit: int = 3, policy: str = "remote_prefer") -> List[SearchResult]:
         """Return up to ``limit`` results for a query."""
+        return self.search_with_filters(query, limit=limit, policy=policy)
+
+    def search_with_filters(
+        self,
+        query: str,
+        *,
+        limit: int = 3,
+        policy: str = "remote_prefer",
+        include_domains: Optional[Iterable[str]] = None,
+        exclude_domains: Optional[Iterable[str]] = None,
+        time_range: Optional[str] = None,
+        country: Optional[str] = None,
+        search_lang: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Return up to ``limit`` results for a query with optional filter surface."""
 
         query = (query or "").strip()
         if not query:
@@ -58,6 +77,11 @@ class WebSearchTool:
             query=query,
             limit=max(1, int(limit)),
             policy=policy,
+            include_domains=self._normalize_string_list(include_domains),
+            exclude_domains=self._normalize_string_list(exclude_domains),
+            time_range=self._normalize_optional_string(time_range),
+            country=self._normalize_optional_string(country),
+            search_lang=self._normalize_optional_string(search_lang),
             include_raw_content=(policy == "remote_required"),
         )
 
@@ -101,6 +125,26 @@ class WebSearchTool:
             if not hit.retrieved_at:
                 hit.retrieved_at = retrieved_at
         return hits
+
+    @staticmethod
+    def _normalize_string_list(values: Optional[Iterable[str]]) -> List[str]:
+        if values is None:
+            return []
+        normalized: List[str] = []
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            token = value.strip()
+            if token and token not in normalized:
+                normalized.append(token)
+        return normalized
+
+    @staticmethod
+    def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        token = value.strip()
+        return token or None
 
     # Remote search helpers -------------------------------------------------
 

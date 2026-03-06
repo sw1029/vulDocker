@@ -25,6 +25,46 @@ def test_contract_uses_rule_defined_success_markers(tmp_path: Path) -> None:
     assert payload["flag_token"] == "FLAG-sqli-demo-token"
     assert payload["output_mode"] == "auto"
     assert payload["schema_version"] == "resolved_contract@1.0"
+    assert payload["contract_stage"] == "synthesis"
+
+
+def test_contract_uses_researcher_proposal_when_rule_is_missing(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-9999",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-9999",
+        researcher_report={
+            "researcher_report": {
+                "verification_spec": {
+                    "success_text_markers": ["UNKNOWN SUCCESS"],
+                    "flag_token": "FLAG-unknown",
+                    "assertion_program": [{"op": "contains", "string": "UNKNOWN SUCCESS"}],
+                },
+                "semantic_signature": {
+                    "input_vector": ["request.args"],
+                    "sink": ["execute("],
+                    "exploit_precondition": ["string concatenation"],
+                },
+                "semantic_signature_source": ["heuristic"],
+                "quality": "sufficient",
+                "quality_reason": "semantic anchors matched",
+            }
+        },
+    )
+
+    assert payload["success_signature"] == "UNKNOWN SUCCESS"
+    assert payload["flag_token"] == "FLAG-unknown"
+    assert payload["sources"]["success_signature"] == "researcher_report.verification_spec.success_text_markers[0]"
+    assert payload["sources"]["flag_token"] == "researcher_report.verification_spec.flag_token"
+    assert payload["proposed_verification_contract"]["success_signature"] == "UNKNOWN SUCCESS"
+    assert payload["proposed_verification_contract"]["flag_token"] == "FLAG-unknown"
+    assert payload["semantic_contract"]["semantic_signature"]["sink"] == ["execute("]
+    assert payload["semantic_contract"]["semantic_signature_source"] == ["heuristic"]
+    assert payload["semantic_contract"]["quality"] == "sufficient"
+    assert payload["contract_stage"] == "research_seed"
 
 
 def test_write_generator_contract_mirrors_resolved_and_legacy_files(tmp_path: Path) -> None:

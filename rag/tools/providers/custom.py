@@ -24,10 +24,21 @@ class CustomSearchProvider(SearchProvider):
         self.timeout = timeout
 
     def search(self, request: SearchRequest) -> Tuple[List[SearchResult], SearchExecution]:
+        params: Dict[str, Any] = {"q": request.query, "size": request.limit}
+        if request.include_domains:
+            params["include_domains"] = list(request.include_domains)
+        if request.exclude_domains:
+            params["exclude_domains"] = list(request.exclude_domains)
+        if request.time_range:
+            params["time_range"] = request.time_range
+        if request.country:
+            params["country"] = request.country
+        if request.search_lang:
+            params["search_lang"] = request.search_lang
         req_payload = {
             "method": "GET",
             "url": self.endpoint,
-            "params": {"q": request.query, "size": request.limit},
+            "params": params,
         }
         if not self.endpoint:
             return [], SearchExecution(

@@ -653,6 +653,7 @@ def _build_poc_exec_cmd(
     *,
     payload: str | None,
 ) -> List[str]:
+    exec_prefix = [DOCKER_BIN, "exec", "-w", "/app", "-e", "PYTHONPATH=/app", container_name]
     cmd = _resolve_poc_cmd(metadata_dir)
     if cmd is None:
         suffix = Path(poc_path).suffix.lower()
@@ -672,11 +673,11 @@ def _build_poc_exec_cmd(
         args = [interpreter, poc_path, "--base-url", base_url]
         if payload:
             args.extend(["--payload", payload])
-        return [DOCKER_BIN, "exec", container_name, *args]
+        return [*exec_prefix, *args]
 
     if _needs_shell(cmd):
         rendered = _render_poc_cmd_shell(cmd, poc_path=poc_path, base_url=base_url, payload=payload)
-        return [DOCKER_BIN, "exec", container_name, "sh", "-lc", rendered]
+        return [*exec_prefix, "sh", "-lc", rendered]
 
     tokens = shlex.split(cmd)
     rendered_tokens: List[str] = []
@@ -697,7 +698,7 @@ def _build_poc_exec_cmd(
         if idx != -1 and idx == len(rendered_tokens) - 1:
             rendered_tokens.append(payload)
 
-    return [DOCKER_BIN, "exec", container_name, *rendered_tokens]
+    return [*exec_prefix, *rendered_tokens]
 
 
 def _resolve_poc_cmd(metadata_dir: Path) -> str | None:

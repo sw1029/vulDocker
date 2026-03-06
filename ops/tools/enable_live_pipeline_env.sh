@@ -29,7 +29,7 @@ Options:
   --help                 Show help
 
 Notes:
-  - The script loads API key from OPENAI_API_KEY, VUL_LLM_API_KEY, or config/api_keys.ini.
+  - The script loads OpenAI/Tavily API keys from env first, then falls back to config/api_keys.ini.
   - It exports:
       OPENAI_API_KEY
       VUL_LLM_API_KEY
@@ -106,10 +106,6 @@ if [[ "${WEB_PROVIDER}" == "custom" && -z "${WEB_ENDPOINT}" ]]; then
   echo "[ENV] custom provider requires --web-endpoint <URL>." >&2
   return 1
 fi
-if [[ "${WEB_PROVIDER}" == "tavily" && -z "${WEB_API_KEY}" ]]; then
-  echo "[ENV] tavily provider requires --web-api-key <KEY> or VUL_WEB_SEARCH_API_KEY." >&2
-  return 1
-fi
 
 API_KEY="${OPENAI_API_KEY:-${VUL_LLM_API_KEY:-}}"
 if [[ -z "${API_KEY}" ]]; then
@@ -130,6 +126,27 @@ fi
 
 if [[ -z "${API_KEY}" ]]; then
   echo "[ENV] OpenAI API key not found in env or ${CONFIG_PATH}" >&2
+  return 1
+fi
+
+if [[ "${WEB_PROVIDER}" == "tavily" && -z "${WEB_API_KEY}" ]]; then
+  if [[ -f "${CONFIG_PATH}" ]]; then
+    WEB_API_KEY="$(python - <<'PY' "${CONFIG_PATH}"
+import configparser
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+parser = configparser.ConfigParser()
+parser.read(path, encoding="utf-8")
+print((parser.get("tavily", "api_key", fallback="") or "").strip(), end="")
+PY
+)"
+  fi
+fi
+
+if [[ "${WEB_PROVIDER}" == "tavily" && -z "${WEB_API_KEY}" ]]; then
+  echo "[ENV] tavily provider requires --web-api-key <KEY>, VUL_WEB_SEARCH_API_KEY, or config/api_keys.ini [tavily]." >&2
   return 1
 fi
 

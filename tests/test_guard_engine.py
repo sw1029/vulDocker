@@ -188,3 +188,27 @@ def test_guard_engine_downgrades_low_stability_syntax_hint_when_builtin_semantic
     assert result.blocking is False
     downgraded = result.details.get("downgraded_assertions") or []
     assert downgraded
+
+
+def test_guard_engine_workspace_matches_abstract_sqli_semantics(tmp_path: Path) -> None:
+    for entry in _manifest()["files"]:
+        path = tmp_path / entry["path"]
+        path.write_text(entry["content"], encoding="utf-8")
+
+    spec = build_guard_spec(
+        sid="sid-test",
+        vuln_id="CWE-89",
+        slug="cwe-89",
+        generator_assertions=[],
+        verifier_assertions=[],
+        semantic_signature={
+            "input_vector": ["user-controlled request parameter"],
+            "sink": ["SQL query execution"],
+            "exploit_precondition": ["input concatenated/interpolated into SQL sink"],
+        },
+    )
+    engine = GuardEngine("CWE-89", spec.to_dict())
+    result = engine.evaluate_workspace([tmp_path])
+    assert result.passed is True
+    assert result.blocking is False
+    assert result.violations == []

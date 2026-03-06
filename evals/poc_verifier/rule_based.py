@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from common.contracts import load_generator_contract as load_resolved_contract
-from common.guardrails import GuardEngine, load_guard_spec_for_sid
+from common.guardrails import GuardEngine, build_guard_spec, load_guard_spec_for_sid
 from common.rules import RuleSpec, load_rule, load_rulespec
 from common.vuln_semantics import evaluate_manifest_semantics, evaluate_workspace_semantics, semantic_error_summary
 
@@ -91,7 +91,7 @@ def verify_with_rule(
     pattern_evidence = _evaluate_patterns(rule, workspace_dirs, generator_manifest, rulespec)
     evidence.extend(pattern_evidence)
 
-    semantic_report = _evaluate_semantic_consistency(vuln_id, workspace_dirs, generator_manifest)
+    semantic_report = _evaluate_semantic_consistency(vuln_id, workspace_dirs, generator_manifest, contract_meta)
     if semantic_report.get("supported"):
         if semantic_report.get("semantic_match"):
             evidence.append("Semantic consistency check passed")
@@ -692,17 +692,47 @@ def _evaluate_semantic_consistency(
     vuln_id: str,
     workspace_dirs: Iterable[Path],
     generator_manifest: Optional[Dict[str, Any]],
+    contract_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    workspace_roots = list(workspace_dirs)
     if isinstance(generator_manifest, dict):
         report = evaluate_manifest_semantics(vuln_id, generator_manifest)
         if report.get("supported"):
             report["source"] = "generator_manifest"
             return report
-    for workspace in workspace_dirs:
+    for workspace in workspace_roots:
         report = evaluate_workspace_semantics(vuln_id, workspace)
         if report.get("supported"):
             report["source"] = str(workspace)
             return report
+    semantic_contract = {}
+    if isinstance(contract_meta, dict):
+        candidate = contract_meta.get("semantic_contract")
+        if isinstance(candidate, dict):
+            semantic_contract = candidate
+        elif isinstance(contract_meta.get("semantic_signature"), dict):
+            semantic_contract = {"semantic_signature": contract_meta.get("semantic_signature")}
+    signature = semantic_contract.get("semantic_signature") if isinstance(semantic_contract, dict) else None
+    if isinstance(signature, dict) and any(signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
+        spec = build_guard_spec(
+            sid=str((contract_meta or {}).get("sid") or "semantic-contract"),
+            vuln_id=vuln_id,
+            slug=str((contract_meta or {}).get("slug") or ""),
+            semantic_signature=signature,
+            generator_assertions=[],
+            verifier_assertions=[],
+            source="contract",
+        )
+        evaluation = GuardEngine(vuln_id, spec.to_dict()).evaluate_workspace(workspace_roots)
+        signature_details = evaluation.details.get("semantic_signature") if isinstance(evaluation.details, dict) else {}
+        return {
+            "supported": True,
+            "semantic_match": evaluation.passed,
+            "errors": list(evaluation.violations or []),
+            "warnings": list(evaluation.warnings or []),
+            "signals": signature_details.get("signals") if isinstance(signature_details, dict) else {},
+            "source": "resolved_contract.semantic_contract",
+        }
     return {
         "supported": False,
         "semantic_match": True,

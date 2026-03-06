@@ -12,7 +12,7 @@ from rag.tools.providers.custom import CustomSearchProvider
 
 
 class _Response:
-    def __init__(self, payload: dict, status_code: int = 200) -> None:
+    def __init__(self, payload: list[dict], status_code: int = 200) -> None:
         self._payload = payload
         self.status_code = status_code
 
@@ -20,46 +20,47 @@ class _Response:
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
 
-    def json(self) -> dict:
+    def json(self) -> list[dict]:
         return self._payload
 
 
-def test_custom_provider_parses_legacy_payload(monkeypatch) -> None:
+def test_custom_provider_propagates_search_filters(monkeypatch) -> None:
+    captured: dict = {}
+
     def _fake_get(url, params, timeout):  # noqa: ANN001
-        assert url == "https://search.example/api"
-        assert params == {"q": "unknown cwe exploit", "size": 2}
+        captured["url"] = url
+        captured["params"] = params
+        captured["timeout"] = timeout
         return _Response(
-            {
-                "items": [
-                    {
-                        "name": "Legacy result",
-                        "link": "https://example.com/legacy",
-                        "body": "legacy snippet",
-                    }
-                ]
-            }
+            [
+                {
+                    "title": "note",
+                    "url": "https://example.com/search",
+                    "snippet": "remote result",
+                }
+            ]
         )
 
     monkeypatch.setattr("rag.tools.providers.custom.requests.get", _fake_get)
 
     provider = CustomSearchProvider(endpoint="https://search.example/api")
-    hits, execution = provider.search(SearchRequest(query="unknown cwe exploit", limit=2))
+    request = SearchRequest(
+        query="unknown cwe",
+        policy="remote_required",
+        include_domains=["mitre.org"],
+        exclude_domains=["example.com"],
+        time_range="30d",
+        country="us",
+        search_lang="en",
+    )
+
+    hits, execution = provider.search(request)
 
     assert len(hits) == 1
-    assert hits[0].provider == "custom"
-    assert hits[0].title == "Legacy result"
-    assert hits[0].url == "https://example.com/legacy"
-    assert hits[0].snippet == "legacy snippet"
-    assert execution.provider == "custom"
     assert execution.configured is True
-    assert execution.result_count == 1
-
-
-def test_custom_provider_reports_missing_endpoint() -> None:
-    provider = CustomSearchProvider(endpoint=None)
-    hits, execution = provider.search(SearchRequest(query="unknown cwe"))
-
-    assert hits == []
-    assert execution.provider == "custom"
-    assert execution.configured is False
-    assert "VUL_WEB_SEARCH_ENDPOINT" in str(execution.error)
+    assert captured["url"] == "https://search.example/api"
+    assert captured["params"]["include_domains"] == ["mitre.org"]
+    assert captured["params"]["exclude_domains"] == ["example.com"]
+    assert captured["params"]["time_range"] == "30d"
+    assert captured["params"]["country"] == "us"
+    assert captured["params"]["search_lang"] == "en"

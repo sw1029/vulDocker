@@ -1,8 +1,9 @@
-"""Shared contract helpers for generator/executor/verifier stages.
+"""Shared contract helpers for researcher/generator/executor/verifier stages.
 
 This module centralizes how we resolve the *run contract* that downstream stages
 need (success/flag markers, service entry, poc entry, service port, base URL,
-PoC command). The generator writes the canonical payload to
+PoC command). Researcher may write an early seed contract and the generator
+later refreshes the canonical payload to
 `resolved_contract.json` and mirrors it to `generator_contract.json` for
 backward compatibility.
 """
@@ -15,7 +16,12 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from common.rules import load_rule
+from common.researcher_report import (
+    extract_semantic_contract,
+    extract_verification_spec,
+    normalize_researcher_report_payload,
+)
+from common.rules import load_rule, load_rulespec
 
 DEFAULT_APP_PORT = 5000
 RESOLVED_CONTRACT_SCHEMA_VERSION = "resolved_contract@1.0"
@@ -61,6 +67,7 @@ def build_generator_contract(
     workspace_dir: Optional[Path] = None,
     generator_mode: str = "",
     bundle_slug: str = "",
+    researcher_report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a normalized generator contract for a single bundle.
 
@@ -76,6 +83,13 @@ def build_generator_contract(
     manifest = _unwrap_manifest(manifest_payload)
     has_manifest = isinstance(manifest.get("files"), list) and bool(manifest.get("files"))
     rule = load_rule(vuln_id) or {}
+    rulespec = load_rulespec(vuln_id)
+    report = normalize_researcher_report_payload(
+        researcher_report if isinstance(researcher_report, dict) else (_load_json(metadata_dir / "researcher_report.json") or {})
+    )
+    guard_spec = _load_json(metadata_dir / "guard_spec.json") or {}
+    proposal = _normalize_proposed_verification_contract(report)
+    semantic_contract = _resolve_semantic_contract(report, guard_spec)
 
     sources: Dict[str, str] = {}
 
@@ -87,8 +101,12 @@ def build_generator_contract(
         if service_entry:
             sources["service_entry"] = "generator_template.service_entry"
         else:
-            service_entry = "app.py"
-            sources["service_entry"] = "default(app.py)"
+            service_entry = _string_or_none(getattr(rulespec, "service_entry", None))
+            if service_entry:
+                sources["service_entry"] = "rulespec.service_entry"
+            else:
+                service_entry = "app.py"
+                sources["service_entry"] = "default(app.py)"
 
     poc_entry = _manifest_role_path(manifest, "poc_entry") or _first_poc_like_path(manifest)
     if poc_entry:
@@ -98,8 +116,12 @@ def build_generator_contract(
         if poc_entry:
             sources["poc_entry"] = "generator_template.poc_entry"
         else:
-            poc_entry = "poc.py"
-            sources["poc_entry"] = "default(poc.py)"
+            poc_entry = _string_or_none(getattr(rulespec, "poc_entry", None))
+            if poc_entry:
+                sources["poc_entry"] = "rulespec.poc_entry"
+            else:
+                poc_entry = "poc.py"
+                sources["poc_entry"] = "default(poc.py)"
 
     service_port = _port_from_generator_manifest(manifest)
     if service_port:
@@ -134,6 +156,10 @@ def build_generator_contract(
             success_signature = _string_or_none(template.get("success_signature"))
             if success_signature:
                 sources["success_signature"] = "generator_template.success_signature"
+            else:
+                success_signature = _string_or_none((proposal or {}).get("success_signature"))
+                if success_signature:
+                    sources["success_signature"] = "researcher_report.verification_spec.success_text_markers[0]"
 
     flag_token = _string_or_none(rule.get("flag_token"))
     if flag_token:
@@ -146,6 +172,14 @@ def build_generator_contract(
             flag_token = _string_or_none(template.get("flag_token"))
             if flag_token:
                 sources["flag_token"] = "generator_template.flag_token"
+            else:
+                flag_token = _string_or_none(getattr(rulespec, "template_flag_token", None))
+                if flag_token:
+                    sources["flag_token"] = "rulespec.template_flag_token"
+                else:
+                    flag_token = _string_or_none((proposal or {}).get("flag_token"))
+                    if flag_token:
+                        sources["flag_token"] = "researcher_report.verification_spec.flag_token"
 
     output_mode = _contract_output_mode(rule)
     if output_mode:
@@ -160,6 +194,7 @@ def build_generator_contract(
         "slug": bundle_slug,
         "vuln_id": vuln_id,
         "generator_mode": generator_mode,
+        "contract_stage": generator_mode or ("generator" if workspace_dir else "seed"),
         "resolved": {
             "success_signature": success_signature,
             "flag_token": flag_token,
@@ -172,12 +207,21 @@ def build_generator_contract(
         },
         "sources": sources,
     }
+    if proposal:
+        payload["proposed_verification_contract"] = proposal
+    if semantic_contract:
+        payload["semantic_contract"] = semantic_contract
 
     if not has_manifest:
         scenario_type = _string_or_none(template.get("scenario_type"))
         if scenario_type:
             payload["scenario_type"] = scenario_type
             sources.setdefault("scenario_type", "generator_template.scenario_type")
+        else:
+            scenario_type = _string_or_none(getattr(rulespec, "scenario_type", None))
+            if scenario_type:
+                payload["scenario_type"] = scenario_type
+                sources.setdefault("scenario_type", "rulespec.scenario_type")
         template_id = _string_or_none(template.get("template_id"))
         if template_id:
             payload["template_id"] = template_id
@@ -203,6 +247,10 @@ def build_generator_contract(
     payload["base_url"] = base_url
     if poc_cmd:
         payload["poc_cmd"] = poc_cmd
+    if semantic_contract.get("semantic_signature"):
+        payload["semantic_signature"] = semantic_contract["semantic_signature"]
+    if semantic_contract.get("semantic_signature_source"):
+        payload["semantic_signature_source"] = semantic_contract["semantic_signature_source"]
     return payload
 
 
@@ -248,6 +296,50 @@ def _contract_output_mode(rule: Dict[str, Any]) -> Optional[str]:
         if normalized:
             return normalized.lower()
     return None
+
+
+def _normalize_proposed_verification_contract(report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(report, dict):
+        return None
+    raw = extract_verification_spec(report)
+    if not isinstance(raw, dict):
+        return None
+
+    markers = raw.get("success_text_markers")
+    success_signature = ""
+    if isinstance(markers, str) and markers.strip():
+        success_signature = markers.strip()
+    elif isinstance(markers, list):
+        for item in markers:
+            if isinstance(item, str) and item.strip():
+                success_signature = item.strip()
+                break
+
+    flag_token = _string_or_none(raw.get("flag_token"))
+    assertion_program = raw.get("assertion_program")
+    normalized: Dict[str, Any] = {
+        "source": "researcher_report.verification_spec",
+        "override_static": bool(raw.get("override_static")),
+    }
+    if success_signature:
+        normalized["success_signature"] = success_signature
+    if flag_token:
+        normalized["flag_token"] = flag_token
+    if isinstance(assertion_program, list) and assertion_program:
+        normalized["assertion_program"] = assertion_program
+    return normalized if len(normalized) > 2 else None
+
+
+def _resolve_semantic_contract(report: Dict[str, Any], guard_spec: Dict[str, Any]) -> Dict[str, Any]:
+    contract = extract_semantic_contract(report)
+    guard_signature = guard_spec.get("semantic_signature") if isinstance(guard_spec, dict) else None
+    if isinstance(guard_signature, dict) and guard_signature and "semantic_signature" not in contract:
+        contract["semantic_signature"] = guard_signature
+        contract.setdefault("semantic_signature_source", ["guard_spec"])
+    guard_confidence = guard_spec.get("confidence") if isinstance(guard_spec, dict) else None
+    if isinstance(guard_confidence, str) and guard_confidence.strip():
+        contract["guard_confidence"] = guard_confidence.strip().lower()
+    return contract
 
 
 def _manifest_role_path(manifest: Dict[str, Any], role: str) -> Optional[str]:
