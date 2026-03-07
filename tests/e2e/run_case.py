@@ -150,29 +150,11 @@ def _run_command(command: Sequence[str], env: Dict[str, str]) -> None:
 
 
 def _execute_pipeline(sid: str, mode: str, env: Dict[str, str]) -> None:
-    steps = [
-        [sys.executable, "agents/researcher/main.py", "--sid", sid, "--mode", mode],
-        [sys.executable, "agents/generator/main.py", "--sid", sid, "--mode", mode],
-        [sys.executable, "executor/runtime/docker_local.py", "--sid", sid, "--build"],
-        [sys.executable, "executor/runtime/docker_local.py", "--sid", sid, "--run"],
-        [sys.executable, "evals/poc_verifier/main.py", "--sid", sid],
-        [sys.executable, "agents/reviewer/main.py", "--sid", sid, "--mode", mode],
-        [sys.executable, "evals/diversity_metrics.py", "--sid", sid],
-    ]
-    for step in steps:
-        _run_command(step, env)
-    plan_path = REPO_ROOT / "metadata" / sid / "plan.json"
-    allow_intentional = False
-    if plan_path.exists():
-        try:
-            plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
-            allow_intentional = bool((plan_data.get("policy") or {}).get("allow_intentional_vuln"))
-        except json.JSONDecodeError:  # pragma: no cover - plan 파일은 정상이어야 함
-            allow_intentional = False
-    pack_cmd = [sys.executable, "orchestrator/pack.py", "--sid", sid]
-    if allow_intentional:
-        pack_cmd.append("--allow-intentional-vuln")
-    _run_command(pack_cmd, env)
+    # E2E cases should exercise the same loop-aware runner used by CI/ops.
+    _run_command(
+        [sys.executable, "orchestrator/run_pipeline.py", "--sid", sid, "--mode", mode],
+        env,
+    )
 
 
 def _load_manifest_summary(sid: str) -> Dict[str, Any]:

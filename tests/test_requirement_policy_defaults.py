@@ -91,3 +91,56 @@ def test_researcher_search_filters_are_normalized() -> None:
     assert filters["search_lang"] == "en"
     assert "unknown_key" not in filters
     assert any("unknown keys" in warning for warning in normalized.warnings)
+
+
+def test_vuln_name_only_requirement_is_mapped_and_defaulted() -> None:
+    normalized = normalize_requirement({"vuln_name": "SQL injection"})
+    requirement = normalized.requirement
+    runtime = requirement.get("runtime") or {}
+    dep_guard = requirement.get("dep_guard") or {}
+
+    assert requirement["vuln_id"] == "CWE-89"
+    assert requirement["requirement_id"].startswith("AUTO-CWE-89")
+    assert requirement["language"] == "python"
+    assert requirement["framework"] == "flask"
+    assert requirement["pattern_id"] == "sqli-string-concat"
+    assert requirement["generator_mode"] == "synthesis"
+    assert runtime["base_image"] == "python:3.11-slim"
+    assert runtime["package_manager"] == "pip"
+    assert runtime["db"] == "sqlite"
+    assert runtime["allow_external_db"] is False
+    assert dep_guard["llm_assist"] is True
+    assert dep_guard["auto_patch"] is True
+    assert requirement["user_deps"] == ["requests==2.31.0"]
+    defaults_meta = requirement.get("_normalization_defaults") or {}
+    assert defaults_meta.get("profile") == "SQL Injection"
+    assert "pattern_id" in (defaults_meta.get("applied_fields") or [])
+
+
+def test_vuln_name_ssrf_maps_to_cwe918_defaults() -> None:
+    normalized = normalize_requirement({"vuln_name": "SSRF"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "CWE-918"
+    assert requirement["pattern_id"] == "ssrf-url-fetch"
+    assert requirement["vuln_label"] == "Server-Side Request Forgery"
+    assert (requirement.get("policy") or {}).get("guard", {}).get("low_confidence_unknown_policy") == "warn"
+
+
+def test_freeform_vuln_name_gets_synthetic_identifier_and_generic_defaults() -> None:
+    normalized = normalize_requirement({"vuln_name": "Template Injection"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert requirement["pattern_id"] == "template-injection"
+    assert requirement["vuln_label"] == "Template Injection"
+    assert requirement["language"] == "python"
+    assert requirement["framework"] == "flask"
+
+
+def test_vuln_name_heuristics_match_non_exact_family_phrase() -> None:
+    normalized = normalize_requirement({"vuln_name": "Reflected XSS vulnerability"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "CWE-79"
+    assert requirement["pattern_id"] == "xss-reflected"

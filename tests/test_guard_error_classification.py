@@ -45,3 +45,17 @@ def test_failure_fingerprint_varies_by_error_code_strategy() -> None:
         vuln_id="CWE-89",
     )
     assert semantic_fp != schema_fp
+
+
+def test_missing_dep_declaration_is_classified_as_dependency_failure() -> None:
+    notes = [
+        "guard assertion failed: missing dep declaration: flask",
+    ]
+
+    code = SynthesisEngine._guard_error_code(notes, unsupported_ops=[], schema_errors=[])
+    subcode = SynthesisEngine._guard_error_subcode(notes, code)
+    missing = SynthesisEngine._extract_missing_dependency_names(notes)
+
+    assert code == "guard_dependency_missing"
+    assert subcode == "dependency_decl_missing"
+    assert missing == ["flask"]

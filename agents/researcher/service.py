@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from common.contracts import build_generator_contract, write_generator_contract
+from common.deps.stdlib import load_stdlib_spec
 from common.guardrails import (
     GENERATOR_OP_ALIASES,
     SUPPORTED_GENERATOR_ASSERTION_OPS,
@@ -36,6 +38,12 @@ from common.run_matrix import (
     metadata_dir_for_bundle,
 )
 from common.variability import VariationManager
+from common.vuln_semantics import (
+    baseline_semantic_signature,
+    family_canonical_tags,
+    normalize_vuln_id,
+    semantic_term_aliases,
+)
 from orchestrator.plugins import ReactLoop, ReactSpan
 from rag.static_loader import load_static_context
 from rag.tools import SearchExecution, SearchResult, SearchRequest, WebSearchTool
@@ -458,6 +466,12 @@ class ResearcherService:
                 guard_raw = maybe_guard
         return default_guard_policy_snapshot(guard_raw)
 
+    def _low_confidence_unknown_policy(self) -> str:
+        policy = str(self._guard_policy().get("low_confidence_unknown_policy") or "warn").strip().lower()
+        if policy in {"warn", "guard_fallback", "fail_closed"}:
+            return policy
+        return "warn"
+
     def _guard_missing_is_blocking(self, bundle: VulnBundle | None) -> bool:
         failure_policy = str(self._guard_policy().get("failure_policy") or "closed_unknown").strip().lower()
         if failure_policy == "closed_all":
@@ -542,6 +556,12 @@ class ResearcherService:
 
         normalized["generator_assertions"] = norm_generators
         normalized["verifier_assertions"] = norm_verifiers
+        self._align_verifier_assertions_with_verification_spec(
+            normalized,
+            report=report,
+            bundle=bundle,
+            warnings=warnings,
+        )
         existing_deferred = normalized.get("verifier_assertions_deferred")
         if isinstance(existing_deferred, list):
             for item in existing_deferred:
@@ -614,6 +634,13 @@ class ResearcherService:
             param_mismatches = self._normalize_assertion_params(assertion, mapped_op)
             schema_mismatches.extend(param_mismatches)
             warnings.extend(self._normalize_assertion_metadata(assertion, op=mapped_op, scope=scope))
+            if self._filter_stdlib_dependency_assertion(
+                assertion,
+                scope=scope,
+                dropped_ops=dropped_ops,
+                warnings=warnings,
+            ):
+                continue
 
             if scope == "generator":
                 supported = mapped_op in SUPPORTED_GENERATOR_ASSERTION_OPS
@@ -633,8 +660,154 @@ class ResearcherService:
                 warnings.append(f"unsupported guard assertion op in {scope}: {mapped_op}")
                 return None
 
-            dropped_ops.append({"op": mapped_op, "scope": scope, "reason": "unsupported_op"})
+                dropped_ops.append({"op": mapped_op, "scope": scope, "reason": "unsupported_op"})
         return normalized
+
+    def _filter_stdlib_dependency_assertion(
+        self,
+        assertion: Dict[str, Any],
+        *,
+        scope: str,
+        dropped_ops: List[Dict[str, Any]],
+        warnings: List[str],
+    ) -> bool:
+        if scope != "generator" or not isinstance(assertion, dict):
+            return False
+        op = str(assertion.get("op") or "").strip().lower()
+        if op not in {"dep_declared", "any_dep_declared"}:
+            return False
+
+        blocked = self._stdlib_dependency_names()
+        if not blocked:
+            return False
+
+        if op == "dep_declared":
+            dep = self._normalize_dependency_name(assertion.get("dep"))
+            if dep and dep in blocked:
+                dropped_ops.append({"op": op, "scope": scope, "reason": "stdlib_dependency", "dep": dep})
+                warnings.append(
+                    f"dropped generator dependency assertion for stdlib/runtime-provided module '{dep}'"
+                )
+                return True
+            return False
+
+        raw_deps = assertion.get("deps")
+        deps = raw_deps if isinstance(raw_deps, list) else [raw_deps]
+        kept: List[str] = []
+        removed: List[str] = []
+        for item in deps:
+            token = str(item).strip() if isinstance(item, str) else ""
+            if not token:
+                continue
+            normalized = self._normalize_dependency_name(token)
+            if normalized in blocked:
+                removed.append(token)
+                continue
+            kept.append(token)
+
+        if removed:
+            warnings.append(
+                "removed stdlib/runtime-provided dependency candidates from guard assertion: "
+                + ", ".join(removed)
+            )
+        if not kept:
+            dropped_ops.append({"op": op, "scope": scope, "reason": "stdlib_dependency", "deps": removed})
+            return True
+        assertion["deps"] = kept
+        return False
+
+    def _stdlib_dependency_names(self) -> set[str]:
+        requirement = self.requirement if isinstance(self.requirement, dict) else {}
+        language = str(requirement.get("language") or "python").strip().lower() or "python"
+        runtime = requirement.get("runtime") or {}
+        version = None
+        if isinstance(runtime, dict):
+            version = runtime.get("language_version") or runtime.get("python_version")
+        spec = load_stdlib_spec(language=language, version=str(version or "3.11"))
+        blocked: set[str] = set()
+        for token in spec.stdlib_modules | spec.auto_patch_denylist:
+            normalized = self._normalize_dependency_name(token)
+            if normalized:
+                blocked.add(normalized)
+        for module_name, package_name in spec.aliases.items():
+            module_norm = self._normalize_dependency_name(module_name)
+            package_norm = self._normalize_dependency_name(package_name)
+            if module_norm and module_norm in blocked and package_norm:
+                blocked.add(package_norm)
+                if package_norm.endswith("-binary"):
+                    blocked.add(package_norm[: -len("-binary")])
+        return blocked
+
+    @staticmethod
+    def _normalize_dependency_name(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        cleaned = value.strip().lower().replace("_", "-")
+        if not cleaned:
+            return ""
+        return re.split(r"[<>=!~\[\]\s]+", cleaned, maxsplit=1)[0]
+
+    def _align_verifier_assertions_with_verification_spec(
+        self,
+        payload: Dict[str, Any],
+        *,
+        report: Dict[str, Any],
+        bundle: VulnBundle | None,
+        warnings: List[str],
+    ) -> None:
+        if not isinstance(payload, dict):
+            return
+        assertions = payload.get("verifier_assertions")
+        if not isinstance(assertions, list):
+            return
+        vuln_id = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "")
+        spec = extract_verification_spec(report, vuln_id=vuln_id)
+        if not isinstance(spec, dict):
+            return
+        raw_markers = spec.get("success_text_markers") or []
+        markers: List[str] = []
+        if isinstance(raw_markers, list):
+            markers.extend(str(item).strip() for item in raw_markers if isinstance(item, str) and str(item).strip())
+        elif isinstance(raw_markers, str) and raw_markers.strip():
+            markers.append(raw_markers.strip())
+        structured_success = self._derive_structured_success_contract(markers)
+        canonical_marker = str(structured_success.get("canonical_marker") or "").strip()
+        if not canonical_marker:
+            return
+
+        variants = {marker for marker in markers if marker}
+        variants.add(canonical_marker)
+        changed = False
+        has_canonical = False
+        for assertion in assertions:
+            if not isinstance(assertion, dict):
+                continue
+            if str(assertion.get("op") or "").strip().lower() != "contains":
+                continue
+            token = str(assertion.get("string") or "").strip()
+            if token == canonical_marker:
+                has_canonical = True
+                continue
+            if token and token in variants:
+                assertion["string"] = canonical_marker
+                has_canonical = True
+                changed = True
+        if not has_canonical:
+            assertions.insert(
+                0,
+                {
+                    "op": "contains",
+                    "string": canonical_marker,
+                    "severity": "block",
+                    "intent": "semantic_anchor",
+                    "stability": "medium",
+                    "evidence_ids": [],
+                },
+            )
+            changed = True
+        if changed:
+            payload["verifier_assertions"] = assertions
+            warnings.append("aligned verifier success marker with canonical structured success contract")
 
     @staticmethod
     def _normalize_op(op: str, *, scope: str) -> str:
@@ -661,8 +834,24 @@ class ResearcherService:
 
         if op == "dep_declared":
             _map_key("dep", ["name", "package"])
+            if assertion.get("dep") is None:
+                for key in ("deps", "names", "packages"):
+                    value = assertion.get(key)
+                    values = value if isinstance(value, list) else [value]
+                    normalized = [
+                        str(item).strip()
+                        for item in values
+                        if isinstance(item, str) and str(item).strip()
+                    ]
+                    if normalized:
+                        assertion["dep"] = normalized[0]
+                        mismatches.append(f"{op}.dep missing, found {key}[0]")
+                        break
             assertion.pop("name", None)
             assertion.pop("package", None)
+            assertion.pop("deps", None)
+            assertion.pop("names", None)
+            assertion.pop("packages", None)
         elif op == "any_dep_declared":
             _map_key("deps", ["names", "packages"])
             value = assertion.get("deps")
@@ -946,7 +1135,7 @@ class ResearcherService:
             payload["verifier_assertions"] = []
         if not isinstance(payload.get("autofix_hints"), list):
             payload["autofix_hints"] = []
-        payload.setdefault("confidence", "medium")
+        payload.setdefault("confidence", self._report_confidence(report))
         unsupported_policy = self._unsupported_op_policy(policy_snapshot)
         normalized_payload = self._normalize_guard_payload_ops(
             payload,
@@ -1030,7 +1219,7 @@ class ResearcherService:
             generator_assertions=generator_assertions,
             verifier_assertions=verifier_assertions,
             autofix_hints=autofix_hints,
-            confidence="medium",
+            confidence=self._report_confidence(report),
             source="llm",
         )
         return spec.to_dict()
@@ -1074,6 +1263,15 @@ class ResearcherService:
         rank_map = {"high": 3, "medium": 2, "low": 1}
         assertions = candidate.get("generator_assertions") or []
         return rank_map.get(confidence, 0), len(assertions) if isinstance(assertions, list) else 0
+
+    @staticmethod
+    def _report_confidence(report: Dict[str, Any]) -> str:
+        relevance = report.get("evidence_relevance") if isinstance(report, dict) else {}
+        if isinstance(relevance, dict):
+            confidence = str(relevance.get("confidence") or "").strip().lower()
+            if confidence in {"high", "medium", "low"}:
+                return confidence
+        return "medium"
 
     @staticmethod
     def _intersect_object_lists(candidates: List[Dict[str, Any]], key: str) -> List[Dict[str, Any]]:
@@ -1225,6 +1423,7 @@ class ResearcherService:
         self._last_evidence_relevance = relevance_report
         relevance_score = float(relevance_report.get("score") or 0.0)
         threshold = float(relevance_report.get("threshold") or self._relevance_threshold(bundle))
+        confidence = str(relevance_report.get("confidence") or "medium").strip().lower()
         if relevance_score < threshold:
             vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
             if unknown and require_evidence:
@@ -1243,6 +1442,33 @@ class ResearcherService:
                         "with static/minimal assertions."
                     ),
                 )
+        if unknown and require_evidence and confidence == "low":
+            vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
+            policy = self._low_confidence_unknown_policy()
+            if policy == "fail_closed":
+                return (
+                    "insufficient",
+                    (
+                        f"Insufficient researcher evidence for {vuln}: low-confidence unknown evidence "
+                        f"(score={relevance_score:.2f}, threshold={threshold:.2f}). "
+                        "policy.guard.low_confidence_unknown_policy=fail_closed."
+                    ),
+                )
+            if policy == "guard_fallback":
+                return (
+                    "sufficient",
+                    (
+                        f"Low-confidence unknown evidence for {vuln} (score={relevance_score:.2f}, threshold={threshold:.2f}); "
+                        "using guard fallback mode due to policy.guard.low_confidence_unknown_policy=guard_fallback."
+                    ),
+                )
+            return (
+                "sufficient",
+                (
+                    f"Low-confidence unknown evidence for {vuln} (score={relevance_score:.2f}, threshold={threshold:.2f}); "
+                    "reviewer should surface this as a confidence warning."
+                ),
+            )
         return "sufficient", ""
 
     def _score_evidence_relevance(
@@ -1271,12 +1497,14 @@ class ResearcherService:
         }
         per_hit: List[Dict[str, Any]] = []
         remote_hits = 0
+        negative_hits = 0
         for hit in search_hits:
             text = self._search_hit_text(hit)
             matched = {
                 "family_terms": self._matched_terms(text, profile.get("family_terms") or []),
                 "stack_terms": self._matched_terms(text, profile.get("stack_terms") or []),
                 "exploit_terms": self._matched_terms(text, profile.get("exploit_terms") or []),
+                "negative_terms": self._matched_terms(text, profile.get("negative_terms") or []),
                 "input_vector": self._matched_terms(
                     text,
                     profile.get("semantic_terms", {}).get("input_vector") or [],
@@ -1307,12 +1535,25 @@ class ResearcherService:
             if str(hit.source or "").strip().lower() == "remote":
                 remote_hits += 1
                 score += 0.05
+            negative_penalty = 0.0
+            semantic_match = any(
+                matched[bucket]
+                for bucket in ("family_terms", "exploit_terms", "input_vector", "sink", "exploit_precondition")
+            )
+            if matched["negative_terms"] and not semantic_match:
+                negative_penalty += min(0.20, 0.05 * len(matched["negative_terms"]))
+            if matched["stack_terms"] and not semantic_match:
+                negative_penalty += 0.05
+            if negative_penalty > 0:
+                negative_hits += 1
+            score = max(0.0, score - negative_penalty)
             per_hit.append(
                 {
                     "title": str(hit.title or ""),
                     "url": str(hit.url or ""),
                     "source": str(hit.source or ""),
                     "score": round(min(1.0, score), 3),
+                    "negative_penalty": round(negative_penalty, 3),
                     "matched": matched,
                 }
             )
@@ -1341,13 +1582,20 @@ class ResearcherService:
             else 0.0
         )
         remote_bonus = 0.05 if remote_hits else 0.0
-        overall = min(1.0, (0.55 * strongest) + (0.20 * support) + (0.20 * coverage) + remote_bonus)
+        negative_ratio = (negative_hits / len(per_hit)) if per_hit else 0.0
+        overall = min(
+            1.0,
+            max(0.0, (0.55 * strongest) + (0.20 * support) + (0.20 * coverage) + remote_bonus - (0.10 * negative_ratio)),
+        )
         return {
             "score": round(overall, 3),
             "threshold": self._relevance_threshold(bundle),
             "profile": profile,
             "coverage": round(coverage, 3),
             "remote_hit_count": remote_hits,
+            "negative_hit_count": negative_hits,
+            "negative_hit_ratio": round(negative_ratio, 3),
+            "confidence": self._relevance_confidence(overall, coverage, negative_ratio),
             "hits": per_hit,
         }
 
@@ -1371,6 +1619,24 @@ class ResearcherService:
         elif vuln_id in {"cwe-352", "cwe_352"}:
             family_terms.extend(["csrf", "cross-site request forgery", "anti-csrf", "csrf token"])
             exploit_terms.extend(["same-site", "cross-site", "forgery"])
+        elif vuln_id in {"cwe-22", "cwe_22"}:
+            family_terms.extend(["path traversal", "directory traversal", "../", "/etc/passwd"])
+            exploit_terms.extend(["../", "..\\", "/etc/passwd", "send_file", "open("])
+        elif vuln_id in {"cwe-78", "cwe_78"}:
+            family_terms.extend(["command injection", "shell injection", "os command"])
+            exploit_terms.extend(["subprocess", "os.system", "shell=true", "command injection"])
+        elif vuln_id in {"cwe-94", "cwe_94"}:
+            family_terms.extend(["code injection", "eval injection", "exec injection"])
+            exploit_terms.extend(["eval(", "exec(", "code injection"])
+        elif vuln_id in {"cwe-79", "cwe_79"}:
+            family_terms.extend(["cross-site scripting", "xss", "<script>"])
+            exploit_terms.extend(["reflected xss", "<script>", "render_template_string"])
+        elif vuln_id in {"cwe-918", "cwe_918"}:
+            family_terms.extend(["ssrf", "server-side request forgery", "url fetch"])
+            exploit_terms.extend(["requests.get", "169.254.169.254", "user-controlled url"])
+        elif vuln_id in {"cwe-502", "cwe_502"}:
+            family_terms.extend(["insecure deserialization", "deserialization", "pickle", "yaml.load"])
+            exploit_terms.extend(["pickle.loads", "yaml.load", "untrusted deserialization"])
         else:
             pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
             if "sqli" in pattern_id or "sql" in pattern_id:
@@ -1379,6 +1645,34 @@ class ResearcherService:
             if "csrf" in pattern_id:
                 family_terms.extend(["csrf", "cross-site request forgery"])
                 exploit_terms.extend(["same-site", "csrf token"])
+            if "path-traversal" in pattern_id:
+                family_terms.extend(["path traversal", "directory traversal", "../"])
+                exploit_terms.extend(["../", "/etc/passwd", "send_file", "open("])
+            if "command-injection" in pattern_id:
+                family_terms.extend(["command injection", "shell injection"])
+                exploit_terms.extend(["subprocess", "os.system", "shell=true"])
+            if "code-injection" in pattern_id:
+                family_terms.extend(["code injection", "eval injection"])
+                exploit_terms.extend(["eval(", "exec("])
+            if "ssrf" in pattern_id:
+                family_terms.extend(["ssrf", "server-side request forgery"])
+                exploit_terms.extend(["requests.get", "169.254.169.254", "user-controlled url"])
+            if "xss" in pattern_id:
+                family_terms.extend(["cross-site scripting", "xss", "<script>"])
+                exploit_terms.extend(["render_template_string", "<script>", "unescaped reflection"])
+            if "deserialization" in pattern_id:
+                family_terms.extend(["insecure deserialization", "deserialization"])
+                exploit_terms.extend(["pickle.loads", "yaml.load", "jsonpickle.decode"])
+            if "template-injection" in pattern_id or "ssti" in pattern_id:
+                family_terms.extend(["template injection", "server-side template injection", "ssti"])
+                exploit_terms.extend(["render_template_string", "jinja2", "{{7*7}}", "template rendering"])
+
+        raw_name = self._raw_vuln_label()
+        if raw_name:
+            family_terms.append(raw_name)
+            normalized_label = re.sub(r"[^a-z0-9]+", " ", raw_name.lower()).strip()
+            if normalized_label and normalized_label not in family_terms:
+                family_terms.append(normalized_label)
 
         stack_terms: List[str] = []
         runtime = self.requirement.get("runtime") or {}
@@ -1392,8 +1686,81 @@ class ResearcherService:
             "family_terms": self._dedupe_strings(family_terms),
             "stack_terms": self._dedupe_strings(stack_terms),
             "exploit_terms": self._dedupe_strings(exploit_terms),
+            "negative_terms": self._negative_relevance_terms(vuln_id=vuln_id, pattern_id=str(self.requirement.get("pattern_id") or "")),
             "semantic_terms": semantic_signature,
         }
+
+    @staticmethod
+    def _negative_relevance_terms(*, vuln_id: str, pattern_id: str) -> List[str]:
+        normalized_vuln = str(vuln_id or "").strip().lower()
+        normalized_pattern = str(pattern_id or "").strip().lower()
+        if normalized_vuln in {"cwe-89", "cwe_89"} or "sql" in normalized_pattern:
+            return [
+                "csrf",
+                "cross-site request forgery",
+                "ssrf",
+                "server-side request forgery",
+                "remote code execution",
+                "rce",
+                "path traversal",
+                "directory traversal",
+                "yaml deserialization",
+                "pickle deserialization",
+                "command injection",
+            ]
+        if normalized_vuln in {"cwe-352", "cwe_352"} or "csrf" in normalized_pattern:
+            return [
+                "sql injection",
+                "sqli",
+                "path traversal",
+                "remote code execution",
+                "ssrf",
+                "command injection",
+            ]
+        if normalized_vuln in {"cwe-22", "cwe_22"} or "path-traversal" in normalized_pattern:
+            return [
+                "sql injection",
+                "sqli",
+                "csrf",
+                "cross-site request forgery",
+                "ssrf",
+                "server-side request forgery",
+                "remote code execution",
+                "yaml deserialization",
+                "pickle deserialization",
+            ]
+        if normalized_vuln in {"cwe-918", "cwe_918"} or "ssrf" in normalized_pattern:
+            return [
+                "sql injection",
+                "sqli",
+                "csrf",
+                "path traversal",
+                "directory traversal",
+                "command injection",
+                "pickle deserialization",
+            ]
+        if "template-injection" in normalized_pattern or "ssti" in normalized_pattern:
+            return [
+                "sql injection",
+                "sqli",
+                "csrf",
+                "cross-site request forgery",
+                "ssrf",
+                "server-side request forgery",
+                "path traversal",
+                "directory traversal",
+                "yaml deserialization",
+                "pickle deserialization",
+            ]
+        return []
+
+    @staticmethod
+    def _relevance_confidence(score: float, coverage: float, negative_ratio: float) -> str:
+        if score >= 0.70 and coverage >= 0.60 and negative_ratio <= 0.20:
+            return "high"
+        if score >= 0.45 and negative_ratio <= 0.50:
+            return "medium"
+        return "low"
 
     @staticmethod
     def _search_hit_text(hit: SearchResult) -> str:
@@ -1421,6 +1788,16 @@ class ResearcherService:
             if token and token not in output:
                 output.append(token)
         return output
+
+    def _raw_vuln_label(self) -> str:
+        for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name", "vuln_label"):
+            value = self.requirement.get(key)
+            if not isinstance(value, str):
+                continue
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+        return ""
 
     def _relevance_threshold(self, bundle: VulnBundle | None) -> float:
         return 0.30 if self._bundle_is_unknown(bundle) else 0.35
@@ -1450,6 +1827,28 @@ class ResearcherService:
         )
         inferred_signature = self._infer_semantic_signature(report, bundle)
         default_signature = normalize_semantic_signature(self._default_semantic_signature(bundle))
+        normalized_vuln = self._normalized_vuln_id(bundle)
+        pattern_signature = normalize_semantic_signature(
+            self._pattern_semantic_signature(
+                str(self.requirement.get("pattern_id") or ""),
+                self._raw_vuln_label(),
+            )
+        )
+        baseline_signature = normalize_semantic_signature(baseline_semantic_signature(normalized_vuln))
+        if self._signature_has_terms(baseline_signature):
+            merged: Dict[str, List[str]] = {
+                "input_vector": list(baseline_signature.get("input_vector") or []),
+                "sink": list(baseline_signature.get("sink") or []),
+                "exploit_precondition": list(baseline_signature.get("exploit_precondition") or []),
+            }
+            sources: List[str] = ["baseline"]
+            if self._merge_known_family_signature(merged, report_signature, normalized_vuln):
+                sources.append("report")
+            if self._merge_known_family_signature(merged, inferred_signature, normalized_vuln):
+                sources.append("heuristic")
+            return merged, sources
+        if self._signature_has_terms(pattern_signature):
+            return pattern_signature, ["pattern"]
         sources: List[str] = []
         if self._signature_has_terms(report_signature):
             sources.append("report")
@@ -1491,6 +1890,41 @@ class ResearcherService:
                     merged.append(token)
         return merged
 
+    def _merge_known_family_signature(
+        self,
+        merged: Dict[str, List[str]],
+        candidate: Dict[str, List[str]],
+        vuln_id: str,
+    ) -> bool:
+        changed = False
+        allowed_tags = family_canonical_tags(vuln_id)
+        for bucket in ("input_vector", "sink", "exploit_precondition"):
+            baseline_bucket = merged.get(bucket) or []
+            values = candidate.get(bucket) if isinstance(candidate, dict) else []
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                if not isinstance(value, str):
+                    continue
+                token = value.strip()
+                if not token or token in baseline_bucket:
+                    continue
+                aliases = semantic_term_aliases(token)
+                if aliases & allowed_tags:
+                    baseline_bucket.append(token)
+                    changed = True
+                    continue
+                lowered = token.lower()
+                if any(lowered in item.lower() or item.lower() in lowered for item in baseline_bucket):
+                    baseline_bucket.append(token)
+                    changed = True
+            merged[bucket] = baseline_bucket
+        return changed
+
+    def _normalized_vuln_id(self, bundle: VulnBundle | None) -> str:
+        vuln_id = bundle.vuln_id if bundle else self.requirement.get("vuln_id")
+        return normalize_vuln_id(str(vuln_id or ""))
+
     def _infer_semantic_signature(
         self,
         report: Dict[str, Any],
@@ -1505,6 +1939,11 @@ class ResearcherService:
         lowered = corpus.lower()
         pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
         vuln_id = str(bundle.vuln_id if bundle else self.requirement.get("vuln_id") or "").strip().lower()
+        raw_vuln_label = self._raw_vuln_label().strip().lower()
+        pattern_signature = normalize_semantic_signature(
+            self._pattern_semantic_signature(pattern_id, raw_vuln_label)
+        )
+        explicit_pattern_family = self._signature_has_terms(pattern_signature)
 
         def add(bucket: str, *values: str) -> None:
             bucket_values = result[bucket]
@@ -1515,6 +1954,9 @@ class ResearcherService:
 
         def contains_any(tokens: List[str]) -> bool:
             return any(token in lowered for token in tokens)
+
+        for bucket in ("input_vector", "sink", "exploit_precondition"):
+            add(bucket, *(pattern_signature.get(bucket) or []))
 
         is_sqli = (
             vuln_id in {"cwe-89", "cwe_89"}
@@ -1559,15 +2001,75 @@ class ResearcherService:
             add("sink", "state-changing endpoint", "POST")
             add("exploit_precondition", "missing CSRF token validation", "csrf token")
 
+        is_path_traversal = (
+            vuln_id in {"cwe-22", "cwe_22"}
+            or "path-traversal" in pattern_id
+            or any(token in raw_vuln_label for token in ["path traversal", "directory traversal"])
+        )
+        if is_path_traversal:
+            add("input_vector", "request.args", "path parameter", "filename")
+            add("sink", "open(", "send_file", "send_from_directory")
+            add("exploit_precondition", "../", "os.path.join", "path traversal")
+
+        is_ssrf = (
+            vuln_id in {"cwe-918", "cwe_918"}
+            or "ssrf" in pattern_id
+            or any(token in raw_vuln_label for token in ["ssrf", "server-side request forgery"])
+        )
+        if is_ssrf:
+            add("input_vector", "request.args", "url parameter", "user-controlled url")
+            add("sink", "requests.get", "urllib.request", "http client request")
+            add("exploit_precondition", "server-side request forgery", "169.254.169.254")
+
+        is_command_injection = (
+            vuln_id in {"cwe-78", "cwe_78"}
+            or "command-injection" in pattern_id
+            or "command injection" in raw_vuln_label
+        )
+        if is_command_injection:
+            add("input_vector", "request.args", "command parameter")
+            add("sink", "subprocess", "os.system", "shell=True")
+            add("exploit_precondition", "command injection", "user input in command")
+
+        is_code_injection = (
+            vuln_id in {"cwe-94", "cwe_94"}
+            or "code-injection" in pattern_id
+            or "code injection" in raw_vuln_label
+        )
+        if is_code_injection:
+            add("input_vector", "request.args", "code parameter")
+            add("sink", "eval(", "exec(")
+            add("exploit_precondition", "code injection", "user input reaches eval")
+
+        is_xss = (
+            vuln_id in {"cwe-79", "cwe_79"}
+            or "xss" in pattern_id
+            or any(token in raw_vuln_label for token in ["xss", "cross-site scripting"])
+        )
+        if is_xss:
+            add("input_vector", "request.args", "query parameter", "user input")
+            add("sink", "render_template_string", "template response", "innerHTML")
+            add("exploit_precondition", "<script>", "unescaped reflection", "cross-site scripting")
+
+        is_deserialization = (
+            vuln_id in {"cwe-502", "cwe_502"}
+            or "deserialization" in pattern_id
+            or "deserialization" in raw_vuln_label
+        )
+        if is_deserialization:
+            add("input_vector", "request.data", "request.get_data", "serialized payload")
+            add("sink", "pickle.loads", "yaml.load", "jsonpickle.decode")
+            add("exploit_precondition", "untrusted deserialization", "attacker-controlled serialized input")
+
         if contains_any(["request.args", "query parameter", "get parameter", "id query param"]):
             add("input_vector", "request.args", "query parameter")
         if contains_any(["request.form", "form parameter"]):
             add("input_vector", "request.form", "form parameter")
         if contains_any(["request.json", "json body", "request body", "body parameter"]):
             add("input_vector", "request.json", "body parameter")
-        if contains_any(["cursor.execute", "execute(", "executescript(", "sql query", "sqlite3"]):
+        if (not explicit_pattern_family) and contains_any(["cursor.execute", "execute(", "executescript(", "sql query", "sqlite3"]):
             add("sink", "cursor.execute", "execute(")
-        if contains_any(["string concatenation", "concat", "interpolat", "f-string", ".format(", "or 1=1"]):
+        if (not explicit_pattern_family) and contains_any(["string concatenation", "concat", "interpolat", "f-string", ".format(", "or 1=1"]):
             add("exploit_precondition", "string concatenation", "input concatenated/interpolated into SQL sink")
 
         return normalize_semantic_signature(result)
@@ -1612,10 +2114,16 @@ class ResearcherService:
         return "\n".join(fragments)
 
     def _default_semantic_signature(self, bundle: VulnBundle | None) -> Dict[str, Any]:
-        vuln_id = (bundle.vuln_id if bundle else self.requirement.get("vuln_id")) or "UNKNOWN"
-        normalized = str(vuln_id).strip().lower().replace("_", "-")
-        if not normalized.startswith("cwe-"):
-            normalized = f"cwe-{normalized.split('-')[-1]}" if normalized else "cwe-unknown"
+        normalized = self._normalized_vuln_id(bundle) or "cwe-unknown"
+        baseline = baseline_semantic_signature(normalized)
+        if any(baseline.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
+            return baseline
+        pattern_signature = self._pattern_semantic_signature(
+            str(self.requirement.get("pattern_id") or ""),
+            self._raw_vuln_label(),
+        )
+        if any(pattern_signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
+            return pattern_signature
         if normalized == "cwe-352":
             return {
                 "input_vector": ["cross-site request", "cookie-authenticated session"],
@@ -1627,6 +2135,76 @@ class ResearcherService:
                 "input_vector": ["user-controlled request parameter"],
                 "sink": ["SQL query execution"],
                 "exploit_precondition": ["input concatenated/interpolated into SQL sink"],
+            }
+        if normalized == "cwe-22":
+            return {
+                "input_vector": ["request.args", "path parameter"],
+                "sink": ["open(", "send_file", "send_from_directory"],
+                "exploit_precondition": ["../", "os.path.join", "path traversal"],
+            }
+        if normalized == "cwe-918":
+            return {
+                "input_vector": ["request.args", "url parameter", "user-controlled url"],
+                "sink": ["requests.get", "urllib.request", "http client request"],
+                "exploit_precondition": ["server-side request forgery", "169.254.169.254"],
+            }
+        if normalized == "cwe-78":
+            return {
+                "input_vector": ["request.args", "command parameter"],
+                "sink": ["subprocess", "os.system", "shell=True"],
+                "exploit_precondition": ["command injection", "user input in command"],
+            }
+        if normalized == "cwe-94":
+            return {
+                "input_vector": ["request.args", "code parameter"],
+                "sink": ["eval(", "exec("],
+                "exploit_precondition": ["code injection", "user input reaches eval"],
+            }
+        if normalized == "cwe-79":
+            return {
+                "input_vector": ["request.args", "query parameter", "user input"],
+                "sink": ["render_template_string", "template response"],
+                "exploit_precondition": ["<script>", "unescaped reflection", "cross-site scripting"],
+            }
+        if normalized == "cwe-502":
+            return {
+                "input_vector": ["request.data", "serialized payload"],
+                "sink": ["pickle.loads", "yaml.load", "jsonpickle.decode"],
+                "exploit_precondition": ["untrusted deserialization", "attacker-controlled serialized input"],
+            }
+        return {
+            "input_vector": [],
+            "sink": [],
+            "exploit_precondition": [],
+        }
+
+    @staticmethod
+    def _pattern_semantic_signature(pattern_id: str, raw_vuln_label: str) -> Dict[str, List[str]]:
+        normalized_pattern = str(pattern_id or "").strip().lower()
+        normalized_label = str(raw_vuln_label or "").strip().lower()
+        if (
+            "template-injection" in normalized_pattern
+            or "ssti" in normalized_pattern
+            or any(
+                token in normalized_label
+                for token in ("template injection", "ssti", "server side template injection", "server-side template injection")
+            )
+        ):
+            return {
+                "input_vector": [
+                    "request.args",
+                    "request.form",
+                    "query parameter",
+                    "user-controlled request parameter",
+                ],
+                "sink": [
+                    "render_template_string",
+                    "jinja2 template rendering from string",
+                ],
+                "exploit_precondition": [
+                    "user input is embedded into template source string (concatenation/interpolation)",
+                    "template string is rendered server-side without escaping/sandboxing",
+                ],
             }
         return {
             "input_vector": [],
@@ -1719,13 +2297,47 @@ class ResearcherService:
             return None
         return extract_verification_spec(report, vuln_id=bundle.vuln_id)
 
+    @staticmethod
+    def _derive_structured_success_contract(markers: List[str]) -> Dict[str, Any]:
+        for marker in markers:
+            if not isinstance(marker, str):
+                continue
+            candidate = marker.strip()
+            if not candidate:
+                continue
+            match = re.fullmatch(
+                r'"(?P<key>[^"]+)"\s*:\s*(?P<value>true|false|null|-?\d+(?:\.\d+)?|"(?:[^"\\]|\\.)*")',
+                candidate,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            key = str(match.group("key") or "").strip()
+            raw_value = str(match.group("value") or "").strip()
+            if not key or not raw_value:
+                continue
+            try:
+                if raw_value.lower() in {"true", "false", "null"}:
+                    parsed_value = json.loads(raw_value.lower())
+                else:
+                    parsed_value = json.loads(raw_value)
+            except Exception:
+                continue
+            canonical_marker = json.dumps({key: parsed_value}, ensure_ascii=False, separators=(",", ":"))[1:-1]
+            return {
+                "success_mode": "json",
+                "json_success_key": key,
+                "json_success_value": parsed_value,
+                "canonical_marker": canonical_marker,
+            }
+        return {}
+
     def _rule_from_verification_spec(self, bundle: VulnBundle, spec: Dict[str, Any]) -> Dict[str, Any]:
         """Construct a v2 rule mapping from a compact verification_spec."""
 
         vuln_id = bundle.vuln_id or "UNKNOWN"
         cwe = vuln_id.upper()
 
-        success_mode = str(spec.get("success_mode") or "text")
         raw_markers = spec.get("success_text_markers") or []
         markers: List[str] = []
         if isinstance(raw_markers, list):
@@ -1734,12 +2346,22 @@ class ResearcherService:
                     markers.append(entry)
         elif isinstance(raw_markers, str) and raw_markers:
             markers.append(raw_markers)
+        structured_success = self._derive_structured_success_contract(markers)
+        canonical_marker = str(structured_success.get("canonical_marker") or "").strip()
+        if canonical_marker and canonical_marker not in markers:
+            markers = [canonical_marker, *markers]
+
+        success_mode = str(spec.get("success_mode") or structured_success.get("success_mode") or "text")
 
         flag_token = spec.get("flag_token")
         flag_mode = str(spec.get("flag_mode") or "strict").lower()
 
-        json_success_key = spec.get("json_success_key")
-        json_success_value = spec.get("json_success_value")
+        json_success_key = spec.get("json_success_key") or structured_success.get("json_success_key")
+        json_success_value = (
+            spec.get("json_success_value")
+            if "json_success_value" in spec
+            else structured_success.get("json_success_value")
+        )
         json_flag_key = spec.get("json_flag_key")
 
         assertion_program = spec.get("assertion_program") or []
@@ -1773,7 +2395,7 @@ class ResearcherService:
         json_cfg: Dict[str, Any] = {}
         if json_success_key:
             json_cfg["success_key"] = json_success_key
-            if "json_success_value" in spec:
+            if ("json_success_value" in spec) or ("json_success_value" in structured_success):
                 json_cfg["success_value"] = json_success_value
         if json_flag_key:
             json_cfg["flag_key"] = json_flag_key

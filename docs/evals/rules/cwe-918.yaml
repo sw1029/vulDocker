@@ -1,0 +1,37 @@
+cwe: CWE-918
+version: 2
+scenario_type: web-poc
+
+verification:
+  source: runtime
+  require_flag: true
+  flag_mode: strict
+  exit_code: zero
+
+output:
+  mode: auto
+  format: auto
+  json_success_key: success
+  json_success_value: true
+  json_flag_key: flag
+  json:
+    success_key: success
+    success_value: true
+    flag_key: flag
+
+llm:
+  assist_default: true
+  assertion_budget: 8
+
+success_signature: FLAG{SSRF_OK}
+flag_token: FLAG{SSRF_OK}
+requires_external_db: false
+strict_flag: true
+
+patterns:
+  - type: file_contains
+    path: "{{service_entry}}"
+    contains: "requests.get"
+  - type: poc_contains
+    path: "{{poc_entry}}"
+    contains: "FLAG{SSRF_OK}"

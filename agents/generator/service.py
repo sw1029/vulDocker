@@ -643,14 +643,23 @@ class GeneratorService:
             LOGGER.info("Sanitized guard spec for generation at %s", self.metadata_dir / "guard_spec.json")
         return sanitized
 
+    def _should_generate_template_plan(self, context: GeneratorContext) -> bool:
+        explicit = self.requirement.get("template_plan_enabled")
+        if explicit is not None:
+            if isinstance(explicit, str):
+                return explicit.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(explicit)
+        return bool((context.failure or "").strip())
+
     def _run_template(self, context: GeneratorContext, *, mode_label: str) -> None:
-        prompt_messages = build_generator_prompt(
-            self.requirement,
-            context.rag,
-            failure_context=context.failure,
-        )
-        llm_notes = self.llm.generate(prompt_messages)
-        (self.metadata_dir / "generator_llm_plan.md").write_text(llm_notes, encoding="utf-8")
+        if self._should_generate_template_plan(context):
+            prompt_messages = build_generator_prompt(
+                self.requirement,
+                context.rag,
+                failure_context=context.failure,
+            )
+            llm_notes = self.llm.generate(prompt_messages)
+            (self.metadata_dir / "generator_llm_plan.md").write_text(llm_notes, encoding="utf-8")
         selection, candidates = self._select_template()
         written_files = self._get_registry().materialize(selection, self.workspace)
         self._augment_workspace_if_needed(selection)

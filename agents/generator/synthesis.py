@@ -381,7 +381,7 @@ class SynthesisEngine:
         normalized = dict(DEFAULT_POC_TEMPLATE)
         if isinstance(template, dict):
             for key, value in template.items():
-                if value:
+                if value is not None and value != "" and value != [] and value != {}:
                     normalized[key] = value
         # Prefer RuleSpec.runtime markers when available so that the
         # success/flag contracts are driven by the evaluation policy
@@ -398,11 +398,31 @@ class SynthesisEngine:
         rule_flag = (self._rule or {}).get("flag_token") if hasattr(self, "_rule") else None
         template_flag = normalized.get("flag_token")
         flag_token = runtime_flag or rule_flag or template_flag
+        json_success_key = runtime.get("json_success_key")
+        json_success_has_value = "json_success_value" in runtime
+        json_success_value = runtime.get("json_success_value")
+        json_flag_key = runtime.get("json_flag_key")
         if flag_token:
             normalized["flag_token"] = flag_token
         else:
             normalized.pop("flag_token", None)
-        if flag_token:
+        if isinstance(json_success_key, str) and json_success_key.strip():
+            normalized["json_success_key"] = json_success_key.strip()
+            if json_success_has_value:
+                normalized["json_success_value"] = json_success_value
+        if isinstance(json_flag_key, str) and json_flag_key.strip():
+            normalized["json_flag_key"] = json_flag_key.strip()
+        if normalized.get("json_success_key"):
+            flag_note = (
+                "On exploit success, parse the HTTP response JSON structurally and require "
+                f"{normalized['json_success_key']!r} == {normalized.get('json_success_value')!r} before printing "
+                f"'{success_signature}'."
+            )
+            if flag_token:
+                flag_note += f" Then print '{flag_token}'."
+            elif normalized.get("json_flag_key"):
+                flag_note += f" If a response flag exists, read it from JSON key {normalized['json_flag_key']!r}."
+        elif flag_token:
             flag_note = f"On exploit success, print '{success_signature}' and '{flag_token}'."
         else:
             flag_note = f"On exploit success, print '{success_signature}'."
@@ -468,9 +488,7 @@ class SynthesisEngine:
         )
         if has_poc_file:
             return manifest
-        success_signature = str(template.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
-        flag_token = str(template.get("flag_token") or "").strip()
-        content = self._build_fallback_poc_content(manifest, success_signature, flag_token)
+        content = self._build_fallback_poc_content(manifest, template)
         files.append(
             {
                 "path": "poc.py",
@@ -1374,7 +1392,10 @@ class SynthesisEngine:
         suggested = sorted(llm_high_conf or missing_static)
         if auto_patched:
             suggested = sorted(set(suggested) | auto_patched)
-        missing_all = sorted(missing_static | missing_from_requirements | missing_from_build | llm_high_conf)
+        noted_missing = set(self._extract_missing_dependency_names(guard_notes))
+        missing_all = sorted(missing_static | missing_from_requirements | missing_from_build | llm_high_conf | noted_missing)
+        if noted_missing:
+            suggested = sorted(set(suggested) | noted_missing)
         timestamp = datetime.now(timezone.utc).isoformat()
         reason = "; ".join(sorted(set(guard_notes))) or "guard violations"
         unsupported_ops = self._extract_unsupported_ops(guard_notes)
@@ -1796,6 +1817,24 @@ class SynthesisEngine:
                     matched.add(label)
         return sorted(matched)
 
+    @staticmethod
+    def _extract_missing_dependency_names(notes: List[str]) -> List[str]:
+        detected: set[str] = set()
+        for note in notes:
+            if not isinstance(note, str):
+                continue
+            lowered = note.strip().lower()
+            single = re.search(r"missing dep declaration:\s*([a-z0-9_.+\-]+)", lowered)
+            if single:
+                detected.add(single.group(1).strip())
+            any_match = re.search(r"none of deps declared:\s*([a-z0-9_, .+\-]+)", lowered)
+            if any_match:
+                for token in any_match.group(1).split(","):
+                    cleaned = token.strip()
+                    if cleaned:
+                        detected.add(cleaned)
+        return sorted(detected)
+
     @classmethod
     def _guard_error_code(
         cls,
@@ -1813,7 +1852,12 @@ class SynthesisEngine:
             return "guard_semantic_mismatch"
         if schema_error_list:
             return "guard_assertion_schema_error"
-        if "missing dependency" in joined or "not installed by build commands" in joined:
+        if (
+            "missing dependency" in joined
+            or "missing dep declaration:" in joined
+            or "none of deps declared:" in joined
+            or "not installed by build commands" in joined
+        ):
             return "guard_dependency_missing"
         if "executor constraint violation" in joined:
             return "guard_executor_constraint"
@@ -1857,7 +1901,7 @@ class SynthesisEngine:
                 return "dependency_requirements_missing"
             if "not installed by build commands" in joined:
                 return "dependency_build_install_missing"
-            if "missing dependency" in joined:
+            if "missing dependency" in joined or "missing dep declaration:" in joined or "none of deps declared:" in joined:
                 return "dependency_decl_missing"
             return "dependency_missing"
         if normalized_code == "guard_executor_constraint":
@@ -2334,12 +2378,32 @@ class SynthesisEngine:
 
         return {"method": "get", "path": "/", "param": param_key, "expect_reflection": False}
 
-    def _build_fallback_poc_content(self, manifest: Dict[str, Any], success_signature: str, flag_token: str) -> str:
+    def _build_fallback_poc_content(
+        self,
+        manifest: Dict[str, Any],
+        template: Dict[str, Any] | str,
+        flag_token: str | None = None,
+    ) -> str:
         endpoint = self._infer_fallback_endpoint(manifest)
         method = str(endpoint.get("method") or "get").lower()
         path = str(endpoint.get("path") or "/")
         param = str(endpoint.get("param") or "q")
         expect_reflection = bool(endpoint.get("expect_reflection"))
+        if isinstance(template, dict):
+            poc_template = dict(template)
+        else:
+            poc_template = {
+                "success_signature": str(template or "Exploit SUCCESS"),
+                "flag_token": str(flag_token or ""),
+            }
+        success_signature = (
+            str(poc_template.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
+        )
+        flag_token = str(poc_template.get("flag_token") or "").strip()
+        json_success_key = str(poc_template.get("json_success_key") or "").strip()
+        json_flag_key = str(poc_template.get("json_flag_key") or "").strip()
+        has_json_success_value = "json_success_value" in poc_template
+        json_success_value = poc_template.get("json_success_value")
 
         default_payload = "<script>alert(1)</script>"
         if "login" in path.lower() or "username" in param.lower():
@@ -2349,6 +2413,7 @@ class SynthesisEngine:
 
         lines = [
             "import argparse",
+            "import json",
             "import sys",
             "from urllib.parse import urlencode",
             "from urllib.request import Request, urlopen",
@@ -2361,6 +2426,10 @@ class SynthesisEngine:
             f"EXPECT_REFLECTION = {expect_reflection!r}",
             f"SUCCESS_SIGNATURE = {success_signature!r}",
             f"FLAG_TOKEN = {flag_token!r}",
+            f"JSON_SUCCESS_KEY = {json_success_key!r}",
+            f"JSON_SUCCESS_HAS_VALUE = {has_json_success_value!r}",
+            f"JSON_SUCCESS_VALUE = {json.dumps(json_success_value, ensure_ascii=False)!r}",
+            f"JSON_FLAG_KEY = {json_flag_key!r}",
             f"DEFAULT_PAYLOAD = {default_payload!r}",
             "",
             "def _request(base_url: str, payload: str) -> tuple[int, str]:",
@@ -2379,6 +2448,22 @@ class SynthesisEngine:
             "        body = resp.read().decode('utf-8', errors='ignore')",
             "    return int(status), body",
             "",
+            "def _json_success(body: str) -> bool:",
+            "    if not JSON_SUCCESS_KEY:",
+            "        return False",
+            "    try:",
+            "        payload = json.loads(body)",
+            "    except Exception:",
+            "        return False",
+            "    if JSON_SUCCESS_KEY not in payload:",
+            "        return False",
+            "    expected = json.loads(JSON_SUCCESS_VALUE) if JSON_SUCCESS_HAS_VALUE else None",
+            "    if JSON_SUCCESS_HAS_VALUE and payload.get(JSON_SUCCESS_KEY) != expected:",
+            "        return False",
+            "    if JSON_FLAG_KEY and FLAG_TOKEN and payload.get(JSON_FLAG_KEY) != FLAG_TOKEN:",
+            "        return False",
+            "    return True",
+            "",
             "def exploit(base_url: str, payload: str) -> bool:",
             "    try:",
             "        status, body = _request(base_url, payload)",
@@ -2387,8 +2472,14 @@ class SynthesisEngine:
             "        return False",
             "    if status >= 400:",
             "        return False",
+            "    if _json_success(body):",
+            "        return True",
             "    if EXPECT_REFLECTION and payload not in body:",
             "        return False",
+            "    if SUCCESS_SIGNATURE and SUCCESS_SIGNATURE in body:",
+            "        if FLAG_TOKEN and FLAG_TOKEN not in body:",
+            "            return False",
+            "        return True",
             "    return True",
             "",
             "def main() -> None:",

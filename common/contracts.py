@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -22,6 +23,12 @@ from common.researcher_report import (
     normalize_researcher_report_payload,
 )
 from common.rules import load_rule, load_rulespec
+from common.vuln_semantics import (
+    baseline_semantic_signature,
+    family_canonical_tags,
+    normalize_vuln_id,
+    semantic_term_aliases,
+)
 
 DEFAULT_APP_PORT = 5000
 RESOLVED_CONTRACT_SCHEMA_VERSION = "resolved_contract@1.0"
@@ -89,7 +96,7 @@ def build_generator_contract(
     )
     guard_spec = _load_json(metadata_dir / "guard_spec.json") or {}
     proposal = _normalize_proposed_verification_contract(report)
-    semantic_contract = _resolve_semantic_contract(report, guard_spec)
+    semantic_contract = _resolve_semantic_contract(vuln_id, report, guard_spec)
 
     sources: Dict[str, str] = {}
 
@@ -321,25 +328,153 @@ def _normalize_proposed_verification_contract(report: Dict[str, Any]) -> Optiona
         "source": "researcher_report.verification_spec",
         "override_static": bool(raw.get("override_static")),
     }
+    success_mode = _string_or_none(raw.get("success_mode"))
+    json_success_key = _string_or_none(raw.get("json_success_key"))
+    json_flag_key = _string_or_none(raw.get("json_flag_key"))
     if success_signature:
         normalized["success_signature"] = success_signature
     if flag_token:
         normalized["flag_token"] = flag_token
+    if success_mode:
+        normalized["success_mode"] = success_mode
+    if json_success_key:
+        normalized["json_success_key"] = json_success_key
+        if "json_success_value" in raw:
+            normalized["json_success_value"] = deepcopy(raw.get("json_success_value"))
+    if json_flag_key:
+        normalized["json_flag_key"] = json_flag_key
     if isinstance(assertion_program, list) and assertion_program:
         normalized["assertion_program"] = assertion_program
     return normalized if len(normalized) > 2 else None
 
 
-def _resolve_semantic_contract(report: Dict[str, Any], guard_spec: Dict[str, Any]) -> Dict[str, Any]:
+def _resolve_semantic_contract(vuln_id: str, report: Dict[str, Any], guard_spec: Dict[str, Any]) -> Dict[str, Any]:
     contract = extract_semantic_contract(report)
+    report_signature = contract.get("semantic_signature") if isinstance(contract, dict) else None
     guard_signature = guard_spec.get("semantic_signature") if isinstance(guard_spec, dict) else None
+    baseline_signature = _normalize_semantic_buckets(baseline_semantic_signature(vuln_id))
+    has_baseline = any(baseline_signature.get(bucket) for bucket in baseline_signature)
+    resolved_signature = _normalize_semantic_buckets(contract.get("semantic_signature") if isinstance(contract, dict) else {})
     if isinstance(guard_signature, dict) and guard_signature and "semantic_signature" not in contract:
         contract["semantic_signature"] = guard_signature
         contract.setdefault("semantic_signature_source", ["guard_spec"])
+        resolved_signature = _normalize_semantic_buckets(guard_signature)
+    elif has_baseline and not any(resolved_signature.get(bucket) for bucket in resolved_signature):
+        contract["semantic_signature"] = baseline_signature
+        contract["semantic_signature_source"] = ["baseline"]
+        resolved_signature = baseline_signature
     guard_confidence = guard_spec.get("confidence") if isinstance(guard_spec, dict) else None
     if isinstance(guard_confidence, str) and guard_confidence.strip():
         contract["guard_confidence"] = guard_confidence.strip().lower()
+    contradictions = _semantic_contract_contradictions(
+        vuln_id,
+        signature=resolved_signature,
+        report_signature=report_signature if isinstance(report_signature, dict) else {},
+        guard_signature=guard_signature if isinstance(guard_signature, dict) else {},
+    )
+    contract["authority"] = "resolved_contract.semantic_contract"
+    contract["contradictions"] = contradictions
+    contract["status"] = "contradicted" if contradictions else "aligned"
     return contract
+
+
+def _semantic_contract_contradictions(
+    vuln_id: str,
+    *,
+    signature: Any,
+    report_signature: Dict[str, Any],
+    guard_signature: Dict[str, Any],
+) -> list[str]:
+    resolved = _normalize_semantic_buckets(signature)
+    report_norm = _normalize_semantic_buckets(report_signature)
+    guard_norm = _normalize_semantic_buckets(guard_signature)
+    baseline = _normalize_semantic_buckets(baseline_semantic_signature(vuln_id))
+    contradictions: list[str] = []
+
+    for bucket in ("input_vector", "sink", "exploit_precondition"):
+        expected = baseline.get(bucket) or []
+        observed = resolved.get(bucket) or []
+        if expected and not observed:
+            contradictions.append(f"semantic_contract missing expected {bucket} for {vuln_id}")
+        elif expected and observed and not _semantic_bucket_overlap(expected, observed):
+            contradictions.append(f"semantic_contract {bucket} conflicts with baseline {vuln_id} semantics")
+
+        report_values = report_norm.get(bucket) or []
+        guard_values = guard_norm.get(bucket) or []
+        if report_values and guard_values and not _semantic_bucket_overlap(report_values, guard_values):
+            contradictions.append(f"report vs guard semantic_signature mismatch on {bucket}")
+        contradictions.extend(_foreign_family_semantic_terms(vuln_id, bucket=bucket, values=observed))
+
+    return contradictions
+
+
+def _normalize_semantic_buckets(signature: Any) -> Dict[str, list[str]]:
+    if not isinstance(signature, dict):
+        return {
+            "input_vector": [],
+            "sink": [],
+            "exploit_precondition": [],
+        }
+    normalized: Dict[str, list[str]] = {}
+    for bucket in ("input_vector", "sink", "exploit_precondition"):
+        values = signature.get(bucket)
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            values = []
+        normalized[bucket] = [
+            str(value).strip()
+            for value in values
+            if isinstance(value, str) and str(value).strip()
+        ]
+    return normalized
+
+
+def _semantic_bucket_overlap(lhs: list[str], rhs: list[str]) -> bool:
+    for left in lhs:
+        left_aliases = semantic_term_aliases(left)
+        for right in rhs:
+            right_aliases = semantic_term_aliases(right)
+            if left_aliases & right_aliases:
+                return True
+            if left.lower() in right.lower() or right.lower() in left.lower():
+                return True
+    return False
+
+
+def _foreign_family_semantic_terms(vuln_id: str, *, bucket: str, values: list[str]) -> list[str]:
+    normalized = normalize_vuln_id(vuln_id)
+    allowed = family_canonical_tags(normalized)
+    if not allowed:
+        return []
+    foreign_tags: dict[str, str] = {}
+    for candidate in (
+        "cwe-89",
+        "cwe-352",
+        "cwe-22",
+        "cwe-918",
+        "cwe-78",
+        "cwe-94",
+        "cwe-79",
+        "cwe-502",
+    ):
+        if candidate == normalized:
+            continue
+        for tag in family_canonical_tags(candidate):
+            foreign_tags.setdefault(tag, candidate.upper())
+    contradictions: list[str] = []
+    for value in values:
+        aliases = semantic_term_aliases(value)
+        if aliases & allowed:
+            continue
+        foreign_hits = [foreign_tags[tag] for tag in aliases if tag in foreign_tags]
+        if not foreign_hits:
+            continue
+        families = ", ".join(sorted(set(foreign_hits)))
+        contradictions.append(
+            f"semantic_contract {bucket} includes foreign-family term '{value}' for {vuln_id} (matches {families})"
+        )
+    return contradictions
 
 
 def _manifest_role_path(manifest: Dict[str, Any], role: str) -> Optional[str]:

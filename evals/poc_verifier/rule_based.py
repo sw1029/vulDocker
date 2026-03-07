@@ -97,6 +97,7 @@ def verify_with_rule(
             evidence.append("Semantic consistency check passed")
         else:
             evidence.append(f"semantic mismatch: {semantic_error_summary(semantic_report)}")
+            success = False
 
     guard_consistency = _evaluate_guard_consistency(
         vuln_id=vuln_id,
@@ -695,6 +696,31 @@ def _evaluate_semantic_consistency(
     contract_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     workspace_roots = list(workspace_dirs)
+    semantic_contract = {}
+    if isinstance(contract_meta, dict):
+        candidate = contract_meta.get("semantic_contract")
+        if isinstance(candidate, dict):
+            semantic_contract = candidate
+        elif isinstance(contract_meta.get("semantic_signature"), dict):
+            semantic_contract = {"semantic_signature": contract_meta.get("semantic_signature")}
+    contradictions = semantic_contract.get("contradictions") if isinstance(semantic_contract, dict) else []
+    if not isinstance(contradictions, list):
+        contradictions = []
+    contradictions = [
+        str(item).strip()
+        for item in contradictions
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if contradictions:
+        return {
+            "supported": True,
+            "semantic_match": False,
+            "errors": contradictions,
+            "warnings": [],
+            "signals": {},
+            "source": "resolved_contract.semantic_contract",
+        }
+
     if isinstance(generator_manifest, dict):
         report = evaluate_manifest_semantics(vuln_id, generator_manifest)
         if report.get("supported"):
@@ -705,13 +731,6 @@ def _evaluate_semantic_consistency(
         if report.get("supported"):
             report["source"] = str(workspace)
             return report
-    semantic_contract = {}
-    if isinstance(contract_meta, dict):
-        candidate = contract_meta.get("semantic_contract")
-        if isinstance(candidate, dict):
-            semantic_contract = candidate
-        elif isinstance(contract_meta.get("semantic_signature"), dict):
-            semantic_contract = {"semantic_signature": contract_meta.get("semantic_signature")}
     signature = semantic_contract.get("semantic_signature") if isinstance(semantic_contract, dict) else None
     if isinstance(signature, dict) and any(signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
         spec = build_guard_spec(

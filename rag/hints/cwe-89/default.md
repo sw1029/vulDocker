@@ -1,3 +1,5 @@
 - Ensure at least one code path concatenates raw request parameters into the SQL string without parameter binding.
 - Provide a deterministic seed dataset and mention the vulnerable table + columns inside README.md so PoC expectations stay reproducible.
 - Make the PoC search for the string "SQLi SUCCESS" inside stdout/stderr; the verifier relies on that exact token.
+- Prefer a deterministic exploit contract: injected input should either return multiple rows/count >= 2 or surface admin-only data in a way that lets PoC print `FLAG-sqli-demo-token` reliably.
+- Favor a simple numeric or string predicate where `1 OR 1=1` or `' OR 1=1 -- ` clearly widens the result set.

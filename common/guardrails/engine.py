@@ -412,6 +412,16 @@ def _semantic_token_alias_present(text: str, token: str) -> bool:
             "params =",
         ]
         return any(alias in text for alias in aliases)
+    if token in {"path parameter", "filename"} or "filename/path" in token:
+        aliases = [
+            "request.args",
+            "request.form",
+            "filename",
+            "filepath",
+            "path =",
+            "file =",
+        ]
+        return any(alias in text for alias in aliases)
     if "sql query execution" in token or token in {"sql sink", "cursor.execute"}:
         aliases = [
             "cursor.execute",
@@ -429,6 +439,80 @@ def _semantic_token_alias_present(text: str, token: str) -> bool:
         return any(alias in text for alias in ["@app.post", "@app.put", "@app.delete", "@app.patch", "methods=['post", 'methods=["post'])
     if "cookie-authenticated session" in token:
         return any(alias in text for alias in ["session", "cookie", "login_required", "set-cookie"])
+    if token in {"open(", "send_file", "send_from_directory"} or "filesystem read" in token:
+        aliases = [
+            "open(",
+            "send_file",
+            "send_from_directory",
+            "read_text(",
+            "read_bytes(",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"../", "os.path.join", "path traversal"} or "confinement" in token:
+        aliases = [
+            "../",
+            "..\\",
+            "/etc/passwd",
+            "os.path.join",
+            "pathlib.path",
+            "path traversal",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"url parameter", "user-controlled url"}:
+        aliases = [
+            "request.args",
+            "request.form",
+            "url =",
+            "target_url",
+            "target =",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"requests.get", "urllib.request", "http client request"} or "server-side request forgery" in token:
+        aliases = [
+            "requests.get",
+            "requests.post",
+            "urllib.request",
+            "urlopen(",
+            "server-side request forgery",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"subprocess", "os.system", "shell=true"} or "command injection" in token:
+        aliases = [
+            "subprocess",
+            "os.system",
+            "shell=true",
+            "shell = true",
+            "popen(",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"eval(", "exec("} or "code injection" in token:
+        return any(alias in text for alias in ["eval(", "exec(", "compile("])
+    if token in {"render_template_string", "template response", "innerhtml"} or "cross-site scripting" in token:
+        aliases = [
+            "render_template_string",
+            "<script>",
+            "innerhtml",
+            "markup(",
+            "template response",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"request.data", "request.get_data", "serialized payload"}:
+        aliases = [
+            "request.data",
+            "request.get_data",
+            "request.json",
+            "payload =",
+            "serialized",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"pickle.loads", "yaml.load", "jsonpickle.decode"} or "deserialization" in token:
+        aliases = [
+            "pickle.loads",
+            "yaml.load",
+            "jsonpickle.decode",
+            "deserialize",
+        ]
+        return any(alias in text for alias in aliases)
     return False
 
 
@@ -503,7 +587,7 @@ def _evaluate_generator_assertion(manifest: Dict[str, Any], assertion: Dict[str,
         matched_paths: List[str] = []
         for entry in files:
             rel = entry["path"]
-            if any(fnmatch.fnmatch(rel, glob) for glob in normalized_globs):
+            if any(_glob_matches(rel, glob) for glob in normalized_globs):
                 if regex.search(entry["content"] or ""):
                     matched_paths.append(rel)
         if matched_paths:
@@ -636,6 +720,19 @@ def _regex_flags_from_value(value: Any) -> int:
     if "x" in merged:
         flags |= re.VERBOSE
     return flags
+
+
+def _glob_matches(path: str, pattern: str) -> bool:
+    normalized_path = str(path or "").strip()
+    normalized_pattern = str(pattern or "").strip()
+    if not normalized_path or not normalized_pattern:
+        return False
+    candidates = [normalized_pattern]
+    if normalized_pattern.startswith("**/"):
+        trimmed = normalized_pattern[3:]
+        if trimmed:
+            candidates.append(trimmed)
+    return any(fnmatch.fnmatch(normalized_path, candidate) for candidate in candidates)
 
 
 def _manifest_deps(manifest: Dict[str, Any]) -> set[str]:

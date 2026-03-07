@@ -148,3 +148,91 @@ def test_semantic_guard_accepts_cwe89_with_tainted_query_flow(tmp_path: Path) ->
     semantics = (report or {}).get("semantics") or {}
     assert semantics.get("supported") is True
     assert semantics.get("semantic_match") is True
+
+
+def test_semantic_guard_accepts_cwe89_multiline_tainted_query_flow(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-89")
+    manifest = {
+        "files": [
+            {
+                "path": "app.py",
+                "role": "service_main",
+                "content": (
+                    "from flask import Flask, request\n"
+                    "import sqlite3\n"
+                    "app = Flask(__name__)\n"
+                    "@app.get('/login')\n"
+                    "def login():\n"
+                    "    username = request.args.get('username', '')\n"
+                    "    password = request.args.get('password', '')\n"
+                    "    query = (\n"
+                    "        \"SELECT id, username FROM users \"\n"
+                    "        \"WHERE username = '\" + username + \"' AND password = '\" + password + \"'\"\n"
+                    "    )\n"
+                    "    conn = sqlite3.connect('/tmp/app.db')\n"
+                    "    cur = conn.cursor()\n"
+                    "    cur.execute(query)\n"
+                    "    return 'ok'\n"
+                ),
+            },
+            {
+                "path": "poc.py",
+                "role": "poc_entry",
+                "content": "print('SQLi SUCCESS')\nprint('FLAG-sqli-demo-token')\n",
+            },
+        ],
+        "deps": ["Flask==3.0.0"],
+        "poc": {
+            "cmd": "python poc.py --base-url {{base_url}}",
+            "success_signature": "SQLi SUCCESS",
+            "flag_token": "FLAG-sqli-demo-token",
+        },
+        "pattern_tags": ["guard-test"],
+    }
+    errors, report = engine._guard_manifest(manifest)
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
+def test_semantic_guard_accepts_cwe918_same_container_loopback_indicator(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-918")
+    manifest = {
+        "files": [
+            {
+                "path": "app.py",
+                "role": "service_main",
+                "content": (
+                    "import requests\n"
+                    "from flask import Flask, request, jsonify\n"
+                    "app = Flask(__name__)\n"
+                    "@app.get('/metadata')\n"
+                    "def metadata():\n"
+                    "    return jsonify({'marker': 'FLAG{SSRF_OK}', 'service': 'metadata'})\n"
+                    "@app.get('/fetch')\n"
+                    "def fetch():\n"
+                    "    target_url = request.args.get('url', 'http://127.0.0.1:5000/metadata')\n"
+                    "    resp = requests.get(target_url, timeout=2)\n"
+                    "    return resp.text\n"
+                ),
+            },
+            {
+                "path": "poc.py",
+                "role": "poc_entry",
+                "content": "print('FLAG{SSRF_OK}')\n",
+            },
+        ],
+        "deps": ["Flask==3.0.0", "requests==2.31.0"],
+        "poc": {
+            "cmd": "python poc.py --base-url {{base_url}}",
+            "success_signature": "FLAG{SSRF_OK}",
+            "flag_token": "FLAG{SSRF_OK}",
+        },
+        "pattern_tags": ["guard-test"],
+    }
+    errors, report = engine._guard_manifest(manifest)
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True

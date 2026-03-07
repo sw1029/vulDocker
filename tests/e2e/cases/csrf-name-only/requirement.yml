@@ -1,0 +1,8 @@
+vuln_name: csrf
+allow_intentional_vuln: true
+seed: 5151
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 5151

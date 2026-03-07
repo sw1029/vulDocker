@@ -11,6 +11,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -21,6 +22,8 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import get_artifacts_dir, get_metadata_dir
 from common.plan import load_plan
+from common.rules import load_static_rule
+from common.run_matrix import load_vuln_bundles
 from orchestrator.loop_controller import LoopController
 
 LOGGER = get_logger(__name__)
@@ -274,6 +277,86 @@ def _run_step(cmd: List[str]) -> int:
     return int(proc.returncode or 0)
 
 
+def _run_step_timed(cmd: List[str]) -> Tuple[int, float]:
+    started = time.perf_counter()
+    rc = _run_step(cmd)
+    return rc, max(0.0, time.perf_counter() - started)
+
+
+def _researcher_force_run(plan: Dict[str, Any]) -> bool:
+    requirement = plan.get("requirement") or {}
+    if not isinstance(requirement, dict):
+        return False
+    researcher_cfg = requirement.get("researcher") or {}
+    if not isinstance(researcher_cfg, dict):
+        return False
+    value = researcher_cfg.get("force_run")
+    if value is None:
+        return False
+    return _as_bool(value)
+
+
+def _can_skip_researcher(plan: Dict[str, Any], *, refresh_requested: bool) -> bool:
+    if refresh_requested:
+        return False
+    if _researcher_force_run(plan):
+        return False
+    policy = plan.get("policy") or {}
+    if isinstance(policy, dict) and _as_bool(policy.get("require_researcher_evidence")):
+        return False
+    bundles = load_vuln_bundles(plan)
+    if not bundles:
+        return False
+    return all(bool(load_static_rule(bundle.vuln_id)) for bundle in bundles)
+
+
+def _record_perf_event(
+    sid: str,
+    events: List[Dict[str, Any]],
+    *,
+    loop: int,
+    stage: str,
+    duration_s: float,
+    returncode: int | None = None,
+    skipped: bool = False,
+    note: str = "",
+) -> None:
+    events.append(
+        {
+            "loop": loop,
+            "stage": stage,
+            "duration_s": round(max(0.0, duration_s), 3),
+            "returncode": returncode,
+            "skipped": bool(skipped),
+            "note": note,
+        }
+    )
+    _write_perf_summary(sid, events)
+
+
+def _write_perf_summary(sid: str, events: List[Dict[str, Any]]) -> None:
+    by_stage: Dict[str, Dict[str, Any]] = {}
+    total = 0.0
+    for item in events:
+        if not isinstance(item, dict):
+            continue
+        duration = float(item.get("duration_s") or 0.0)
+        total += duration
+        stage = str(item.get("stage") or "UNKNOWN")
+        stage_bucket = by_stage.setdefault(stage, {"count": 0, "duration_s": 0.0, "skipped": 0})
+        stage_bucket["count"] += 1
+        stage_bucket["duration_s"] = round(float(stage_bucket["duration_s"]) + duration, 3)
+        if item.get("skipped"):
+            stage_bucket["skipped"] += 1
+    payload = {
+        "sid": sid,
+        "events": events,
+        "by_stage": by_stage,
+        "total_duration_s": round(total, 3),
+    }
+    _write_json(get_metadata_dir(sid) / "performance_summary.json", payload)
+
+
 def _summarize_executor_error(sid: str, *, stage: str) -> Tuple[str, str, Dict[str, Any]]:
     artifacts_root = get_artifacts_dir(sid)
     index_path = artifacts_root / "run" / "index.json"
@@ -437,30 +520,66 @@ def main() -> None:
     plan = load_plan(sid)
     loop_cfg = plan.get("loop", {"max_loops": 3})
     controller = LoopController(sid, max_loops=int(loop_cfg.get("max_loops", 3)))
+    perf_events: List[Dict[str, Any]] = []
     if controller.current_loop == 0:
         controller.start_loop()
 
     researcher_ran = False
+    researcher_refresh_requested = False
     while True:
-        if not args.skip_researcher and (args.researcher_every_loop or not researcher_ran):
-            rc = _run_step(_python_cmd("agents/researcher/main.py", "--sid", sid, "--mode", args.mode))
-            if rc != 0:
-                controller.record_failure(
+        if not args.skip_researcher and (args.researcher_every_loop or researcher_refresh_requested or not researcher_ran):
+            if not args.researcher_every_loop and _can_skip_researcher(plan, refresh_requested=researcher_refresh_requested):
+                note = "researcher skipped: known static rule path"
+                controller.record_success(stage="RESEARCH", note=note)
+                _record_perf_event(
+                    sid,
+                    perf_events,
+                    loop=controller.current_loop,
                     stage="RESEARCH",
-                    reason=f"Researcher failed with exit code {rc}",
-                    fix_hint="Check LLM provider configuration / API key / network connectivity.",
-                    blocking=True,
-                    metadata={"exit_code": rc},
+                    duration_s=0.0,
+                    skipped=True,
+                    note=note,
                 )
-                if controller.should_continue():
-                    controller.start_loop()
-                    continue
-                break
-            controller.record_success(stage="RESEARCH", note="researcher succeeded")
-            researcher_ran = True
+                researcher_ran = True
+                researcher_refresh_requested = False
+            else:
+                rc, duration = _run_step_timed(
+                    _python_cmd("agents/researcher/main.py", "--sid", sid, "--mode", args.mode)
+                )
+                _record_perf_event(
+                    sid,
+                    perf_events,
+                    loop=controller.current_loop,
+                    stage="RESEARCH",
+                    duration_s=duration,
+                    returncode=rc,
+                )
+                if rc != 0:
+                    controller.record_failure(
+                        stage="RESEARCH",
+                        reason=f"Researcher failed with exit code {rc}",
+                        fix_hint="Check LLM provider configuration / API key / network connectivity.",
+                        blocking=True,
+                        metadata={"exit_code": rc},
+                    )
+                    if controller.should_continue():
+                        controller.start_loop()
+                        continue
+                    break
+                controller.record_success(stage="RESEARCH", note="researcher succeeded")
+                researcher_ran = True
+                researcher_refresh_requested = False
 
-        rc = _run_step(
+        rc, duration = _run_step_timed(
             _python_cmd("agents/generator/main.py", "--sid", sid, "--mode", args.mode, "--single-attempt")
+        )
+        _record_perf_event(
+            sid,
+            perf_events,
+            loop=controller.current_loop,
+            stage="GENERATOR",
+            duration_s=duration,
+            returncode=rc,
         )
         if rc != 0:
             latest_failure = _latest_generator_failure(sid)
@@ -510,6 +629,7 @@ def main() -> None:
                 else:
                     LOGGER.info("Refreshing researcher on next loop due to guard failure policy.")
                 researcher_ran = False
+                researcher_refresh_requested = True
             can_continue = controller.should_continue()
             if can_continue:
                 controller.start_loop()
@@ -529,7 +649,15 @@ def main() -> None:
                 LOGGER.info("Researcher refresh deferred: loop limit reached for %s", sid)
             break
 
-        rc = _run_step(_python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--build"))
+        rc, duration = _run_step_timed(_python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--build"))
+        _record_perf_event(
+            sid,
+            perf_events,
+            loop=controller.current_loop,
+            stage="EXECUTOR_BUILD",
+            duration_s=duration,
+            returncode=rc,
+        )
         if rc != 0:
             reason, hint, meta = _summarize_executor_error(sid, stage="build")
             controller.record_failure(stage="EXECUTOR", reason=reason, fix_hint=hint, blocking=True, metadata=meta)
@@ -538,7 +666,15 @@ def main() -> None:
                 continue
             break
 
-        rc = _run_step(_python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--run"))
+        rc, duration = _run_step_timed(_python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--run"))
+        _record_perf_event(
+            sid,
+            perf_events,
+            loop=controller.current_loop,
+            stage="EXECUTOR_RUN",
+            duration_s=duration,
+            returncode=rc,
+        )
         if rc != 0:
             reason, hint, meta = _summarize_executor_error(sid, stage="run")
             controller.record_failure(stage="EXECUTOR", reason=reason, fix_hint=hint, blocking=True, metadata=meta)
@@ -549,7 +685,15 @@ def main() -> None:
 
         controller.record_success(stage="EXECUTOR", note="executor build+run succeeded")
 
-        _run_step(_python_cmd("evals/poc_verifier/main.py", "--sid", sid))
+        rc, duration = _run_step_timed(_python_cmd("evals/poc_verifier/main.py", "--sid", sid))
+        _record_perf_event(
+            sid,
+            perf_events,
+            loop=controller.current_loop,
+            stage="VERIFY",
+            duration_s=duration,
+            returncode=rc,
+        )
         if not _overall_verify_pass(sid):
             reason, hint, meta = _summarize_verify_failure(sid)
             controller.record_failure(stage="VERIFY", reason=reason, fix_hint=hint, blocking=True, metadata=meta)
@@ -561,21 +705,45 @@ def main() -> None:
         controller.record_success(stage="VERIFY", note="verifier passed")
 
         if not args.skip_reviewer:
-            _run_step(_python_cmd("agents/reviewer/main.py", "--sid", sid, "--mode", args.mode))
+            rc, duration = _run_step_timed(_python_cmd("agents/reviewer/main.py", "--sid", sid, "--mode", args.mode))
+            _record_perf_event(
+                sid,
+                perf_events,
+                loop=controller.current_loop,
+                stage="REVIEW",
+                duration_s=duration,
+                returncode=rc,
+            )
             if _review_blocking(sid):
                 if controller.should_continue():
                     controller.start_loop()
                     continue
                 break
 
-        _run_step(_python_cmd("evals/diversity_metrics.py", "--sid", sid))
+        rc, duration = _run_step_timed(_python_cmd("evals/diversity_metrics.py", "--sid", sid))
+        _record_perf_event(
+            sid,
+            perf_events,
+            loop=controller.current_loop,
+            stage="DIVERSITY",
+            duration_s=duration,
+            returncode=rc,
+        )
 
         if not args.skip_pack:
             allow_intentional = bool((plan.get("policy") or {}).get("allow_intentional_vuln"))
             pack_cmd = _python_cmd("orchestrator/pack.py", "--sid", sid)
             if allow_intentional:
                 pack_cmd.append("--allow-intentional-vuln")
-            _run_step(pack_cmd)
+            rc, duration = _run_step_timed(pack_cmd)
+            _record_perf_event(
+                sid,
+                perf_events,
+                loop=controller.current_loop,
+                stage="PACK",
+                duration_s=duration,
+                returncode=rc,
+            )
 
         return
 
@@ -585,7 +753,15 @@ def main() -> None:
         pack_cmd = _python_cmd("orchestrator/pack.py", "--sid", sid)
         if allow_intentional:
             pack_cmd.append("--allow-intentional-vuln")
-        _run_step(pack_cmd)
+        rc, duration = _run_step_timed(pack_cmd)
+        _record_perf_event(
+            sid,
+            perf_events,
+            loop=controller.current_loop,
+            stage="PACK",
+            duration_s=duration,
+            returncode=rc,
+        )
     raise SystemExit(1)
 
 

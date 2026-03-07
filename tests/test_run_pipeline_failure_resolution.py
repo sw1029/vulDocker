@@ -131,3 +131,34 @@ def test_record_deferred_refresh_marks_loop_state(tmp_path: Path, monkeypatch) -
     metadata = updated["history"][-1]["metadata"]
     assert metadata["refresh_deferred_due_to_loop_limit"] is True
     assert metadata["planned_next_action"]["retry_stage"] == "RESEARCH"
+
+
+def test_can_skip_researcher_for_known_static_without_required_evidence(monkeypatch) -> None:
+    plan = {
+        "requirement": {"researcher": {}},
+        "policy": {"require_researcher_evidence": False},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"},
+                {"vuln_id": "CWE-352", "slug": "cwe-352", "workspace_subdir": "app"},
+            ]
+        },
+    }
+    monkeypatch.setattr(run_pipeline, "load_static_rule", lambda vuln_id: {"cwe": vuln_id})
+
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is True
+
+
+def test_cannot_skip_researcher_when_required_or_refresh_requested(monkeypatch) -> None:
+    plan = {
+        "requirement": {"researcher": {}},
+        "policy": {"require_researcher_evidence": True},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-9999", "slug": "cwe-9999", "workspace_subdir": "app"}]},
+    }
+    monkeypatch.setattr(run_pipeline, "load_static_rule", lambda vuln_id: {})
+
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is False
+    assert run_pipeline._can_skip_researcher(
+        {"requirement": {"researcher": {}}, "policy": {"require_researcher_evidence": False}, "run_matrix": plan["run_matrix"]},
+        refresh_requested=True,
+    ) is False

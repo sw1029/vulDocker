@@ -78,6 +78,7 @@ class ReactLoop:
 
         queries: List[str] = []
         vuln_ids = _vuln_ids_from_requirement(requirement)
+        vuln_names = _vuln_names_from_requirement(requirement)
         language = requirement.get("language")
         framework = requirement.get("framework")
         tech_stack = " ".join(filter(None, [language, framework]))
@@ -85,6 +86,8 @@ class ReactLoop:
 
         for vuln_id in vuln_ids:
             queries.append(f"{vuln_id} exploit writeup {tech_stack}".strip())
+        for vuln_name in vuln_names:
+            queries.append(f"{vuln_name} exploit writeup {tech_stack}".strip())
         if intent:
             queries.append(f"{intent} poc tutorial {tech_stack}".strip())
         runtime = requirement.get("runtime") or {}
@@ -155,6 +158,18 @@ def _vuln_ids_from_requirement(requirement: Dict[str, Any]) -> List[str]:
     if isinstance(fallback, str) and fallback.strip():
         return [fallback.strip()]
     return []
+
+
+def _vuln_names_from_requirement(requirement: Dict[str, Any]) -> List[str]:
+    names: List[str] = []
+    for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name", "vuln_label"):
+        value = requirement.get(key)
+        if not isinstance(value, str):
+            continue
+        cleaned = value.strip()
+        if cleaned and cleaned not in names:
+            names.append(cleaned)
+    return names
 
 
 __all__ = ["ReactLoop", "ReactSpan"]

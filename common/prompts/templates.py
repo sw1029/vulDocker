@@ -26,6 +26,32 @@ def _flag_token(requirement: Dict[str, object]) -> str:
     return ""
 
 
+def _structured_success_contract(requirement: Dict[str, object]) -> str:
+    vuln = str((requirement or {}).get("vuln_id") or "").strip().lower()
+    rule = load_rule(vuln)
+    if not isinstance(rule, dict):
+        return ""
+    runtime = rule.get("runtime") if isinstance(rule.get("runtime"), dict) else {}
+    output = rule.get("output") if isinstance(rule.get("output"), dict) else {}
+    json_cfg = output.get("json") if isinstance(output.get("json"), dict) else {}
+    success_key = runtime.get("json_success_key") or json_cfg.get("success_key")
+    success_value = (
+        runtime.get("json_success_value")
+        if "json_success_value" in runtime
+        else json_cfg.get("success_value")
+    )
+    flag_key = runtime.get("json_flag_key") or json_cfg.get("flag_key")
+    if not isinstance(success_key, str) or not success_key.strip():
+        return ""
+    lines = [
+        "- Success is determined structurally from JSON, not raw whitespace-sensitive substring matching.",
+        f"- Parse the HTTP response JSON and require `{success_key}` == `{success_value!r}`.",
+    ]
+    if isinstance(flag_key, str) and flag_key.strip():
+        lines.append(f"- If the response embeds a flag, read it from JSON key `{flag_key}`.")
+    return "\n".join(lines)
+
+
 def _semantic_contract(requirement: Dict[str, object]) -> str:
     vuln = str((requirement or {}).get("vuln_id") or "").strip().lower().replace("_", "-")
     if vuln == "89":
@@ -40,13 +66,53 @@ def _semantic_contract(requirement: Dict[str, object]) -> str:
         return (
             "- CWE-89: include a real SQL injection path.\n"
             "- MUST read user input from request args/form/json, compose SQL by string concat/interpolation, and execute that composed query.\n"
-            "- MUST NOT use parameterized placeholders for the intentionally vulnerable query path."
+            "- MUST NOT use parameterized placeholders for the intentionally vulnerable query path.\n"
+            "- Prefer a deterministic `/search?id=` or `/login` JSON response where a classic payload such as `1 OR 1=1` or `' OR 1=1 -- ` produces an obviously exploitable result.\n"
+            "- Make PoC success deterministic: either return a result count >= 2 or emit `FLAG-sqli-demo-token` whenever the injected path yields multiple rows/admin data."
         )
     if vuln == "cwe-352":
         return (
             "- CWE-352: include a real CSRF path.\n"
             "- MUST have a state-changing endpoint (POST/PUT/DELETE/PATCH) behind session/cookie auth.\n"
             "- MUST omit CSRF token and Origin/Referer validation on the vulnerable endpoint."
+        )
+    if vuln == "cwe-22":
+        return (
+            "- CWE-22: include a real path traversal path.\n"
+            "- MUST read a filename/path from request input and use it in a filesystem read sink such as open(), send_file(), or send_from_directory().\n"
+            "- MUST omit canonicalization+confinement checks so payloads like ../ or /etc/passwd-style targets are reachable."
+        )
+    if vuln == "cwe-918":
+        return (
+            "- CWE-918: include a real SSRF path.\n"
+            "- MUST accept a user-controlled URL from request input and make a server-side HTTP fetch with it.\n"
+            "- MUST omit scheme/host allowlisting and internal address protection on the vulnerable path.\n"
+            "- Prefer same-container loopback SSRF: expose an internal `/metadata`-style endpoint returning `FLAG{SSRF_OK}` and make `/fetch?url=` call `requests.get(user_url)` directly.\n"
+            "- Do not use `before_first_request`; Flask 3 startup/init must run explicitly before `app.run()` or behind a one-time request guard."
+        )
+    if vuln == "cwe-78":
+        return (
+            "- CWE-78: include a real command injection path.\n"
+            "- MUST read user input from the request and splice it into a shell/system command.\n"
+            "- MUST keep a shell-enabled execution path such as shell=True or os.system on the vulnerable route."
+        )
+    if vuln == "cwe-94":
+        return (
+            "- CWE-94: include a real code injection path.\n"
+            "- MUST read attacker-controlled input and feed it into eval()/exec() or an equivalent dynamic-code sink.\n"
+            "- MUST NOT sanitize or sandbox the vulnerable execution path."
+        )
+    if vuln == "cwe-79":
+        return (
+            "- CWE-79: include a real reflected XSS path.\n"
+            "- MUST reflect attacker-controlled input into the HTTP response or template output.\n"
+            "- MUST omit output encoding/escaping on the vulnerable reflection path."
+        )
+    if vuln == "cwe-502":
+        return (
+            "- CWE-502: include a real insecure deserialization path.\n"
+            "- MUST accept attacker-controlled serialized input from the request body.\n"
+            "- MUST deserialize it with an unsafe sink such as pickle.loads(), yaml.load(), or jsonpickle.decode()."
         )
     return "- Keep generated code semantically aligned with vuln_id (input vector, sink, exploit precondition)."
 
@@ -103,6 +169,7 @@ def build_synthesis_prompt(
     limits_payload = json.dumps(limits or {}, indent=2, ensure_ascii=False)
     success_signature = _success_signature(requirement)
     flag_token = _flag_token(requirement)
+    structured_success = _structured_success_contract(requirement)
     semantic_contract = _semantic_contract(requirement)
     if guard_spec:
         semantic_contract = (
@@ -114,6 +181,8 @@ def build_synthesis_prompt(
         + (f"- Flag token: `{flag_token}`\n" if flag_token else "- Flag token: none\n")
         + "- The PoC and runtime evidence must use these exact values."
     )
+    if structured_success:
+        contract_block += "\n" + structured_success
     execution_constraints = (
         "- Container is executed with `--read-only` and `/tmp` is mounted as tmpfs (writable). "
         "`/tmp` starts EMPTY on every container run and masks anything written to `/tmp` at image build time. "

@@ -1,398 +1,463 @@
-# CWE 일반화 중심 구현계획 및 현재 상태
+# 동적 취약 Docker 생성 개선 계획
 
-본 문서는 2026-03-07 KST 기준의 실행 문서다. 목적은 세 가지다.
+본 문서는 2026-03-07 KST 기준의 검토 결과와 fresh rerun 결과를 토대로 작성한 실행계획 문서다.
+이 문서는 더 이상 "현재 상태 회고" 중심 문서가 아니라, 다음 구현 단계를 구체적으로 정의하는 계획 문서다.
 
-- 현재 구현 상태를 코드와 실제 실행 결과 기준으로 다시 정리한다.
-- 이번 턴에서 실제로 보완한 항목과 그 효과를 기록한다.
-- 잔여 구현계획의 우선순위를 현재 증거에 맞게 재배치한다.
+핵심 대전제는 유지한다.
 
-주의:
+- 사용자 입력은 최종적으로 `취약점 이름만` 제공하는 형태까지 허용해야 한다.
+- 시스템은 LLM/RAG/Guard/Verifier를 사용해 취약점을 동적으로 삽입한 Docker 환경을 생성해야 한다.
+- 방향성을 "정적 템플릿 카탈로그만 고르는 시스템"으로 후퇴시키지 않는다.
+- 다만 "생성 성공"과 "검증/승격 신뢰성"은 별개의 축으로 평가해야 한다.
 
-- 본 문서의 “이번 실행”은 2026-03-07 KST 기준이다.
-- 로그와 메타데이터 타임스탬프는 UTC라 일부 파일에는 2026-03-06으로 보인다.
-- historical artifact와 이번 턴 post-patch artifact를 구분해서 쓴다.
+## 1. 문서 목적
 
-## 1. 핵심 결론
+이 문서의 목적은 네 가지다.
 
-현재 레포는 더 이상 `known path만 겨우 되는 프로토타입`은 아니다. `CWE-89` known path는 이번 턴 post-patch 재실행에서도 deterministic single-run pass를 유지했고, reviewer non-blocking semantic noise도 제거했다.
+1. 현재 구현이 실제로 어디까지 닫혀 있는지 verified baseline을 고정한다.
+2. 이번 검토에서 확인된 구조적 결함을 우선순위 순으로 정리한다.
+3. `vuln_name -> dynamic vulnerable Docker synthesis`라는 초기 방향을 유지한 채, 다음 구현 단계를 단계적으로 정의한다.
+4. 이후 구현이 "pass rate 증가"에만 치우치지 않고 "artifact trust 증가"까지 달성하도록 acceptance 기준을 명확히 한다.
 
-또한 `CWE-9999` unknown live path는 현재 워킹트리 기준으로 pass한다. 이번 턴 후속 패치에서는 unknown path에 대해 다음 세 가지가 추가로 개선됐다.
+## 2. 비가역 원칙
 
-- wrapped `researcher_report`를 canonical top-level 스키마로 정규화
-- unknown evidence relevance를 raw CWE token 매칭이 아니라 semantic anchor / stack / exploit term 중심으로 재계산
-- `resolved_contract.json`에 `semantic_contract`를 승격하고, verifier의 `semantic_consistency`가 builtin rule 부재 시 이 계약을 직접 소비
+이 문서 이후의 구현은 아래 원칙을 깨지 않아야 한다.
 
-그 결과 unknown run의 검증은 더 이상 generic `"Exploit SUCCESS"` 단일 문자열에만 기대지 않고, runtime rule과 verifier evidence가 researcher `verification_spec`에서 유도된 concrete marker/flag를 사용한다.
+### 2.1 입력 원칙
 
-다만 이 성공을 곧바로 `취약점 이름만 제공` 수준의 일반화 달성으로 해석하면 안 된다. 현재 unknown success는 여전히 `pattern_id`, language/framework/runtime, runtime rule, self-authored verification contract에 강하게 의존한다. 즉, 현재 최상위 잔여 과제는 더 이상 `unknown live 1회 pass 재확보`가 아니라 다음 두 가지다.
+- `vuln_id`가 명시된 입력은 계속 지원한다.
+- `vuln_name`만 주어진 minimal input도 1급 입력으로 지원한다.
+- `NAME-*` synthetic identifier는 free-form 취약점명을 plan 단계에 태우기 위한 공식 메커니즘으로 유지한다.
 
-1. unknown path의 semantic validity를 더 독립적으로 보장
-2. `취약점 이름만 제공`에 가까운 minimal-input 일반화 lane 확보
+### 2.2 생성 원칙
 
-## 2. 이번 턴에서 반영한 구현
+- Docker 환경은 실행 가능한 취약 서비스 + PoC + 빌드/실행 메타데이터까지 동적으로 생성해야 한다.
+- researcher/guard/verifier는 생성된 환경이 "실제로 그 취약점인지"를 확인하는 장치여야 하며, 생성 자체를 카탈로그 선택 문제로 축소해서는 안 된다.
+- 템플릿은 fast path 또는 fallback으로 활용할 수 있지만, system capability의 정의는 "템플릿 유무와 무관하게 동적 합성 가능"이어야 한다.
 
-이번 턴에서 실제로 반영한 보완은 다음 일곱 가지다.
+### 2.3 검증 원칙
 
-### 2.1 unknown semantics source-of-truth 보강
+- `exploit succeeds`는 필요조건이지 충분조건이 아니다.
+- `verify_pass`, `review_pass`, `promotion_eligible`는 모두 semantic/guard/contract 정합성을 반영해야 한다.
+- nested failure를 evidence 문자열에만 남기고 top-level 성공으로 승격시키는 동작은 제거한다.
 
-- Researcher 단계에서 `semantic_signature`를 후처리한다.
-- known CWE 기본 시그니처와 report payload를 그대로 쓰는 대신,
-  - report가 가진 시그니처
-  - pattern / verification_spec / preconditions / failure_context에서 추론한 heuristic 시그니처
-  - known CWE default 시그니처
-  를 merge한다.
-- 결과적으로 unknown run에서도 `semantic_signature`가 empty로 남지 않도록 보강했다.
-- `semantic_signature_source`를 researcher report에 남겨, default/heuristic/report 중 어디에서 채워졌는지 추적 가능하게 했다.
+## 3. 2026-03-07 기준 verified baseline
 
-효과:
+이번 검토에서 직접 확인한 항목은 아래와 같다.
 
-- `metadata/sid-d2ff12df4e6d/researcher_report.json`의 top-level `semantic_signature`가 더 이상 빈 값이 아니다.
-- same run의 `guard_spec.json`도 concrete anchor를 가진 semantic contract를 소비한다.
+### 3.1 테스트 스위트
 
-### 2.2 semantic matcher 현실화
+- `python -m pytest -q tests`
+- 결과: `114 passed, 7 skipped`
 
-- Guard engine의 semantic token matcher에 alias / code-anchor 인식을 추가했다.
-- 예:
-  - `user-controlled request parameter` -> `request.args`, `request.form`, `request.json`, query/body parameter 흔적
-  - `SQL query execution` -> `cursor.execute`, `execute(`, `executescript(`, `sqlite3.connect`
-  - `input concatenated/interpolated into SQL sink` -> SQL string composition regex
-- 이 보완으로 known `CWE-89` bundle에서 실제 취약 구현이 있는데도 reviewer가 semantic mismatch를 내는 false positive를 줄였다.
+### 3.2 직접 rerun한 lane
 
-효과:
+| lane | 입력 형태 | 결과 | loop | 총 소요 | 비고 |
+| --- | --- | --- | --- | --- | --- |
+| SQLi | `sqli-name-only` | pass | 2 | 약 52s | loop 1에서 guard miss 발생 후 loop 2 성공 |
+| CSRF | `csrf-name-only` | pass | 1 | 약 35s | known static lane |
+| SSRF | `ssrf-name-only` | pass | 1 | 약 22s | known static lane |
+| Path Traversal | `vuln_name: Path Traversal` | pass | 1 | 약 58s | researcher-backed runtime rule lane |
+| Template Injection | `vuln_name: Template Injection` | pipeline pass | 1 | 약 72s | guard verifier failure가 top-level success로 누락되는 결함 확인 |
+| Reflected XSS | `vuln_name: Reflected XSS` | pass | 1 | 약 59s | researcher-backed runtime rule lane |
 
-- post-patch known E2E에서 reviewer `issues_sample`이 0이 되었다.
-
-### 2.3 executor PoC 실행 컨텍스트 보강
-
-- executor가 컨테이너 안에서 `/tmp/poc.py`를 실행할 때 `-w /app -e PYTHONPATH=/app`를 함께 준다.
-- 이 보완으로 generated PoC가 `from app import app` / Flask test_client 패턴을 사용해도 `/app/app.py`를 import할 수 있다.
-
-효과:
-
-- post-patch known run에서 한 번 드러난 `PoC import error: No module named 'app'` 유형의 flake를 즉시 해소했다.
-
-### 2.4 repeatability report 왜곡 수정
-
-- success attempt에서 `failure_stage`를 채우지 않도록 수정했다.
-- subprocess error만 있고 `latest_failure`가 없는 경우에는 에러 문자열에서 stage를 추론하도록 보강했다.
-
-효과:
-
-- success report가 더 이상 `failure_stage=REVIEW`로 왜곡되지 않는다.
-
-### 2.5 researcher_report schema normalization
-
-- LLM이 `{"researcher_report": {...}}` 래퍼를 씌운 JSON을 반환해도 저장 직전 canonical top-level shape로 정규화한다.
-- downstream helper(`_extract_verification_spec`, `build_generator_contract`)도 wrapped/legacy payload를 모두 읽을 수 있게 했다.
-
-효과:
-
-- unknown run에서 `researcher_report.json`의 핵심 필드(`verification_spec`, `semantic_signature`, `quality`, `evidence_relevance`)가 top-level에서 일관되게 보인다.
-- runtime rule 생성이 더 이상 wrapped payload를 놓쳐 generic fallback contract로 떨어지지 않는다.
-
-### 2.6 evidence relevance 점수식 1차 재설계
-
-- unknown/known 공통으로 relevance 계산에서 `hit.query`를 제거했다. 이제 query 문자열만으로 관련성이 부풀려지지 않는다.
-- 대신 다음 축을 사용한다.
-  - vulnerability family term
-  - stack affinity(language/framework/db)
-  - exploit term
-  - semantic anchor(`input_vector`, `sink`, `exploit_precondition`)
-- hit별 score/matched category를 `researcher_report.json.evidence_relevance`와 `resolved_contract.json.semantic_contract.evidence_relevance`에 기록한다.
-
-효과:
-
-- unknown run에서도 어떤 remote evidence가 실제로 관련 있고 어떤 hit가 low-signal인지 산출물에서 바로 식별할 수 있다.
-- query-only inflated relevance bug는 제거됐다.
-
-### 2.7 semantic contract 승격 및 verifier 소비
-
-- `resolved_contract.json`에 `semantic_contract`를 추가했다.
-- payload에는 다음이 포함된다.
-  - `semantic_signature`
-  - `semantic_signature_source`
-  - `quality`
-  - `quality_reason`
-  - `evidence_relevance`
-  - `guard_confidence`(available 시)
-- verifier의 `semantic_consistency`는 builtin semantics가 지원되지 않는 unknown CWE에서 `resolved_contract.semantic_contract`를 직접 사용하도록 보강했다.
-
-효과:
-
-- unknown eval 결과의 `semantic_consistency.supported`가 더 이상 `false`가 아니다.
-- `semantic_consistency.source="resolved_contract.semantic_contract"`로, verifier가 공통 semantic contract를 명시적으로 소비했음을 artifact에서 확인할 수 있다.
-
-## 3. 이번 턴 검증 결과
-
-이번 턴에서 직접 확인한 항목:
-
-- 전체 테스트
-  - `pytest -q tests`
-  - 결과: `80 passed, 4 skipped`
-- known deterministic E2E 재실행 (post-patch)
-  - `python tests/e2e/run_case.py --case tests/e2e/cases/cwe-89-basic --mode deterministic --no-snapshot --output-dir /tmp/vuld-postpatch2-cwe89`
-  - 결과: pass
-- unknown live E2E 재실행 (post-patch)
-  - `env VUL_WEB_SEARCH_PROVIDER=tavily python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --mode deterministic --no-snapshot --output-dir /tmp/vuld-postpatch3-unknown`
-  - 결과: pass
-- unknown artifact spot-check
-  - `metadata/sid-d2ff12df4e6d/runtime_rules/cwe-9999.yaml`
-  - 결과: success marker가 generic `Exploit SUCCESS`가 아니라 concrete `"count": 2`, `VULNERABLE_SQLI_CONFIRMED`
-- unknown semantic contract spot-check
-  - `metadata/sid-d2ff12df4e6d/resolved_contract.json`
-  - 결과: `semantic_contract` 포함
-- unknown verifier semantic consistency spot-check
-  - `artifacts/sid-d2ff12df4e6d/reports/evals.json`
-  - 결과: `semantic_consistency.supported=true`, `source=resolved_contract.semantic_contract`
-- unknown regeneration hardness spot-check
-  - same rerun에서 generator가 첫 시도 실패 후 loop 2에서 회복
-  - 실패 이유: `poc missing '"count": 2'`
+이번 검토에서는 `unknown live rerun`은 재실행하지 않았다.
+따라서 unknown noisy evidence lane의 상태는 이전 artifact와 코드 구조를 참고하되, 이번 문서에서는 우선순위만 정의하고 상태를 과도하게 단정하지 않는다.
 
 ## 4. 현재 상태 판정
 
-### 4.1 known path: `cwe-89-basic`
-
-현재 사실:
-
-- deterministic single-run은 post-patch 재실행에서도 pass.
-- `/tmp/vuld-postpatch2-cwe89/summary.json` 기준:
-  - `overall_pass=true`
-  - `verify_pass=true`
-  - `run_passed=true`
-  - `exit_code=0`
-- `metadata/sid-b36ff41a638a/reviewer_report.json` 기준 reviewer issues는 0.
-
-해석:
-
-- known baseline의 기능 경로는 현재도 유지된다.
-- reviewer signal 품질은 이전보다 좋아졌다.
-- 다만 이번 follow-up patch 이후의 full 3회 repeatability를 다시 장시간 재실행하지는 않았다. 따라서 현재 증거는 `single-run 건강성 유지`까지다.
-
-### 4.2 unknown live path: `cwe-unknown-basic`
-
-현재 사실:
-
-- post-patch unknown live run은 pass.
-- `/tmp/vuld-postpatch3-unknown/summary.json` 기준:
-  - `overall_pass=true`
-  - `verify_pass=true`
-  - `run_passed=true`
-  - `blocking_bundles=[]`
-- same summary 기준 verify evidence:
-  - `Found signature: "count": 2`
-  - `Found flag token: VULNERABLE_SQLI_CONFIRMED`
-  - `Semantic consistency check passed`
-- `metadata/sid-d2ff12df4e6d/search_health.json` 기준:
-  - `provider=tavily`
-  - `configured=true`
-  - `auth_present=true`
-  - `policy=remote_required`
-  - `remote_result_count=9`
-  - `degraded=false`
-- `metadata/sid-d2ff12df4e6d/researcher_report.json` 기준:
-  - wrapped payload가 canonical top-level로 정규화됨
-  - `semantic_signature` non-empty
-  - `semantic_signature_source=["heuristic"]`
-  - `evidence_relevance.score=0.661`
-  - low-signal evidence도 hit-level score로 드러남(예: E2E tutorial hit `0.05`)
-- `metadata/sid-d2ff12df4e6d/runtime_rules/cwe-9999.yaml` 기준:
-  - `success_signature="count": 2`
-  - `flag_token=VULNERABLE_SQLI_CONFIRMED`
-  - `assertion_program`이 더 이상 free-form verifier code에서 첫 문자열 리터럴만 뽑은 약한 값으로 채워지지 않고, success marker / flag 기반 contains assertion으로 정규화됨
-- `metadata/sid-d2ff12df4e6d/resolved_contract.json` 기준:
-  - `semantic_contract` 존재
-  - `quality=sufficient`
-  - `evidence_relevance` 포함
-- `artifacts/sid-d2ff12df4e6d/reports/evals.json` 기준:
-  - `semantic_consistency.supported=true`
-  - `semantic_consistency.source=resolved_contract.semantic_contract`
-- `metadata/sid-d2ff12df4e6d/guard_spec.json`도 concrete anchor를 가진 semantic signature를 기록한다.
-
-해석:
-
-- unknown live path는 더 이상 `현재 유일한 hard failure`가 아니다.
-- unknown path의 verifier contract는 이전보다 명확해졌다. 즉, `generic fallback success marker` 의존도는 줄었다.
-- unknown path의 semantic validity는 여전히 완전히 독립적이지는 않지만, verifier가 shared `semantic_contract`를 소비하도록 보강되면서 `산출물 semantic 독립성`은 `낮음 -> 중하` 정도로 한 단계 개선됐다.
-- unknown evidence relevance는 query inflation bug가 제거됐지만, 아직 mixed evidence set를 완전히 억제하지는 못한다. 즉, 현재 문제는 `availability`보다 `validity + confidence calibration`이다.
-- follow-up rerun에서 stricter success marker 때문에 generator가 1회 재시도한 점은 남은 리스크다. 즉, quality bar는 올라갔지만 unknown lane의 deterministic margin은 아직 넉넉하지 않다.
-
-### 4.3 search/provider 상태
-
-현재 사실:
-
-- `custom|tavily` provider는 동작한다.
-- Tavily 키는 `config/api_keys.ini` fallback으로 자동 인식된다.
-- `researcher.search_filters`는 request layer까지 전달된다.
-- `ops/ci/run_e2e_tests.sh`는 Tavily preflight와 repeatability gate opt-in을 이미 지원한다.
-
-현재 한계:
-
-- `brave`, `searxng` adapter는 아직 없다.
-- provider 간 filter parity는 아직 완전하지 않다.
-- heavy E2E/live gate는 여전히 opt-in 운영이 맞다.
-
-해석:
-
-- search/provider는 primary blocker가 아니다.
-- 이 영역의 남은 과제는 기능 부재보다 운영 정책과 parity다.
-
-### 4.4 “일반화 / 취약점 이름만 제공” 관점
-
-현재 사실:
-
-- unknown case는 여전히 base requirement에서 다음을 강하게 상속한다.
-  - `pattern_id: sqli-string-concat`
-  - `language: python`
-  - `framework: flask`
-  - `runtime.db: sqlite`
-  - `base_image`
-  - `user_deps`
-- unknown researcher report도 실제로는 `CWE-89 유사 SQLi`를 재현하는 방향으로 bundle을 유도한다.
-- runtime rule 또한 researcher verification spec에서 파생되어 unknown verifier contract를 강화한다.
-- 현재 E2E case set은 여전히 `cwe-89-basic`, `cwe-unknown-basic` 두 개뿐이며, 별도 minimal-input lane은 없다.
+현재 레포는 이전 문서가 기술하던 상태보다 기능적으로는 더 전진해 있다.
+하지만 검증 신뢰성 관점에서는 여전히 치명적인 결함이 남아 있다.
 
-해석:
+### 4.1 구현 완성도
 
-- 현재 unknown success는 `vuln-name-only generalization`의 증거가 아니다.
-- 더 정확한 표현은 다음이다.
-  - `pattern-conditioned synthesis`
-  - `runtime rule + verification-contract aware generation`
-  - `semantic contract가 이전보다 나아졌고 verifier도 이를 소비하지만, 아직 input-minimal generalization은 아님`
+- known static name-only lane(SQLi/CSRF/SSRF): `중상`
+- known-but-ruleless lane(Path Traversal/XSS): `중상에 근접`
+- free-form `NAME-*` generation capability: `중간 이상`
+- free-form `NAME-*` verification/promotion trust: `중하`
+- open-world multi-stack generalization: `낮음`
 
-즉, 남은 구조적 갭은 `unknown pass/fail`보다 `얼마나 적은 입력으로도 올바른 취약 종류를 고를 수 있느냐`다.
+### 4.2 성능 판정
 
-### 4.5 현재 등급 재판정
+- Docker build/run/verify 자체는 상대적으로 빠르다. 대체로 2~6초 안쪽이다.
+- 병목은 `RESEARCH`와 `GENERATOR`다.
+- researcher가 붙는 lane은 `RESEARCH`만 약 39초가 소요된다.
+- known static lane도 generator retry가 한 번만 발생하면 총 시간이 바로 50초대로 상승한다.
 
-- unknown pattern-conditioned lane: `중간 -> 중상`
-  - 이유: wrapped report normalization, concrete runtime verifier contract, semantic contract 소비까지 연결됐다.
-- 산출물 semantic 독립성: `낮음 -> 중하`
-  - 이유: builtin rule이 없는 unknown에서도 verifier가 shared semantic contract를 읽지만, 그 contract 자체는 아직 researcher-derived heuristic 비중이 높다.
-- 취약점 이름만 제공 generalization: `낮음 유지`
-  - 이유: minimal-input lane과 stack inference lane이 아직 없다.
+### 4.3 산출물 품질 판정
 
-## 5. 잔여 구현계획 타당성 재검토
+- semantic contract 생성 품질은 이전보다 좋아졌다.
+- 그러나 top-level `success/promotion`이 nested guard/verifier failure를 무시하는 결함이 있다.
+- 따라서 현재 상태를 "artifact trust까지 높다"라고 해석하면 안 된다.
+- 특히 `Template Injection` rerun은 실제로 이 문제를 재현했다.
 
-### 5.1 그대로 유지할 가치가 높은 항목
+## 5. 이번 검토에서 확인된 핵심 구조 결함
 
-- dynamic semantics 강화
-  - 이번 턴에서 `resolved_contract.semantic_contract`와 verifier consumption까지 추가했지만, 아직 authoritative owner를 완전히 고정하지는 않았다.
-- repeatability / live artifact 보존 및 CI gate 승격
-  - 이번 턴에서 report 해석 품질을 고쳤으므로, 이제 artifact-driven gate 운영 가치가 더 높아졌다.
-- provider parity
-  - primary blocker는 아니지만, 운영 lane 다양화에는 여전히 필요하다.
-- scaffold + vuln patch 아키텍처
-  - 장기적으로 일반화 품질을 가장 크게 끌어올릴 수 있는 방향은 여전히 맞다.
+### 5.1 P0 결함: guard/verifier failure가 top-level success를 막지 못한다
 
-### 5.2 우선순위를 낮춰야 하는 항목
+현재는 다음과 같은 잘못된 성공 경로가 존재한다.
 
-- `unknown live 1회 pass 재확보`
-  - 현재 워킹트리 기준 이미 달성됐다.
-- `repeated-failure loop`를 immediate top priority로 두는 것
-  - unknown fail baseline이 더 이상 현재의 대표 상태가 아니므로, 이 항목은 한 단계 내려가야 한다.
+- verifier 내부에서 guard inconsistency가 발생해도
+- evidence 문자열에만 경고가 남고
+- `verify_pass=true`
+- reviewer clean
+- promotion eligible
+로 끝날 수 있다.
 
-### 5.3 현재 기준 새 우선순위
+실제 예:
 
-#### 1순위: unknown semantic validity hardening
+- `Template Injection` rerun (`sid-86dba9eb7da8`)
+- `guard_consistency.verifier.passed=false`
+- `violations=["verifier assertion failed (contains): substring=missing: 49"]`
+- 그럼에도 `overall_pass=true`, reviewer clean, promotion eligible
 
-이유:
+이 결함은 현재 레포의 최우선 수정 대상이다.
 
-- unknown path는 pass하고 verifier도 shared semantic contract를 읽지만, 그 contract가 아직 researcher-derived heuristic에 가깝다.
-- 지금 가장 중요한 질문은 “이 취약점이 정말 요청한 취약점인가”다.
+### 5.2 P0 결함: `NAME-*` runtime rule이 실제 로드되지 않는다
 
-핵심 작업:
+free-form lane의 runtime rule writer와 loader가 같은 naming rule을 공유하지 않는다.
 
-- `semantic_signature`를 researcher / guard / verifier / contract 중 어디가 authoritative인지 명확히 고정
-- 현재 추가된 `resolved_contract.semantic_contract`를 진짜 source-of-truth로 승격
-- runtime rule / verification spec이 semantic contract와 모순되지 않는지 cross-check
+- writer는 `name-template-injection.yaml`처럼 기록한다.
+- loader는 non-CWE id를 `cwe-name-template-injection.yaml`로 해석한다.
 
-완료 기준:
+결과:
 
-- unknown run에서 semantic contract가 empty가 아니고,
-- same contract를 researcher / guard / verifier가 공통 소비하며,
-- self-authored verifier contract만 맞추는 bundle이 semantic layer에서 차단된다.
+- `NAME-*` family는 researcher가 runtime rule을 생성해도
+- verify 단계에서 그 rule을 직접 쓰지 못하고
+- generator manifest fallback rule에 의존하게 된다.
 
-#### 2순위: evidence relevance 강화
+즉 free-form lane의 "runtime rule generalization"은 현재 부분적으로만 동작한다.
 
-이유:
+### 5.3 P1 결함: role vocabulary가 stage마다 다르다
 
-- 이번 턴에서 query inflation bug는 제거했지만, 현재 scoring은 여전히 `stack/sql/sqlite` hit 몇 개만으로 overall sufficient가 가능하다.
-- mixed evidence set에서 off-topic remote hit를 더 강하게 감점하는 2차 보정이 필요하다.
+현재 pipeline의 canonical role은 사실상 다음 둘이다.
 
-핵심 작업:
+- `service_main`
+- `poc_entry`
 
-- unknown relevance를 raw CWE token match보다
-  - vulnerability family term
-  - sink/input/precondition anchor
-  - stack affinity
-  - exploit effect
-  중심으로 재계산
-- off-topic / wrong-family evidence에 negative weighting 추가
-- low-confidence unknown evidence에서는 runtime rule strength를 낮추거나 explicit fallback mode로 전환
+하지만 실제 생성물과 guard spec은 다음 role을 쓰는 경우가 있다.
 
-완료 기준:
+- `server`
+- `verifier`
 
-- unrelated evidence mix가 많은 unknown run은 quality가 낮게 판정되거나
-- 최소한 semantic contract confidence가 낮다고 명시된다.
+이 문제는 즉시 실패로 드러나지 않을 수 있다.
+왜냐하면 일부 stage는 fallback으로 `app.py`/`poc.py`를 사용하기 때문이다.
+하지만 파일명이 비정형으로 바뀌는 순간 contract resolution, rule placeholder resolution, reviewer scan이 서로 다른 파일을 보게 된다.
 
-#### 3순위: minimal-input generalization lane 신설
+즉 role drift는 현재는 운 좋게 가려지는 결함이지, 해결된 문제가 아니다.
 
-이유:
+### 5.4 P1 결함: runtime assertion success가 semantic/guard 검사를 shortcut한다
 
-- 현재 repo는 `pattern-conditioned` lane에서는 점점 좋아지고 있다.
-- 하지만 사용자가 원하는 `취약점 이름만 제공` 수준은 아직 별도 검증 lane 자체가 없다.
+runtime rule에 assertion program이 있으면 verify가 조기 성공할 수 있다.
+그 결과 일부 lane에서는 eval evidence가 사실상 substring pass에 가까워진다.
 
-핵심 작업:
+이 동작은 다음 문제를 만든다.
 
-- 새 E2E case를 추가해 다음을 최소화한다.
-  - no explicit `pattern_id`
-  - no explicit framework hint
-  - no explicit DB hint
-  - only vuln_id + safe runtime defaults
-- 현재 lane과 분리해서 `pattern-conditioned lane` / `minimal-input lane`을 별도 지표로 관리
+- semantic consistency가 항상 기록되지 않는다.
+- guard consistency가 항상 top-level verdict에 반영되지 않는다.
+- reviewer가 보완하더라도 exploit 성공 시 non-blocking으로 낮춰지는 경로가 남는다.
 
-완료 기준:
+즉 현재 verify는 "exploit success detector"로는 동작하지만, 항상 "contract/trust gate"로 동작하지는 않는다.
 
-- minimal-input lane에서 1회 이상 pass artifact 확보
-- 실패 시에도 어떤 missing semantic / stack inference 때문에 실패했는지 metadata에 남음
+## 6. 전략 목표
 
-#### 4순위: repeatability / CI gate 승격
+다음 단계의 목표는 단순하다.
 
-이유:
+### 6.1 North Star
 
-- 이번 턴에서 repeatability report 왜곡이 수정됐다.
-- 이제 artifact 해석 가능성이 높아졌으므로 CI 승격을 논할 수 있다.
+`vuln_name only -> researcher/guard/synthesis -> runnable vulnerable Docker bundle -> exploit success + semantic/guard alignment + promotion truthfulness`
 
-핵심 작업:
+### 6.2 이번 계획의 핵심 전환
 
-- known repeatability gate를 CI 기본 lane으로 승격
-- unknown live gate는 Tavily key가 있는 lane/nightly에서 required
-- repeatability/live artifact를 long-lived artifact로 보존
+이전 문서는 다음을 상위 우선순위로 두었다.
 
-완료 기준:
+- Path Traversal low-loop 안정화
+- Template Injection dependency follow-through
+- XSS/Deserialization live coverage 확보
 
-- success/failure stage, guard codes, report path가 CI artifact로 안정적으로 남음
+이번 검토 결과, 우선순위는 다음처럼 바뀌어야 한다.
 
-#### 5순위: provider 확장과 filter parity
+1. success/promotion truth repair
+2. `NAME-*` runtime rule/contract normalization
+3. role canonicalization
+4. official lane codification(Template Injection/XSS/Deserialization)
+5. then performance stabilization
+6. then broader stack generalization
 
-이유:
+## 7. 단계별 개선 계획
 
-- 여전히 useful하지만 primary blocker는 아니다.
+### Phase 0. Verdict Truth Repair
 
-핵심 작업:
+### 목적
 
-- `brave.py`, `searxng.py` adapter
-- provider별 filter parity 정렬
+- nested verifier/guard/semantic failure가 있으면 top-level `verify_pass`, `review`, `promotion`이 반드시 실패하도록 만든다.
 
-## 6. 지금 바로 이어서 할 다음 구현 단계
+### 작업 항목
 
-현 시점에서 가장 타당한 다음 작업은 아래 순서다.
+1. `evals/poc_verifier/rule_based.py`
+   - `guard_consistency.verifier.blocking=true` 또는 workspace guard blocking이면 `verify_pass=false`로 강제한다.
+   - semantic consistency mismatch가 blocking 수준이면 evidence 추가만 하지 말고 verify failure로 반영한다.
+   - top-level 결과를 `exploit_pass`, `contract_pass`, `verify_pass`로 분리하는 리팩터링 여부를 결정한다.
 
-1. `semantic_contract` authority 고정 + runtime rule / verification spec contradiction check 추가
-2. unknown evidence relevance 2차 보정(negative weighting / confidence downgrade)
-3. minimal-input unknown E2E case 추가
-4. known repeatability 3회 post-follow-up 재측정 및 CI lane 연결
-5. provider parity 확장
+2. `agents/reviewer/service.py`
+   - `evaluate_with_vuln()`가 반환한 nested `guard_consistency`, `semantic_consistency`를 reviewer issue로 승격한다.
+   - exploit 성공 여부와 무관하게 `severity=block`인 verifier guard failure는 reviewer blocking으로 처리한다.
+   - 현재의 "exploit 성공 시 workspace semantic/guard mismatch는 non-blocking" 정책을 재검토하고, 최소한 guard failure는 blocking으로 상향한다.
 
-## 7. 현재 상태를 한 문장으로 요약하면
+3. `orchestrator/pack.py`
+   - `eval_result.guard_consistency.verifier.passed=false`
+   - `eval_result.guard_consistency.workspace.passed=false`
+   - `eval_result.semantic_consistency.semantic_match=false`
+   인 경우 promotion을 차단한다.
 
-2026-03-07 KST 기준 이 레포는 `known/unknown live path 모두 현재는 실제 pass 가능하고, follow-up patch에서 unknown verifier contract / evidence relevance / semantic contract 공유를 한 단계 강화했지만, 아직 “취약점 이름만 제공” 수준의 일반화 엔진으로 보기는 이르다`가 가장 정확하다.
+4. 테스트 추가
+   - `Template Injection`과 같은 케이스에서 nested guard failure가 있을 때
+     - `evals.overall_pass=false`
+     - reviewer blocking
+     - promotion.eligible=false
+     를 강제하는 unit/e2e 테스트를 추가한다.
+
+### 완료 기준
+
+- `Template Injection` rerun이 현재처럼 false-positive success로 끝나지 않는다.
+- nested guard failure가 있는 artifact는 reviewer 또는 pack 단계에서 반드시 차단된다.
+- `success`와 `promotion eligible`의 의미가 다시 일치한다.
+
+### Phase 1. `NAME-*` Runtime Rule Normalization
+
+### 목적
+
+- free-form vulnerability family도 researcher가 만든 runtime rule을 verify가 직접 소비하게 만든다.
+
+### 작업 항목
+
+1. `common/rules/__init__.py`
+   - `_normalized_filename()`를 `NAME-*`와 기타 synthetic identifier에 맞게 확장한다.
+   - `cwe-` prefix 전제 로직을 완화하거나, identifier class에 따라 filename normalization을 분기한다.
+
+2. `agents/researcher/service.py`
+   - `_write_candidate_rule()`가 rule loader와 동일한 filename normalization 함수를 쓰도록 바꾼다.
+   - writer/loader가 서로 다른 naming policy를 가지지 않게 만든다.
+
+3. `evals/poc_verifier/registry.py`
+   - `rule_available` 판정이 실제 `load_rule()` 가능성과 일치하도록 정리한다.
+   - "registry knows the id"와 "rule loader can actually resolve the file"를 분리 기록할지 결정한다.
+
+4. 테스트 추가
+   - `NAME-TEMPLATE-INJECTION` runtime rule writer/loader round-trip test
+   - `NAME-*` rule이 있으면 generator_manifest fallback으로 내려가지 않는 verify path test
+
+### 완료 기준
+
+- `load_rule("NAME-TEMPLATE-INJECTION")`가 실제 runtime rule을 반환한다.
+- free-form lane에서 runtime rule이 verify에 직접 사용된다.
+- `rule_available` metadata가 실제 rule resolution과 어긋나지 않는다.
+
+### Phase 2. Canonical Role Normalization
+
+### 목적
+
+- 생성물, guard, contract, verifier, reviewer가 같은 file role vocabulary를 사용하게 만든다.
+
+### canonical role
+
+- `service_main`
+- `poc_entry`
+- `helper`
+- `schema`
+- `seed_data`
+- `docs`
+- `container`
+- `deps_lock`
+
+### 작업 항목
+
+1. researcher guard payload normalization
+   - `server -> service_main`
+   - `verifier -> poc_entry`
+   alias를 정식 지원한다.
+
+2. synthesis manifest validation
+   - role alias가 들어오면 canonical role로 normalize해서 기록한다.
+   - 원본 role은 optional metadata로만 남긴다.
+
+3. contract resolution / reviewer / verifier
+   - canonical role 우선 사용
+   - alias는 backward compatibility layer로만 허용
+
+4. docs/prompts
+   - generator prompt와 handbook에 canonical role만 공식 스키마로 명시한다.
+
+### 완료 기준
+
+- 모든 generated manifest는 canonical role을 쓴다.
+- contract/reviewer/verifier가 파일 경로 fallback 없이 같은 entry file을 본다.
+- 비정형 파일명(`server.py`, `exploit.py`, `main_service.py`)에서도 stable하게 동작한다.
+
+### Phase 3. Verify Model Refactor
+
+### 목적
+
+- verify를 "substring pass detector"가 아니라 "exploit + contract alignment verifier"로 만든다.
+
+### 작업 항목
+
+1. `evals/poc_verifier/scenarios.py`
+   - assertion_program 성공 시에도 semantic/guard consistency 계산을 계속 수행하도록 수정한다.
+   - 조기 return을 제거하거나, partial verdict를 합성하는 구조로 변경한다.
+
+2. verify result schema 개선
+   - `exploit_pass`
+   - `semantic_pass`
+   - `guard_pass`
+   - `verify_pass`
+   를 구분한다.
+
+3. reviewer/pack 연동
+   - reviewer는 `verify_pass`만 보지 않고 하위 verdict를 직접 읽는다.
+   - pack은 `guard_pass=false` 또는 `semantic_pass=false`면 promotion 차단한다.
+
+4. 테스트 추가
+   - Path Traversal/XSS처럼 runtime assertion이 있는 lane에서도 semantic/guard report가 비지 않는지 검증한다.
+
+### 완료 기준
+
+- eval result에 semantic/guard verdict가 항상 기록된다.
+- assertion_program이 성공해도 semantic mismatch가 있으면 전체 verify는 실패한다.
+- reviewer/pack이 하위 verdict와 모순되지 않는다.
+
+### Phase 4. Official Lane Codification
+
+### 목적
+
+- 지금 수동 rerun으로 확인된 lane을 공식 regression asset으로 승격한다.
+
+### 작업 항목
+
+1. E2E case 추가 또는 정리
+   - `Path Traversal` name-only official case
+   - `Template Injection` name-only official case
+   - `XSS` name-only official case
+   - `Insecure Deserialization` name-only case 설계/구현
+
+2. 문서/룰 정리
+   - static rule이 필요한 family와 runtime rule로 충분한 family를 구분한다.
+   - free-form family는 runtime rule + semantic contract + guard spec을 공식 경로로 문서화한다.
+
+3. CI 분리
+   - deterministic local lane
+   - researcher-backed remote lane
+   - unknown live lane
+   를 분리하고, 각각의 책임을 다르게 둔다.
+
+### 완료 기준
+
+- manual rerun이 아니라 repo의 official case로 Path Traversal/Template Injection/XSS를 재현 가능하다.
+- `Insecure Deserialization` 최소 1개 live pass 확보 또는 blocker를 재현하는 failing case가 officialized 된다.
+
+### Phase 5. Performance Stabilization
+
+### 목적
+
+- researcher-backed lane의 latency를 줄이고 known static lane의 retry를 줄인다.
+
+### 우선 병목
+
+- researcher latency 약 39초
+- generator latency 14~24초
+- known static lane도 generator retry 1회만으로 50초대
+
+### 작업 항목
+
+1. known static fast path
+   - researcher skip lane에서 prompt/hint를 더 deterministic하게 줄여 generator first-pass rate를 높인다.
+   - SQLi처럼 반복되는 guard miss를 재현 가능한 regression으로 고정한다.
+
+2. researcher query budget 정리
+   - query 수, provider latency, high-noise source penalty를 튜닝한다.
+   - evidence relevance가 충분히 높으면 추가 검색을 조기 종료한다.
+
+3. synthesis retry cost 절감
+   - 이전 loop의 accepted semantic skeleton을 재사용한다.
+   - dependency/role/contract class 오류는 full regenerate 대신 structured patch를 우선한다.
+
+### 성능 목표
+
+- known static deterministic lane: p95 30초 이내
+- researcher-backed deterministic lane: p95 75초 이내
+- known static first-loop success rate: 90% 이상
+- runtime rule lane first-loop success rate: 80% 이상
+
+### Phase 6. Open-World Generalization
+
+### 목적
+
+- 현재의 Python/Flask 단일 컨테이너 중심 capability를 넘어 multi-stack, multi-service까지 일반화한다.
+
+### 현재 판단
+
+- 이 단계는 중요하지만 P0/P1 이후다.
+- 현재 가장 큰 문제는 coverage 부족이 아니라 trust mismatch다.
+
+### 작업 항목
+
+1. Node/Express, PHP, Java 최소 1개 family 확보
+2. 외부 DB sidecar 및 multi-container synthesis 정식화
+3. non-web scenario type 확장 여부 검토
+
+### 완료 기준
+
+- 단일 스택이 아닌 lane에서도 `vuln_name only -> runnable bundle -> trusted verify`가 성립한다.
+
+## 8. 실행 순서
+
+실제 구현 순서는 아래로 고정한다.
+
+1. Phase 0 완료
+2. Phase 1 완료
+3. Phase 2 완료
+4. Phase 3 최소 버전 완료
+5. Phase 4에서 Template Injection/XSS officialization
+6. 그 다음 Path Traversal/Deserialization 정식화
+7. 이후 Phase 5 성능 안정화
+8. 마지막으로 Phase 6 stack generalization
+
+즉, 다음 sprint의 핵심은 "새 family 추가"가 아니라 "현재 pass의 의미를 신뢰 가능하게 만드는 것"이다.
+
+## 9. Acceptance Matrix
+
+아래 matrix가 모두 만족되어야 이번 단계 완료로 본다.
+
+| 구분 | 최소 acceptance |
+| --- | --- |
+| Unit tests | 기존 `114 passed, 7 skipped` 수준 유지 또는 상향 |
+| Verdict truth | nested guard/verifier failure가 있으면 top-level success 금지 |
+| Free-form rule loading | `NAME-*` runtime rule writer/loader round-trip 성공 |
+| Role normalization | generated manifest canonical role 100% |
+| Official lanes | SQLi/CSRF/SSRF/Path Traversal/Template Injection/XSS 공식 rerun 보유 |
+| Promotion truth | `promotion.eligible=true`인 artifact는 guard/semantic blocking failure가 없어야 함 |
+| Performance | known static p95 <= 30s, researcher-backed p95 <= 75s |
+
+## 10. 문서 운영 규칙
+
+이 문서는 이후부터 다음 규칙으로 유지한다.
+
+- speculative statement를 쓰지 않는다.
+- "pass", "stable", "eligible" 같은 표현은 fresh rerun 또는 CI artifact로만 갱신한다.
+- 상태 서술과 계획 서술을 분리한다.
+- 계획 변경 시에는 반드시 "왜 우선순위가 바뀌었는지"를 rerun 결과와 연결해 적는다.
+
+## 11. 현재 즉시 착수할 구현 항목
+
+지금 바로 시작할 work package는 아래 네 개다.
+
+1. verifier/reviewer/pack truth repair
+2. `NAME-*` runtime rule filename normalization
+3. role canonicalization across researcher/synthesis/contract/reviewer/verifier
+4. Template Injection official regression case + false-positive blocking test
+
+이 네 항목이 닫히기 전까지는 "free-form `취약점 이름만 제공` 기반 동적 취약 Docker 생성이 신뢰 가능한 수준에 도달했다"고 판단하지 않는다.
+
+## 12. 한 문장 요약
+
+현재 레포는 `취약점 이름만 제공 -> 동적 취약 Docker 생성`이라는 초기 방향성 자체는 실제로 SQLi/CSRF/SSRF/Path Traversal/Template Injection/XSS까지 상당 부분 구현했지만, 다음 단계의 최우선 과제는 family 확장보다 먼저 `verify/review/promotion truthfulness`, `NAME-* runtime rule loading`, `role canonicalization`을 바로잡아 생성 성공과 산출물 신뢰성을 일치시키는 것이다.

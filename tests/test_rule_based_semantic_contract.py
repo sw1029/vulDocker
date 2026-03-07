@@ -88,3 +88,65 @@ def test_unknown_rule_based_verifier_uses_resolved_contract_semantic_contract(
     assert result["semantic_consistency"]["supported"] is True
     assert result["semantic_consistency"]["semantic_match"] is True
     assert result["semantic_consistency"]["source"] == "resolved_contract.semantic_contract"
+
+
+def test_rule_based_verifier_fails_when_semantic_contract_has_contradictions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    metadata_dir = repo_root / "metadata" / "sid-semantic-bad"
+    workspace_dir = repo_root / "workspaces" / "sid-semantic-bad" / "app"
+    run_dir = repo_root / "artifacts" / "sid-semantic-bad" / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = "from flask import Flask\napp = Flask(__name__)\n"
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('SQLi SUCCESS')\nprint('FLAG-sqli-demo-token')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("SQLi SUCCESS\nFLAG-sqli-demo-token\n", encoding="utf-8")
+
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-semantic-bad",
+            "slug": "cwe-89",
+            "vuln_id": "CWE-89",
+            "success_signature": "SQLi SUCCESS",
+            "flag_token": "FLAG-sqli-demo-token",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["cross-site request"],
+                    "sink": ["state-changing endpoint (POST/PUT/DELETE/PATCH)"],
+                    "exploit_precondition": ["missing CSRF token validation"],
+                },
+                "contradictions": ["semantic_contract sink conflicts with baseline CWE-89 semantics"],
+                "status": "contradicted",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-89",
+        run_dir / "run.log",
+        run_summary={"sid": "sid-semantic-bad", "slug": "cwe-89", "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is False
+    assert result["semantic_consistency"]["supported"] is True
+    assert result["semantic_consistency"]["semantic_match"] is False
+    assert any(
+        "baseline" in item or "semantic_contract" in item
+        for item in result["semantic_consistency"]["errors"]
+    )

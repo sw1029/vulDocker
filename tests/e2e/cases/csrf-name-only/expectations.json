@@ -1,0 +1,20 @@
+{
+  "manifest": {
+    "overall_pass": true
+  },
+  "evals": [
+    {
+      "slug": "cwe-352",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "evidence_contains": [
+        "CSRF SUCCESS",
+        "FLAG-csrf-demo-token"
+      ]
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

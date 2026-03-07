@@ -100,6 +100,22 @@ def test_guard_engine_regex_ops_supported() -> None:
     assert result.blocking is False
 
 
+def test_guard_engine_file_regex_any_matches_top_level_files_for_recursive_glob() -> None:
+    spec = build_guard_spec(
+        sid="sid-test",
+        vuln_id="CWE-89",
+        slug="cwe-89",
+        generator_assertions=[
+            {"op": "file_regex_any", "globs": ["**/*.py"], "regex": r"request\.args|Exploit SUCCESS"},
+        ],
+        verifier_assertions=[],
+    )
+    engine = GuardEngine("CWE-89", spec.to_dict())
+    result = engine.evaluate_manifest(_manifest())
+    assert result.passed is True
+    assert result.blocking is False
+
+
 def test_guard_engine_accepts_legacy_generator_op_aliases() -> None:
     spec = build_guard_spec(
         sid="sid-test",

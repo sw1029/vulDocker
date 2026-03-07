@@ -16,9 +16,98 @@ VALID_GUARD_DYNAMIC_SCOPES = {"assertions_semantics", "include_patterns", "full"
 VALID_GUARD_BUDGET_MODES = {"bundle_once", "per_candidate", "verifier_only", "bundle_ensemble"}
 VALID_GUARD_AUTOFIX_LEVELS = {"none", "manifest", "code"}
 VALID_GUARD_UNSUPPORTED_OP_POLICIES = {"normalize_retry", "fail", "warn"}
+VALID_GUARD_LOW_CONFIDENCE_POLICIES = {"warn", "guard_fallback", "fail_closed"}
 DEFAULT_GUARD_SEMANTIC_REFRESH_THRESHOLD = 2
 DEFAULT_GUARD_FAILURE_FINGERPRINT_WINDOW = 3
 VALID_SEARCH_FILTER_KEYS = {"include_domains", "exclude_domains", "time_range", "country", "search_lang"}
+VULN_NAME_ALIASES = {
+    "sql injection": "CWE-89",
+    "sqli": "CWE-89",
+    "cross site request forgery": "CWE-352",
+    "csrf": "CWE-352",
+    "path traversal": "CWE-22",
+    "directory traversal": "CWE-22",
+    "code injection": "CWE-94",
+    "command injection": "CWE-78",
+    "cross site scripting": "CWE-79",
+    "xss": "CWE-79",
+    "server side request forgery": "CWE-918",
+    "ssrf": "CWE-918",
+    "insecure deserialization": "CWE-502",
+    "deserialization": "CWE-502",
+}
+VULN_NAME_HEURISTICS = (
+    (re.compile(r"\b(sql injection|sqli)\b"), "CWE-89"),
+    (re.compile(r"\b(cross[ -]?site request forgery|csrf)\b"), "CWE-352"),
+    (re.compile(r"\b(path traversal|directory traversal|file traversal)\b"), "CWE-22"),
+    (re.compile(r"\b(command injection|shell injection|os command injection)\b"), "CWE-78"),
+    (re.compile(r"\b(code injection|eval injection|exec injection)\b"), "CWE-94"),
+    (re.compile(r"\b(cross[ -]?site scripting|xss)\b"), "CWE-79"),
+    (re.compile(r"\b(server[ -]?side request forgery|ssrf)\b"), "CWE-918"),
+    (re.compile(r"\b(insecure deserialization|unsafe deserialization|deserialization)\b"), "CWE-502"),
+)
+DEFAULT_STACK_PROFILE = {
+    "language": "python",
+    "framework": "flask",
+    "runtime": {
+        "base_image": "python:3.11-slim",
+        "package_manager": "pip",
+        "allow_external_db": False,
+    },
+    "generator_mode": "synthesis",
+    "seed": 1000,
+    "retriever_commit": "stub",
+    "corpus_snapshot": "rag-snap-mvp",
+    "deps_digest": "sha256:auto",
+    "base_image_digest": "sha256:python311",
+    "dep_guard": {
+        "llm_assist": True,
+        "auto_patch": True,
+    },
+}
+VULN_PROFILE_DEFAULTS = {
+    "CWE-89": {
+        "display_name": "SQL Injection",
+        "pattern_id": "sqli-string-concat",
+        "runtime": {"db": "sqlite"},
+        "user_deps": ["requests==2.31.0"],
+    },
+    "CWE-352": {
+        "display_name": "CSRF",
+        "pattern_id": "csrf",
+        "user_deps": ["requests==2.31.0"],
+    },
+    "CWE-22": {
+        "display_name": "Path Traversal",
+        "pattern_id": "path-traversal",
+        "user_deps": ["requests==2.31.0"],
+    },
+    "CWE-78": {
+        "display_name": "Command Injection",
+        "pattern_id": "command-injection",
+        "user_deps": ["requests==2.31.0"],
+    },
+    "CWE-94": {
+        "display_name": "Code Injection",
+        "pattern_id": "code-injection",
+        "user_deps": ["requests==2.31.0"],
+    },
+    "CWE-79": {
+        "display_name": "Cross-Site Scripting",
+        "pattern_id": "xss-reflected",
+        "user_deps": ["requests==2.31.0"],
+    },
+    "CWE-918": {
+        "display_name": "Server-Side Request Forgery",
+        "pattern_id": "ssrf-url-fetch",
+        "user_deps": ["requests==2.31.0"],
+    },
+    "CWE-502": {
+        "display_name": "Insecure Deserialization",
+        "pattern_id": "insecure-deserialization",
+        "user_deps": ["requests==2.31.0"],
+    },
+}
 
 
 def _as_bool(value: Any) -> bool:
@@ -35,8 +124,59 @@ def _coerce_identifier(value: Any) -> str:
     cleaned = value.strip()
     if not cleaned:
         return ""
-    normalized = cleaned.replace(" ", "").upper()
-    return normalized
+    mapped = _mapped_vuln_id(cleaned)
+    if mapped:
+        return mapped
+    lowered = cleaned.lower()
+    if lowered.startswith(("cwe", "cve")):
+        return cleaned.replace(" ", "").replace("_", "-").upper()
+    if cleaned.isdigit():
+        return cleaned
+    if re.fullmatch(r"[A-Za-z0-9.-]+", cleaned):
+        return cleaned.replace(" ", "").upper()
+    return ""
+
+
+def _normalize_vuln_label(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    cleaned = re.sub(r"[^a-z0-9]+", " ", value.strip().lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _mapped_vuln_id(value: Any) -> str:
+    label = _normalize_vuln_label(value)
+    if not label:
+        return ""
+    mapped = VULN_NAME_ALIASES.get(label, "")
+    if mapped:
+        return mapped
+    for pattern, inferred in VULN_NAME_HEURISTICS:
+        if pattern.search(label):
+            return inferred
+    return ""
+
+
+def _named_vuln_label(requirement: Dict[str, Any]) -> str:
+    for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name"):
+        value = requirement.get(key)
+        if not isinstance(value, str):
+            continue
+        cleaned = value.strip()
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _named_vuln_id(requirement: Dict[str, Any]) -> str:
+    for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name"):
+        mapped = _mapped_vuln_id(requirement.get(key))
+        if mapped:
+            return mapped
+    raw_name = _named_vuln_label(requirement)
+    if raw_name:
+        return f"NAME-{slugify_vuln_id(raw_name).upper()}"
+    return ""
 
 
 def slugify_vuln_id(value: str) -> str:
@@ -91,6 +231,7 @@ def normalize_requirement(
     normalized_req["vuln_id"] = effective[0]
     normalized_req["vuln_ids"] = effective
     normalized_req["multi_vuln"] = multi_vuln
+    _apply_minimal_input_defaults(normalized_req, effective, warnings)
     _normalize_research_policy(normalized_req, effective, warnings)
     _normalize_pipeline_policy(normalized_req, effective, warnings)
 
@@ -138,6 +279,8 @@ def _extract_vuln_ids(requirement: Dict[str, Any]) -> List[str]:
         or requirement.get("cwe_id")
         or requirement.get("cve_id")
     )
+    if not primary:
+        primary = _named_vuln_id(requirement)
     if primary:
         if primary in declared:
             declared.remove(primary)
@@ -145,6 +288,121 @@ def _extract_vuln_ids(requirement: Dict[str, Any]) -> List[str]:
     if not declared:
         return []
     return declared
+
+
+def _pattern_default_for_name(raw_name: str) -> str:
+    label = _normalize_vuln_label(raw_name)
+    if not label:
+        return "generic-web-vuln"
+    pattern_aliases = {
+        "sql injection": "sqli-string-concat",
+        "sqli": "sqli-string-concat",
+        "cross site request forgery": "csrf",
+        "csrf": "csrf",
+        "path traversal": "path-traversal",
+        "directory traversal": "path-traversal",
+        "command injection": "command-injection",
+        "code injection": "code-injection",
+        "cross site scripting": "xss-reflected",
+        "xss": "xss-reflected",
+        "server side request forgery": "ssrf-url-fetch",
+        "ssrf": "ssrf-url-fetch",
+        "insecure deserialization": "insecure-deserialization",
+        "deserialization": "insecure-deserialization",
+        "server side template injection": "template-injection",
+        "ssti": "template-injection",
+        "template injection": "template-injection",
+        "open redirect": "open-redirect",
+        "xxe": "xxe",
+    }
+    mapped = pattern_aliases.get(label)
+    if mapped:
+        return mapped
+    if "template injection" in label or "ssti" in label:
+        return "template-injection"
+    if "open redirect" in label:
+        return "open-redirect"
+    if label == "xxe" or "xml external entity" in label:
+        return "xxe"
+    return "generic-web-vuln"
+
+
+def _profile_defaults_for_vuln(vuln_id: str, *, raw_name: str = "") -> Dict[str, Any]:
+    normalized = _coerce_identifier(vuln_id) or str(vuln_id or "").strip().upper()
+    profile = deepcopy(DEFAULT_STACK_PROFILE)
+    profile.update(deepcopy(VULN_PROFILE_DEFAULTS.get(normalized, {})))
+    runtime = deepcopy(DEFAULT_STACK_PROFILE.get("runtime") or {})
+    runtime.update(deepcopy((VULN_PROFILE_DEFAULTS.get(normalized, {}) or {}).get("runtime") or {}))
+    profile["runtime"] = runtime
+    profile.setdefault("display_name", str(raw_name or "").strip() or normalized or "Unknown Vulnerability")
+    profile.setdefault("pattern_id", _pattern_default_for_name(raw_name))
+    profile.setdefault("user_deps", ["requests==2.31.0"])
+    return profile
+
+
+def _apply_minimal_input_defaults(
+    requirement: Dict[str, Any],
+    effective_vuln_ids: List[str],
+    warnings: List[str],
+) -> None:
+    primary_vuln = effective_vuln_ids[0] if effective_vuln_ids else str(requirement.get("vuln_id") or "")
+    raw_name = _named_vuln_label(requirement)
+    profile = _profile_defaults_for_vuln(primary_vuln, raw_name=raw_name)
+    applied: List[str] = []
+
+    def _apply(key: str, value: Any) -> None:
+        if requirement.get(key) not in (None, "", [], {}):
+            return
+        requirement[key] = deepcopy(value)
+        applied.append(key)
+
+    _apply("requirement_id", f"AUTO-{slugify_vuln_id(primary_vuln or 'unknown').upper()}")
+    _apply("intent", f"Auto-normalized minimal-input run for {profile.get('display_name') or primary_vuln}")
+    _apply("vuln_label", profile.get("display_name"))
+    _apply("language", profile.get("language"))
+    _apply("framework", profile.get("framework"))
+    _apply("seed", profile.get("seed"))
+    _apply("retriever_commit", profile.get("retriever_commit"))
+    _apply("corpus_snapshot", profile.get("corpus_snapshot"))
+    _apply("pattern_id", profile.get("pattern_id"))
+    _apply("deps_digest", profile.get("deps_digest"))
+    _apply("base_image_digest", profile.get("base_image_digest"))
+    _apply("generator_mode", profile.get("generator_mode"))
+
+    runtime = requirement.get("runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+        requirement["runtime"] = runtime
+    runtime_defaults = profile.get("runtime") if isinstance(profile.get("runtime"), dict) else {}
+    for key, value in runtime_defaults.items():
+        if runtime.get(key) in (None, "", [], {}):
+            runtime[key] = deepcopy(value)
+            applied.append(f"runtime.{key}")
+
+    dep_guard = requirement.get("dep_guard")
+    if not isinstance(dep_guard, dict):
+        dep_guard = {}
+        requirement["dep_guard"] = dep_guard
+    for key, value in (profile.get("dep_guard") or {}).items():
+        if dep_guard.get(key) in (None, "", [], {}):
+            dep_guard[key] = deepcopy(value)
+            applied.append(f"dep_guard.{key}")
+
+    if requirement.get("user_deps") in (None, "", []):
+        default_user_deps = profile.get("user_deps")
+        if isinstance(default_user_deps, list) and default_user_deps:
+            requirement["user_deps"] = deepcopy(default_user_deps)
+            applied.append("user_deps")
+
+    if applied:
+        requirement["_normalization_defaults"] = {
+            "profile": str(profile.get("display_name") or primary_vuln or "unknown"),
+            "applied_fields": applied,
+        }
+        warnings.append(
+            "Applied minimal-input defaults for "
+            f"{primary_vuln or 'unknown'}: {', '.join(applied)}"
+        )
 
 
 def _normalize_executor_policy(requirement: Dict[str, Any]) -> Dict[str, Any]:
@@ -366,6 +624,14 @@ def _normalize_guard_policy(
         )
         unsupported_op_policy = "normalize_retry"
 
+    low_confidence_policy = str(guard.get("low_confidence_unknown_policy") or "warn").strip().lower()
+    if low_confidence_policy not in VALID_GUARD_LOW_CONFIDENCE_POLICIES:
+        warnings.append(
+            "policy.guard.low_confidence_unknown_policy must be one of "
+            f"{sorted(VALID_GUARD_LOW_CONFIDENCE_POLICIES)}; falling back to warn"
+        )
+        low_confidence_policy = "warn"
+
     refresh_researcher = guard.get("refresh_researcher_on_guard_dsl_error")
     if refresh_researcher is None:
         refresh_researcher_on_guard_dsl_error = True
@@ -415,6 +681,7 @@ def _normalize_guard_policy(
         "max_attempts": autofix_attempts,
     }
     guard["unsupported_op_policy"] = unsupported_op_policy
+    guard["low_confidence_unknown_policy"] = low_confidence_policy
     guard["refresh_researcher_on_guard_dsl_error"] = refresh_researcher_on_guard_dsl_error
     guard["semantic_refresh_threshold"] = semantic_refresh_threshold
     guard["hint_payload_enabled"] = hint_payload_enabled

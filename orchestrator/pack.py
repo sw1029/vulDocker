@@ -16,6 +16,8 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
+from common.contracts import load_generator_contract
+from common.rules import load_static_rule
 from common.run_matrix import (
     artifacts_dir_for_bundle,
     load_vuln_bundles,
@@ -74,12 +76,15 @@ def write_manifest(sid: str, plan: dict) -> Path:
     artifacts_dir = get_artifacts_dir(sid)
     bundles = _collect_bundle_records(plan, sid)
     reports_dir = artifacts_dir / "reports"
+    promotion = _promotion_summary(bundles)
+    pipeline_result = _pipeline_result(sid)
     manifest = {
         "sid": sid,
         "packed_at": datetime.now(timezone.utc).isoformat(),
         "variation_key": plan.get("variation_key"),
         "paths": plan.get("paths"),
-        "status": "success",
+        "status": pipeline_result,
+        "pipeline_result": pipeline_result,
         "features": plan.get("features", {}),
         "policy": plan.get("policy", {}),
         "vuln_ids": plan.get("vuln_ids") or [plan.get("requirement", {}).get("vuln_id")],
@@ -87,6 +92,7 @@ def write_manifest(sid: str, plan: dict) -> Path:
         "vuln_ids_digest": plan.get("vuln_ids_digest"),
         "sid_inputs": plan.get("sid_inputs", {}),
         "bundles": bundles,
+        "promotion": promotion,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {
             "evals": _load_json(reports_dir / "evals.json"),
@@ -97,6 +103,20 @@ def write_manifest(sid: str, plan: dict) -> Path:
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     LOGGER.info("Manifest written to %s", manifest_path)
     return manifest_path
+
+
+def _pipeline_result(sid: str) -> str:
+    loop_state_path = get_metadata_dir(sid) / "loop_state.json"
+    if not loop_state_path.exists():
+        return "success"
+    try:
+        state = json.loads(loop_state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return "success"
+    last_result = str(state.get("last_result") or "").strip().lower()
+    if last_result in {"success", "failure"}:
+        return last_result
+    return "success"
 
 
 def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, Any]]:
@@ -121,11 +141,13 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
         pattern_id = (generator_payload or {}).get("pattern_id") or requirement.get("pattern_id")
         run_record = run_map.get(bundle.slug, {})
         eval_record = eval_map.get(bundle.slug) or eval_map.get(bundle.vuln_id)
+        promotion = _bundle_promotion_status(plan, bundle)
 
         bundle_entry = {
             "vuln_id": bundle.vuln_id,
             "slug": bundle.slug,
             "pattern_id": pattern_id,
+            "promotion": promotion,
             "deps_digest": dep_digest,
             "paths": {
                 "workspace": str(workspace_dir),
@@ -146,6 +168,100 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
         }
         bundles.append(bundle_entry)
     return bundles
+
+
+def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
+    metadata_dir = metadata_dir_for_bundle(plan, bundle)
+    reviewer_report = _load_json(metadata_dir / "reviewer_report.json")
+    run_summary = _bundle_run_summary(plan, bundle)
+    eval_result = _bundle_eval_result(plan, bundle)
+    contract = load_generator_contract(metadata_dir)
+    reasons: List[str] = []
+    if not isinstance(run_summary, dict):
+        reasons.append("pipeline:run_missing")
+    elif not bool(run_summary.get("run_passed")):
+        reasons.append("pipeline:run_failed")
+    if not isinstance(eval_result, dict):
+        reasons.append("pipeline:verify_missing")
+    elif not bool(eval_result.get("verify_pass")):
+        reasons.append("pipeline:verify_failed")
+    if not isinstance(reviewer_report, dict):
+        reasons.append("pipeline:review_missing")
+    elif bool(reviewer_report.get("blocking")) or reviewer_report.get("success") is False:
+        reasons.append("pipeline:review_failed")
+    if isinstance(contract, dict):
+        semantic_contract = contract.get("semantic_contract")
+        if isinstance(semantic_contract, dict):
+            contradictions = semantic_contract.get("contradictions")
+            if isinstance(contradictions, list):
+                reasons.extend(
+                    f"semantic_contract:{str(item).strip()}"
+                    for item in contradictions
+                    if isinstance(item, str) and str(item).strip()
+                )
+            relevance = semantic_contract.get("evidence_relevance")
+            if isinstance(relevance, dict) and not load_static_rule(bundle.vuln_id):
+                confidence = str(relevance.get("confidence") or "").strip().lower()
+                try:
+                    negative_ratio = float(relevance.get("negative_hit_ratio") or 0.0)
+                except Exception:
+                    negative_ratio = 0.0
+                if confidence == "low":
+                    reasons.append("unknown_evidence:low_confidence")
+                elif confidence == "medium" and negative_ratio >= 0.30:
+                    reasons.append("unknown_evidence:medium_confidence_high_negative_ratio")
+    return {
+        "eligible": not reasons,
+        "reasons": reasons,
+    }
+
+
+def _bundle_eval_result(plan: Dict[str, Any], bundle) -> Optional[Dict[str, Any]]:
+    artifacts_root = _artifacts_root(plan)
+    if artifacts_root is None:
+        return None
+    reports_dir = artifacts_root / "reports"
+    payload = _load_json(reports_dir / "evals.json") or {}
+    results = payload.get("results") if isinstance(payload, dict) else []
+    if not isinstance(results, list):
+        return None
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("slug") == bundle.slug or entry.get("vuln_id") == bundle.vuln_id:
+            return entry
+    return None
+
+
+def _bundle_run_summary(plan: Dict[str, Any], bundle) -> Optional[Dict[str, Any]]:
+    artifacts_root = _artifacts_root(plan)
+    if artifacts_root is None:
+        return None
+    return _load_json(artifacts_dir_for_bundle(plan, bundle, "run") / "summary.json")
+
+
+def _artifacts_root(plan: Dict[str, Any]) -> Optional[Path]:
+    paths = plan.get("paths")
+    if not isinstance(paths, dict):
+        return None
+    raw = paths.get("artifacts")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return Path(raw)
+
+
+def _promotion_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    reasons: List[str] = []
+    for entry in bundles:
+        promotion = entry.get("promotion") or {}
+        bundle_reasons = promotion.get("reasons") or []
+        for item in bundle_reasons:
+            if isinstance(item, str) and item.strip():
+                reasons.append(f"{entry.get('slug')}: {item.strip()}")
+    return {
+        "eligible": not reasons,
+        "reasons": reasons,
+    }
 
 
 def _collect_indices(metadata_dir: Path, artifacts_dir: Path) -> Dict[str, Optional[str]]:

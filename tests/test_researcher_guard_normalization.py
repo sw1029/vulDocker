@@ -99,6 +99,29 @@ def test_researcher_normalizes_file_regex_any_patterns_into_regex_and_globs() ->
     assert "patterns" not in assertion
 
 
+def test_researcher_normalizes_dep_declared_from_plural_dependency_keys() -> None:
+    service = _service_stub()
+    payload = {
+        "generator_assertions": [
+            {"op": "dep_declared", "deps": ["flask", "requests"]},
+        ],
+        "verifier_assertions": [],
+    }
+
+    normalized = service._normalize_guard_payload_ops(  # type: ignore[attr-defined]
+        payload,
+        unsupported_policy="normalize_retry",
+        bundle=None,
+        report={},
+    )
+
+    assert normalized is not None
+    assertion = normalized["generator_assertions"][0]
+    assert assertion["op"] == "dep_declared"
+    assert assertion["dep"] == "flask"
+    assert "deps" not in assertion
+
+
 def test_researcher_downgrades_contract_like_regex_generator_assertions() -> None:
     service = _service_stub()
     payload = {
@@ -196,6 +219,60 @@ def test_unknown_cwe_low_relevance_is_insufficient_when_evidence_required() -> N
     assert "low relevance score" in reason.lower()
 
 
+def test_unknown_cwe_low_confidence_policy_can_fail_closed() -> None:
+    service = _service_stub("CWE-9999")
+    service._search_policy = lambda: "remote_prefer"  # type: ignore[attr-defined]
+    service._require_researcher_evidence = lambda bundle: True  # type: ignore[attr-defined]
+    service._bundle_is_unknown = lambda bundle: True  # type: ignore[attr-defined]
+    service._low_confidence_unknown_policy = lambda: "fail_closed"  # type: ignore[attr-defined]
+    service._score_evidence_relevance = lambda bundle, hits: {  # type: ignore[attr-defined]
+        "score": 0.42,
+        "threshold": 0.30,
+        "confidence": "low",
+    }
+    hits = [
+        SearchResult(
+            title="vuln note",
+            url="https://example.com/v",
+            snippet="Potentially related write-up",
+            source="remote",
+            query="name only vuln",
+        )
+    ]
+
+    quality, reason = service._evaluate_evidence_quality(None, hits)  # type: ignore[attr-defined]
+
+    assert quality == "insufficient"
+    assert "low-confidence unknown evidence" in reason.lower()
+
+
+def test_unknown_cwe_low_confidence_policy_can_downgrade_to_guard_fallback() -> None:
+    service = _service_stub("CWE-9999")
+    service._search_policy = lambda: "remote_prefer"  # type: ignore[attr-defined]
+    service._require_researcher_evidence = lambda bundle: True  # type: ignore[attr-defined]
+    service._bundle_is_unknown = lambda bundle: True  # type: ignore[attr-defined]
+    service._low_confidence_unknown_policy = lambda: "guard_fallback"  # type: ignore[attr-defined]
+    service._score_evidence_relevance = lambda bundle, hits: {  # type: ignore[attr-defined]
+        "score": 0.42,
+        "threshold": 0.30,
+        "confidence": "low",
+    }
+    hits = [
+        SearchResult(
+            title="vuln note",
+            url="https://example.com/v",
+            snippet="Potentially related write-up",
+            source="remote",
+            query="name only vuln",
+        )
+    ]
+
+    quality, reason = service._evaluate_evidence_quality(None, hits)  # type: ignore[attr-defined]
+
+    assert quality == "sufficient"
+    assert "guard fallback mode" in reason.lower()
+
+
 def test_unknown_cwe_query_token_does_not_inflate_relevance() -> None:
     service = _service_stub("CWE-9999")
     service.requirement = {  # type: ignore[attr-defined]
@@ -252,6 +329,170 @@ def test_unknown_semantic_signature_is_derived_from_pattern_and_verification_spe
     assert "request.args" in signature["input_vector"]
     assert any(token in signature["sink"] for token in ["cursor.execute", "execute("])
     assert any("string concatenation" in token or "input concatenated/interpolated into SQL sink" in token for token in signature["exploit_precondition"])
+
+
+def test_known_family_semantic_signature_merge_stays_family_scoped() -> None:
+    service = _service_stub("CWE-22")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-22",
+        "pattern_id": "path-traversal",
+        "vuln_name": "path traversal",
+    }
+    report = {
+        "semantic_signature": {
+            "input_vector": ["request.args", "user-controlled url"],
+            "sink": ["open(", "requests.get"],
+            "exploit_precondition": ["path traversal", "server-side request forgery", "string concatenation"],
+        }
+    }
+
+    signature, sources = service._resolve_semantic_signature(report, None)  # type: ignore[attr-defined]
+
+    assert "baseline" in sources
+    assert "open(" in signature["sink"]
+    assert "requests.get" not in signature["sink"]
+    assert "user-controlled url" not in signature["input_vector"]
+    assert "server-side request forgery" not in signature["exploit_precondition"]
+    assert "string concatenation" not in signature["exploit_precondition"]
+
+
+def test_freeform_template_injection_pattern_uses_pattern_semantics() -> None:
+    service = _service_stub("NAME-TEMPLATE-INJECTION")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-TEMPLATE-INJECTION",
+        "pattern_id": "template-injection",
+        "vuln_name": "Template Injection",
+        "language": "python",
+        "framework": "flask",
+    }
+    report = {
+        "preconditions": [
+            "render_template_string(template)",
+            "incidental note mentioning cursor.execute should not flip the family",
+        ],
+        "verification_spec": {
+            "success_text_markers": ["49"],
+            "flag_token": "FLAG_SSTI_OK",
+        },
+    }
+
+    signature, sources = service._resolve_semantic_signature(report, None)  # type: ignore[attr-defined]
+
+    assert sources == ["pattern"]
+    assert "render_template_string" in signature["sink"]
+    assert any("template source string" in item for item in signature["exploit_precondition"])
+    assert "cursor.execute" not in signature["sink"]
+    assert "SQL query execution" not in signature["sink"]
+
+
+def test_researcher_drops_stdlib_dependency_assertions_from_generator_guards() -> None:
+    service = _service_stub("CWE-9999")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-9999",
+        "language": "python",
+        "runtime": {"python_version": "3.11"},
+    }
+    payload = {
+        "generator_assertions": [
+            {"op": "dep_declared", "dep": "sqlite3"},
+            {"op": "any_dep_declared", "deps": ["sqlite3", "pysqlite3", "flask"]},
+        ],
+        "verifier_assertions": [],
+    }
+
+    normalized = service._normalize_guard_payload_ops(  # type: ignore[attr-defined]
+        payload,
+        unsupported_policy="normalize_retry",
+        bundle=None,
+        report={},
+    )
+
+    assert normalized is not None
+    generator_assertions = normalized["generator_assertions"]
+    assert len(generator_assertions) == 1
+    assert generator_assertions[0]["op"] == "any_dep_declared"
+    assert generator_assertions[0]["deps"] == ["flask"]
+    warnings = normalized["normalization"]["warnings"]
+    assert any("stdlib/runtime-provided module 'sqlite3'" in item for item in warnings)
+    assert any("removed stdlib/runtime-provided dependency candidates" in item for item in warnings)
+
+
+def test_unknown_relevance_penalizes_wrong_family_remote_hits() -> None:
+    service = _service_stub("CWE-9999")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-9999",
+        "pattern_id": "sqli-string-concat",
+        "language": "python",
+        "framework": "flask",
+        "runtime": {"db": "sqlite"},
+    }
+    report = service._score_evidence_relevance(  # type: ignore[attr-defined]
+        None,
+        [
+            SearchResult(
+                title="Flask SSRF via remote fetch",
+                url="https://example.com/ssrf",
+                snippet="Flask SSRF allows server-side request forgery to internal metadata services and remote code execution style impact.",
+                source="remote",
+                query="unknown cwe exploit python flask",
+            )
+        ],
+    )
+
+    assert report["negative_hit_count"] == 1
+    assert report["negative_hit_ratio"] == 1.0
+    assert report["confidence"] == "low"
+    assert report["score"] < 0.30
+
+
+def test_rule_from_verification_spec_derives_json_success_contract_from_marker() -> None:
+    service = _service_stub("CWE-9999")
+    bundle = type("Bundle", (), {"vuln_id": "CWE-9999"})()
+
+    rule = service._rule_from_verification_spec(  # type: ignore[attr-defined]
+        bundle,
+        {
+            "success_text_markers": ['"count": 2'],
+        },
+    )
+
+    runtime = rule["runtime"]
+    output = rule["output"]
+    assert runtime["success_mode"] == "json"
+    assert runtime["success_text_markers"][0] == '"count":2'
+    assert runtime["json_success_key"] == "count"
+    assert runtime["json_success_value"] == 2
+    assert output["mode"] == "json"
+    assert output["json"]["success_key"] == "count"
+    assert output["json"]["success_value"] == 2
+
+
+def test_guard_normalization_aligns_verifier_marker_with_canonical_json_marker() -> None:
+    service = _service_stub("CWE-9999")
+    payload = {
+        "generator_assertions": [{"op": "role_exists", "role": "service_main"}],
+        "verifier_assertions": [{"op": "contains", "string": '"count": 2'}],
+    }
+    report = {
+        "verification_spec": {
+            "success_text_markers": ['"count": 2'],
+        }
+    }
+
+    normalized = service._normalize_guard_payload_ops(  # type: ignore[attr-defined]
+        payload,
+        unsupported_policy="normalize_retry",
+        bundle=None,
+        report=report,
+    )
+
+    assert normalized is not None
+    verifier_assertions = normalized["verifier_assertions"]
+    assert verifier_assertions[0]["string"] == '"count":2'
+    assert any(
+        "canonical structured success contract" in item
+        for item in normalized["normalization"]["warnings"]
+    )
 
 
 def test_extract_verification_spec_reads_wrapped_researcher_report() -> None:

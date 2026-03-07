@@ -1,0 +1,8 @@
+vuln_name: SQL injection
+allow_intentional_vuln: true
+seed: 4242
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 4242

@@ -43,8 +43,9 @@ def load_hints(cwe_id: str, stack: str | None = None, *, limit: int | None = Non
     if not normalized.startswith("cwe-"):
         normalized = f"cwe-{normalized.split('-')[-1] if normalized else 'unknown'}"
     hint_dir = base / normalized
+    default_hint = base / "default.md"
     if not hint_dir.exists():
-        return ""
+        return default_hint.read_text(encoding="utf-8").strip() if default_hint.exists() else ""
 
     def _slug(value: str) -> str:
         cleaned = "".join(ch if ch.isalnum() else "-" for ch in value.lower())
@@ -74,7 +75,13 @@ def load_hints(cwe_id: str, stack: str | None = None, *, limit: int | None = Non
             snippets.append(f"# Hint: {path.stem}\n{text}")
         if limit is not None and len(snippets) >= limit:
             break
-    return "\n\n".join(snippets)
+    if snippets:
+        return "\n\n".join(snippets)
+    if default_hint.exists():
+        text = default_hint.read_text(encoding="utf-8").strip()
+        if text:
+            return f"# Hint: default\n{text}"
+    return ""
 
 def load_boilerplate(stack: str | None = None, *, limit: int | None = None) -> str:
     """Return stack-level boilerplate hints (executor constraints, DB init patterns, etc.).

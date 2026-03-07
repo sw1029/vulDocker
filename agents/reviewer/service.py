@@ -13,7 +13,7 @@ from common.logging import get_logger
 from common.paths import ensure_dir
 from common.plan import load_plan
 from common.prompts import build_reviewer_prompt
-from common.rules import load_rule
+from common.rules import load_rule, load_static_rule
 from common.contracts import load_generator_contract
 from common.vuln_semantics import evaluate_workspace_semantics, semantic_error_summary
 from common.run_matrix import (
@@ -75,7 +75,9 @@ class ReviewerService:
         for bundle in self.bundles:
             context = self._evaluate_bundle(bundle)
             static_issues = self._scan_workspace(bundle, exploit_success=context.success)
-            all_issues = context.issues + static_issues
+            semantic_contract_issues = self._semantic_contract_issues(bundle)
+            confidence_issues = self._confidence_issues(bundle)
+            all_issues = context.issues + static_issues + semantic_contract_issues + confidence_issues
             blocking = context.blocking or any(bool(issue.get("blocking")) for issue in all_issues)
             run_summary = {
                 "sid": self.sid,
@@ -84,7 +86,7 @@ class ReviewerService:
                 "log_excerpt": context.log_excerpt,
                 "issues": all_issues,
             }
-            llm_feedback = self.llm.generate(build_reviewer_prompt(run_summary))
+            llm_feedback = self._llm_feedback(run_summary, all_issues=all_issues, blocking=blocking)
             report = {
                 "sid": self.sid,
                 "bundle": {"vuln_id": bundle.vuln_id, "slug": bundle.slug},
@@ -228,6 +230,112 @@ class ReviewerService:
             reason=reason,
             fix_hint=fix_hint,
         )
+
+    def _llm_feedback(
+        self,
+        run_summary: Dict[str, Any],
+        *,
+        all_issues: List[Dict[str, Any]],
+        blocking: bool,
+    ) -> str:
+        explicit = self.plan["requirement"].get("reviewer_always_llm_feedback")
+        if explicit is not None:
+            enabled = bool(explicit) if not isinstance(explicit, str) else explicit.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        else:
+            enabled = bool(blocking or all_issues)
+        if not enabled:
+            return "skipped: clean run without blocking or quality issues"
+        return self.llm.generate(build_reviewer_prompt(run_summary))
+
+    def _confidence_issues(self, bundle: VulnBundle) -> List[Dict[str, Any]]:
+        if load_static_rule(bundle.vuln_id):
+            return []
+        meta_dir = metadata_dir_for_bundle(self.plan, bundle)
+        contract = load_generator_contract(meta_dir)
+        if not isinstance(contract, dict):
+            return []
+        semantic_contract = contract.get("semantic_contract")
+        if not isinstance(semantic_contract, dict):
+            return []
+        relevance = semantic_contract.get("evidence_relevance")
+        if not isinstance(relevance, dict):
+            return []
+        confidence = str(relevance.get("confidence") or "").strip().lower()
+        try:
+            negative_ratio = float(relevance.get("negative_hit_ratio") or 0.0)
+        except Exception:
+            negative_ratio = 0.0
+        guard_policy = ((self.plan.get("policy") or {}).get("guard") or {})
+        policy = str(guard_policy.get("low_confidence_unknown_policy") or "warn").strip().lower()
+        issues: List[Dict[str, Any]] = []
+        if confidence == "low":
+            blocking = policy == "fail_closed"
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="resolved_contract.json",
+                    line=1,
+                    issue=(
+                        "Researcher evidence confidence is low for unknown vulnerability; "
+                        "the generated bundle should be treated as low-trust."
+                    ),
+                    fix_hint="Strengthen evidence quality or set a stricter low_confidence_unknown_policy.",
+                    evidence=[str(meta_dir / "resolved_contract.json")],
+                    severity="high" if blocking else "medium",
+                    blocking=blocking,
+                )
+            )
+        elif confidence == "medium" and negative_ratio >= 0.30:
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="resolved_contract.json",
+                    line=1,
+                    issue=(
+                        "Researcher evidence confidence is medium with high negative-hit ratio; "
+                        "verification passed, but evidence remains noisy."
+                    ),
+                    fix_hint="Review search traces and tighten evidence selection before promoting this bundle.",
+                    evidence=[str(meta_dir / "resolved_contract.json")],
+                    severity="low",
+                    blocking=False,
+                )
+            )
+        return issues
+
+    def _semantic_contract_issues(self, bundle: VulnBundle) -> List[Dict[str, Any]]:
+        meta_dir = metadata_dir_for_bundle(self.plan, bundle)
+        contract = load_generator_contract(meta_dir)
+        if not isinstance(contract, dict):
+            return []
+        semantic_contract = contract.get("semantic_contract")
+        if not isinstance(semantic_contract, dict):
+            return []
+        contradictions = semantic_contract.get("contradictions")
+        if not isinstance(contradictions, list):
+            return []
+        issues: List[Dict[str, Any]] = []
+        for item in contradictions:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="resolved_contract.json",
+                    line=1,
+                    issue=f"Semantic contract contradiction: {item.strip()}",
+                    fix_hint="Align researcher report, guard spec, and generated artifacts to the same semantic contract.",
+                    evidence=[str(meta_dir / "resolved_contract.json")],
+                    severity="high",
+                    blocking=True,
+                )
+            )
+        return issues
 
     def _load_run_summary(self, bundle: VulnBundle) -> Dict[str, Any]:
         summary_path = artifacts_dir_for_bundle(self.plan, bundle, "run") / "summary.json"

@@ -13,6 +13,7 @@ VALID_DYNAMIC_SCOPE = {"assertions_semantics", "include_patterns", "full"}
 VALID_CALL_BUDGET_MODES = {"bundle_once", "per_candidate", "verifier_only", "bundle_ensemble"}
 VALID_AUTOFIX_LEVELS = {"none", "manifest", "code"}
 VALID_UNSUPPORTED_OP_POLICIES = {"normalize_retry", "fail", "warn"}
+VALID_LOW_CONFIDENCE_UNKNOWN_POLICIES = {"warn", "guard_fallback", "fail_closed"}
 VALID_ASSERTION_SEVERITY = {"block", "warn"}
 VALID_ASSERTION_INTENT = {"semantic_anchor", "syntax_hint", "contract", "dependency"}
 VALID_ASSERTION_STABILITY = {"high", "medium", "low"}
@@ -144,6 +145,9 @@ def default_guard_policy_snapshot(raw: Optional[Dict[str, Any]] = None) -> Dict[
     unsupported_op_policy = str(raw.get("unsupported_op_policy") or "normalize_retry").strip().lower()
     if unsupported_op_policy not in VALID_UNSUPPORTED_OP_POLICIES:
         unsupported_op_policy = "normalize_retry"
+    low_confidence_unknown_policy = str(raw.get("low_confidence_unknown_policy") or "warn").strip().lower()
+    if low_confidence_unknown_policy not in VALID_LOW_CONFIDENCE_UNKNOWN_POLICIES:
+        low_confidence_unknown_policy = "warn"
     refresh_researcher = raw.get("refresh_researcher_on_guard_dsl_error")
     if refresh_researcher is None:
         refresh_researcher_on_guard_dsl_error = True
@@ -178,6 +182,7 @@ def default_guard_policy_snapshot(raw: Optional[Dict[str, Any]] = None) -> Dict[
             "max_attempts": autofix_attempts,
         },
         "unsupported_op_policy": unsupported_op_policy,
+        "low_confidence_unknown_policy": low_confidence_unknown_policy,
         "refresh_researcher_on_guard_dsl_error": refresh_researcher_on_guard_dsl_error,
         "semantic_refresh_threshold": semantic_refresh_threshold,
         "hint_payload_enabled": hint_payload_enabled,

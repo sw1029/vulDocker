@@ -1,0 +1,8 @@
+vuln_name: ssrf
+allow_intentional_vuln: true
+seed: 6161
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 6161
