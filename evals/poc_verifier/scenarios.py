@@ -16,7 +16,6 @@ from typing import Any, Dict, Iterable, List, Optional, Type
 from common.contracts import load_generator_contract
 from common.rules import RuleSpec, load_rulespec
 from evals.poc_verifier import rule_based as _rule_based
-from evals.assertions import run_assertions
 
 
 @dataclass
@@ -91,31 +90,7 @@ class RuleBasedScenario(BaseScenarioVerifier):
     """Scenario that delegates to the generic rule-based verifier."""
 
     def verify(self) -> Dict[str, Any]:
-        # First, attempt runtime assertion-based verification if available.
-        spec = self.context.rule_spec
-        if spec and isinstance(spec.runtime, dict):
-            program = spec.runtime.get("assertion_program")
-            if isinstance(program, list) and program:
-                log_path = self.context.log_path
-                if not log_path.exists():
-                    raise FileNotFoundError(f"Log file not found: {log_path}")
-                log_text = log_path.read_text(encoding="utf-8")
-                success, outcomes = run_assertions(log_text, program)
-                if success:
-                    evidence_lines = []
-                    for outcome in outcomes:
-                        prefix = "PASS" if outcome.success else "FAIL"
-                        evidence_lines.append(f"[{prefix}::{outcome.op}] {outcome.details}")
-                    evidence = "\n".join(evidence_lines) or "runtime assertion program satisfied"
-                    return {
-                        "verify_pass": True,
-                        "evidence": evidence,
-                        "log_path": str(log_path),
-                        "status": "evaluated",
-                        "rule": spec.cwe,
-                    }
-
-        # Fallback to legacy rule-based verifier.
+        # Delegate exploit/semantic/guard composition to the shared verifier.
         policy = self.context.policy or {}
         result = _rule_based.verify_with_rule(
             self.context.vuln_id,

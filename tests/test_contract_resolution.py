@@ -175,3 +175,76 @@ def test_write_generator_contract_mirrors_resolved_and_legacy_files(tmp_path: Pa
     assert loaded is not None
     assert loaded["success_signature"] == "SQLi SUCCESS"
     assert json.loads((tmp_path / "generator_contract.json").read_text(encoding="utf-8"))["slug"] == "cwe-89"
+
+
+def test_contract_provenance_prefers_generator_manifest_metadata(tmp_path: Path) -> None:
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_origin": "deterministic_fallback",
+                "fallback_used": True,
+                "family_override_applied": False,
+                "llm_stub_used": True,
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": "print('app')\n"},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('poc')\n"},
+                    ],
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                    "run": {"port": 8080},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-9999",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-9999",
+    )
+
+    assert payload["generation_origin"] == "deterministic_fallback"
+    assert payload["fallback_used"] is True
+    assert payload["family_override_applied"] is False
+    assert payload["llm_stub_used"] is True
+    assert payload["provenance"]["source"] == "generator_manifest"
+
+
+def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_path: Path) -> None:
+    (tmp_path / "generator_template.json").write_text(
+        json.dumps(
+            {
+                "template_id": "flask_sqlite_raw",
+                "service_entry": "app.py",
+                "poc_entry": "poc.py",
+                "ports": {"app": 5000},
+                "generation_origin": "built_in_template",
+                "fallback_used": False,
+                "family_override_applied": False,
+                "llm_stub_used": False,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-89",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="template",
+        bundle_slug="cwe-89",
+    )
+
+    assert payload["generation_origin"] == "built_in_template"
+    assert payload["fallback_used"] is False
+    assert payload["family_override_applied"] is False
+    assert payload["llm_stub_used"] is False
+    assert payload["provenance"]["template_id"] == "flask_sqlite_raw"
+    assert payload["provenance"]["source"] == "generator_template"

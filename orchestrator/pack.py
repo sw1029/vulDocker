@@ -71,12 +71,14 @@ def assert_review_passed(sid: str, plan: dict, allow_intentional: bool) -> None:
         )
 
 
-def write_manifest(sid: str, plan: dict) -> Path:
+def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> Path:
     metadata_dir = get_metadata_dir(sid)
     artifacts_dir = get_artifacts_dir(sid)
     bundles = _collect_bundle_records(plan, sid)
     reports_dir = artifacts_dir / "reports"
+    performance = _load_json(metadata_dir / "performance_summary.json")
     promotion = _promotion_summary(bundles)
+    generation_summary = _generation_summary(bundles)
     pipeline_result = _pipeline_result(sid)
     manifest = {
         "sid": sid,
@@ -93,13 +95,15 @@ def write_manifest(sid: str, plan: dict) -> Path:
         "sid_inputs": plan.get("sid_inputs", {}),
         "bundles": bundles,
         "promotion": promotion,
+        "generation_summary": generation_summary,
+        "performance": performance,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {
             "evals": _load_json(reports_dir / "evals.json"),
             "diversity": _load_json(reports_dir / "diversity.json"),
         },
     }
-    manifest_path = metadata_dir / "manifest.json"
+    manifest_path = metadata_dir / filename
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     LOGGER.info("Manifest written to %s", manifest_path)
     return manifest_path
@@ -142,12 +146,16 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
         run_record = run_map.get(bundle.slug, {})
         eval_record = eval_map.get(bundle.slug) or eval_map.get(bundle.vuln_id)
         promotion = _bundle_promotion_status(plan, bundle)
+        provenance = _bundle_generation_provenance(metadata_dir, generator_payload)
+        dynamicness = _bundle_dynamicness_verdict(provenance)
 
         bundle_entry = {
             "vuln_id": bundle.vuln_id,
             "slug": bundle.slug,
             "pattern_id": pattern_id,
             "promotion": promotion,
+            "provenance": provenance,
+            "dynamicness": dynamicness,
             "deps_digest": dep_digest,
             "paths": {
                 "workspace": str(workspace_dir),
@@ -305,6 +313,163 @@ def _promotion_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _bundle_generation_provenance(
+    metadata_dir: Path,
+    generator_template: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    contract = load_generator_contract(metadata_dir) or {}
+    provenance = contract.get("provenance") if isinstance(contract, dict) else {}
+    if not isinstance(provenance, dict):
+        provenance = {}
+
+    def _read_str(key: str) -> Optional[str]:
+        value = provenance.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(contract, dict):
+            fallback = contract.get(key)
+            if isinstance(fallback, str) and fallback.strip():
+                return fallback.strip()
+        if generator_template:
+            fallback = generator_template.get(key)
+            if isinstance(fallback, str) and fallback.strip():
+                return fallback.strip()
+        return None
+
+    def _read_bool(key: str) -> Optional[bool]:
+        for source in (provenance, contract if isinstance(contract, dict) else {}, generator_template or {}):
+            value = source.get(key)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                token = value.strip().lower()
+                if token in {"true", "1", "yes", "on"}:
+                    return True
+                if token in {"false", "0", "no", "off"}:
+                    return False
+        return None
+
+    payload: Dict[str, Any] = {}
+    for key in ("generation_origin", "template_id", "source"):
+        value = _read_str(key)
+        if value:
+            payload[key] = value
+    for key in ("fallback_used", "family_override_applied", "llm_stub_used"):
+        value = _read_bool(key)
+        if value is not None:
+            payload[key] = value
+    if not payload:
+        failure_payload = _latest_failure_provenance(metadata_dir)
+        if failure_payload:
+            payload.update(failure_payload)
+    return payload
+
+
+def _latest_failure_provenance(metadata_dir: Path) -> Dict[str, Any]:
+    failure_path = metadata_dir / "generator_failures.jsonl"
+    if not failure_path.exists():
+        return {}
+    latest: Dict[str, Any] = {}
+    lines = [line for line in failure_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    for line in reversed(lines):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            latest = payload
+            break
+    if not latest:
+        return {}
+    provenance: Dict[str, Any] = {"source": "generator_failure_record"}
+    if latest.get("fallback_used") is True:
+        provenance["generation_origin"] = "deterministic_fallback"
+        provenance["fallback_used"] = True
+    if latest.get("family_override_applied") is True:
+        provenance["family_override_applied"] = True
+        provenance.setdefault("generation_origin", "family_override")
+    if latest.get("llm_stub_used") is True:
+        provenance["llm_stub_used"] = True
+    return provenance
+
+
+def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_origin: Dict[str, int] = {}
+    by_dynamicness_verdict: Dict[str, int] = {}
+    llm_stub_bundles = 0
+    fallback_bundles = 0
+    family_override_bundles = 0
+    for entry in bundles:
+        provenance = entry.get("provenance") or {}
+        if not isinstance(provenance, dict):
+            continue
+        origin = str(provenance.get("generation_origin") or "").strip()
+        if origin:
+            by_origin[origin] = by_origin.get(origin, 0) + 1
+        dynamicness = entry.get("dynamicness") or {}
+        if isinstance(dynamicness, dict):
+            verdict = str(dynamicness.get("verdict") or "").strip()
+            if verdict:
+                by_dynamicness_verdict[verdict] = by_dynamicness_verdict.get(verdict, 0) + 1
+        if provenance.get("llm_stub_used") is True:
+            llm_stub_bundles += 1
+        if provenance.get("fallback_used") is True:
+            fallback_bundles += 1
+        if provenance.get("family_override_applied") is True:
+            family_override_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "by_origin": by_origin,
+        "by_dynamicness_verdict": by_dynamicness_verdict,
+        "llm_stub_bundles": llm_stub_bundles,
+        "fallback_bundles": fallback_bundles,
+        "family_override_bundles": family_override_bundles,
+    }
+
+
+def _bundle_dynamicness_verdict(provenance: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(provenance, dict) or not provenance:
+        return {
+            "verdict": "unclassified",
+            "trusted": False,
+            "reason": "generation provenance missing",
+        }
+
+    origin = str(provenance.get("generation_origin") or "").strip()
+    fallback_used = provenance.get("fallback_used") is True
+    family_override_applied = provenance.get("family_override_applied") is True
+
+    if fallback_used or origin == "deterministic_fallback":
+        return {
+            "verdict": "deterministic fallback dependent",
+            "trusted": False,
+            "reason": "deterministic fallback generation path was used",
+        }
+    if origin in {"built_in_template", "runtime_template_clone"}:
+        return {
+            "verdict": "template-assisted",
+            "trusted": False,
+            "reason": f"template-backed generation path was used ({origin})",
+        }
+    if family_override_applied or origin == "family_override":
+        return {
+            "verdict": "template-assisted",
+            "trusted": False,
+            "reason": "family-specific deterministic override was applied",
+        }
+    if origin == "llm_manifest":
+        return {
+            "verdict": "trusted dynamic",
+            "trusted": True,
+            "reason": "llm_manifest provenance recorded without fallback/template override",
+        }
+    return {
+        "verdict": "unclassified",
+        "trusted": False,
+        "reason": f"unsupported or incomplete provenance origin: {origin or 'missing'}",
+    }
+
+
 def _collect_indices(metadata_dir: Path, artifacts_dir: Path) -> Dict[str, Optional[str]]:
     indices = {
         "researcher_reports": _existing(metadata_dir / "researcher_reports.json"),
@@ -314,6 +479,7 @@ def _collect_indices(metadata_dir: Path, artifacts_dir: Path) -> Dict[str, Optio
         "run_index": _existing(artifacts_dir / "run" / "index.json"),
         "evals": _existing(artifacts_dir / "reports" / "evals.json"),
         "diversity": _existing(artifacts_dir / "reports" / "diversity.json"),
+        "performance": _existing(metadata_dir / "performance_summary.json"),
     }
     return indices
 

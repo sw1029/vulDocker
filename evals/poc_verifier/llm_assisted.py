@@ -11,7 +11,6 @@ from common.logging import get_logger
 from common.llm import LLMClient
 from common.prompts import build_llm_verifier_prompt
 from common.rules import RuleSpec, load_rulespec
-from evals.assertions import run_assertions
 
 LOGGER = get_logger(__name__)
 DEFAULT_LOG_EXCERPT = 6000
@@ -51,10 +50,6 @@ def llm_assisted_verify(
         LOGGER.warning("Failed to read log for LLM verifier %s: %s", vuln_id, exc)
         return None
 
-    # If a runtime assertion program is available in RuleSpec, prefer it
-    # before invoking the LLM, to keep verification as deterministic and
-    # policy-driven as possible. 이 경로는 policy.llm_assist 여부와 무관하게
-    # 항상 실행된다.
     spec: Optional[RuleSpec]
     if rule_spec is not None:
         spec = rule_spec
@@ -63,30 +58,6 @@ def llm_assisted_verify(
             spec = load_rulespec(vuln_id)
         except Exception:  # pragma: no cover - defensive
             spec = None
-    if spec and isinstance(spec.runtime, dict):
-        program = spec.runtime.get("assertion_program")
-        if isinstance(program, list) and program:
-            success, assertion_details = run_assertions(log_text, program)
-            if success:
-                evidence_lines = []
-                for outcome in assertion_details:
-                    prefix = "PASS" if outcome.success else "FAIL"
-                    evidence_lines.append(f"[{prefix}::{outcome.op}] {outcome.details}")
-                evidence = "\n".join(evidence_lines).strip() or "runtime assertion program satisfied"
-                return {
-                    "verify_pass": True,
-                    "evidence": evidence,
-                    "log_path": str(log_path),
-                    "status": "evaluated-llm",
-                    "metamorphic": None,
-                    "llm": {
-                        "model": "runtime-assertions",
-                        "confidence": "high",
-                        "raw_response_digest": _digest(evidence),
-                        "assertions_checked": len(assertion_details),
-                        "base_status": (base_result or {}).get("status"),
-                    },
-                }
 
     # Decide whether to call the LLM at all, combining explicit policy with
     # RuleSpec의 기본 설정(assist_default).

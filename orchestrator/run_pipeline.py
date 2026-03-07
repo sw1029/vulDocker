@@ -348,13 +348,168 @@ def _write_perf_summary(sid: str, events: List[Dict[str, Any]]) -> None:
         stage_bucket["duration_s"] = round(float(stage_bucket["duration_s"]) + duration, 3)
         if item.get("skipped"):
             stage_bucket["skipped"] += 1
+    retry_count = _count_retries(events)
+    provider_health_state = _provider_health_state(sid)
+    llm_stub_used = _pipeline_llm_stub_used(sid)
+    llm_failure_class = _pipeline_llm_failure_class(sid)
     payload = {
         "sid": sid,
         "events": events,
         "by_stage": by_stage,
+        "retry_count": retry_count,
+        "provider_health_state": provider_health_state,
+        "llm_stub_used": llm_stub_used,
+        "llm_failure_class": llm_failure_class,
         "total_duration_s": round(total, 3),
     }
     _write_json(get_metadata_dir(sid) / "performance_summary.json", payload)
+
+
+def _count_retries(events: List[Dict[str, Any]]) -> int:
+    stage_counts: Dict[str, int] = {}
+    for item in events:
+        if not isinstance(item, dict) or item.get("skipped"):
+            continue
+        stage = str(item.get("stage") or "").strip().upper()
+        if not stage or stage == "PACK":
+            continue
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+    return sum(max(0, count - 1) for count in stage_counts.values())
+
+
+def _provider_health_state(sid: str) -> str:
+    search_health = _load_json(get_metadata_dir(sid) / "search_health.json") or {}
+    search_degraded = bool(search_health.get("degraded")) if isinstance(search_health, dict) else False
+    llm_stub_used = _pipeline_llm_stub_used(sid)
+    if search_degraded and llm_stub_used:
+        return "search_and_llm_degraded"
+    if llm_stub_used:
+        return "llm_degraded"
+    if search_degraded:
+        return "search_degraded"
+    if isinstance(search_health, dict) and search_health:
+        if bool(search_health.get("configured")) or int(search_health.get("remote_result_count") or 0) > 0:
+            return "healthy"
+    return "unknown"
+
+
+def _pipeline_llm_stub_used(sid: str) -> bool:
+    metadata_root = get_metadata_dir(sid)
+    candidate_paths = [
+        metadata_root / "resolved_contract.json",
+        metadata_root / "generator_contract.json",
+        metadata_root / "generator_manifest.json",
+        metadata_root / "generator_template.json",
+    ]
+    bundles_dir = metadata_root / "bundles"
+    if bundles_dir.exists():
+        for bundle_dir in sorted(path for path in bundles_dir.iterdir() if path.is_dir()):
+            candidate_paths.extend(
+                [
+                    bundle_dir / "resolved_contract.json",
+                    bundle_dir / "generator_contract.json",
+                    bundle_dir / "generator_manifest.json",
+                    bundle_dir / "generator_template.json",
+                ]
+            )
+    for path in candidate_paths:
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        if _payload_llm_stub_used(payload):
+            return True
+    for record in _load_generator_failure_records(sid):
+        if _failure_record_llm_stub_used(record):
+            return True
+    return False
+
+
+def _payload_llm_stub_used(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    direct = payload.get("llm_stub_used")
+    if isinstance(direct, bool):
+        return direct
+    provenance = payload.get("provenance")
+    if isinstance(provenance, dict):
+        nested = provenance.get("llm_stub_used")
+        if isinstance(nested, bool):
+            return nested
+    return False
+
+
+def _pipeline_llm_failure_class(sid: str) -> str:
+    metadata_root = get_metadata_dir(sid)
+    candidate_paths = [
+        metadata_root / "resolved_contract.json",
+        metadata_root / "generator_contract.json",
+        metadata_root / "generator_manifest.json",
+        metadata_root / "generator_template.json",
+    ]
+    bundles_dir = metadata_root / "bundles"
+    if bundles_dir.exists():
+        for bundle_dir in sorted(path for path in bundles_dir.iterdir() if path.is_dir()):
+            candidate_paths.extend(
+                [
+                    bundle_dir / "resolved_contract.json",
+                    bundle_dir / "generator_contract.json",
+                    bundle_dir / "generator_manifest.json",
+                    bundle_dir / "generator_template.json",
+                ]
+            )
+    for path in candidate_paths:
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        token = _payload_llm_failure_class(payload)
+        if token:
+            return token
+    for record in _load_generator_failure_records(sid):
+        token = _failure_record_llm_failure_class(record)
+        if token:
+            return token
+    return ""
+
+
+def _payload_llm_failure_class(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    direct = payload.get("llm_failure_class")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    provenance = payload.get("provenance")
+    if isinstance(provenance, dict):
+        nested = provenance.get("llm_failure_class")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+    return ""
+
+
+def _failure_record_llm_stub_used(record: Dict[str, Any]) -> bool:
+    if not isinstance(record, dict):
+        return False
+    direct = record.get("llm_stub_used")
+    if isinstance(direct, bool):
+        return direct
+    return False
+
+
+def _failure_record_llm_failure_class(record: Dict[str, Any]) -> str:
+    if not isinstance(record, dict):
+        return ""
+    direct = record.get("llm_failure_class")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    return ""
+
+
+def _write_failure_summary_manifest(sid: str, plan: Dict[str, Any]) -> None:
+    try:
+        from orchestrator import pack as pack_mod
+
+        pack_mod.write_manifest(sid, plan, filename="failure_manifest.json")
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        LOGGER.warning("Failed to write failure summary manifest for %s: %s", sid, exc)
 
 
 def _summarize_executor_error(sid: str, *, stage: str) -> Tuple[str, str, Dict[str, Any]]:
@@ -744,6 +899,8 @@ def main() -> None:
                 duration_s=duration,
                 returncode=rc,
             )
+            if rc != 0:
+                _write_failure_summary_manifest(sid, plan)
 
         return
 
@@ -762,6 +919,8 @@ def main() -> None:
             duration_s=duration,
             returncode=rc,
         )
+        if rc != 0:
+            _write_failure_summary_manifest(sid, plan)
     raise SystemExit(1)
 
 

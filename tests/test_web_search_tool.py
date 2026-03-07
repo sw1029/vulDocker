@@ -80,6 +80,20 @@ def test_web_search_tool_loads_tavily_key_from_config_loader(monkeypatch) -> Non
     assert tool.api_key == "ini-token"
 
 
+def test_web_search_tool_auto_selects_tavily_when_key_exists(monkeypatch) -> None:
+    monkeypatch.delenv("VUL_WEB_SEARCH_PROVIDER", raising=False)
+    monkeypatch.delenv("VUL_WEB_SEARCH_ENDPOINT", raising=False)
+    monkeypatch.delenv("VUL_WEB_SEARCH_BASE_URL", raising=False)
+    monkeypatch.delenv("VUL_WEB_SEARCH_API_KEY", raising=False)
+    monkeypatch.setattr("rag.tools.web_search.get_tavily_api_key", lambda: "ini-token")
+
+    tool = WebSearchTool()
+
+    assert tool.provider_name == "tavily"
+    assert tool.api_key == "ini-token"
+    assert tool._build_remote_provider().__class__.__name__ == "TavilySearchProvider"
+
+
 def test_web_search_tool_propagates_filter_surface_to_request(monkeypatch) -> None:
     captured = {}
 

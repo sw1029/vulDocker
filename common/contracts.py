@@ -90,6 +90,12 @@ def build_generator_contract(
     manifest_payload = _load_json(metadata_dir / "generator_manifest.json") or {}
     manifest = _unwrap_manifest(manifest_payload)
     has_manifest = isinstance(manifest.get("files"), list) and bool(manifest.get("files"))
+    provenance = _resolve_generation_provenance(
+        generator_mode=generator_mode,
+        manifest_payload=manifest_payload,
+        template_summary=template,
+        has_manifest=has_manifest,
+    )
     rule = load_rule(vuln_id) or {}
     rulespec = load_rulespec(vuln_id)
     report = normalize_researcher_report_payload(
@@ -215,6 +221,8 @@ def build_generator_contract(
         },
         "sources": sources,
     }
+    if provenance:
+        payload["provenance"] = provenance
     if proposal:
         payload["proposed_verification_contract"] = proposal
     if semantic_contract:
@@ -253,6 +261,18 @@ def build_generator_contract(
     payload["poc_entry"] = poc_entry
     payload["service_port"] = service_port
     payload["base_url"] = base_url
+    generation_origin = _string_or_none(provenance.get("generation_origin")) if provenance else None
+    if generation_origin:
+        payload["generation_origin"] = generation_origin
+    fallback_used = _bool_or_none(provenance.get("fallback_used")) if provenance else None
+    if fallback_used is not None:
+        payload["fallback_used"] = fallback_used
+    family_override_applied = _bool_or_none(provenance.get("family_override_applied")) if provenance else None
+    if family_override_applied is not None:
+        payload["family_override_applied"] = family_override_applied
+    llm_stub_used = _bool_or_none(provenance.get("llm_stub_used")) if provenance else None
+    if llm_stub_used is not None:
+        payload["llm_stub_used"] = llm_stub_used
     if poc_cmd:
         payload["poc_cmd"] = poc_cmd
     if semantic_contract.get("semantic_signature"):
@@ -279,6 +299,56 @@ def _unwrap_manifest(payload: Dict[str, Any]) -> Dict[str, Any]:
     return inner if isinstance(inner, dict) else payload
 
 
+def _resolve_generation_provenance(
+    *,
+    generator_mode: str,
+    manifest_payload: Dict[str, Any],
+    template_summary: Dict[str, Any],
+    has_manifest: bool,
+) -> Dict[str, Any]:
+    provenance: Dict[str, Any] = {}
+
+    manifest_origin = _string_or_none(manifest_payload.get("generation_origin")) if isinstance(manifest_payload, dict) else None
+    template_origin = _string_or_none(template_summary.get("generation_origin")) if isinstance(template_summary, dict) else None
+
+    if manifest_origin:
+        provenance["generation_origin"] = manifest_origin
+        provenance["source"] = "generator_manifest"
+    elif template_origin:
+        provenance["generation_origin"] = template_origin
+        provenance["source"] = "generator_template"
+    elif generator_mode in {"template", "hybrid-template"}:
+        provenance["generation_origin"] = "built_in_template"
+        provenance["source"] = "generator_mode"
+    elif has_manifest:
+        provenance["generation_origin"] = "llm_manifest"
+        provenance["source"] = "generator_manifest"
+
+    fallback_used = _bool_or_none(manifest_payload.get("fallback_used")) if isinstance(manifest_payload, dict) else None
+    if fallback_used is None and isinstance(template_summary, dict):
+        fallback_used = _bool_or_none(template_summary.get("fallback_used"))
+    if fallback_used is not None:
+        provenance["fallback_used"] = fallback_used
+
+    family_override_applied = _bool_or_none(manifest_payload.get("family_override_applied")) if isinstance(manifest_payload, dict) else None
+    if family_override_applied is None and isinstance(template_summary, dict):
+        family_override_applied = _bool_or_none(template_summary.get("family_override_applied"))
+    if family_override_applied is not None:
+        provenance["family_override_applied"] = family_override_applied
+
+    llm_stub_used = _bool_or_none(manifest_payload.get("llm_stub_used")) if isinstance(manifest_payload, dict) else None
+    if llm_stub_used is None and isinstance(template_summary, dict):
+        llm_stub_used = _bool_or_none(template_summary.get("llm_stub_used"))
+    if llm_stub_used is not None:
+        provenance["llm_stub_used"] = llm_stub_used
+
+    template_id = _string_or_none(template_summary.get("template_id")) if isinstance(template_summary, dict) else None
+    if template_id:
+        provenance["template_id"] = template_id
+
+    return provenance
+
+
 def _dig(mapping: Dict[str, Any], *keys: str) -> Any:
     current: Any = mapping
     for key in keys:
@@ -291,6 +361,18 @@ def _dig(mapping: Dict[str, Any], *keys: str) -> Any:
 def _string_or_none(value: Any) -> Optional[str]:
     if isinstance(value, str) and value.strip():
         return value.strip()
+    return None
+
+
+def _bool_or_none(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "1", "yes", "on"}:
+            return True
+        if token in {"false", "0", "no", "off"}:
+            return False
     return None
 
 

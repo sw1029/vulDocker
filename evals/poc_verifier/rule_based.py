@@ -10,6 +10,7 @@ from common.guardrails import GuardEngine, build_guard_spec, load_guard_spec_for
 from common.roles import role_matches
 from common.rules import RuleSpec, load_rule, load_rulespec
 from common.vuln_semantics import evaluate_manifest_semantics, evaluate_workspace_semantics, semantic_error_summary
+from evals.assertions import run_assertions
 
 DEFAULT_FLAG_MARKER = "FLAG"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +87,12 @@ def verify_with_rule(
         success = text_success
         evidence.extend(text_evidence)
 
+    runtime_assertion_pass, runtime_assertion_evidence = _evaluate_runtime_assertions(rulespec, log_text)
+    if runtime_assertion_evidence:
+        evidence.extend(runtime_assertion_evidence)
+    exploit_pass = bool(success or runtime_assertion_pass)
+    success = exploit_pass
+
     success, exit_evidence = _apply_exit_policy(success, summary_data, policy, rulespec)
     evidence.extend(exit_evidence)
 
@@ -135,9 +142,11 @@ def verify_with_rule(
         evidence.append("Signature missing")
 
     return {
+        "exploit_pass": exploit_pass,
         "verify_pass": success,
         "semantic_pass": semantic_pass,
         "guard_pass": guard_pass,
+        "runtime_assertion_pass": runtime_assertion_pass,
         "evidence": ", ".join(evidence),
         "log_path": str(log_path),
         "status": "evaluated",
@@ -145,6 +154,26 @@ def verify_with_rule(
         "semantic_consistency": semantic_report,
         "guard_consistency": guard_consistency,
     }
+
+
+def _evaluate_runtime_assertions(
+    rulespec: RuleSpec,
+    log_text: str,
+) -> Tuple[bool, List[str]]:
+    if not isinstance(rulespec, RuleSpec):
+        return False, []
+    runtime = rulespec.runtime if isinstance(rulespec.runtime, dict) else {}
+    program = runtime.get("assertion_program")
+    if not isinstance(program, list) or not program:
+        return False, []
+    success, outcomes = run_assertions(log_text, program)
+    if not success:
+        return False, []
+    evidence: List[str] = []
+    for outcome in outcomes:
+        prefix = "PASS" if outcome.success else "FAIL"
+        evidence.append(f"[{prefix}::{outcome.op}] {outcome.details}")
+    return True, evidence
 
 
 def _evaluate_guard_consistency(

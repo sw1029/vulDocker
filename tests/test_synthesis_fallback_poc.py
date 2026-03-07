@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import sys
 from pathlib import Path
 
@@ -8,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from agents.generator.synthesis import SynthesisEngine, SynthesisLimits
+from agents.generator.synthesis import CandidateReport, SynthesisEngine, SynthesisLimits
 
 
 class _DummyLLM:
@@ -169,3 +170,77 @@ def test_template_injection_stabilizer_rewrites_poc_deterministically(tmp_path: 
     assert "print('49')" in poc_content
     assert updated["poc"]["success_signature"] == "OK: arithmetic marker present"
     assert updated["poc"]["flag_token"] == "SSTI_OK"
+    assert any(dep.startswith("requests") for dep in (updated.get("deps") or []))
+    req_entry = next(entry for entry in updated["files"] if entry.get("path") == "requirements.txt")
+    assert "requests" in req_entry["content"]
+
+
+def test_write_records_persists_generation_provenance(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    engine._guard_spec_payload = {}  # type: ignore[attr-defined]
+    engine._guard_engine = None  # type: ignore[attr-defined]
+    engine._user_deps = []  # type: ignore[attr-defined]
+    selected = CandidateReport(
+        index=1,
+        manifest={
+            "files": [
+                {"path": "app.py", "role": "service_main", "content": "print('app')\n"},
+                {"path": "poc.py", "role": "poc_entry", "content": "print('poc')\n"},
+            ],
+            "pattern_tags": ["fallback", "stub", "cwe-89"],
+        },
+        raw_response="[llm-stub-synthesis]",
+        violations=[],
+        score=1.0,
+        static_report={},
+        fallback_used=True,
+        family_override_applied=False,
+        llm_stub_used=True,
+        llm_failure_class="quota_exhausted",
+        llm_failure_message="rate limit",
+    )
+
+    engine._write_records(  # type: ignore[attr-defined]
+        selected,
+        [selected],
+        hints="",
+        rag_context="",
+        failure_context="",
+        requires_external_db=False,
+    )
+
+    manifest = json.loads((tmp_path / "metadata" / "generator_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["generation_origin"] == "deterministic_fallback"
+    assert manifest["fallback_used"] is True
+    assert manifest["family_override_applied"] is False
+    assert manifest["llm_stub_used"] is True
+    assert manifest["llm_failure_class"] == "quota_exhausted"
+    assert manifest["provenance"]["generation_origin"] == "deterministic_fallback"
+
+
+def test_record_guard_failure_persists_failure_path_provenance(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    engine._requirement = {"vuln_id": "CWE-89"}  # type: ignore[attr-defined]
+    report = CandidateReport(
+        index=1,
+        manifest={"files": [{"path": "app.py", "role": "service_main", "content": "print('x')\n"}]},
+        raw_response="[llm-stub-synthesis]",
+        violations=["semantic mismatch"],
+        score=0.0,
+        static_report={},
+        guard_report={"errors": ["semantic mismatch"]},
+        fallback_used=True,
+        family_override_applied=False,
+        llm_stub_used=True,
+        llm_failure_class="quota_exhausted",
+        llm_failure_message="rate limit",
+    )
+
+    engine._record_guard_failure([report])  # type: ignore[attr-defined]
+
+    failure_path = tmp_path / "metadata" / "generator_failures.jsonl"
+    payload = json.loads(failure_path.read_text(encoding="utf-8").strip())
+    assert payload["llm_stub_used"] is True
+    assert payload["fallback_used"] is True
+    assert payload["family_override_applied"] is False
+    assert payload["llm_failure_class"] == "quota_exhausted"

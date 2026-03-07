@@ -9,6 +9,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.contracts import write_generator_contract
+from common.rules import list_rules, load_rule
+from evals.poc_verifier.registry import evaluate_with_vuln
 from evals.poc_verifier.rule_based import verify_with_rule
 
 
@@ -206,3 +208,94 @@ def test_rule_based_verifier_fails_when_guard_consistency_blocks(
     assert result["verify_pass"] is False
     assert result["guard_pass"] is False
     assert "guard mismatch:" in result["evidence"]
+
+
+def test_evaluate_with_vuln_runtime_assertions_do_not_bypass_semantic_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-runtime-assert"
+    vuln_id = "CWE-9998"
+    slug = "cwe-9998"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / "app"
+    run_dir = repo_root / "artifacts" / sid / "run"
+    runtime_rules = metadata_dir / "runtime_rules"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+    runtime_rules.mkdir(parents=True)
+
+    (runtime_rules / "cwe-9998.yaml").write_text(
+        (
+            "cwe: CWE-9998\n"
+            "version: 2\n"
+            "scenario_type: web-poc\n"
+            "verification:\n"
+            "  source: runtime\n"
+            "  require_flag: false\n"
+            "  flag_mode: none\n"
+            "  exit_code: zero\n"
+            "output:\n"
+            "  mode: auto\n"
+            "llm:\n"
+            "  assist_default: false\n"
+            "  assertion_budget: 4\n"
+            "runtime:\n"
+            "  success_mode: text\n"
+            "  success_text_markers: [OK]\n"
+            "  assertion_program:\n"
+            "    - op: contains\n"
+            "      string: OK\n"
+        ),
+        encoding="utf-8",
+    )
+    (workspace_dir / "app.py").write_text(
+        "from flask import Flask\napp = Flask(__name__)\n@app.get('/')\ndef home():\n    return 'hello'\n",
+        encoding="utf-8",
+    )
+    (run_dir / "run.log").write_text("OK\n", encoding="utf-8")
+
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": vuln_id,
+            "success_signature": "OK",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["user-controlled request parameter"],
+                    "sink": ["SQL query execution"],
+                    "exploit_precondition": ["input concatenated/interpolated into SQL sink"],
+                },
+                "semantic_signature_source": ["contract"],
+            },
+        },
+    )
+
+    monkeypatch.setenv("VULD_RUNTIME_RULE_DIRS", str(runtime_rules))
+    load_rule.cache_clear()
+    list_rules.cache_clear()
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = evaluate_with_vuln(
+        vuln_id,
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        plan_policy={"verifier": {"prefer_rule": True, "llm_assist": False, "require_exit_code_zero": True}},
+    )
+
+    assert result["exploit_pass"] is True
+    assert result["verify_pass"] is False
+    assert result["semantic_consistency"]["supported"] is True
+    assert result["semantic_consistency"]["semantic_match"] is False
+    assert "semantic mismatch:" in result["evidence"]

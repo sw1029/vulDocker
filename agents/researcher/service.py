@@ -133,6 +133,7 @@ class ResearcherService:
                     report,
                     active_bundle,
                 )
+                report = self._canonicalize_report_identity(report, active_bundle)
                 contract_path = self._write_resolved_contract_seed(report, active_bundle)
                 report["resolved_contract_path"] = str(contract_path)
                 self._last_report = report
@@ -140,9 +141,7 @@ class ResearcherService:
                 span.event("research_insufficient", reason=failure_reason, path=str(path))
                 raise RuntimeError(failure_reason)
             report = normalize_researcher_report_payload(self._generate_report(rag_context, search_hits))
-            report.setdefault("sid", self.sid)
-            if active_bundle:
-                report.setdefault("vuln_id", active_bundle.vuln_id)
+            report = self._canonicalize_report_identity(report, active_bundle)
             report.setdefault("trace_id", self.react_loop.trace_id)
             report.setdefault("retrieval_snapshot_id", snapshot)
             report.setdefault("failure_context", self.react_loop.failure_context)
@@ -189,6 +188,28 @@ class ResearcherService:
         return path
 
     # Internal helpers -----------------------------------------------------
+
+    def _canonical_report_vuln_id(self, bundle: VulnBundle | None) -> str:
+        if bundle and isinstance(bundle.vuln_id, str) and bundle.vuln_id.strip():
+            return bundle.vuln_id.strip()
+        value = self.requirement.get("vuln_id")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return "UNKNOWN"
+
+    def _canonicalize_report_identity(
+        self,
+        report: Dict[str, Any],
+        bundle: VulnBundle | None,
+    ) -> Dict[str, Any]:
+        if not isinstance(report, dict):
+            return report
+        report.setdefault("sid", self.sid)
+        canonical_vuln_id = self._canonical_report_vuln_id(bundle)
+        current_vuln_id = str(report.get("vuln_id") or "").strip()
+        if canonical_vuln_id and (not current_vuln_id or current_vuln_id.upper() == "UNKNOWN"):
+            report["vuln_id"] = canonical_vuln_id
+        return report
 
     def _snapshot_id(self) -> str:
         requirement = self.plan["requirement"]

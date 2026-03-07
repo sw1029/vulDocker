@@ -185,6 +185,42 @@ def test_remote_prefer_degraded_search_is_recorded_in_report(monkeypatch, tmp_pa
     assert contract["contract_stage"] == "research_seed"
 
 
+def test_success_report_canonicalizes_unknown_vuln_id(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("agents.researcher.service.load_static_context", lambda _snapshot: "")
+    service = _service_stub(
+        tmp_path,
+        vuln_id="NAME-TEMPLATE-INJECTION",
+        search_policy="remote_required",
+        require_evidence=False,
+    )
+    service._evaluate_evidence_quality = lambda bundle, hits: ("sufficient", "sufficient evidence")  # type: ignore[attr-defined]
+    service._generate_report = lambda rag_context, search_hits: {"intent": "demo", "vuln_id": "UNKNOWN"}  # type: ignore[attr-defined]
+    service.search_tool = _SearchToolStub(  # type: ignore[attr-defined]
+        [
+            SearchResult(
+                title="remote note",
+                url="https://example.com/ssti",
+                snippet="template injection note",
+                source="remote",
+                provider="tavily",
+            )
+        ],
+        SearchExecution(
+            provider="tavily",
+            configured=True,
+            result_count=1,
+            request={"query": "unknown cwe exploit"},
+        ),
+    )
+
+    path = service.run()
+
+    report = json.loads(path.read_text(encoding="utf-8"))
+    contract = json.loads((tmp_path / "resolved_contract.json").read_text(encoding="utf-8"))
+    assert report["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert contract["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+
+
 class _Response:
     def __init__(self, payload: dict, status_code: int = 200) -> None:
         self._payload = payload

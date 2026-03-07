@@ -230,6 +230,44 @@ def test_xss_name_only_case(tmp_path: Path) -> None:
 
 
 @pytest.mark.e2e
+def test_deserialization_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+    if not _tavily_key_available():
+        if _live_gate_required():
+            pytest.fail("Tavily API key is required for mandatory deserialization live gate")
+        pytest.skip("Tavily API key is not configured in env or config/api_keys.ini")
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/deserialization-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    env = os.environ.copy()
+    env["VUL_WEB_SEARCH_PROVIDER"] = "tavily"
+    env.pop("VUL_WEB_SEARCH_ENDPOINT", None)
+    if get_tavily_api_key():
+        env.pop("VUL_WEB_SEARCH_API_KEY", None)
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, env=env)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert any(bundle["slug"] == "cwe-502" and bundle.get("verify_pass") for bundle in summary["bundles"])
+    assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
 def test_cwe89_basic_repeatability_gate(tmp_path: Path) -> None:
     reason = _skip_reason()
     if reason:

@@ -38,9 +38,13 @@ class WebSearchTool:
         self.provider_name = (provider or os.environ.get("VUL_WEB_SEARCH_PROVIDER") or "").strip().lower()
         self.endpoint = (endpoint or os.environ.get("VUL_WEB_SEARCH_ENDPOINT") or "").strip()
         self.base_url = (base_url or os.environ.get("VUL_WEB_SEARCH_BASE_URL") or "").strip()
-        resolved_api_key = (api_key or os.environ.get("VUL_WEB_SEARCH_API_KEY") or "").strip()
+        explicit_api_key = (api_key or os.environ.get("VUL_WEB_SEARCH_API_KEY") or "").strip()
+        config_tavily_key = get_tavily_api_key() or ""
+        if not self.provider_name and not self.endpoint and (explicit_api_key or config_tavily_key):
+            self.provider_name = "tavily"
+        resolved_api_key = explicit_api_key
         if not resolved_api_key and self.provider_name == "tavily":
-            resolved_api_key = get_tavily_api_key() or ""
+            resolved_api_key = config_tavily_key
         self.api_key = resolved_api_key
         self.timeout = timeout
         self.max_local_files = max_local_files

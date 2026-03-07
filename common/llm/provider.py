@@ -41,6 +41,9 @@ class LLMClient:
         self.use_stub = False
         self._fallback_on_error = use_stub_when_unavailable
         self._last_usage: Optional[Dict[str, Any]] = None
+        self.last_error_class: Optional[str] = None
+        self.last_error_message: Optional[str] = None
+        self.last_error_retryable: Optional[bool] = None
 
         api_key = (
             get_openai_api_key()
@@ -56,6 +59,9 @@ class LLMClient:
             if use_stub_when_unavailable:
                 LOGGER.warning(msg)
                 self.use_stub = True
+                self.last_error_class = "llm_unavailable"
+                self.last_error_message = msg
+                self.last_error_retryable = False
             else:  # pragma: no cover - configuration error path
                 raise LLMConfigError(msg)
 
@@ -70,6 +76,10 @@ class LLMClient:
 
         if self.use_stub:
             return self._stub_response(messages)
+
+        self.last_error_class = None
+        self.last_error_message = None
+        self.last_error_retryable = None
 
         assert litellm_completion is not None  # for type-checkers
         payload: Dict[str, Any] = {
@@ -100,6 +110,7 @@ class LLMClient:
                 if not self._fallback_on_error:
                     raise
                 LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
+                self._record_error(exc)
                 self.use_stub = True
                 return self._stub_response(messages)
         try:
@@ -109,6 +120,7 @@ class LLMClient:
             if not self._fallback_on_error:
                 raise
             LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
+            self._record_error(exc)
             self.use_stub = True
             return self._stub_response(messages)
 
@@ -122,6 +134,30 @@ class LLMClient:
     def _model_disallows_sampling_params(model_name: str) -> bool:
         token = (model_name or "").strip().lower()
         return token.startswith("gpt-5")
+
+    def _record_error(self, exc: Exception) -> None:
+        token = str(exc or "").strip()
+        lowered = token.lower()
+        error_class = "llm_error"
+        retryable = False
+
+        if "quota" in lowered or ("rate limit" in lowered and "billing" in lowered):
+            error_class = "quota_exhausted"
+        elif "rate limit" in lowered or "429" in lowered:
+            error_class = "rate_limited"
+            retryable = True
+        elif "unauthorized" in lowered or "401" in lowered or "invalid api key" in lowered or "authentication" in lowered:
+            error_class = "auth_failure"
+        elif "timeout" in lowered or "connection" in lowered or "dns" in lowered or "temporarily unavailable" in lowered:
+            error_class = "network_transient"
+            retryable = True
+        elif "503" in lowered or "service unavailable" in lowered or "provider unavailable" in lowered or "overloaded" in lowered:
+            error_class = "provider_unavailable"
+            retryable = True
+
+        self.last_error_class = error_class
+        self.last_error_message = token[:500] if token else None
+        self.last_error_retryable = retryable
 
     def _stub_response(self, messages: List[Dict[str, str]]) -> str:
         """Return a deterministic stub when the real model is unavailable."""

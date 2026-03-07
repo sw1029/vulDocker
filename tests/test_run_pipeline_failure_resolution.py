@@ -162,3 +162,92 @@ def test_cannot_skip_researcher_when_required_or_refresh_requested(monkeypatch) 
         {"requirement": {"researcher": {}}, "policy": {"require_researcher_evidence": False}, "run_matrix": plan["run_matrix"]},
         refresh_requested=True,
     ) is False
+
+
+def test_write_perf_summary_records_retry_and_provider_health(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-perf"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "search_health.json").write_text(
+        json.dumps(
+            {
+                "provider": "tavily",
+                "configured": True,
+                "degraded": False,
+                "remote_result_count": 3,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_root / "resolved_contract.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "resolved_contract@1.0",
+                "llm_stub_used": True,
+                "provenance": {"llm_stub_used": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "GENERATOR", "duration_s": 3.0, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 2, "stage": "GENERATOR", "duration_s": 2.0, "returncode": 0, "skipped": False, "note": ""},
+        {"loop": 2, "stage": "PACK", "duration_s": 0.1, "returncode": 0, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["retry_count"] == 1
+    assert payload["provider_health_state"] == "llm_degraded"
+    assert payload["llm_stub_used"] is True
+
+
+def test_write_perf_summary_uses_failure_records_for_llm_health(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-perf-failure-record"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "search_health.json").write_text(
+        json.dumps(
+            {
+                "provider": "tavily",
+                "configured": True,
+                "degraded": False,
+                "remote_result_count": 9,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_root / "generator_failures.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-03-07T10:38:57Z",
+                "guard_error_code": "guard_semantic_mismatch",
+                "reason": "semantic mismatch",
+                "failure_fingerprint": "fp-1",
+                "llm_stub_used": True,
+                "fallback_used": True,
+                "family_override_applied": False,
+                "llm_failure_class": "quota_exhausted",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "GENERATOR", "duration_s": 3.0, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 1, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["provider_health_state"] == "llm_degraded"
+    assert payload["llm_stub_used"] is True
+    assert payload["llm_failure_class"] == "quota_exhausted"

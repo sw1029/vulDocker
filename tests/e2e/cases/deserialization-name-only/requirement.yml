@@ -1,0 +1,5 @@
+vuln_name: Insecure Deserialization
+
+options:
+  env:
+    VUL_WEB_SEARCH_PROVIDER: tavily

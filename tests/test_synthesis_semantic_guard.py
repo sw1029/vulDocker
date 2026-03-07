@@ -196,6 +196,42 @@ def test_semantic_guard_accepts_cwe89_multiline_tainted_query_flow(tmp_path: Pat
     assert semantics.get("semantic_match") is True
 
 
+def test_family_aware_fallback_manifest_for_cwe89_passes_guard(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-89")
+    manifest = engine._fallback_manifest()
+
+    errors, report = engine._guard_manifest(manifest)
+
+    assert not any("semantic mismatch:" in item for item in errors)
+    assert manifest["metadata"]["generation_origin"] == "deterministic_fallback"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "SELECT id, username FROM users" in service_main["content"]
+    assert "cur.execute(query)" in service_main["content"]
+    assert "SQLi SUCCESS" in poc_entry["content"]
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
+def test_family_aware_fallback_manifest_for_cwe352_passes_guard(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-352")
+    manifest = engine._fallback_manifest()
+
+    errors, report = engine._guard_manifest(manifest)
+
+    assert not any("semantic mismatch:" in item for item in errors)
+    assert manifest["metadata"]["generation_origin"] == "deterministic_fallback"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "@app.post('/transfer')" in service_main["content"]
+    assert "session['user'] = user" in service_main["content"]
+    assert "CSRF SUCCESS" in poc_entry["content"]
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
 def test_semantic_guard_accepts_cwe918_same_container_loopback_indicator(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "CWE-918")
     manifest = {

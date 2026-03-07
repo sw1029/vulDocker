@@ -888,6 +888,11 @@ class GeneratorService:
         }
         candidates_path.write_text(json.dumps(candidates_payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
+        template_root = selection.path.parent
+        runtime_template_selected = bool(
+            template_root == self.runtime_templates_dir or self.runtime_templates_dir in template_root.parents
+        )
+        generation_origin = "runtime_template_clone" if runtime_template_selected else "built_in_template"
         selection_payload = {
             "sid": self.sid,
             "template_id": selection.id,
@@ -908,6 +913,11 @@ class GeneratorService:
             "written_files": written_files,
             "user_deps_requested": self.user_deps,
             "user_deps_added": user_deps_added or [],
+            "generation_origin": generation_origin,
+            "fallback_used": False,
+            "family_override_applied": False,
+            "llm_stub_used": bool(getattr(self.llm, "use_stub", False)),
+            "template_root": str(template_root),
         }
         summary_path = self.metadata_dir / "generator_template.json"
         summary_path.write_text(json.dumps(selection_payload, indent=2, ensure_ascii=False), encoding="utf-8")

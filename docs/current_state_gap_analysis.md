@@ -1,539 +1,758 @@
-# 동적 취약 Docker 생성 개선 계획
+# 동적 취약 Docker 생성 현재 상태 및 통합 실행 계획
 
-본 문서는 2026-03-07 KST 기준의 검토 결과와 fresh rerun 결과를 토대로 작성한 실행계획 문서다.
-이 문서는 더 이상 "현재 상태 회고" 중심 문서가 아니라, 다음 구현 단계를 구체적으로 정의하는 계획 문서다.
+본 문서는 2026-03-07 KST 기준으로 다음 세 가지를 함께 반영한 단일 마스터 계획 문서다.
 
-핵심 대전제는 유지한다.
+- current workspace 직접 rerun 결과
+- 기존 healthy-provider 세션에서 확보된 verified baseline
+- 현재 코드 구조에 대한 템플릿/하드코딩 의존 감사
 
-- 사용자 입력은 최종적으로 `취약점 이름만` 제공하는 형태까지 허용해야 한다.
-- 시스템은 LLM/RAG/Guard/Verifier를 사용해 취약점을 동적으로 삽입한 Docker 환경을 생성해야 한다.
-- 방향성을 "정적 템플릿 카탈로그만 고르는 시스템"으로 후퇴시키지 않는다.
-- 다만 "생성 성공"과 "검증/승격 신뢰성"은 별개의 축으로 평가해야 한다.
+이 문서는 더 이상 단순 회고 문서가 아니다.
+현재 상태를 과대평가하지 않도록 verified fact와 계획을 명확히 분리하고,
+이후 구현 우선순위를 `신뢰성 최소 차단선 선행 -> failure-path truth/provenance 고정 -> degraded-mode resilience 확보 -> 성능 전면화 -> 템플릿/하드코딩 의존 축소 -> free-form generalization` 순으로 고정하는 실행 문서다.
 
-## 1. 문서 목적
+## 1. 문서 목적과 판정 원칙
 
-이 문서의 목적은 네 가지다.
+### 1.1 목적
 
-1. 현재 구현이 실제로 어디까지 닫혀 있는지 verified baseline을 고정한다.
-2. 이번 검토에서 확인된 구조적 결함을 우선순위 순으로 정리한다.
-3. `vuln_name -> dynamic vulnerable Docker synthesis`라는 초기 방향을 유지한 채, 다음 구현 단계를 단계적으로 정의한다.
-4. 이후 구현이 "pass rate 증가"에만 치우치지 않고 "artifact trust 증가"까지 달성하도록 acceptance 기준을 명확히 한다.
+이 문서의 목적은 여섯 가지다.
 
-## 2. 비가역 원칙
+1. 현재 레포가 실제로 어디까지 닫혀 있는지 verified baseline을 고정한다.
+2. healthy-provider success와 current-workspace degraded failure를 동시에 기록해 운영 하한선을 숨기지 않는다.
+3. 현재 구현의 생성 경로를 `LLM 동적 생성`, `템플릿 복사`, `family-specific deterministic override`, `fallback`으로 분해한다.
+4. 템플릿 의존과 family-specific 하드코딩 의존을 공식적으로 문서화한다.
+5. 다음 구현 단계를 decision-complete한 phase 계획으로 재정렬한다.
+6. 이후 문서 갱신이 “pass rate 증가”만이 아니라 “artifact trust 증가”를 반영하게 만든다.
 
-이 문서 이후의 구현은 아래 원칙을 깨지 않아야 한다.
+### 1.2 판정 원칙
 
-### 2.1 입력 원칙
+이 문서 이후 상태 판정은 아래 원칙을 따른다.
 
-- `vuln_id`가 명시된 입력은 계속 지원한다.
-- `vuln_name`만 주어진 minimal input도 1급 입력으로 지원한다.
-- `NAME-*` synthetic identifier는 free-form 취약점명을 plan 단계에 태우기 위한 공식 메커니즘으로 유지한다.
+- `pass`는 반드시 provider condition을 함께 적는다.
+- `python -m pytest -q tests` 통과와 Docker E2E 통과는 같은 완성도 근거로 취급하지 않는다.
+- `dynamic`이라는 단어는 provenance가 `llm_manifest` 중심일 때만 쓴다.
+- built-in template copy, runtime template clone, scaffold overwrite, deterministic fallback은 별도 분류로 적는다.
+- healthy-provider success와 degraded-provider failure가 공존하면, 운영 완성도는 더 낮은 쪽을 기준으로 쓴다.
+- `vuln_name only` 방향성은 유지하되, `CWE-9999` 같은 explicit synthetic id를 free-form name-only 성공의 증거로 쓰지 않는다.
 
-### 2.2 생성 원칙
+## 2. Verified Current State
 
-- Docker 환경은 실행 가능한 취약 서비스 + PoC + 빌드/실행 메타데이터까지 동적으로 생성해야 한다.
-- researcher/guard/verifier는 생성된 환경이 "실제로 그 취약점인지"를 확인하는 장치여야 하며, 생성 자체를 카탈로그 선택 문제로 축소해서는 안 된다.
-- 템플릿은 fast path 또는 fallback으로 활용할 수 있지만, system capability의 정의는 "템플릿 유무와 무관하게 동적 합성 가능"이어야 한다.
+### 2.1 테스트 스위트 truth
 
-### 2.3 검증 원칙
+- 실행: `python -m pytest -q tests`
+- 결과: `147 passed, 11 skipped`
 
-- `exploit succeeds`는 필요조건이지 충분조건이 아니다.
-- `verify_pass`, `review_pass`, `promotion_eligible`는 모두 semantic/guard/contract 정합성을 반영해야 한다.
-- nested failure를 evidence 문자열에만 남기고 top-level 성공으로 승격시키는 동작은 제거한다.
+단, 이 수치는 기본 테스트 스위트 truth일 뿐이다.
+현재 E2E 테스트는 `tests/e2e/test_cases.py`에서 `VULD_RUN_E2E=1`이 없으면 skip되므로,
+이 문서에서는 “기본 pytest pass”를 “Docker E2E 완성도”와 동일시하지 않는다.
 
-## 3. 2026-03-07 기준 verified baseline
+### 2.2 healthy-provider baseline
 
-이번 검토에서 직접 확인한 항목은 아래와 같다.
-
-### 3.1 테스트 스위트
-
-- `python -m pytest -q tests`
-- 결과: `132 passed, 10 skipped`
-
-### 3.2 직접 rerun한 lane
+아래 표는 healthy-provider 세션에서 확인된 verified baseline이다.
+이 표는 “특정 provider health session에서 확인된 상한선”이지,
+current workspace의 운영 하한선이 아니다.
 
 | lane | 입력 형태 | 결과 | loop | 총 소요 | 비고 |
 | --- | --- | --- | --- | --- | --- |
-| SQLi | `sqli-name-only` | pass | 2 | 약 52s | loop 1에서 guard miss 발생 후 loop 2 성공 |
+| SQLi | `sqli-name-only` | pass | 2 | 약 52s | loop 1 guard miss 후 loop 2 성공 |
 | CSRF | `csrf-name-only` | pass | 1 | 약 35s | known static lane |
 | SSRF | `ssrf-name-only` | pass | 1 | 약 22s | known static lane |
 | Path Traversal | `vuln_name: Path Traversal` | pass | 1 | 약 58s | researcher-backed runtime rule lane |
-| Template Injection | `vuln_name: Template Injection` | pass | 1 | 약 68~73s | official E2E case 추가, fresh rerun 기준 loop 1 pass 확인 |
-| Reflected XSS | `vuln_name: Reflected XSS` | pass | 1 | 약 59s | official E2E case 추가 및 expectations satisfied 확인 |
-
-이번 검토에서는 `unknown live rerun`은 재실행하지 않았다.
-따라서 unknown noisy evidence lane의 상태는 이전 artifact와 코드 구조를 참고하되, 이번 문서에서는 우선순위만 정의하고 상태를 과도하게 단정하지 않는다.
-
-### 3.3 착수 직후 반영된 작업
-
-이번 계획 문서 작성 직후 아래 작업을 실제로 반영했다.
-
-- Phase 0 `verdict truth repair` 1차 구현
-  - verifier가 nested guard failure를 더 이상 evidence 문자열로만 남기지 않고 `verify_pass=false`로 반영
-  - reviewer가 nested verifier guard failure를 blocking issue로 승격
-  - pack promotion이 nested `guard_consistency` / `semantic_consistency` failure를 차단
-- Phase 1 `NAME-* runtime rule filename normalization` 1차 구현
-  - rule loader가 `NAME-*` synthetic identifier를 `name-*.yaml`로 직접 해석
-  - researcher runtime rule writer가 loader와 같은 filename normalization을 사용
-- Phase 2 `role canonicalization` 1차 구현
-  - `server -> service_main`
-  - `verifier -> poc_entry`
-  alias를 researcher normalization / synthesis manifest parsing / contract resolution / guard engine / reviewer / verifier에 공통 반영
-- dependency/semantic guard 안정화 1차 구현
-  - guard engine `dep_declared`가 `requirements.txt` 선언도 읽도록 보강
-  - template-injection exploit precondition을 semantic alias로 인정하도록 보강
-- Template Injection low-loop stabilization 1차 구현
-  - generated `poc.py`를 deterministic template-injection verifier 형태로 안정화
-  - success 시 `49`, success signature, optional flag token을 함께 출력하도록 보강
-- Phase 4 일부 착수
-  - `tests/e2e/cases/template-injection-name-only/` official case 추가
-  - `tests/e2e/cases/xss-name-only/` official case 추가
-  - pytest e2e entry 추가
-  - `Template Injection` repeatability gate pytest entry 추가
-  - `ops/ci/run_repeatability_gate.sh`를 case path 인자 지원 형태로 일반화
-- 관련 테스트 추가 후 전체 테스트 재실행
-  - `132 passed, 8 skipped`
-- 기존 false-positive artifact 재검증
-  - 대상 SID: `sid-86dba9eb7da8` (`Template Injection`)
-  - 수정 후 `VERIFY` 재실행 결과: `overall_pass=false`
-  - 수정 후 `REVIEW` 재실행 결과: `blocking_bundles=["name-template-injection"]`
-  - 수정 후 `PACK` 재실행 결과: `last_result=failure`로 차단
-  - 추가 검증: 동일 SID에서 `VERIFY` 재실행 시 더 이상 `generator_manifest fallback rule` 경로로 판정되지 않음
-- existing alias artifact recheck
-  - 대상 SID: `sid-319953f83d00` (`Path Traversal`)
-  - role alias가 들어간 기존 artifact에 대해 `VERIFY` 재실행 결과: `overall_pass=true`
-- official Template Injection case 검증
-  - `tests/e2e/cases/template-injection-name-only`
-  - `run_case` 기준 expectations satisfied 확인
-  - 추가 fresh rerun 기준 loop 1 pass 확인
-  - `repeat_case` 3회 반복 실행 결과 `success_count=3`, `failure_count=0`
-- official XSS case 검증
-  - `tests/e2e/cases/xss-name-only`
-  - `run_case` 기준 expectations satisfied 확인
+| Template Injection | `vuln_name: Template Injection` | pass | 1 | 약 68~73s | official E2E case, fresh rerun 기준 loop 1 pass 확인 |
+| Reflected XSS | `vuln_name: Reflected XSS` | pass | 1 | 약 59s | official E2E case expectations satisfied 확인 |
+| Insecure Deserialization | `vuln_name: Insecure Deserialization` | pass | 2 | 약 106s | official E2E case expectations satisfied 확인 |
+
+주의:
+
+- 위 baseline은 current workspace degraded 상태의 하한선을 대변하지 않는다.
+- unknown live lane은 이번 healthy-provider 재검증 대상으로 재실행하지 않았으므로, 이 문서에서 success evidence로 집계하지 않는다.
+
+### 2.3 current-workspace degraded baseline
+
+2026-03-07 KST current workspace 직접 rerun에서는 OpenAI provider가 quota exhausted 상태였다.
+같은 세션에서 Tavily remote search는 정상 동작했다.
+아래 표는 이 degraded 상태에서 직접 확인한 운영 하한선이다.
+
+| lane | SID | 결과 | loop | 총 소요 | 실패 stage | fingerprint / 비고 |
+| --- | --- | --- | --- | --- | --- | --- |
+| SQLi | `sid-3325b4630aa4` | fail | 3 | 21.461s | GENERATOR | `23365ba0 -> 10f8dd23`; fallback manifest가 SQLi semantic/guard를 통과하지 못함 |
+| Template Injection | `sid-60ae4e071b9f` | fail | 3 | 28.115s | GENERATOR | `f40a3ab4`; Tavily remote search 성공 후에도 deterministic family fallback 부족으로 fail |
+| unknown (`CWE-9999`) | `sid-d2ff12df4e6d` | fail | 3 | 30.366s | GENERATOR | `88cb5626`; remote search configured=true, `remote_result_count=9`, 이후 semantic guard fail |
+
+추가 사실:
+
+- `sid-60ae4e071b9f`, `sid-d2ff12df4e6d`의 `search_health.json` 기준
+  - `provider=tavily`
+  - `configured=true`
+  - `remote_result_count=9`
+  - `last_status_code=200`
+- 즉 current workspace degraded baseline의 핵심 병목은 search가 아니라 generator/LLM degraded path다.
+
+### 2.3.1 이번 세션 fresh rerun 재검증
+
+아래 rerun은 본 문서 갱신 과정에서 2026-03-07 KST에 새 SID로 직접 실행한 검증이다.
+세 실행 모두 stderr에서 OpenAI `RateLimitError` 후 stub/fallback 경로로 전환된 것이 확인되었다.
+
+| lane | SID | 결과 | loop | 총 소요 | 관찰 |
+| --- | --- | --- | --- | --- | --- |
+| SQLi | `sid-6247be018b41` | fail | 3 | 18.407s | search는 healthy였으나 generator가 fallback 후 semantic/guard mismatch로 종료 |
+| Template Injection | `sid-02575fde190d` | fail | 3 | 29.729s | researcher/search는 정상, generator fail 후 review gate 때문에 PACK도 실패 |
+| CSRF | `sid-db1e04270bf4` | fail | 3 | 17.088s | known static lane도 degraded 상태에서 fallback semantic mismatch로 종료 |
+
+추가 사실:
+
+- 세 rerun 모두 `search_health.json` 기준 `provider=tavily`, `configured=true`, `remote_result_count=9`, `degraded=false`, `last_status_code=200`이었다.
+- `sid-6247be018b41`는 `allow_intentional_vuln=true`라 failure manifest가 남았지만,
+  그 manifest는 `provider_health_state=healthy`, `llm_stub_used=false`, `bundle.provenance={}`로 surface되었다.
+- `sid-02575fde190d`, `sid-db1e04270bf4`는 review/pack gate에 막혀 top-level `manifest.json`이 생성되지 않았다.
+- 따라서 현 시점의 실운영 하한선은 “LLM degraded 시 known static lane도 의미 있게 닫히지 못하고,
+  failure provenance/health truth도 완전하게 surface되지 않는다” 쪽에 더 가깝다.
+
+### 2.3.2 이번 턴 구현 반영 후 post-fix rerun
+
+아래 rerun은 본 문서의 개선안을 실제 반영한 뒤 같은 degraded 환경에서 다시 수행한 fresh rerun이다.
+세 known lane 모두 stderr에서 OpenAI `RateLimitError` 후 stub/fallback으로 전환되었지만,
+family-aware deterministic fallback을 통해 end-to-end를 닫는 것이 확인되었다.
+
+| lane | SID | 결과 | loop | 총 소요 | 핵심 관찰 |
+| --- | --- | --- | --- | --- | --- |
+| SQLi | `sid-5a5277a8aeda` | pass | 1 | 13.611s | `provider_health_state=llm_degraded`, `llm_failure_class=quota_exhausted`, `generation_origin=deterministic_fallback` |
+| CSRF | `sid-91c772b15bb1` | pass | 1 | 12.179s | degraded known static lane이 deterministic fallback으로 loop 1 pass |
+| Template Injection | `sid-6210ffdbeb5b` | pass | 1 | 19.580s | deterministic fallback + family override로 verify/review/pack까지 pass |
+| unknown (`CWE-9999`) | `sid-269fb6724565` | fail | 3 | 16.565s | RESEARCH low relevance로 종료, `failure_manifest.json` 생성 확인 |
+
+추가 사실:
+
+- `sid-5a5277a8aeda`, `sid-91c772b15bb1`, `sid-6210ffdbeb5b`
+  - `status=success`
+  - `performance.provider_health_state=llm_degraded`
+  - `performance.llm_stub_used=true`
+  - `performance.llm_failure_class=quota_exhausted`
+  - bundle `provenance.generation_origin=deterministic_fallback`
+  - bundle `dynamicness.verdict=deterministic fallback dependent`
+- 즉 known/static lane 및 Template Injection은 degraded 상태에서 “동적 신뢰성”을 회복한 것이 아니라
+  “family-aware deterministic fallback dependent success”를 확보한 상태로 보는 것이 정확하다.
+- `sid-269fb6724565`는 generation 이전 RESEARCH stage에서 종료됐지만,
+  `failure_manifest.json`이 생성되어 pack/review gate와 inspection summary emission이 분리된 것이 확인되었다.
+
+### 2.4 현재 코드에 이미 반영된 개선
+
+현재 코드에는 아래 개선이 이미 반영되어 있다.
+
+- verifier/reviewer/pack truth repair 1차 구현
+- `NAME-*` runtime rule filename normalization 1차 구현
+- role canonicalization 1차 구현
+- Template Injection deterministic PoC stabilization 1차 구현
+- Tavily auto-selection 보강
+- Template Injection / XSS / Insecure Deserialization official E2E case 추가
+- stub researcher report의 canonical `vuln_id` normalization 1차 구현
+- `generator_manifest.json` / `generator_template.json` / `resolved_contract.json` provenance 1차 구현
+  - `generation_origin`
+  - `fallback_used`
+  - `family_override_applied`
+  - `llm_stub_used`
+- pack manifest provenance / generation summary surface 1차 구현
+  - bundle-level `provenance`
+  - top-level `generation_summary`
+  - top-level `performance`
+- provenance 기반 dynamicness classification 1차 구현
+  - bundle-level `dynamicness`
+  - top-level `generation_summary.by_dynamicness_verdict`
+  - 분류값:
+    - `trusted dynamic`
+    - `template-assisted`
+    - `deterministic fallback dependent`
+- `performance_summary.json` metadata 확장 1차 구현
+  - `retry_count`
+  - `provider_health_state`
+  - `llm_stub_used`
+- failure-path truth / degraded provenance 1차 구현
+  - `generator_failures.jsonl`에 `llm_stub_used`
+  - `generator_failures.jsonl`에 `fallback_used`
+  - `generator_failures.jsonl`에 `family_override_applied`
+  - `generator_failures.jsonl`에 `llm_failure_class`
+  - `performance_summary.json`에 `llm_failure_class`
+  - pack block 시 `failure_manifest.json` emission
+  - pack bundle provenance가 generator failure record를 fallback source로 읽도록 보강
+- family-aware deterministic fallback 1차 구현
+  - SQLi service/PoC skeleton
+  - CSRF service/PoC skeleton
+  - Template Injection service skeleton + deterministic PoC dependency sync
+  - Path Traversal service/PoC skeleton
+- dependency sync truth repair 1차 구현
+  - declared `deps`의 explicit version을 requirements sync 시 보존
+- 관련 targeted test 추가 후 full pytest 재실행
+  - targeted: `45 passed`
+  - full: `147 passed, 11 skipped`
 
-즉, P0와 Phase 1, Phase 2 core normalization, 그리고 Phase 4의 `Template Injection/XSS officialization`, `Template Injection` 1차 low-loop stabilization, repeatability gate wiring까지는 코드 반영이 완료되었다.
-다만 아직 full rerun 기준 free-form lane 전체 재검증과 CI regression officialization은 남아 있다.
+이번 턴 기준으로 아래 blind spot은 실제로 닫혔다.
 
-## 4. 현재 상태 판정
+- known static / Template Injection degraded rerun에서 `provider_health_state=llm_degraded`가 실제로 surface된다.
+- `generator_failures.jsonl`에 failure-path provenance가 기록된다.
+- pack gate에 막혀도 `failure_manifest.json`은 남는다.
 
-현재 레포는 이전 문서가 기술하던 상태보다 기능적으로는 더 전진해 있다.
-하지만 검증 신뢰성 관점에서는 여전히 치명적인 결함이 남아 있다.
+다만 아래 항목은 아직 “운영 완료”로 판정하지 않는다.
 
-### 4.1 구현 완성도
+- `exploit_pass / semantic_pass / guard_pass / verify_pass` schema 최종 고정
+- degraded-mode family-aware fallback synthesis의 unknown/free-form/general-purpose 확대
+- official lane/CI summary에서 provenance 기반 dynamicness classification 사용
+- free-form unknown-name official case
 
-- known static name-only lane(SQLi/CSRF/SSRF): `중상`
-- known-but-ruleless lane(Path Traversal/XSS): `중상에 근접`
-- free-form `NAME-*` generation capability: `중간 이상`
-- free-form `NAME-*` verification/promotion trust: `중하 -> 중간`
-- open-world multi-stack generalization: `낮음`
+### 2.5 이번 세션에서 재검증되어 active defect 목록에서 내린 항목
 
-### 4.2 성능 판정
+- `researcher_report.vuln_id` canonicalization은 fresh rerun에서 정상으로 확인되었다.
+  - `sid-6247be018b41` -> `CWE-89`
+  - `sid-02575fde190d` -> `NAME-TEMPLATE-INJECTION`
+  - `sid-db1e04270bf4` -> `CWE-352`
+- 따라서 `vuln_id=UNKNOWN` 문제는 현 시점 active defect라기보다 regression watch 항목으로 내린다.
 
-- Docker build/run/verify 자체는 상대적으로 빠르다. 대체로 2~6초 안쪽이다.
-- 병목은 `RESEARCH`와 `GENERATOR`다.
-- researcher가 붙는 lane은 `RESEARCH`만 약 39초가 소요된다.
-- known static lane도 generator retry가 한 번만 발생하면 총 시간이 바로 50초대로 상승한다.
-- free-form official case(`Template Injection`)는 fresh rerun 기준 loop 1에서도 닫힌다.
-- `Template Injection` repeatability gate 3회 반복 실행도 현재는 통과했다.
+## 3. 현재 구현의 실제 생성 방식 분해
 
-### 4.3 산출물 품질 판정
+현재 레포의 “동적 생성”은 단일 경로가 아니다.
+실제로는 아래 네 등급의 생성 경로가 공존한다.
 
-- semantic contract 생성 품질은 이전보다 좋아졌다.
-- top-level `success/promotion`이 nested guard/verifier failure를 무시하던 P0 결함은 이번 턴에 1차 수정이 반영되었다.
-- 다만 아직 full rerun/CI 기준으로 모든 lane에 대해 재검증이 끝난 상태는 아니다.
-- 따라서 현재 상태를 "artifact trust까지 충분히 안정화되었다"고 해석하면 안 된다.
+### A. Explicit built-in template materialization
 
-## 5. 이번 검토에서 확인된 핵심 구조 결함
+- `generator_mode=template|hybrid`에서 built-in template를 그대로 복사하는 경로
+- researcher candidate template가 새 코드를 합성하는 것이 아니라 기존 template를 clone하는 경로도 포함
 
-### 5.1 P0 결함: guard/verifier failure가 top-level success를 막지 못한다
+판정:
 
-상태: `1차 수리 완료, 회귀 고정/전체 rerun 재검증 남음`
+- SQLi/CSRF 계열에는 explicit built-in template dependence가 실재한다.
+- 이는 valid fast path일 수 있지만 “pure dynamic synthesis”와 동일하게 집계하면 안 된다.
 
-수정 전에는 다음과 같은 잘못된 성공 경로가 존재했다.
+### B. Template-assisted synthesis
 
-- verifier 내부에서 guard inconsistency가 발생해도
-- evidence 문자열에만 경고가 남고
-- `verify_pass=true`
-- reviewer clean
-- promotion eligible
-로 끝날 수 있다.
+- synthesis 결과 이후 template metadata, marker scaffold, auto-generated PoC scaffold, contract priority로 보정되는 경로
+- manifest가 존재해도 downstream contract가 template metadata를 주요 source로 쓰는 경우를 포함
 
-실제 예:
+판정:
 
-- `Template Injection` rerun (`sid-86dba9eb7da8`)
-- `guard_consistency.verifier.passed=false`
-- `violations=["verifier assertion failed (contains): substring=missing: 49"]`
-- 그럼에도 `overall_pass=true`, reviewer clean, promotion eligible
+- 일부 lane은 “LLM이 전부 생성”하는 것이 아니라 synthesis 후 template/contract/scaffold 보정에 상당히 의존한다.
+- 이 경로는 동적 합성과 정적 자산 재사용의 혼합 형태로 분리 집계해야 한다.
 
-이 결함은 이번 턴에서 1차 수정이 반영되었고, 이제 남은 일은 regression 고정과 전체 lane 재검증이다.
+### C. Family-specific deterministic synthesis override
 
-### 5.2 P0 결함: `NAME-*` runtime rule이 실제 로드되지 않는다
+- Template Injection deterministic PoC overwrite
+- fallback PoC endpoint/payload heuristic
+- family별 semantic signature, relevance term, guard fallback, known pattern heuristic
 
-상태: `1차 수리 완료, free-form lane 전체 재검증 남음`
+판정:
 
-free-form lane의 runtime rule writer와 loader가 같은 naming rule을 공유하지 않는다.
+- Template Injection/XSS/Deserialization은 built-in template보다는 family-specific guard/semantic/PoC hardcoding 의존이 더 크다.
+- 이 경로는 “LLM free synthesis”가 아니라 “family-aware deterministic assistance”에 가깝다.
 
-- writer는 `name-template-injection.yaml`처럼 기록한다.
-- loader는 non-CWE id를 `cwe-name-template-injection.yaml`로 해석한다.
+### D. LLM-led manifest synthesis
 
-수정 전 결과:
+- 실제 LLM JSON manifest를 기반으로 서비스/PoC/Dockerfile이 형성되는 경로
+- 이 경로가 artifact의 중심 provenance일 때만 `dynamic`이라는 표현을 쓴다.
 
-- `NAME-*` family는 researcher가 runtime rule을 생성해도
-- verify 단계에서 그 rule을 직접 쓰지 못하고
-- generator manifest fallback rule에 의존하게 된다.
+### 3.5 종합 판정
 
-이번 턴에서 filename normalization을 1차 수정했으므로, 이제 남은 일은 free-form lane 전체 rerun과 regression case 고정이다.
+현재 시스템은 “pure dynamic synthesis”가 아니다.
+보다 정확한 정의는 아래다.
 
-### 5.3 P1 결함: role vocabulary가 stage마다 다르다
+- `LLM + static rules + semantic heuristics + optional templates + deterministic fallback`
 
-상태: `1차 수리 완료, 비정형 파일명/전체 lane rerun 재검증 남음`
+즉, `취약점 이름만 제공 -> 동적 취약 Docker 생성` 방향성은 유지되고 있지만,
+현재 성립하는 것은 “보조 정적 자산과 family heuristic이 강하게 개입하는 hybrid generation”이다.
 
-현재 pipeline의 canonical role은 사실상 다음 둘이다.
+## 4. 템플릿/하드코딩 의존 감사
 
-- `service_main`
-- `poc_entry`
+아래 표는 lane별 의존 축을 공식 분류한 것이다.
+이 표는 이후 official lane classification과 provenance schema의 기준이 된다.
 
-하지만 실제 생성물과 guard spec은 다음 role을 쓰는 경우가 있다.
+| lane | 입력 | primary generation path | template dependence | family hardcoding | degraded-mode survivability | trusted dynamicness verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| SQLi | `vuln_name -> CWE-89` | synthesis default + family-aware deterministic fallback pass | 중간 | 높음 | 중간 이상 | deterministic fallback dependent under degraded |
+| CSRF | `vuln_name -> CWE-352` | known static lane + family-aware deterministic fallback pass | 중간 | 높음 | 중간 이상 | deterministic fallback dependent under degraded |
+| SSRF | `vuln_name -> CWE-918` | known static synthesis/static-rule lane | 낮음 또는 불명 | 중간 | 불명확 | partial dynamic, degraded 미검증 |
+| Path Traversal | `vuln_name -> CWE-22` | researcher runtime rule + heuristic semantic contract | 낮음 | 높음 | 불명확 | heuristic-assisted dynamic |
+| Template Injection | `vuln_name -> NAME-*` | runtime rule + deterministic family-specific service/PoC fallback | 낮음 | 높음 | 중간 이상 | deterministic fallback dependent under degraded |
+| Reflected XSS | `vuln_name -> CWE-79` | known-name mapping + semantic/relevance heuristic | 낮음 | 높음 | 불명확 | heuristic-assisted dynamic |
+| Insecure Deserialization | `vuln_name -> CWE-502` | known-name mapping + semantic/relevance heuristic | 낮음 | 높음 | 불명확 | heuristic-assisted dynamic |
+| unknown / `CWE-9999` | explicit synthetic id | remote evidence + runtime rule + degraded fallback fail | 없음 | 높음 | 낮음 | free-form name-only generalization 증거로 사용 금지 |
 
-- `server`
-- `verifier`
+### 4.1 이 표의 결론
 
-이 문제는 즉시 실패로 드러나지 않을 수 있다.
-왜냐하면 일부 stage는 fallback으로 `app.py`/`poc.py`를 사용하기 때문이다.
-하지만 파일명이 비정형으로 바뀌는 순간 contract resolution, rule placeholder resolution, reviewer scan이 서로 다른 파일을 보게 된다.
+- “취약점 이름만 제공 -> 동적 생성”은 부분적으로 성립한다.
+- 그러나 “템플릿 비의존, 하드코딩 비의존, provider degraded에서도 의미 있게 작동” 단계에는 아직 도달하지 못했다.
+- 따라서 official success 집계는 반드시 provenance와 dependency class를 함께 적어야 한다.
 
-이번 턴에서 alias normalization의 1차 구현이 반영되었고, 이제 남은 일은 비정형 파일명 lane과 full rerun 기준 재검증이다.
+## 5. 핵심 결함 및 위험도
 
-### 5.4 P1 결함: runtime assertion success가 semantic/guard 검사를 shortcut한다
+### 5.1 P1: provider degraded recovery는 known lane 기준 부분 회복됐지만 여전히 deterministic fallback dependent다
 
-runtime rule에 assertion program이 있으면 verify가 조기 성공할 수 있다.
-그 결과 일부 lane에서는 eval evidence가 사실상 substring pass에 가까워진다.
+이번 턴 전에는 provider degraded 시 generator가 사실상 닫히는 상태였다.
+이번 턴 구현 후에는 SQLi / CSRF / Template Injection은 degraded provider에서도 loop 1 pass가 가능해졌다.
 
-이 동작은 다음 문제를 만든다.
+다만 현재 degraded success의 성격은 아래와 같다.
 
-- semantic consistency가 항상 기록되지 않는다.
-- guard consistency가 항상 top-level verdict에 반영되지 않는다.
-- reviewer가 보완하더라도 exploit 성공 시 non-blocking으로 낮춰지는 경로가 남는다.
+- `trusted dynamic` recovery가 아니다.
+- `generation_origin=deterministic_fallback`
+- `dynamicness=deterministic fallback dependent`
+- unknown/free-form lane은 여전히 researcher evidence 또는 broader family fallback coverage에 막힌다.
 
-즉 현재 verify는 "exploit success detector"로는 동작하지만, 항상 "contract/trust gate"로 동작하지는 않는다.
+즉 degraded resilience는 분명히 개선되었지만,
+현재 문서/운영 메시지는 이를 “family-aware deterministic degraded recovery”로 써야 한다.
 
-### 5.5 P1 결함: free-form official lane의 low-loop repeatability가 아직 약하다
+### 5.2 P0: pytest green과 Docker E2E truth 사이의 간극이 크다
 
-상태: `공식 case 추가 + 1차 low-loop 안정화 + repeatability gate 통과, 장기 안정성 관찰 남음`
+- `147 passed, 11 skipped`는 유지되고 있지만,
+- 느린 E2E는 env gate가 없으면 기본적으로 skip된다.
+- 따라서 현재 기본 테스트 스위트는 live Docker pipeline의 완성도를 충분히 대표하지 못한다.
 
-현재 `Template Injection`은 official case로 승격되었지만, 다음 특성이 남아 있다.
+이 gap은 성능 계획보다 먼저 문서와 acceptance에서 바로잡아야 한다.
 
-- fresh rerun 기준 loop 1 pass를 확보했고, 3회 repeatability gate도 통과했다.
-- free-form lane의 researcher-generated dependency assertions / semantic precondition assertions이 생성물 variability보다 더 타이트해질 가능성은 여전히 남아 있다.
+### 5.3 P1: failure-path provenance / provider health truth는 generator/pack failure 기준 1차 해소되었지만 RESEARCH-stage taxonomy는 아직 거칠다
 
-즉 free-form lane은 이제 `Template Injection` 기준으로는 repeatability gate까지 통과했지만, 다른 free-form family까지 같은 수준이라고 일반화할 수는 없다.
+이번 턴 구현으로 아래는 실제로 개선되었다.
 
-## 6. 전략 목표
+- `generator_failures.jsonl`에 `llm_stub_used`, `fallback_used`, `family_override_applied`, `llm_failure_class`가 기록된다.
+- `performance_summary.provider_health_state`가 degraded known lane rerun에서 `llm_degraded`로 surface된다.
+- pack block이 있어도 `failure_manifest.json`이 남는다.
+- failed bundle provenance는 generator failure record를 fallback source로 읽을 수 있다.
 
-다음 단계의 목표는 단순하다.
+다만 RESEARCH-stage failure는 아직 아래처럼 거칠다.
 
-### 6.1 North Star
+- `loop_state.reason`이 `Researcher failed with exit code 1` 수준에 머무른다.
+- unknown lane low relevance / remote evidence insufficiency / provider degraded를 분리한 top-level taxonomy가 없다.
+- generation 이전에 종료된 bundle은 provenance가 `unclassified`로 남는 것이 자연스럽지만,
+  운영 summary에는 “왜 generation까지 못 갔는지”가 더 구조적으로 surface될 필요가 있다.
 
-`vuln_name only -> researcher/guard/synthesis -> runnable vulnerable Docker bundle -> exploit success + semantic/guard alignment + promotion truthfulness`
+### 5.4 P1: failure artifact availability가 policy-dependent하다
 
-### 6.2 이번 계획의 핵심 전환
+이 결함은 이번 턴에서 1차 해소되었다.
 
-이전 문서는 다음을 상위 우선순위로 두었다.
+- `allow_intentional_vuln` 여부와 관계없이 pack block 시 `failure_manifest.json`이 남는다.
+- 실제 확인:
+  - `sid-83bf14999326`
+  - `sid-cfb2af6ba8ef`
+  - `sid-269fb6724565`
 
-- Path Traversal low-loop 안정화
-- Template Injection dependency follow-through
-- XSS/Deserialization live coverage 확보
+남은 일:
 
-이번 검토 결과, 우선순위는 다음처럼 바뀌어야 한다.
+- CI / live acceptance summary가 `manifest.json`과 `failure_manifest.json`을 함께 집계하도록 연결
+- failure summary를 reviewer/ops 대시보드에 노출
 
-1. success/promotion truth repair
-2. `NAME-*` runtime rule/contract normalization
-3. role canonicalization
-4. official lane codification(Template Injection/XSS/Deserialization)
-5. then performance stabilization
-6. then broader stack generalization
+### 5.5 P1: official unknown lane이 free-form `vuln_name only` 증거가 아니다
 
-## 7. 단계별 개선 계획
+현재 공식 unknown case는 `vuln_name only`가 아니라 explicit `CWE-9999` 기반이다.
+따라서 이 케이스를 free-form generalization 성공 증거로 쓰면 안 된다.
 
-### Phase 0. Verdict Truth Repair
+### 5.6 P1: official lane/CI summary가 아직 provenance 기반 dynamicness classification을 기본 집계로 쓰지 않는다
 
-### 목적
+artifact에는 `generation_origin`, `dynamicness`, `provider_health_state`가 기록되지만,
+official lane/CI summary는 아직 success/failure 중심으로 읽히는 경향이 강하다.
 
-- nested verifier/guard/semantic failure가 있으면 top-level `verify_pass`, `review`, `promotion`이 반드시 실패하도록 만든다.
+현재부터는 degraded success를 다음처럼 분리 집계해야 한다.
 
-### 진행 현황
+- `trusted dynamic`
+- `template-assisted`
+- `deterministic fallback dependent`
 
-- `rule_based verifier -> reviewer -> pack` 핵심 전파는 1차 구현 완료
-- nested guard failure에 대한 unit/regression test 추가 완료
-- 남은 일은 full lane rerun 재검증, CI case 편입, 필요 시 verdict schema 추가 분리다
+### 5.7 P2: broader family coverage와 free-form unknown-name evidence는 아직 부족하다
 
-### 작업 항목
+- SQLi / CSRF / Template Injection degraded recovery는 확보했지만,
+  SSRF / XSS / Insecure Deserialization / broader unknown family까지 닫았다고 쓰면 안 된다.
+- official unknown case도 여전히 explicit `CWE-9999`다.
+- real free-form `vuln_name -> NAME-*` acceptance가 아직 없다.
 
-1. `evals/poc_verifier/rule_based.py`
-   - `guard_consistency.verifier.blocking=true` 또는 workspace guard blocking이면 `verify_pass=false`로 강제한다.
-   - semantic consistency mismatch가 blocking 수준이면 evidence 추가만 하지 말고 verify failure로 반영한다.
-   - top-level 결과를 `exploit_pass`, `contract_pass`, `verify_pass`로 분리하는 리팩터링 여부를 결정한다.
+### 5.8 P2: 현재 semantic/heuristic core는 Python/Flask 단일 스택 편향이 강하다
 
-2. `agents/reviewer/service.py`
-   - `evaluate_with_vuln()`가 반환한 nested `guard_consistency`, `semantic_consistency`를 reviewer issue로 승격한다.
-   - exploit 성공 여부와 무관하게 `severity=block`인 verifier guard failure는 reviewer blocking으로 처리한다.
-   - 현재의 "exploit 성공 시 workspace semantic/guard mismatch는 non-blocking" 정책을 재검토하고, 최소한 guard failure는 blocking으로 상향한다.
+minimal input defaults, semantic signatures, relevance terms, fallback PoC heuristic이 모두 Python/Flask 단일 컨테이너 웹앱에 강하게 기울어 있다.
+따라서 open-world multi-stack generalization은 현재 단계에서 후순위가 맞다.
 
-3. `orchestrator/pack.py`
-   - `eval_result.guard_consistency.verifier.passed=false`
-   - `eval_result.guard_consistency.workspace.passed=false`
-   - `eval_result.semantic_consistency.semantic_match=false`
-   인 경우 promotion을 차단한다.
+### 5.9 P2: researcher `vuln_id` canonicalization은 active defect가 아니라 regression watch 항목이다
 
-4. 테스트 추가
-   - `Template Injection`과 같은 케이스에서 nested guard failure가 있을 때
-     - `evals.overall_pass=false`
-     - reviewer blocking
-     - promotion.eligible=false
-     를 강제하는 unit/e2e 테스트를 추가한다.
+이번 세션 fresh rerun에서는 `researcher_report.json.vuln_id`가 모두 canonical value로 기록되었다.
+따라서 이전 `UNKNOWN` 관찰은 현 시점 active defect로 유지하지 않고,
+acceptance/pytest로 회귀 방지하는 항목으로 관리한다.
 
-### 완료 기준
+## 6. 통합 단계별 실행계획
 
-- `Template Injection` rerun이 현재처럼 false-positive success로 끝나지 않는다.
-- nested guard failure가 있는 artifact는 reviewer 또는 pack 단계에서 반드시 차단된다.
-- `success`와 `promotion eligible`의 의미가 다시 일치한다.
+### Phase 0. Reliability Floor
 
-### Phase 1. `NAME-*` Runtime Rule Normalization
+### 목표
 
-### 목적
+- healthy/degraded 양쪽에서 truthfulness를 일치시키는 최소 차단선을 완성한다.
+- success, verify, promotion의 의미를 다시 일치시킨다.
 
-- free-form vulnerability family도 researcher가 만든 runtime rule을 verify가 직접 소비하게 만든다.
+### 작업
 
-### 작업 항목
-
-1. `common/rules/__init__.py`
-   - `_normalized_filename()`를 `NAME-*`와 기타 synthetic identifier에 맞게 확장한다.
-   - `cwe-` prefix 전제 로직을 완화하거나, identifier class에 따라 filename normalization을 분기한다.
-
-2. `agents/researcher/service.py`
-   - `_write_candidate_rule()`가 rule loader와 동일한 filename normalization 함수를 쓰도록 바꾼다.
-   - writer/loader가 서로 다른 naming policy를 가지지 않게 만든다.
-
-3. `evals/poc_verifier/registry.py`
-   - `rule_available` 판정이 실제 `load_rule()` 가능성과 일치하도록 정리한다.
-   - "registry knows the id"와 "rule loader can actually resolve the file"를 분리 기록할지 결정한다.
-
-4. 테스트 추가
-   - `NAME-TEMPLATE-INJECTION` runtime rule writer/loader round-trip test
-   - `NAME-*` rule이 있으면 generator_manifest fallback으로 내려가지 않는 verify path test
-
-### 완료 기준
-
-- `load_rule("NAME-TEMPLATE-INJECTION")`가 실제 runtime rule을 반환한다.
-- free-form lane에서 runtime rule이 verify에 직접 사용된다.
-- `rule_available` metadata가 실제 rule resolution과 어긋나지 않는다.
-
-### Phase 2. Canonical Role Normalization
-
-### 목적
-
-- 생성물, guard, contract, verifier, reviewer가 같은 file role vocabulary를 사용하게 만든다.
-
-### canonical role
-
-- `service_main`
-- `poc_entry`
-- `helper`
-- `schema`
-- `seed_data`
-- `docs`
-- `container`
-- `deps_lock`
-
-### 작업 항목
-
-1. researcher guard payload normalization
-   - `server -> service_main`
-   - `verifier -> poc_entry`
-   alias를 정식 지원한다.
-
-2. synthesis manifest validation
-   - role alias가 들어오면 canonical role로 normalize해서 기록한다.
-   - 원본 role은 optional metadata로만 남긴다.
-
-3. contract resolution / reviewer / verifier
-   - canonical role 우선 사용
-   - alias는 backward compatibility layer로만 허용
-
-4. docs/prompts
-   - generator prompt와 handbook에 canonical role만 공식 스키마로 명시한다.
-
-### 완료 기준
-
-- 모든 generated manifest는 canonical role을 쓴다.
-- contract/reviewer/verifier가 파일 경로 fallback 없이 같은 entry file을 본다.
-- 비정형 파일명(`server.py`, `exploit.py`, `main_service.py`)에서도 stable하게 동작한다.
-
-### Phase 3. Verify Model Refactor
-
-### 목적
-
-- verify를 "substring pass detector"가 아니라 "exploit + contract alignment verifier"로 만든다.
-
-### 작업 항목
-
-1. `evals/poc_verifier/scenarios.py`
-   - assertion_program 성공 시에도 semantic/guard consistency 계산을 계속 수행하도록 수정한다.
-   - 조기 return을 제거하거나, partial verdict를 합성하는 구조로 변경한다.
-
-2. verify result schema 개선
+1. verifier result schema를 공식 top-level verdict로 고정한다.
    - `exploit_pass`
    - `semantic_pass`
    - `guard_pass`
    - `verify_pass`
-   를 구분한다.
-
-3. reviewer/pack 연동
-   - reviewer는 `verify_pass`만 보지 않고 하위 verdict를 직접 읽는다.
-   - pack은 `guard_pass=false` 또는 `semantic_pass=false`면 promotion 차단한다.
-
-4. 테스트 추가
-   - Path Traversal/XSS처럼 runtime assertion이 있는 lane에서도 semantic/guard report가 비지 않는지 검증한다.
+2. reviewer와 pack이 위 verdict를 직접 소비하도록 정리한다.
+3. `researcher_report.vuln_id` canonicalization 1차 구현이 실제 rerun artifact에서도 유지되는지 재검증한다.
+4. healthy-provider와 degraded-provider 양쪽 rerun에서 promotion truth가 일치하는지 재검증한다.
+5. official lane 재검증 시 nested guard/semantic failure가 top-level success로 승격되지 않는지 다시 확인한다.
 
 ### 완료 기준
 
-- eval result에 semantic/guard verdict가 항상 기록된다.
-- assertion_program이 성공해도 semantic mismatch가 있으면 전체 verify는 실패한다.
-- reviewer/pack이 하위 verdict와 모순되지 않는다.
+- healthy/degraded 공통으로 `verify_pass=true`이면 semantic/guard blocking failure가 없다.
+- `promotion.eligible=true`인 artifact는 reviewer/guard/semantic contradiction이 없다.
+- stub researcher report에도 canonical `vuln_id`가 기록되고 rerun artifact에서 유지된다.
 
-### Phase 4. Official Lane Codification
+### Phase 0.5. Failure-Path Truth & Degraded Provenance
 
-### 목적
+### 목표
 
-- 지금 수동 rerun으로 확인된 lane을 공식 regression asset으로 승격한다.
+- 실패 run에서도 provider health, fallback provenance, dynamicness class를 inspection 가능한 형태로 남긴다.
+- promotion gate와 failure summary emission을 분리해 postmortem truth를 보존한다.
 
-### 작업 항목
+### 작업
 
-1. E2E case 추가 또는 정리
-   - `Path Traversal` name-only official case
-   - `Template Injection` name-only official case
-   - `XSS` name-only official case
-   - `Insecure Deserialization` name-only case 설계/구현
-
-2. 문서/룰 정리
-   - static rule이 필요한 family와 runtime rule로 충분한 family를 구분한다.
-   - free-form family는 runtime rule + semantic contract + guard spec을 공식 경로로 문서화한다.
-
-3. CI 분리
-   - deterministic local lane
-   - researcher-backed remote lane
-   - unknown live lane
-   를 분리하고, 각각의 책임을 다르게 둔다.
+1. `generator_failures.jsonl`, `loop_state.history[].metadata`, `performance_summary.json`에 아래 필드를 직접 기록한다.
+   - 이번 턴 1차 구현 완료:
+     - `llm_stub_used`
+     - `fallback_used`
+     - `family_override_applied`
+     - `llm_failure_class`
+   - 남은 일:
+     - RESEARCH-stage failure taxonomy까지 health/provenance 필드 전파
+     - `provider_health_state`를 stage별 원인과 연결한 richer summary 보강
+2. `generator_manifest.json`이 없는 실패 run도 provenance를 잃지 않도록 failure summary surface를 추가한다.
+   - 이번 턴 1차 구현 완료:
+     - `failure_manifest.json`
+   - 남은 일:
+     - `manifest.json`과 `failure_manifest.json`의 소비 지점을 CI/ops에서 통합
+3. `PACK` gating과 inspection artifact emission을 분리한다.
+   - 이번 턴 1차 구현 완료:
+     - review block이어도 `failure_manifest.json`은 남김
+   - 남은 일:
+     - `failure_manifest.json`을 official summary와 reviewer/ops 대시보드까지 연결
+4. quota/auth/network/provider-unavailable failure를 구분하는 regression test와 rerun harness를 추가한다.
 
 ### 완료 기준
 
-- manual rerun이 아니라 repo의 official case로 Path Traversal/Template Injection/XSS를 재현 가능하다.
-- `Insecure Deserialization` 최소 1개 live pass 확보 또는 blocker를 재현하는 failing case가 officialized 된다.
+- degraded rerun에서 `provider_health_state`가 실제 failure class와 어긋나지 않는다.
+- failed bundle도 `provenance={}` / `dynamicness=unclassified` 대신 근거 있는 class를 가진다.
+- review/pack block이 있어도 inspection 가능한 top-level summary artifact가 남는다.
 
-### Phase 5. Performance Stabilization
+### Phase 1. Performance Stabilization
 
-### 목적
+이 phase는 문서의 첫 번째 전면 실행 트랙이다.
+단, `Reliability Floor`와 `Phase 0.5` 완료 후 착수한다.
 
-- researcher-backed lane의 latency를 줄이고 known static lane의 retry를 줄인다.
+### 목표
 
-### 우선 병목
+- known static lane의 불필요한 synthesis retry를 줄인다.
+- researcher-backed lane의 p95를 낮춘다.
+- fail-fast와 structured repair를 통해 retry cost를 줄인다.
 
-- researcher latency 약 39초
-- generator latency 14~24초
-- known static lane도 generator retry 1회만으로 50초대
+### 작업
 
-### 작업 항목
+1. known static lane fast path를 끌어올린다.
+   - provider health가 불량할 때 known static lane이 synthesis에 과도하게 의존하지 않도록 경로를 재검토한다.
+   - template/hybrid/verified skeleton을 쓸 경우 provenance를 함께 기록한다.
+2. researcher skip lane의 first-pass rate를 높인다.
+   - prompt/hint를 더 deterministic하게 고정한다.
+   - 반복적으로 같은 semantic miss가 나는 lane은 regression asset으로 박는다.
+3. loop repair 전략을 바꾼다.
+   - dependency, role, contract class 오류는 full regenerate보다 structured patch를 우선한다.
+   - full regenerate는 semantic skeleton이 깨졌을 때만 수행한다.
+4. LLM health failure를 fail-fast로 분류한다.
+   - quota/auth/network/transient를 구분한다.
+   - 재시도 가치가 없는 상태에서는 loop budget을 낭비하지 않는다.
+5. 성능 측정 필드를 확장한다.
+   - `retry_count`
+   - `provider_health_state`
+   - `llm_stub_used`
 
-1. known static fast path
-   - researcher skip lane에서 prompt/hint를 더 deterministic하게 줄여 generator first-pass rate를 높인다.
-   - SQLi처럼 반복되는 guard miss를 재현 가능한 regression으로 고정한다.
-
-2. researcher query budget 정리
-   - query 수, provider latency, high-noise source penalty를 튜닝한다.
-   - evidence relevance가 충분히 높으면 추가 검색을 조기 종료한다.
-
-3. synthesis retry cost 절감
-   - 이전 loop의 accepted semantic skeleton을 재사용한다.
-   - dependency/role/contract class 오류는 full regenerate 대신 structured patch를 우선한다.
-
-### 성능 목표
+### 목표 지표
 
 - known static deterministic lane: p95 30초 이내
 - researcher-backed deterministic lane: p95 75초 이내
 - known static first-loop success rate: 90% 이상
 - runtime rule lane first-loop success rate: 80% 이상
 
-### Phase 6. Open-World Generalization
+### Phase 2. Degraded-Mode Resilience
 
-### 목적
+### 목표
 
-- 현재의 Python/Flask 단일 컨테이너 중심 capability를 넘어 multi-stack, multi-service까지 일반화한다.
+- provider degraded 시에도 파이프라인이 “의미 있게 전진하거나, 최소한 정확한 failure class를 남기는 상태”를 만든다.
 
-### 현재 판단
+### 작업
 
-- 이 단계는 중요하지만 P0/P1 이후다.
-- 현재 가장 큰 문제는 coverage 부족이 아니라 trust mismatch다.
-
-### 작업 항목
-
-1. Node/Express, PHP, Java 최소 1개 family 확보
-2. 외부 DB sidecar 및 multi-container synthesis 정식화
-3. non-web scenario type 확장 여부 검토
+1. provider health class를 공식화한다.
+   - quota exhausted
+   - auth failure
+   - network transient
+   - provider unavailable
+   - search success / llm degraded
+2. same-process stub stickiness를 문제 정의에 포함한다.
+   - self-consistency와 retry 의미가 사라지지 않도록 LLM health handling policy를 재설계한다.
+3. family-aware deterministic fallback skeleton을 확장한다.
+   - 이번 턴 1차 구현 완료:
+     - SQLi
+     - CSRF
+     - Template Injection
+     - Path Traversal
+   - 남은 일:
+     - SSRF / XSS / Insecure Deserialization 계열 fallback 여부 정리
+     - unknown-sqli-like 및 broader unknown family fallback
+     - non-web / multi-stack fallback 여부 검토
+4. degraded known lane이 template safety net을 쓰는 경우 provenance를 반드시 남긴다.
+5. degraded failure는 아래 둘을 분리 기록한다.
+   - search unavailable
+   - family-aware synthesis unavailable
 
 ### 완료 기준
 
-- 단일 스택이 아닌 lane에서도 `vuln_name only -> runnable bundle -> trusted verify`가 성립한다.
+- remote-required lane은 provider env footgun 없이 정상 설정된다.
+- known/static lane 일부는 degraded provider 상태에서도 닫히거나, 닫히지 않으면 정확한 health class를 남긴다.
+- degraded mode에서 self-consistency가 형식적 재시도가 아니라 실제 다른 경로를 의미한다.
 
-## 8. 실행 순서
+### Phase 3. Template / Hardcode Dependency Reduction
 
-실제 구현 순서는 아래로 고정한다.
+### 목표
 
-1. Phase 0 잔여 항목 완료
-2. Phase 1 잔여 항목 완료
-3. Phase 2 잔여 항목 완료
-4. Phase 3 최소 버전 완료
-5. Phase 4에서 Template Injection/XSS officialization
-6. 그 다음 Path Traversal/Deserialization 정식화
-7. 이후 Phase 5 성능 안정화
-8. 마지막으로 Phase 6 stack generalization
+- 현재 시스템이 어떤 정적 도움에 의존하는지 provenance와 dynamicness budget으로 명시한다.
+- template reuse와 family override를 dynamic success와 분리한다.
 
-즉, 다음 sprint의 핵심은 "새 family 추가"가 아니라 "현재 pass의 의미를 신뢰 가능하게 만드는 것"이다.
+### 작업
 
-## 9. Acceptance Matrix
+1. artifact provenance 필드를 추가한다.
+   - 현재 1차 구현 완료:
+     - `generation_origin`
+     - `family_override_applied`
+     - `fallback_used`
+     - `llm_stub_used`
+     - pack bundle `provenance`
+     - top-level `generation_summary`
+     - bundle `dynamicness`
+     - top-level `generation_summary.by_dynamicness_verdict`
+   - 남은 일:
+     - failure path (`generator_failures.jsonl`, `loop_state`, `performance_summary`, top-level failure summary)까지 동일 필드 전파
+     - official lane summary 및 CI acceptance까지 동일 필드 전파
+     - acceptance에서 provenance 기반 분류 사용
+2. official lane별 dynamicness budget을 정의한다.
+   - 어느 수준의 static aid까지 허용하는지 lane별로 문서화한다.
+3. built-in template copy는 문서상 `dynamic synthesis success`로 집계하지 않는다.
+4. runtime candidate template clone은 “new synthesis”가 아니라 “template reuse”로 표기한다.
+5. contract와 manifest가 template metadata를 source로 쓸 경우 그 사실을 artifact에 남긴다.
 
-아래 matrix가 모두 만족되어야 이번 단계 완료로 본다.
+### 완료 기준
+
+- official artifact는 모두 provenance를 가진다.
+- template-assisted success와 LLM-led dynamic success를 문서와 artifact 양쪽에서 구분할 수 있다.
+
+### Phase 4. Official Lane Reclassification
+
+### 목표
+
+- 현재 official lane을 success 여부만이 아니라 dependency/provenance class로 다시 분류한다.
+
+### 작업
+
+1. official lane을 아래 세 등급으로 재분류한다.
+   - `trusted dynamic`
+   - `template-assisted`
+   - `deterministic fallback dependent`
+2. `cwe-unknown-basic`은 free-form `vuln_name only` 증거에서 제외한다.
+3. 실제 free-form unknown-name case를 새 acceptance 대상으로 추가한다.
+   - 예: 임의 취약점명 기반 `NAME-*` case 최소 1개
+4. official lane 문서와 CI matrix를 healthy/degraded 축으로 분리한다.
+
+### 완료 기준
+
+- official lane 목록이 성공/실패만이 아니라 provenance class를 함께 가진다.
+- free-form name-only 증거와 synthetic id 증거를 혼동하지 않는다.
+
+### Phase 5. Open-World Generalization
+
+### 목표
+
+- 단일 Python/Flask 컨테이너 편향을 넘는 multi-stack generalization으로 확장한다.
+
+### 작업
+
+1. Node/Express, PHP, Java 최소 1개 lane 확보
+2. 외부 DB sidecar 및 multi-container synthesis 정식화
+3. non-web scenario type 확장 여부 검토
+
+### 착수 조건
+
+- 단일 스택 lane에서 provenance가 명확하다.
+- degraded-mode behavior가 규정되어 있다.
+- official lane 분류가 완료되었다.
+
+## 6.1 계획에 포함할 인터페이스 / 스키마 변경
+
+아래 스키마 변경은 위 phase와 별개로 cross-cutting deliverable로 취급한다.
+
+### verifier result schema
+
+- `exploit_pass`
+- `semantic_pass`
+- `guard_pass`
+- `verify_pass`
+
+위 네 필드를 공식 top-level verdict로 고정한다.
+
+### researcher report normalization
+
+- stub/LLM fallback이어도 `vuln_id`가 `UNKNOWN`으로 남지 않도록 canonicalize
+- `quality`, `quality_reason`, `search_degraded`와 함께 artifact truth를 유지
+
+### manifest / contract provenance
+
+- `generation_origin`
+- `template_id`
+- `family_override_applied`
+- `fallback_used`
+
+위 필드를 `resolved_contract` 또는 manifest metadata에 기록한다.
+
+### performance summary
+
+기존 stage latency 외에 아래 필드를 공식화한다.
+
+- `retry_count`
+- `provider_health_state`
+- `llm_stub_used`
+
+현재 `performance_summary.json`에는 위 세 필드의 1차 구현이 반영되었다.
+남은 일은 official report/CI summary에서 이를 기준으로 pass/fail 및 degraded classification을 집계하는 것이다.
+
+## 6.2 연계 계획 문서 정합성
+
+이 문서는 verifier/template 독립화 하위 실행 설계인 [eval_refactor_plan.md](/home/ysw/vulDocker/docs/evals/eval_refactor_plan.md)와 다음 관계를 가진다.
+
+- 본 문서의 `Phase 0`, `Phase 0.5`, `Phase 3`는 `eval_refactor_plan.md`의 RuleSpec / EvaluationContext / runtime rule 재사용 방향을 전제로 한다.
+- 특히 아래 항목은 두 문서가 같은 방향을 가리켜야 한다.
+  - verifier verdict schema 고정
+  - runtime rule / RuleSpec / generator guard의 단일 truth source화
+  - template metadata와 placeholder 기반 검증으로의 이행
+  - hardcoded success string / file path 의존 축소
+- 따라서 `gap_analysis` 문서에서 말하는 template/hardcode dependency reduction은
+  단순 provenance 표기만이 아니라 `eval_refactor_plan.md`의 RuleSpec 통합이 실제 코드로 닫히는지까지 포함해 판단한다.
+
+## 7. Acceptance Matrix
+
+아래 matrix를 모두 만족해야 이번 단계 완료로 본다.
 
 | 구분 | 최소 acceptance |
 | --- | --- |
-| Unit tests | 기존 `114 passed, 7 skipped` 수준 유지 또는 상향 |
-| Verdict truth | nested guard/verifier failure가 있으면 top-level success 금지 |
+| Unit tests | `python -m pytest -q tests` 기준 최소 `147 passed, 11 skipped` 유지 또는 상향 |
+| E2E truth | 기본 pytest pass와 별개로 필수 live E2E set가 존재해야 함 |
+| Verdict truth | nested guard/verifier/semantic failure가 있으면 top-level success 금지 |
+| Failure-path provenance | generator failure artifact에도 `llm_stub_used`, `fallback_used`, `family_override_applied`, `provider_health_state`가 남아야 함 |
+| Failure artifact availability | review/pack block이 있어도 inspection 가능한 top-level summary artifact가 남아야 함 |
+| Researcher normalization | stub researcher report에도 canonical `vuln_id`가 기록되어야 함 |
 | Free-form rule loading | `NAME-*` runtime rule writer/loader round-trip 성공 |
 | Role normalization | generated manifest canonical role 100% |
-| Official lanes | SQLi/CSRF/SSRF/Path Traversal/Template Injection/XSS 공식 rerun 보유 |
-| Promotion truth | `promotion.eligible=true`인 artifact는 guard/semantic blocking failure가 없어야 함 |
-| Performance | known static p95 <= 30s, researcher-backed p95 <= 75s |
+| Provider health | remote-required lane이 provider env 누락만으로 실패하지 않아야 함 |
+| Degraded mode | known/static lane 일부는 degraded provider 상태에서도 닫히거나, 정확한 failure class를 남겨야 함 |
+| Generation provenance | official artifact는 `generation_origin`과 fallback/template usage를 기록해야 함 |
+| Template dependency disclosure | template reuse lane은 문서상 dynamic success로 집계하지 않아야 함 |
+| Official lanes | healthy-provider 기준 SQLi/CSRF/SSRF/Path Traversal/Template Injection/XSS/Deserialization rerun 보유 |
+| Free-form evidence quality | unknown 공식 케이스는 `CWE-9999`가 아니라 실제 free-form `vuln_name` case 최소 1개 포함 |
+| Performance | known static p95 <= 30s, researcher-backed p95 <= 75s, known static first-loop success rate >= 90% |
 
-## 10. 문서 운영 규칙
+## 8. 이번 문서 갱신에 반영한 실측 검증
 
-이 문서는 이후부터 다음 규칙으로 유지한다.
+### 8.1 테스트
+
+- `python -m pytest -q tests`
+  - 결과: `147 passed, 11 skipped`
+- targeted verification:
+  - `python -m pytest -q tests/test_synthesis_fallback_poc.py tests/test_synthesis_semantic_guard.py tests/test_run_pipeline_failure_resolution.py tests/test_pack_promotion.py tests/test_contract_resolution.py tests/test_researcher_search_artifacts.py`
+  - 결과: `45 passed`
+
+### 8.2 fresh rerun
+
+- pre-fix SQLi
+  - 입력: fresh plan -> `sid-6247be018b41`
+  - 실행: `python orchestrator/run_pipeline.py --sid sid-6247be018b41 --mode deterministic`
+  - 결과: OpenAI quota exhausted -> stub/fallback -> GENERATOR 3회 실패 -> failure manifest 기록
+  - 관찰: `performance_summary.provider_health_state=healthy`, `llm_stub_used=false`, bundle `provenance={}`로 surface
+- pre-fix Template Injection
+  - 입력: fresh plan -> `sid-02575fde190d`
+  - 실행: `python orchestrator/run_pipeline.py --sid sid-02575fde190d --mode deterministic`
+  - 결과: OpenAI quota exhausted -> stub/fallback -> semantic mismatch -> PACK gate failure
+  - 관찰: top-level `manifest.json` 미생성
+- pre-fix CSRF
+  - 입력: fresh plan -> `sid-db1e04270bf4`
+  - 실행: `python orchestrator/run_pipeline.py --sid sid-db1e04270bf4 --mode deterministic`
+  - 결과: OpenAI quota exhausted -> stub/fallback -> state-changing endpoint missing -> PACK gate failure
+  - 관찰: known static lane도 degraded 시 low survivability로 재확인
+- post-fix SQLi
+  - 입력: fresh plan -> `sid-5a5277a8aeda`
+  - 실행: `python orchestrator/run_pipeline.py --sid sid-5a5277a8aeda --mode deterministic`
+  - 결과: OpenAI quota exhausted -> deterministic fallback -> build/run/verify/review/pack pass
+  - 관찰: `status=success`, `provider_health_state=llm_degraded`, `llm_failure_class=quota_exhausted`
+- post-fix CSRF
+  - 입력: fresh plan -> `sid-91c772b15bb1`
+  - 실행: `python orchestrator/run_pipeline.py --sid sid-91c772b15bb1 --mode deterministic`
+  - 결과: OpenAI quota exhausted -> deterministic fallback -> build/run/verify/review/pack pass
+  - 관찰: degraded known static lane이 loop 1에서 닫힘
+- post-fix Template Injection
+  - 입력: fresh plan -> `sid-6210ffdbeb5b`
+  - 실행: `python orchestrator/run_pipeline.py --sid sid-6210ffdbeb5b --mode deterministic`
+  - 결과: OpenAI quota exhausted -> deterministic fallback + family override -> build/run/verify/review/pack pass
+  - 관찰: `dynamicness=deterministic fallback dependent`, reviewer blocking 없음
+- failure-summary validation
+  - 입력: fresh plan -> `sid-269fb6724565` (`CWE-9999`)
+  - 실행: `python orchestrator/run_pipeline.py --sid sid-269fb6724565 --mode deterministic`
+  - 결과: RESEARCH low relevance fail
+  - 관찰: pack block 이후에도 `failure_manifest.json` 생성 확인
+
+### 8.3 이번 세션에서 다시 확인한 positive fact
+
+- `researcher_report.vuln_id` canonicalization은 세 fresh rerun에서 모두 유지되었다.
+- `search_health.json`은 세 rerun 모두 Tavily remote success(`remote_result_count=9`, `last_status_code=200`)를 기록했다.
+- post-fix rerun에서는 SQLi / CSRF / Template Injection이 모두 `llm_degraded` 상태에서 deterministic fallback path로 loop 1 pass했다.
+- unknown synthetic lane은 여전히 실패했지만 `failure_manifest.json`이 남아 inspection summary emission이 개선된 것이 확인되었다.
+- 즉 현 시점 핵심 병목은 “known degraded lane collapse”보다 “unknown/free-form evidence quality”, “official provenance-aware reporting”, “broader family coverage” 쪽으로 이동했다.
+
+## 9. 문서 운영 규칙
+
+이 문서는 이후 아래 규칙으로 유지한다.
 
 - speculative statement를 쓰지 않는다.
-- "pass", "stable", "eligible" 같은 표현은 fresh rerun 또는 CI artifact로만 갱신한다.
+- `pass`, `stable`, `eligible`, `dynamic` 같은 표현은 provider condition과 provenance를 함께 적는다.
 - 상태 서술과 계획 서술을 분리한다.
-- 계획 변경 시에는 반드시 "왜 우선순위가 바뀌었는지"를 rerun 결과와 연결해 적는다.
+- template clone, scaffold overwrite, deterministic fallback은 별도 표기한다.
+- healthy-provider success와 degraded-provider failure가 공존하면 문서 요약문은 더 낮은 운영 완성도를 기준으로 쓴다.
+- official unknown lane은 real free-form `vuln_name only` case가 생기기 전까지 generalization success 근거로 쓰지 않는다.
 
-## 11. 현재 즉시 착수할 구현 항목
+## 10. 즉시 착수 work package
 
-지금 바로 시작할 work package는 아래 네 개다.
+지금 바로 시작할 work package는 아래 순서로 고정한다.
 
-1. `Insecure Deserialization` official regression case 또는 failing case 공식화
-2. `verifier/reviewer/pack truth repair` 잔여 full rerun 재검증
-3. `NAME-*` runtime rule normalization 잔여 정리 및 free-form rerun 고정
-4. role canonicalization 잔여 정리 및 비정형 파일명 rerun 고정
-5. `Template Injection` repeatability gate를 CI/nightly 정책에 연결
+1. `Reliability Floor` 잔여 항목 완료
+   - verifier/reviewer/pack truth rerun 재검증
+   - stub researcher `vuln_id` normalization rerun 검증
+   - `exploit_pass / semantic_pass / guard_pass / verify_pass` schema 고정
+2. `Failure-Path Truth & Degraded Provenance` 완료
+   - `generator_failures.jsonl` / `loop_state` / `performance_summary` 필드 확장
+   - top-level failure summary artifact 도입
+3. degraded-mode resilience 구현
+   - provider health class
+   - family-aware fallback skeleton 확장
+   - degraded provenance 기록
+4. known static lane 성능 개선 착수
+   - fast path pull-up
+   - 불필요한 synthesis retry 축소
+   - fail-fast health classification 도입
+5. template / hardcode provenance 도입
+   - `generation_origin`
+   - `family_override_applied`
+   - `fallback_used`
+   - `llm_stub_used`
+   - pack surface / dynamicness verdict 확장 후 official lane/CI summary 연결
+6. official lane reclassification
+   - `trusted dynamic`
+   - `template-assisted`
+   - `deterministic fallback dependent`
+7. free-form unknown-name case 추가
+   - `CWE-9999`가 아닌 real `vuln_name -> NAME-*` case 확보
+8. 그 다음 open-world generalization 착수
 
-이 네 항목이 닫히기 전까지는 "free-form `취약점 이름만 제공` 기반 동적 취약 Docker 생성이 신뢰 가능한 수준에 도달했다"고 판단하지 않는다.
+## 11. 한 문장 요약
 
-## 12. 한 문장 요약
-
-현재 레포는 `취약점 이름만 제공 -> 동적 취약 Docker 생성`이라는 초기 방향성 자체는 실제로 SQLi/CSRF/SSRF/Path Traversal/Template Injection/XSS까지 상당 부분 구현했지만, 다음 단계의 최우선 과제는 family 확장보다 먼저 `verify/review/promotion truthfulness`, `NAME-* runtime rule loading`, `role canonicalization`을 바로잡아 생성 성공과 산출물 신뢰성을 일치시키는 것이다.
+현재 레포는 `취약점 이름만 제공 -> 취약 Docker 생성` 방향성 자체는 부분적으로 구현했지만,
+현 시점의 핵심 과제는 family 확장보다 먼저 `healthy/degraded 운영 하한선 정직화`, `failure-path truth/provenance 고정`, `degraded-mode resilience 확보`, `template/하드코딩 의존 공개`, `Reliability Floor 완료`를 통해 생성 성공과 산출물 신뢰성을 다시 일치시키는 것이다.
