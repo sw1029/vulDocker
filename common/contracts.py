@@ -17,6 +17,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from common.roles import role_matches
 from common.researcher_report import (
     extract_semantic_contract,
     extract_verification_spec,
@@ -485,7 +486,7 @@ def _manifest_role_path(manifest: Dict[str, Any], role: str) -> Optional[str]:
     for entry in files:
         if not isinstance(entry, dict):
             continue
-        if str(entry.get("role") or "").strip().lower() != role_norm:
+        if not role_matches(entry.get("role"), role_norm):
             continue
         path = _string_or_none(entry.get("path"))
         if path:

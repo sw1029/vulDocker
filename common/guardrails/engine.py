@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from common.roles import normalize_role, role_matches
 from common.rules import load_static_rule
 from common.vuln_semantics import (
     evaluate_manifest_semantics,
@@ -496,6 +497,29 @@ def _semantic_token_alias_present(text: str, token: str) -> bool:
             "template response",
         ]
         return any(alias in text for alias in aliases)
+    if "template source string" in token or ("concatenation" in token and "template" in token):
+        template_source_aliases = [
+            "render_template_string(",
+            "template = f",
+            "template=f",
+            "template_source = f",
+            "template_source=f",
+            ".format(",
+            "{name}",
+            "{payload}",
+            "+ name",
+            "+ payload",
+            "+ user_input",
+            "+ request.args",
+        ]
+        return "render_template_string" in text and any(alias in text for alias in template_source_aliases)
+    if "without escaping/sandboxing" in token or ("sandbox" in token and "template" in token):
+        aliases = [
+            "render_template_string",
+            "jinja2.from_string",
+            "template.render(",
+        ]
+        return any(alias in text for alias in aliases)
     if token in {"request.data", "request.get_data", "serialized payload"}:
         aliases = [
             "request.data",
@@ -538,10 +562,10 @@ def _evaluate_generator_assertion(manifest: Dict[str, Any], assertion: Dict[str,
                 return True, f"file exists: {path}"
         return False, f"missing file: {path}"
     if op == "role_exists":
-        role = str(assertion.get("role") or "").strip().lower()
+        role = normalize_role(assertion.get("role"))
         if not role:
             return False, "role_exists requires role"
-        if any((entry["role"] or "").lower() == role for entry in files):
+        if any(role_matches(entry["role"], role) for entry in files):
             return True, f"role exists: {role}"
         return False, f"missing role: {role}"
     if op in {"file_contains", "file_not_contains"}:
@@ -664,7 +688,7 @@ def _manifest_files(manifest: Dict[str, Any]) -> List[Dict[str, str]]:
         output.append(
             {
                 "path": path,
-                "role": str(entry.get("role") or "").strip(),
+                "role": normalize_role(entry.get("role")),
                 "content": str(entry.get("content") or ""),
             }
         )
@@ -739,16 +763,31 @@ def _manifest_deps(manifest: Dict[str, Any]) -> set[str]:
     body = manifest.get("manifest") if isinstance(manifest.get("manifest"), dict) else manifest
     deps = body.get("deps") if isinstance(body, dict) else []
     result: set[str] = set()
-    if not isinstance(deps, list):
-        return result
-    for dep in deps:
-        if not isinstance(dep, str):
-            continue
-        token = dep.strip().lower()
-        if not token:
-            continue
-        result.add(token.split("==")[0].strip())
-        result.add(token)
+    if isinstance(deps, list):
+        for dep in deps:
+            if not isinstance(dep, str):
+                continue
+            token = dep.strip().lower()
+            if not token:
+                continue
+            result.add(token.split("==")[0].strip())
+            result.add(token)
+
+    files = body.get("files") if isinstance(body, dict) else []
+    if isinstance(files, list):
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            path = str(entry.get("path") or "").strip().lower()
+            if not path or not path.startswith("requirements") or not path.endswith(".txt"):
+                continue
+            content = str(entry.get("content") or "")
+            for line in content.splitlines():
+                token = line.split("#", 1)[0].strip().lower()
+                if not token:
+                    continue
+                result.add(re.split(r"[<>=!~\[\]\s]+", token, maxsplit=1)[0])
+                result.add(token)
     return result
 
 

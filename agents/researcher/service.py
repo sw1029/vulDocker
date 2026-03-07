@@ -30,7 +30,8 @@ from common.paths import ensure_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_guard_planner_prompt, build_researcher_prompt
 from common.researcher_report import extract_verification_spec, normalize_researcher_report_payload
-from common.rules import load_rule, load_static_rule
+from common.roles import normalize_role
+from common.rules import load_rule, load_static_rule, rule_filename_for_vuln_id
 from common.run_matrix import (
     VulnBundle,
     bundle_requirement,
@@ -764,40 +765,56 @@ class ResearcherService:
         spec = extract_verification_spec(report, vuln_id=vuln_id)
         if not isinstance(spec, dict):
             return
+        spec, normalization = self._normalize_runtime_verification_spec(spec)
         raw_markers = spec.get("success_text_markers") or []
         markers: List[str] = []
         if isinstance(raw_markers, list):
             markers.extend(str(item).strip() for item in raw_markers if isinstance(item, str) and str(item).strip())
         elif isinstance(raw_markers, str) and raw_markers.strip():
             markers.append(raw_markers.strip())
+        dropped_markers = set(normalization.get("dropped_markers") or [])
+        negative_markers = [
+            str(item).strip()
+            for item in (normalization.get("negative_markers") or [])
+            if isinstance(item, str) and str(item).strip()
+        ]
         structured_success = self._derive_structured_success_contract(markers)
         canonical_marker = str(structured_success.get("canonical_marker") or "").strip()
-        if not canonical_marker:
-            return
-
-        variants = {marker for marker in markers if marker}
-        variants.add(canonical_marker)
         changed = False
-        has_canonical = False
+        normalized_assertions: List[Dict[str, Any]] = []
+        has_positive = {marker: False for marker in markers}
+        has_negative = {marker: False for marker in negative_markers}
+        variants = {marker for marker in markers if marker}
+        if canonical_marker:
+            variants.add(canonical_marker)
+
         for assertion in assertions:
             if not isinstance(assertion, dict):
                 continue
-            if str(assertion.get("op") or "").strip().lower() != "contains":
-                continue
+            op = str(assertion.get("op") or "").strip().lower()
             token = str(assertion.get("string") or "").strip()
-            if token == canonical_marker:
-                has_canonical = True
+            if op == "contains":
+                if token and token in dropped_markers and token not in markers:
+                    changed = True
+                    continue
+                if canonical_marker and token and token in variants and token != canonical_marker:
+                    assertion["string"] = canonical_marker
+                    token = canonical_marker
+                    changed = True
+                if token in has_positive:
+                    has_positive[token] = True
+            elif op == "not_contains" and token in has_negative:
+                has_negative[token] = True
+            normalized_assertions.append(assertion)
+
+        for marker, present in has_positive.items():
+            if present:
                 continue
-            if token and token in variants:
-                assertion["string"] = canonical_marker
-                has_canonical = True
-                changed = True
-        if not has_canonical:
-            assertions.insert(
+            normalized_assertions.insert(
                 0,
                 {
                     "op": "contains",
-                    "string": canonical_marker,
+                    "string": canonical_marker if canonical_marker and marker in variants else marker,
                     "severity": "block",
                     "intent": "semantic_anchor",
                     "stability": "medium",
@@ -805,9 +822,126 @@ class ResearcherService:
                 },
             )
             changed = True
+        for marker, present in has_negative.items():
+            if present:
+                continue
+            normalized_assertions.append(
+                {
+                    "op": "not_contains",
+                    "string": marker,
+                    "severity": "block",
+                    "intent": "semantic_anchor",
+                    "stability": "medium",
+                    "evidence_ids": [],
+                }
+            )
+            changed = True
         if changed:
-            payload["verifier_assertions"] = assertions
-            warnings.append("aligned verifier success marker with canonical structured success contract")
+            payload["verifier_assertions"] = normalized_assertions
+            if canonical_marker:
+                warnings.append("aligned verifier success marker with canonical structured success contract")
+            else:
+                warnings.append("aligned verifier assertions with normalized runtime verification contract")
+
+    @staticmethod
+    def _extract_print_markers_from_assertion_program(program: str) -> Dict[str, List[str]]:
+        positive: List[str] = []
+        negative: List[str] = []
+        if not isinstance(program, str) or not program.strip():
+            return {"positive": positive, "negative": negative}
+        for match in re.finditer(r"print\(\s*(['\"])(?P<text>.*?)(?<!\\)\1\s*\)", program, flags=re.DOTALL):
+            token = str(match.group("text") or "").strip()
+            if not token:
+                continue
+            lowered = token.lower()
+            if lowered.startswith(("fail", "error", "unexpected")):
+                if token not in negative:
+                    negative.append(token)
+                continue
+            if token not in positive:
+                positive.append(token)
+        return {"positive": positive, "negative": negative}
+
+    @staticmethod
+    def _looks_like_flag_token(token: str) -> bool:
+        candidate = str(token or "").strip()
+        lowered = candidate.lower()
+        if not candidate:
+            return False
+        return (
+            "flag" in lowered
+            or "token" in lowered
+            or ("{" in candidate and "}" in candidate)
+        )
+
+    @staticmethod
+    def _is_weak_runtime_marker(token: str) -> bool:
+        candidate = str(token or "").strip()
+        if not candidate:
+            return True
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", candidate):
+            return True
+        if candidate.lower() in {"true", "false", "null", "none"}:
+            return True
+        return False
+
+    def _normalize_runtime_verification_spec(
+        self,
+        spec: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, List[str]]]:
+        normalized = dict(spec)
+        info: Dict[str, List[str]] = {
+            "dropped_markers": [],
+            "negative_markers": [],
+        }
+        raw_markers = normalized.get("success_text_markers") or []
+        markers: List[str] = []
+        if isinstance(raw_markers, list):
+            markers = [str(item).strip() for item in raw_markers if isinstance(item, str) and str(item).strip()]
+        elif isinstance(raw_markers, str) and raw_markers.strip():
+            markers = [raw_markers.strip()]
+
+        program = normalized.get("assertion_program")
+        extracted = self._extract_print_markers_from_assertion_program(program) if isinstance(program, str) else {"positive": [], "negative": []}
+        positive_markers = extracted.get("positive") or []
+        negative_markers = extracted.get("negative") or []
+
+        use_program_print_markers = False
+        if positive_markers and markers and all(self._is_weak_runtime_marker(marker) for marker in markers):
+            info["dropped_markers"] = list(markers)
+            normalized["success_text_markers"] = positive_markers
+            markers = list(positive_markers)
+            use_program_print_markers = True
+        elif positive_markers and not markers:
+            normalized["success_text_markers"] = positive_markers
+            markers = list(positive_markers)
+            use_program_print_markers = True
+
+        flag_token = str(normalized.get("flag_token") or "").strip()
+        if (
+            positive_markers
+            and flag_token
+            and (flag_token in info["dropped_markers"] or self._is_weak_runtime_marker(flag_token))
+            and not self._looks_like_flag_token(flag_token)
+        ):
+            normalized.pop("flag_token", None)
+            normalized["flag_mode"] = "none"
+
+        if isinstance(program, str) and positive_markers and use_program_print_markers:
+            assertion_program: List[Dict[str, Any]] = [
+                {"op": "contains", "string": marker}
+                for marker in positive_markers
+                if isinstance(marker, str) and marker
+            ]
+            assertion_program.extend(
+                {"op": "not_contains", "string": marker}
+                for marker in negative_markers
+                if isinstance(marker, str) and marker
+            )
+            normalized["assertion_program"] = assertion_program
+
+        info["negative_markers"] = list(negative_markers)
+        return normalized, info
 
     @staticmethod
     def _normalize_op(op: str, *, scope: str) -> str:
@@ -863,6 +997,10 @@ class ResearcherService:
             _map_key("string", ["contains", "needle"])
             assertion.pop("contains", None)
             assertion.pop("needle", None)
+        elif op == "role_exists":
+            role = normalize_role(assertion.get("role"))
+            if role:
+                assertion["role"] = role
         elif op in {"file_regex_contains", "file_regex_not_contains", "file_regex_any"}:
             _map_key("regex", ["pattern"])
             if op == "file_regex_any":
@@ -1171,6 +1309,7 @@ class ResearcherService:
         )
         if not isinstance(verification_spec, dict):
             verification_spec = {}
+        verification_spec, _ = self._normalize_runtime_verification_spec(verification_spec)
         vuln_id = bundle.vuln_id if bundle else self.requirement.get("vuln_id")
         rule = load_rule(vuln_id)
         has_static = bool(load_static_rule(vuln_id))
@@ -2248,7 +2387,7 @@ class ResearcherService:
     def _write_candidate_rule(self, bundle: VulnBundle, rule: Dict[str, Any]) -> Path:
         import yaml
 
-        filename = f"{bundle.vuln_id.lower()}.yaml"
+        filename = f"{rule_filename_for_vuln_id(bundle.vuln_id)}.yaml"
         path = self.runtime_rules_dir / filename
         path.write_text(yaml.safe_dump(rule, sort_keys=False, allow_unicode=True), encoding="utf-8")
         LOGGER.info("Candidate rule written to %s", path)
@@ -2295,7 +2434,11 @@ class ResearcherService:
         report = self._load_latest_report()
         if not isinstance(report, dict):
             return None
-        return extract_verification_spec(report, vuln_id=bundle.vuln_id)
+        spec = extract_verification_spec(report, vuln_id=bundle.vuln_id)
+        if not isinstance(spec, dict):
+            return None
+        normalized, _ = self._normalize_runtime_verification_spec(spec)
+        return normalized
 
     @staticmethod
     def _derive_structured_success_contract(markers: List[str]) -> Dict[str, Any]:
@@ -2337,6 +2480,7 @@ class ResearcherService:
 
         vuln_id = bundle.vuln_id or "UNKNOWN"
         cwe = vuln_id.upper()
+        spec, _ = self._normalize_runtime_verification_spec(spec)
 
         raw_markers = spec.get("success_text_markers") or []
         markers: List[str] = []

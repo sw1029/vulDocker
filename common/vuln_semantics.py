@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from common.roles import role_matches
+
 SUPPORTED_VULN_IDS = {"cwe-22", "cwe-89", "cwe-352", "cwe-918"}
 FAMILY_CANONICAL_TAGS = {
     "cwe-89": {"request_input", "sql_sink", "sql_injection"},
@@ -279,9 +281,9 @@ def _collect_manifest_text(manifest: Dict[str, Any]) -> tuple[str, str, int]:
         if not isinstance(content, str) or not content:
             continue
         path = str(entry.get("path") or "").strip().lower()
-        role = str(entry.get("role") or "").strip().lower()
+        role = entry.get("role")
         all_chunks.append(content)
-        if role == "service_main":
+        if role_matches(role, "service_main"):
             service_chunks.append(content)
         elif path.endswith(".py"):
             python_chunks.append(content)

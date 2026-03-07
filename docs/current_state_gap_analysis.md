@@ -48,7 +48,7 @@
 ### 3.1 테스트 스위트
 
 - `python -m pytest -q tests`
-- 결과: `114 passed, 7 skipped`
+- 결과: `132 passed, 10 skipped`
 
 ### 3.2 직접 rerun한 lane
 
@@ -58,11 +58,61 @@
 | CSRF | `csrf-name-only` | pass | 1 | 약 35s | known static lane |
 | SSRF | `ssrf-name-only` | pass | 1 | 약 22s | known static lane |
 | Path Traversal | `vuln_name: Path Traversal` | pass | 1 | 약 58s | researcher-backed runtime rule lane |
-| Template Injection | `vuln_name: Template Injection` | pipeline pass | 1 | 약 72s | guard verifier failure가 top-level success로 누락되는 결함 확인 |
-| Reflected XSS | `vuln_name: Reflected XSS` | pass | 1 | 약 59s | researcher-backed runtime rule lane |
+| Template Injection | `vuln_name: Template Injection` | pass | 1 | 약 68~73s | official E2E case 추가, fresh rerun 기준 loop 1 pass 확인 |
+| Reflected XSS | `vuln_name: Reflected XSS` | pass | 1 | 약 59s | official E2E case 추가 및 expectations satisfied 확인 |
 
 이번 검토에서는 `unknown live rerun`은 재실행하지 않았다.
 따라서 unknown noisy evidence lane의 상태는 이전 artifact와 코드 구조를 참고하되, 이번 문서에서는 우선순위만 정의하고 상태를 과도하게 단정하지 않는다.
+
+### 3.3 착수 직후 반영된 작업
+
+이번 계획 문서 작성 직후 아래 작업을 실제로 반영했다.
+
+- Phase 0 `verdict truth repair` 1차 구현
+  - verifier가 nested guard failure를 더 이상 evidence 문자열로만 남기지 않고 `verify_pass=false`로 반영
+  - reviewer가 nested verifier guard failure를 blocking issue로 승격
+  - pack promotion이 nested `guard_consistency` / `semantic_consistency` failure를 차단
+- Phase 1 `NAME-* runtime rule filename normalization` 1차 구현
+  - rule loader가 `NAME-*` synthetic identifier를 `name-*.yaml`로 직접 해석
+  - researcher runtime rule writer가 loader와 같은 filename normalization을 사용
+- Phase 2 `role canonicalization` 1차 구현
+  - `server -> service_main`
+  - `verifier -> poc_entry`
+  alias를 researcher normalization / synthesis manifest parsing / contract resolution / guard engine / reviewer / verifier에 공통 반영
+- dependency/semantic guard 안정화 1차 구현
+  - guard engine `dep_declared`가 `requirements.txt` 선언도 읽도록 보강
+  - template-injection exploit precondition을 semantic alias로 인정하도록 보강
+- Template Injection low-loop stabilization 1차 구현
+  - generated `poc.py`를 deterministic template-injection verifier 형태로 안정화
+  - success 시 `49`, success signature, optional flag token을 함께 출력하도록 보강
+- Phase 4 일부 착수
+  - `tests/e2e/cases/template-injection-name-only/` official case 추가
+  - `tests/e2e/cases/xss-name-only/` official case 추가
+  - pytest e2e entry 추가
+  - `Template Injection` repeatability gate pytest entry 추가
+  - `ops/ci/run_repeatability_gate.sh`를 case path 인자 지원 형태로 일반화
+- 관련 테스트 추가 후 전체 테스트 재실행
+  - `132 passed, 8 skipped`
+- 기존 false-positive artifact 재검증
+  - 대상 SID: `sid-86dba9eb7da8` (`Template Injection`)
+  - 수정 후 `VERIFY` 재실행 결과: `overall_pass=false`
+  - 수정 후 `REVIEW` 재실행 결과: `blocking_bundles=["name-template-injection"]`
+  - 수정 후 `PACK` 재실행 결과: `last_result=failure`로 차단
+  - 추가 검증: 동일 SID에서 `VERIFY` 재실행 시 더 이상 `generator_manifest fallback rule` 경로로 판정되지 않음
+- existing alias artifact recheck
+  - 대상 SID: `sid-319953f83d00` (`Path Traversal`)
+  - role alias가 들어간 기존 artifact에 대해 `VERIFY` 재실행 결과: `overall_pass=true`
+- official Template Injection case 검증
+  - `tests/e2e/cases/template-injection-name-only`
+  - `run_case` 기준 expectations satisfied 확인
+  - 추가 fresh rerun 기준 loop 1 pass 확인
+  - `repeat_case` 3회 반복 실행 결과 `success_count=3`, `failure_count=0`
+- official XSS case 검증
+  - `tests/e2e/cases/xss-name-only`
+  - `run_case` 기준 expectations satisfied 확인
+
+즉, P0와 Phase 1, Phase 2 core normalization, 그리고 Phase 4의 `Template Injection/XSS officialization`, `Template Injection` 1차 low-loop stabilization, repeatability gate wiring까지는 코드 반영이 완료되었다.
+다만 아직 full rerun 기준 free-form lane 전체 재검증과 CI regression officialization은 남아 있다.
 
 ## 4. 현재 상태 판정
 
@@ -74,7 +124,7 @@
 - known static name-only lane(SQLi/CSRF/SSRF): `중상`
 - known-but-ruleless lane(Path Traversal/XSS): `중상에 근접`
 - free-form `NAME-*` generation capability: `중간 이상`
-- free-form `NAME-*` verification/promotion trust: `중하`
+- free-form `NAME-*` verification/promotion trust: `중하 -> 중간`
 - open-world multi-stack generalization: `낮음`
 
 ### 4.2 성능 판정
@@ -83,19 +133,23 @@
 - 병목은 `RESEARCH`와 `GENERATOR`다.
 - researcher가 붙는 lane은 `RESEARCH`만 약 39초가 소요된다.
 - known static lane도 generator retry가 한 번만 발생하면 총 시간이 바로 50초대로 상승한다.
+- free-form official case(`Template Injection`)는 fresh rerun 기준 loop 1에서도 닫힌다.
+- `Template Injection` repeatability gate 3회 반복 실행도 현재는 통과했다.
 
 ### 4.3 산출물 품질 판정
 
 - semantic contract 생성 품질은 이전보다 좋아졌다.
-- 그러나 top-level `success/promotion`이 nested guard/verifier failure를 무시하는 결함이 있다.
-- 따라서 현재 상태를 "artifact trust까지 높다"라고 해석하면 안 된다.
-- 특히 `Template Injection` rerun은 실제로 이 문제를 재현했다.
+- top-level `success/promotion`이 nested guard/verifier failure를 무시하던 P0 결함은 이번 턴에 1차 수정이 반영되었다.
+- 다만 아직 full rerun/CI 기준으로 모든 lane에 대해 재검증이 끝난 상태는 아니다.
+- 따라서 현재 상태를 "artifact trust까지 충분히 안정화되었다"고 해석하면 안 된다.
 
 ## 5. 이번 검토에서 확인된 핵심 구조 결함
 
 ### 5.1 P0 결함: guard/verifier failure가 top-level success를 막지 못한다
 
-현재는 다음과 같은 잘못된 성공 경로가 존재한다.
+상태: `1차 수리 완료, 회귀 고정/전체 rerun 재검증 남음`
+
+수정 전에는 다음과 같은 잘못된 성공 경로가 존재했다.
 
 - verifier 내부에서 guard inconsistency가 발생해도
 - evidence 문자열에만 경고가 남고
@@ -111,24 +165,28 @@
 - `violations=["verifier assertion failed (contains): substring=missing: 49"]`
 - 그럼에도 `overall_pass=true`, reviewer clean, promotion eligible
 
-이 결함은 현재 레포의 최우선 수정 대상이다.
+이 결함은 이번 턴에서 1차 수정이 반영되었고, 이제 남은 일은 regression 고정과 전체 lane 재검증이다.
 
 ### 5.2 P0 결함: `NAME-*` runtime rule이 실제 로드되지 않는다
+
+상태: `1차 수리 완료, free-form lane 전체 재검증 남음`
 
 free-form lane의 runtime rule writer와 loader가 같은 naming rule을 공유하지 않는다.
 
 - writer는 `name-template-injection.yaml`처럼 기록한다.
 - loader는 non-CWE id를 `cwe-name-template-injection.yaml`로 해석한다.
 
-결과:
+수정 전 결과:
 
 - `NAME-*` family는 researcher가 runtime rule을 생성해도
 - verify 단계에서 그 rule을 직접 쓰지 못하고
 - generator manifest fallback rule에 의존하게 된다.
 
-즉 free-form lane의 "runtime rule generalization"은 현재 부분적으로만 동작한다.
+이번 턴에서 filename normalization을 1차 수정했으므로, 이제 남은 일은 free-form lane 전체 rerun과 regression case 고정이다.
 
 ### 5.3 P1 결함: role vocabulary가 stage마다 다르다
+
+상태: `1차 수리 완료, 비정형 파일명/전체 lane rerun 재검증 남음`
 
 현재 pipeline의 canonical role은 사실상 다음 둘이다.
 
@@ -144,7 +202,7 @@ free-form lane의 runtime rule writer와 loader가 같은 naming rule을 공유�
 왜냐하면 일부 stage는 fallback으로 `app.py`/`poc.py`를 사용하기 때문이다.
 하지만 파일명이 비정형으로 바뀌는 순간 contract resolution, rule placeholder resolution, reviewer scan이 서로 다른 파일을 보게 된다.
 
-즉 role drift는 현재는 운 좋게 가려지는 결함이지, 해결된 문제가 아니다.
+이번 턴에서 alias normalization의 1차 구현이 반영되었고, 이제 남은 일은 비정형 파일명 lane과 full rerun 기준 재검증이다.
 
 ### 5.4 P1 결함: runtime assertion success가 semantic/guard 검사를 shortcut한다
 
@@ -158,6 +216,17 @@ runtime rule에 assertion program이 있으면 verify가 조기 성공할 수 �
 - reviewer가 보완하더라도 exploit 성공 시 non-blocking으로 낮춰지는 경로가 남는다.
 
 즉 현재 verify는 "exploit success detector"로는 동작하지만, 항상 "contract/trust gate"로 동작하지는 않는다.
+
+### 5.5 P1 결함: free-form official lane의 low-loop repeatability가 아직 약하다
+
+상태: `공식 case 추가 + 1차 low-loop 안정화 + repeatability gate 통과, 장기 안정성 관찰 남음`
+
+현재 `Template Injection`은 official case로 승격되었지만, 다음 특성이 남아 있다.
+
+- fresh rerun 기준 loop 1 pass를 확보했고, 3회 repeatability gate도 통과했다.
+- free-form lane의 researcher-generated dependency assertions / semantic precondition assertions이 생성물 variability보다 더 타이트해질 가능성은 여전히 남아 있다.
+
+즉 free-form lane은 이제 `Template Injection` 기준으로는 repeatability gate까지 통과했지만, 다른 free-form family까지 같은 수준이라고 일반화할 수는 없다.
 
 ## 6. 전략 목표
 
@@ -191,6 +260,12 @@ runtime rule에 assertion program이 있으면 verify가 조기 성공할 수 �
 ### 목적
 
 - nested verifier/guard/semantic failure가 있으면 top-level `verify_pass`, `review`, `promotion`이 반드시 실패하도록 만든다.
+
+### 진행 현황
+
+- `rule_based verifier -> reviewer -> pack` 핵심 전파는 1차 구현 완료
+- nested guard failure에 대한 unit/regression test 추가 완료
+- 남은 일은 full lane rerun 재검증, CI case 편입, 필요 시 verdict schema 추가 분리다
 
 ### 작업 항목
 
@@ -413,9 +488,9 @@ runtime rule에 assertion program이 있으면 verify가 조기 성공할 수 �
 
 실제 구현 순서는 아래로 고정한다.
 
-1. Phase 0 완료
-2. Phase 1 완료
-3. Phase 2 완료
+1. Phase 0 잔여 항목 완료
+2. Phase 1 잔여 항목 완료
+3. Phase 2 잔여 항목 완료
 4. Phase 3 최소 버전 완료
 5. Phase 4에서 Template Injection/XSS officialization
 6. 그 다음 Path Traversal/Deserialization 정식화
@@ -451,10 +526,11 @@ runtime rule에 assertion program이 있으면 verify가 조기 성공할 수 �
 
 지금 바로 시작할 work package는 아래 네 개다.
 
-1. verifier/reviewer/pack truth repair
-2. `NAME-*` runtime rule filename normalization
-3. role canonicalization across researcher/synthesis/contract/reviewer/verifier
-4. Template Injection official regression case + false-positive blocking test
+1. `Insecure Deserialization` official regression case 또는 failing case 공식화
+2. `verifier/reviewer/pack truth repair` 잔여 full rerun 재검증
+3. `NAME-*` runtime rule normalization 잔여 정리 및 free-form rerun 고정
+4. role canonicalization 잔여 정리 및 비정형 파일명 rerun 고정
+5. `Template Injection` repeatability gate를 CI/nightly 정책에 연결
 
 이 네 항목이 닫히기 전까지는 "free-form `취약점 이름만 제공` 기반 동적 취약 Docker 생성이 신뢰 가능한 수준에 도달했다"고 판단하지 않는다.
 

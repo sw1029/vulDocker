@@ -189,6 +189,10 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
         reasons.append("pipeline:review_missing")
     elif bool(reviewer_report.get("blocking")) or reviewer_report.get("success") is False:
         reasons.append("pipeline:review_failed")
+    elif bundle.slug in (reviewer_report.get("blocking_bundles") or []):
+        reasons.append("pipeline:review_failed")
+    if isinstance(eval_result, dict):
+        reasons.extend(_eval_result_failure_reasons(eval_result))
     if isinstance(contract, dict):
         semantic_contract = contract.get("semantic_contract")
         if isinstance(semantic_contract, dict):
@@ -214,6 +218,43 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
         "eligible": not reasons,
         "reasons": reasons,
     }
+
+
+def _eval_result_failure_reasons(eval_result: Dict[str, Any]) -> List[str]:
+    reasons: List[str] = []
+    semantic = eval_result.get("semantic_consistency")
+    if isinstance(semantic, dict) and semantic.get("supported") and not semantic.get("semantic_match"):
+        errors = semantic.get("errors") or []
+        if isinstance(errors, list):
+            reasons.extend(
+                f"verify_semantic:{str(item).strip()}"
+                for item in errors
+                if isinstance(item, str) and str(item).strip()
+            )
+        if not reasons or not any(reason.startswith("verify_semantic:") for reason in reasons):
+            reasons.append("verify_semantic:mismatch")
+
+    guard = eval_result.get("guard_consistency")
+    if not isinstance(guard, dict):
+        return reasons
+    if guard.get("required_but_missing"):
+        reasons.append("verify_guard:required_but_missing")
+        return reasons
+
+    for scope in ("verifier", "workspace"):
+        scope_report = guard.get(scope)
+        if not isinstance(scope_report, dict) or scope_report.get("passed") is not False:
+            continue
+        violations = scope_report.get("violations") or []
+        if isinstance(violations, list):
+            reasons.extend(
+                f"verify_guard:{scope}:{str(item).strip()}"
+                for item in violations
+                if isinstance(item, str) and str(item).strip()
+            )
+        if not any(reason.startswith(f"verify_guard:{scope}:") for reason in reasons):
+            reasons.append(f"verify_guard:{scope}:failed")
+    return reasons
 
 
 def _bundle_eval_result(plan: Dict[str, Any], bundle) -> Optional[Dict[str, Any]]:

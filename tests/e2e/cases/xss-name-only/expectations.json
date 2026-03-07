@@ -1,0 +1,16 @@
+{
+  "manifest": {
+    "overall_pass": true
+  },
+  "evals": [
+    {
+      "slug": "cwe-79",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

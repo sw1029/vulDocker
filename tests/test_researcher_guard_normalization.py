@@ -533,3 +533,94 @@ def test_rule_from_verification_spec_ignores_opaque_code_string_and_uses_markers
         {"op": "contains", "string": "SQLI_OK"},
         {"op": "contains", "string": "FLAG_SQLI"},
     ]
+
+
+def test_rule_from_verification_spec_prefers_printed_success_marker_over_weak_response_marker() -> None:
+    service = _service_stub("NAME-TEMPLATE-INJECTION")
+    bundle = type("Bundle", (), {"vuln_id": "NAME-TEMPLATE-INJECTION"})()
+
+    rule = service._rule_from_verification_spec(  # type: ignore[attr-defined]
+        bundle,
+        {
+            "success_text_markers": ["49"],
+            "flag_token": "49",
+            "assertion_program": "print('OK: SSTI confirmed')\nprint('FAIL: marker not found')\n",
+        },
+    )
+
+    runtime = rule["runtime"]
+    assert runtime["success_text_markers"] == ["OK: SSTI confirmed"]
+    assert runtime["assertion_program"] == [
+        {"op": "contains", "string": "OK: SSTI confirmed"},
+        {"op": "not_contains", "string": "FAIL: marker not found"},
+    ]
+    assert runtime.get("flag_token") in {"", None}
+    assert rule["success_signature"] == "OK: SSTI confirmed"
+    assert "flag_token" not in rule
+    assert rule["verification"]["require_flag"] is False
+
+
+def test_align_verifier_assertions_drops_weak_response_marker_for_template_injection() -> None:
+    service = _service_stub("NAME-TEMPLATE-INJECTION")
+    payload = {
+        "verifier_assertions": [
+            {"op": "contains", "string": "OK: SSTI confirmed"},
+            {"op": "contains", "string": "49"},
+            {"op": "not_contains", "string": "FAIL: marker not found"},
+        ]
+    }
+    report = {
+        "verification_spec": {
+            "success_text_markers": ["49"],
+            "flag_token": "49",
+            "assertion_program": "print('OK: SSTI confirmed')\nprint('FAIL: marker not found')\n",
+        }
+    }
+    warnings: list[str] = []
+    bundle = type("Bundle", (), {"vuln_id": "NAME-TEMPLATE-INJECTION"})()
+
+    service._align_verifier_assertions_with_verification_spec(  # type: ignore[attr-defined]
+        payload,
+        report=report,
+        bundle=bundle,
+        warnings=warnings,
+    )
+
+    assertions = payload["verifier_assertions"]
+    contains = [item["string"] for item in assertions if item.get("op") == "contains"]
+    not_contains = [item["string"] for item in assertions if item.get("op") == "not_contains"]
+    assert contains == ["OK: SSTI confirmed"]
+    assert not_contains == ["FAIL: marker not found"]
+    assert any("normalized runtime verification contract" in item for item in warnings)
+
+
+def test_fallback_guard_spec_uses_normalized_runtime_verification_spec_for_template_injection() -> None:
+    service = _service_stub("NAME-TEMPLATE-INJECTION")
+    service.sid = "sid-template"  # type: ignore[attr-defined]
+    service.requirement = {"vuln_id": "NAME-TEMPLATE-INJECTION"}  # type: ignore[attr-defined]
+    service._allow_runtime_rule_override_static = lambda: False  # type: ignore[attr-defined]
+    service._report_confidence = lambda report: "high"  # type: ignore[attr-defined]
+    bundle = type("Bundle", (), {"vuln_id": "NAME-TEMPLATE-INJECTION", "slug": "name-template-injection"})()
+
+    payload = service._fallback_guard_spec(  # type: ignore[attr-defined]
+        report={
+            "verification_spec": {
+                "success_text_markers": ["49"],
+                "flag_token": "49",
+                "assertion_program": "print('OK: SSTI confirmed')\nprint('FAIL: marker not found')\n",
+            },
+            "semantic_signature": {},
+        },
+        evidence_refs=[],
+        policy_snapshot={},
+        bundle=bundle,
+    )
+
+    generator_assertions = payload["generator_assertions"]
+    verifier_assertions = payload["verifier_assertions"]
+    assert any(
+        item.get("op") == "manifest_field_contains" and item.get("string") == "OK: SSTI confirmed"
+        for item in generator_assertions
+    )
+    assert any(item.get("op") == "contains" and item.get("string") == "OK: SSTI confirmed" for item in verifier_assertions)
+    assert not any(item.get("string") == "49" for item in verifier_assertions if item.get("op") == "contains")

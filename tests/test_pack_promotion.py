@@ -81,6 +81,113 @@ def test_bundle_promotion_is_blocked_when_pipeline_artifacts_are_missing(tmp_pat
     assert any(reason.startswith("pipeline:") for reason in promotion["reasons"])
 
 
+def test_bundle_promotion_is_blocked_by_nested_eval_guard_failure(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+
+    plan = {
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+        },
+        "features": {"multi_vuln": False},
+    }
+    bundle = VulnBundle(vuln_id="NAME-TEMPLATE-INJECTION", slug="name-template-injection", workspace_subdir="app")
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "name-template-injection",
+                        "vuln_id": "NAME-TEMPLATE-INJECTION",
+                        "verify_pass": True,
+                        "guard_consistency": {
+                            "available": True,
+                            "required_but_missing": False,
+                            "verifier": {
+                                "passed": False,
+                                "blocking": True,
+                                "violations": [
+                                    "verifier assertion failed (contains): substring=missing: 49"
+                                ],
+                            },
+                            "workspace": {"passed": True, "blocking": False, "violations": []},
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    promotion = _bundle_promotion_status(plan, bundle)
+
+    assert promotion["eligible"] is False
+    assert any(reason.startswith("verify_guard:verifier:") for reason in promotion["reasons"])
+
+
+def test_bundle_promotion_is_blocked_by_nested_eval_semantic_failure(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+
+    plan = {
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+        },
+        "features": {"multi_vuln": False},
+    }
+    bundle = VulnBundle(vuln_id="CWE-79", slug="cwe-79", workspace_subdir="app")
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "cwe-79",
+                        "vuln_id": "CWE-79",
+                        "verify_pass": True,
+                        "semantic_consistency": {
+                            "supported": True,
+                            "semantic_match": False,
+                            "errors": ["missing reflected XSS sink"],
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    promotion = _bundle_promotion_status(plan, bundle)
+
+    assert promotion["eligible"] is False
+    assert any(reason.startswith("verify_semantic:") for reason in promotion["reasons"])
+
+
 def test_write_manifest_records_failure_pipeline_result(tmp_path: Path, monkeypatch) -> None:
     sid = "sid-pack-status"
     metadata_dir = tmp_path / "metadata" / sid

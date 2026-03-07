@@ -13,6 +13,7 @@ from common.logging import get_logger
 from common.paths import ensure_dir
 from common.plan import load_plan
 from common.prompts import build_reviewer_prompt
+from common.roles import role_matches
 from common.rules import load_rule, load_static_rule
 from common.contracts import load_generator_contract
 from common.vuln_semantics import evaluate_workspace_semantics, semantic_error_summary
@@ -119,6 +120,8 @@ class ReviewerService:
             "loop_count": self.loop_controller.current_loop,
             "bundles": bundle_reports,
             "blocking_bundles": blocking_bundles,
+            "blocking": blocking_overall,
+            "success": not blocking_overall,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "issues_sample": aggregated_issues[:5],
         }
@@ -207,8 +210,17 @@ class ReviewerService:
                     issue=reason,
                     fix_hint=fix_hint,
                     evidence=[str(log_path)],
+                    )
                 )
-            )
+        verifier_issues = self._verifier_result_issues(bundle, result)
+        if verifier_issues:
+            issues.extend(verifier_issues)
+            if any(bool(issue.get("blocking")) for issue in verifier_issues):
+                blocking = True
+                if success:
+                    success = False
+                    reason = verifier_issues[0].get("issue") or "Verifier trust checks failed"
+                    fix_hint = verifier_issues[0].get("fix_hint") or "Align verifier contract and guard checks"
         exit_issues, exit_reason = self._check_exit_code_policy(bundle, run_summary)
         if exit_issues:
             issues.extend(exit_issues)
@@ -230,6 +242,65 @@ class ReviewerService:
             reason=reason,
             fix_hint=fix_hint,
         )
+
+    def _verifier_result_issues(self, bundle: VulnBundle, result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        issues: List[Dict[str, Any]] = []
+        meta_dir = metadata_dir_for_bundle(self.plan, bundle)
+        contract_path = meta_dir / "resolved_contract.json"
+        contract_evidence = [str(contract_path)] if contract_path.exists() else []
+
+        semantic = result.get("semantic_consistency")
+        if isinstance(semantic, dict) and semantic.get("supported") and not semantic.get("semantic_match"):
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="resolved_contract.json",
+                    line=1,
+                    issue=f"Verifier semantic mismatch: {semantic_error_summary(semantic)}",
+                    fix_hint="Align generated service/PoC with the resolved semantic contract before promotion.",
+                    evidence=contract_evidence,
+                    severity="critical",
+                    blocking=True,
+                )
+            )
+
+        guard = result.get("guard_consistency")
+        if not isinstance(guard, dict):
+            return issues
+        if guard.get("required_but_missing"):
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="resolved_contract.json",
+                    line=1,
+                    issue=str(guard.get("reason") or "Dynamic guard spec missing under failure policy"),
+                    fix_hint="Ensure researcher emits guard_spec.json and verifier consumes it consistently.",
+                    evidence=contract_evidence,
+                    severity="critical",
+                    blocking=True,
+                )
+            )
+            return issues
+
+        for scope in ("verifier", "workspace"):
+            scope_report = guard.get(scope)
+            if not isinstance(scope_report, dict) or scope_report.get("passed") is not False:
+                continue
+            violations = scope_report.get("violations") or []
+            details = "; ".join(str(item).strip() for item in violations if str(item).strip()) or "guard evaluation failed"
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="run.log" if scope == "verifier" else "resolved_contract.json",
+                    line=1,
+                    issue=f"Verifier guard mismatch ({scope}): {details}",
+                    fix_hint="Resolve guard assertion failures before treating this bundle as successful.",
+                    evidence=[str(self._load_run_log_path(bundle))] if scope == "verifier" else contract_evidence,
+                    severity="critical",
+                    blocking=True,
+                )
+            )
+        return issues
 
     def _llm_feedback(
         self,
@@ -380,13 +451,13 @@ class ReviewerService:
                 for entry in manifest.get("files") or []:
                     if not isinstance(entry, dict):
                         continue
-                    role = str(entry.get("role") or "").strip().lower()
+                    role = entry.get("role")
                     path = entry.get("path")
                     if not isinstance(path, str) or not path.strip():
                         continue
-                    if role == "service_main":
+                    if role_matches(role, "service_main"):
                         service_entry = path.strip()
-                    elif role == "poc_entry":
+                    elif role_matches(role, "poc_entry"):
                         poc_entry = path.strip()
 
         template_path = meta_dir / "generator_template.json"
@@ -540,6 +611,9 @@ class ReviewerService:
             )
             return issues, f"exit_code={exit_code}"
         return issues, None
+
+    def _load_run_log_path(self, bundle: VulnBundle) -> Path:
+        return artifacts_dir_for_bundle(self.plan, bundle, "run") / "run.log"
 
     def _issue_stub(
         self,

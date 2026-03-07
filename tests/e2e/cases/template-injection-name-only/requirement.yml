@@ -1,0 +1,11 @@
+vuln_name: Template Injection
+seed: 4242
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 4242
+
+options:
+  env:
+    VUL_WEB_SEARCH_PROVIDER: tavily

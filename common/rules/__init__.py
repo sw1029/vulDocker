@@ -160,10 +160,22 @@ def _iter_rule_paths() -> Iterable[Path]:
 
 
 def _normalized_filename(vuln_id: str) -> str:
-    normalized = str(vuln_id).strip().lower()
+    normalized = str(vuln_id).strip().lower().replace("_", "-")
     if not normalized:
         return ""
-    return normalized if normalized.startswith("cwe-") else f"cwe-{normalized}"
+    if normalized.startswith(("cwe-", "name-")):
+        return normalized
+    if normalized.startswith("cwe"):
+        return normalized.replace("cwe", "cwe-", 1)
+    if normalized.startswith("name"):
+        return normalized.replace("name", "name-", 1)
+    return f"cwe-{normalized}"
+
+
+def rule_filename_for_vuln_id(vuln_id: str | None) -> str:
+    """Return the normalized rule filename stem for a vuln identifier."""
+
+    return _normalized_filename(str(vuln_id or ""))
 
 
 @functools.lru_cache(maxsize=1)
@@ -451,4 +463,11 @@ def load_rulespec(vuln_id: str | None) -> RuleSpec:
     return _enrich_with_template_metadata(vuln_id, spec)
 
 
-__all__ = ["load_rule", "load_static_rule", "list_rules", "RuleSpec", "load_rulespec"]
+__all__ = [
+    "load_rule",
+    "load_static_rule",
+    "list_rules",
+    "RuleSpec",
+    "load_rulespec",
+    "rule_filename_for_vuln_id",
+]

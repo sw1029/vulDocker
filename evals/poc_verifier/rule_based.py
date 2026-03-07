@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from common.contracts import load_generator_contract as load_resolved_contract
 from common.guardrails import GuardEngine, build_guard_spec, load_guard_spec_for_sid
+from common.roles import role_matches
 from common.rules import RuleSpec, load_rule, load_rulespec
 from common.vuln_semantics import evaluate_manifest_semantics, evaluate_workspace_semantics, semantic_error_summary
 
@@ -92,8 +93,10 @@ def verify_with_rule(
     evidence.extend(pattern_evidence)
 
     semantic_report = _evaluate_semantic_consistency(vuln_id, workspace_dirs, generator_manifest, contract_meta)
+    semantic_pass = True
     if semantic_report.get("supported"):
-        if semantic_report.get("semantic_match"):
+        semantic_pass = bool(semantic_report.get("semantic_match"))
+        if semantic_pass:
             evidence.append("Semantic consistency check passed")
         else:
             evidence.append(f"semantic mismatch: {semantic_error_summary(semantic_report)}")
@@ -106,24 +109,35 @@ def verify_with_rule(
         run_summary=run_summary or summary_data,
         policy=policy,
     )
+    guard_pass = True
     if guard_consistency.get("required_but_missing"):
+        guard_pass = False
         evidence.append(str(guard_consistency.get("reason") or "dynamic guard spec missing"))
+        success = False
     else:
         verifier_guard = guard_consistency.get("verifier") or {}
         workspace_guard = guard_consistency.get("workspace") or {}
         violations = []
         if isinstance(verifier_guard, dict):
             violations.extend(verifier_guard.get("violations") or [])
+            if verifier_guard.get("passed") is False:
+                guard_pass = False
         if isinstance(workspace_guard, dict):
             violations.extend(workspace_guard.get("violations") or [])
+            if workspace_guard.get("passed") is False:
+                guard_pass = False
         if violations:
             evidence.append("guard mismatch: " + "; ".join(str(item) for item in violations))
+        if not guard_pass:
+            success = False
 
     if not evidence:
         evidence.append("Signature missing")
 
     return {
         "verify_pass": success,
+        "semantic_pass": semantic_pass,
+        "guard_pass": guard_pass,
         "evidence": ", ".join(evidence),
         "log_path": str(log_path),
         "status": "evaluated",
@@ -646,9 +660,9 @@ def _manifest_role_path(manifest: Optional[Dict[str, Any]], role: str) -> Option
     for entry in files:
         if not isinstance(entry, dict):
             continue
-        entry_role = str(entry.get("role") or "").strip().lower()
+        entry_role = entry.get("role")
         path = entry.get("path")
-        if entry_role == role and isinstance(path, str) and path:
+        if role_matches(entry_role, role) and isinstance(path, str) and path:
             return path
     return None
 

@@ -150,3 +150,59 @@ def test_rule_based_verifier_fails_when_semantic_contract_has_contradictions(
         "baseline" in item or "semantic_contract" in item
         for item in result["semantic_consistency"]["errors"]
     )
+
+
+def test_rule_based_verifier_fails_when_guard_consistency_blocks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    metadata_dir = repo_root / "metadata" / "sid-guard-bad"
+    workspace_dir = repo_root / "workspaces" / "sid-guard-bad" / "app"
+    run_dir = repo_root / "artifacts" / "sid-guard-bad" / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = "from flask import Flask\napp = Flask(__name__)\n"
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+
+    manifest = {
+        "manifest": {
+            "files": [
+                {"path": "app.py", "role": "service_main", "content": app_text},
+                {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+            ],
+            "poc": {"success_signature": "Exploit SUCCESS"},
+        },
+    }
+    (metadata_dir / "generator_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+    monkeypatch.setattr(
+        "evals.poc_verifier.rule_based._evaluate_guard_consistency",
+        lambda **kwargs: {
+            "available": True,
+            "required_but_missing": False,
+            "verifier": {
+                "passed": False,
+                "blocking": True,
+                "violations": ["verifier assertion failed (contains): substring=missing: expected marker"],
+            },
+            "workspace": {"passed": True, "blocking": False, "violations": []},
+        },
+    )
+
+    result = verify_with_rule(
+        "CWE-9999",
+        run_dir / "run.log",
+        run_summary={"sid": "sid-guard-bad", "slug": "cwe-9999", "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is False
+    assert result["guard_pass"] is False
+    assert "guard mismatch:" in result["evidence"]

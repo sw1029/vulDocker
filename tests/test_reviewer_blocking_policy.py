@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -192,3 +193,51 @@ def test_reviewer_blocks_on_semantic_contract_contradiction(tmp_path: Path) -> N
     summary = json.loads((tmp_path / "reviewer_report.json").read_text(encoding="utf-8"))
     assert summary["blocking_bundles"] == ["cwe-89"]
     assert any("semantic contract contradiction" in issue.get("issue", "").lower() for issue in summary["issues_sample"])
+
+
+def test_evaluate_bundle_blocks_on_nested_verifier_guard_failure(tmp_path: Path, monkeypatch) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    run_log = artifacts_dir / "run" / "run.log"
+    run_log.write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"exit_code": 0, "run_attempted": True, "sid": "sid-review", "slug": "cwe-89"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    service = ReviewerService.__new__(ReviewerService)
+    service.sid = "sid-review"
+    service.plan = {  # type: ignore[attr-defined]
+        "requirement": {},
+        "paths": {"metadata": str(metadata_dir), "artifacts": str(artifacts_dir)},
+    }
+    service.metadata_root = metadata_dir  # type: ignore[attr-defined]
+
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+
+    def _fake_evaluate_with_vuln(*args, **kwargs) -> Dict[str, Any]:
+        return {
+            "verify_pass": True,
+            "status": "evaluated",
+            "evidence": "Exploit SUCCESS",
+            "guard_consistency": {
+                "available": True,
+                "required_but_missing": False,
+                "verifier": {
+                    "passed": False,
+                    "blocking": True,
+                    "violations": ["verifier assertion failed (contains): substring=missing: expected marker"],
+                },
+                "workspace": {"passed": True, "blocking": False, "violations": []},
+            },
+        }
+
+    monkeypatch.setattr("agents.reviewer.service.evaluate_with_vuln", _fake_evaluate_with_vuln)
+
+    context = service._evaluate_bundle(bundle)  # type: ignore[attr-defined]
+
+    assert context.success is False
+    assert context.blocking is True
+    assert any("verifier guard mismatch" in issue.get("issue", "").lower() for issue in context.issues)

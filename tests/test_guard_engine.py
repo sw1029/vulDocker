@@ -151,6 +151,32 @@ def test_guard_engine_normalizes_assertion_parameter_aliases() -> None:
     assert result.blocking is False
 
 
+def test_guard_engine_dep_declared_reads_requirements_file_when_deps_field_missing() -> None:
+    manifest = _manifest()
+    manifest.pop("deps", None)
+    manifest["files"].append(
+        {
+            "path": "requirements.txt",
+            "role": "deps_lock",
+            "content": "Flask==3.0.0\nrequests==2.31.0\n",
+        }
+    )
+    spec = build_guard_spec(
+        sid="sid-test",
+        vuln_id="CWE-89",
+        slug="cwe-89",
+        generator_assertions=[
+            {"op": "dep_declared", "dep": "flask"},
+            {"op": "any_dep_declared", "deps": ["foo", "requests"]},
+        ],
+        verifier_assertions=[],
+    )
+    engine = GuardEngine("CWE-89", spec.to_dict())
+    result = engine.evaluate_manifest(manifest)
+    assert result.passed is True
+    assert result.blocking is False
+
+
 def test_guard_engine_warn_severity_is_non_blocking() -> None:
     spec = build_guard_spec(
         sid="sid-test",
@@ -225,6 +251,53 @@ def test_guard_engine_workspace_matches_abstract_sqli_semantics(tmp_path: Path) 
     )
     engine = GuardEngine("CWE-89", spec.to_dict())
     result = engine.evaluate_workspace([tmp_path])
+    assert result.passed is True
+    assert result.blocking is False
+    assert result.violations == []
+
+
+def test_guard_engine_manifest_matches_template_injection_semantics() -> None:
+    manifest = {
+        "files": [
+            {
+                "path": "app.py",
+                "role": "service_main",
+                "content": (
+                    "from flask import Flask, request, render_template_string\n"
+                    "app = Flask(__name__)\n"
+                    "@app.get('/greet')\n"
+                    "def greet():\n"
+                    "    name = request.args.get('name', '')\n"
+                    "    template = f'<h1>Hello {name}</h1>'\n"
+                    "    return render_template_string(template)\n"
+                ),
+            }
+        ]
+    }
+    spec = build_guard_spec(
+        sid="sid-test",
+        vuln_id="NAME-TEMPLATE-INJECTION",
+        slug="name-template-injection",
+        generator_assertions=[],
+        verifier_assertions=[],
+        semantic_signature={
+            "input_vector": [
+                "request.args",
+                "query parameter",
+                "user-controlled request parameter",
+            ],
+            "sink": [
+                "render_template_string",
+                "jinja2 template rendering from string",
+            ],
+            "exploit_precondition": [
+                "user input is embedded into template source string (concatenation/interpolation)",
+                "template string is rendered server-side without escaping/sandboxing",
+            ],
+        },
+    )
+    engine = GuardEngine("NAME-TEMPLATE-INJECTION", spec.to_dict())
+    result = engine.evaluate_manifest(manifest)
     assert result.passed is True
     assert result.blocking is False
     assert result.violations == []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 
@@ -113,3 +114,58 @@ def test_ensure_fallback_poc_skips_when_poc_entry_present(tmp_path: Path) -> Non
     before = len(manifest["files"])
     updated = engine._ensure_fallback_poc(manifest, template)
     assert len(updated["files"]) == before
+
+
+def test_template_injection_stabilizer_rewrites_poc_deterministically(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    engine._requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-TEMPLATE-INJECTION",
+        "pattern_id": "template-injection",
+        "vuln_name": "Template Injection",
+    }
+    manifest = {
+        "files": [
+            {
+                "path": "app.py",
+                "role": "service_main",
+                "content": (
+                    "from flask import Flask, request, render_template_string\n"
+                    "app = Flask(__name__)\n"
+                    "@app.get('/greet')\n"
+                    "def greet():\n"
+                    "    name = request.args.get('name', '')\n"
+                    "    template = f'<h1>Hello {name}</h1>'\n"
+                    "    return render_template_string(template)\n"
+                ),
+            },
+            {
+                "path": "poc.py",
+                "role": "poc_entry",
+                "content": (
+                    "FLAG_TOKEN='SSTI_OK'\n"
+                    "default=f\"{FLAG_TOKEN} {{\\u007b\\u007b7*7\\u007d\\u007d}\"\n"
+                ),
+            },
+        ],
+        "poc": {
+            "cmd": "python poc.py --base-url {{base_url}}",
+            "success_signature": "OK: arithmetic marker present",
+            "flag_token": "SSTI_OK",
+        },
+    }
+    template = {
+        "cmd": "python poc.py --base-url {{base_url}}",
+        "success_signature": "OK: arithmetic marker present",
+        "flag_token": "SSTI_OK",
+    }
+
+    updated = engine._stabilize_pattern_specific_artifacts(manifest, template)  # type: ignore[attr-defined]
+
+    poc_entry = next(entry for entry in updated["files"] if entry.get("path") == "poc.py")
+    poc_content = poc_entry["content"]
+    ast.parse(poc_content)
+    assert "DEFAULT_PAYLOAD = 'SSTI_OK {{7*7}}'" in poc_content
+    assert "ROUTE_CANDIDATES = ['/greet', '/display_name', '/hello', '/']" in poc_content
+    assert "print('49')" in poc_content
+    assert updated["poc"]["success_signature"] == "OK: arithmetic marker present"
+    assert updated["poc"]["flag_token"] == "SSTI_OK"
