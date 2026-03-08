@@ -69,6 +69,80 @@ def test_bundle_promotion_is_blocked_by_medium_confidence_unknown_noise(tmp_path
     assert summary["eligible"] is False
 
 
+def test_bundle_promotion_is_blocked_when_known_family_verifier_reports_semantic_failure(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+    bundle = VulnBundle(vuln_id="CWE-79", slug="cwe-79", workspace_subdir="app")
+    plan = {
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+        },
+        "features": {"multi_vuln": False},
+    }
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-pack",
+            "slug": "cwe-79",
+            "vuln_id": "CWE-79",
+            "semantic_profile": {
+                "schema_version": "semantic_profile@1.0",
+                "sid": "sid-pack",
+                "slug": "cwe-79",
+                "requested_name": "XSS",
+                "normalized_vuln_id": "CWE-79",
+                "family": "xss",
+                "support_level": "builtin_supported",
+                "compiler_strategy": "xss_reflected",
+                "compiler_supported": True,
+                "compiler_reason": "compiler strategy and scaffold are available",
+                "stack_profile": {"language": "python", "framework": "flask"},
+                "scenario_shape": {"service_entry": "app.py", "poc_entry": "poc.py", "service_port": 5000},
+                "semantic_signature": {
+                    "input_vector": ["request.args"],
+                    "sink": ["render_template_string"],
+                    "exploit_precondition": ["unescaped reflection"],
+                },
+                "verification_contract": {"success_signature": "Exploit SUCCESS", "output_mode": "auto"},
+                "derived_assertions": {"semantic_gate_required": True},
+                "evidence_relevance": {},
+            },
+        },
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(json.dumps({"run_passed": True}), encoding="utf-8")
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "cwe-79",
+                        "vuln_id": "CWE-79",
+                        "verify_pass": True,
+                        "semantic_supported": False,
+                        "semantic_status": "unsupported",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}),
+        encoding="utf-8",
+    )
+
+    promotion = _bundle_promotion_status(plan, bundle)
+
+    assert promotion["eligible"] is False
+    assert "verify_semantic:unsupported" in promotion["reasons"]
+    assert "verify_semantic_status:unsupported" in promotion["reasons"]
+
+
 def test_bundle_generalization_marks_synthetic_unknown_as_non_generalizing() -> None:
     bundle = VulnBundle(vuln_id="CWE-9999", slug="cwe-9999", workspace_subdir="app")
 

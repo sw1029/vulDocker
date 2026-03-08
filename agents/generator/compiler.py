@@ -1,24 +1,17 @@
 """Deterministic scaffold/fragment compiler for compiler-covered families."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agents.generator.flask_fragment_registry import FLASK_FRAGMENT_REGISTRY
 from agents.generator.scaffold_registry import load_scaffold_spec
 
 SUPPORTED_COMPILER_STRATEGIES = frozenset(FLASK_FRAGMENT_REGISTRY)
-
-_DEFAULT_COMPILER_TARGETS: Dict[str, Dict[str, str]] = {
-    "csrf_missing_token": {"name": "CSRF", "vuln_id": "CWE-352"},
-    "deserialization_pickle_body": {"name": "Insecure Deserialization", "vuln_id": "CWE-502"},
-    "open_redirect_reflect": {"name": "Open Redirect", "vuln_id": "NAME-OPEN-REDIRECT"},
-    "path_traversal_file_read": {"name": "Path Traversal", "vuln_id": "CWE-22"},
-    "sqli_string_concat": {"name": "SQL Injection", "vuln_id": "CWE-89"},
-    "ssrf_loopback_fetch": {"name": "SSRF", "vuln_id": "CWE-918"},
-    "template_injection_render": {"name": "Template Injection", "vuln_id": "NAME-TEMPLATE-INJECTION"},
-    "xss_reflected": {"name": "Reflected XSS", "vuln_id": "CWE-79"},
-}
+ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
+COMPILER_TARGETS_PATH = ASSETS_ROOT / "compiler-targets.json"
 
 
 @dataclass
@@ -32,6 +25,22 @@ def supported_compiler_strategies() -> set[str]:
     return set(SUPPORTED_COMPILER_STRATEGIES)
 
 
+def _default_compiler_targets() -> Dict[str, Dict[str, str]]:
+    payload = json.loads(COMPILER_TARGETS_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return {}
+    normalized: Dict[str, Dict[str, str]] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        name = str(value.get("name") or "").strip()
+        vuln_id = str(value.get("vuln_id") or "").strip()
+        if not name or not vuln_id:
+            continue
+        normalized[key.strip()] = {"name": name, "vuln_id": vuln_id}
+    return normalized
+
+
 def compile_manifest(
     *,
     sid: str,
@@ -40,7 +49,7 @@ def compile_manifest(
 ) -> Optional[CompilerResult]:
     strategy = str(semantic_profile.get("compiler_strategy") or "").strip()
     fragment = FLASK_FRAGMENT_REGISTRY.get(strategy)
-    defaults = _DEFAULT_COMPILER_TARGETS.get(strategy)
+    defaults = _default_compiler_targets().get(strategy)
     if fragment is None or defaults is None:
         return None
     return CompilerResult(

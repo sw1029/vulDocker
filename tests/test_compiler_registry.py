@@ -101,6 +101,28 @@ def test_csrf_registry_manifest_records_scaffold_and_fragment_metadata() -> None
     assert result.manifest["poc"]["flag_token"] == "FLAG-csrf-demo-token"
 
 
+def test_command_injection_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
+    result = compile_manifest(
+        sid="sid-registry-cmdi",
+        requirement={"vuln_id": "CWE-78", "vuln_name": "Command Injection"},
+        semantic_profile=_semantic_profile(
+            "command_injection_shell",
+            requested_name="Command Injection",
+            normalized_vuln_id="CWE-78",
+        ),
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/flask"
+    assert metadata["stack_scaffold_version"] == "1.0"
+    assert metadata["fragment_id"] == "shell_command_exec_route"
+    assert metadata["compose_mode"] == "registry"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    assert "subprocess.check_output(cmd, shell=True, text=True)" in service_main["content"]
+    assert result.manifest["poc"]["flag_token"] == "FLAG{CMDI_OK}"
+
+
 def test_sqli_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
     result = compile_manifest(
         sid="sid-registry-sqli",

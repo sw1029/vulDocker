@@ -13,6 +13,7 @@ from agents.generator.flask_fragment_registry import (
 def test_registry_contains_all_compiler_covered_families() -> None:
     assert set(FLASK_FRAGMENT_REGISTRY) == {
         "csrf_missing_token",
+        "command_injection_shell",
         "deserialization_pickle_body",
         "open_redirect_reflect",
         "path_traversal_file_read",
@@ -26,6 +27,7 @@ def test_registry_contains_all_compiler_covered_families() -> None:
 def test_resolve_fragment_strategy_from_vuln_id_and_pattern() -> None:
     assert resolve_fragment_strategy("NAME-OPEN-REDIRECT") == "open_redirect_reflect"
     assert resolve_fragment_strategy("CWE-89") == "sqli_string_concat"
+    assert resolve_fragment_strategy("CWE-78") == "command_injection_shell"
     assert resolve_fragment_strategy("", pattern_id="path-traversal") == "path_traversal_file_read"
     assert resolve_fragment_strategy("", raw_label="Template Injection") == "template_injection_render"
     assert resolve_fragment_strategy("", raw_label="Server Side Template Injection") == "template_injection_render"
@@ -37,6 +39,7 @@ def test_service_side_tokens_are_derived_from_registry() -> None:
     assert service_side_file_contains_tokens("NAME-OPEN-REDIRECT") == ["redirect(", "request.args.get('next'"]
     assert service_side_file_contains_tokens("CWE-79") == ["render_template_string", "request.args"]
     assert service_side_file_contains_tokens("", pattern_id="ssrf-url-fetch") == ["requests.get", "/metadata"]
+    assert service_side_file_contains_tokens("CWE-78") == ["subprocess.check_output", "shell=True", "request.args.get('cmd'"]
 
 
 def test_fragment_semantic_signature_is_derived_from_registry() -> None:

@@ -234,7 +234,7 @@ def test_contract_records_foreign_family_terms_for_known_baseline(tmp_path: Path
     assert any("foreign-family term 'server-side request forgery'" in item for item in semantic_contract["contradictions"])
 
 
-def test_contract_marks_unsupported_when_freeform_semantics_are_empty(tmp_path: Path) -> None:
+def test_contract_backfills_fragment_signature_for_supported_freeform_family(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
         vuln_id="NAME-OPEN-REDIRECT",
@@ -246,8 +246,14 @@ def test_contract_marks_unsupported_when_freeform_semantics_are_empty(tmp_path: 
     )
 
     assert requires_semantic_support("NAME-OPEN-REDIRECT") is True
-    assert payload["semantic_contract"]["status"] == "unsupported"
+    assert payload["semantic_contract"]["status"] == "aligned"
     assert payload["semantic_contract"]["contradictions"] == []
+    assert payload["semantic_contract"]["semantic_signature_source"] == ["fragment_registry"]
+    assert payload["semantic_contract"]["semantic_signature"]["sink"] == [
+        "redirect(",
+        "location header",
+        "http redirect sink",
+    ]
 
 
 def test_contract_surfaces_semantic_profile_and_compiler_verdict(tmp_path: Path) -> None:
@@ -288,6 +294,41 @@ def test_contract_surfaces_semantic_profile_and_compiler_verdict(tmp_path: Path)
     assert payload["compiler_strategy"] == "open_redirect_reflect"
 
 
+def test_contract_keeps_name_open_redirect_fail_closed_but_populates_profile_signature(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "language": "python",
+            "framework": "flask",
+            "pattern_id": "open-redirect",
+        },
+        researcher_report={"researcher_report": {"verification_spec": {"success_text_markers": ["Exploit SUCCESS"]}}},
+    )
+
+    assert payload["semantic_contract"]["status"] == "aligned"
+    profile = payload["semantic_profile"]
+    assert profile["compiler_supported"] is True
+    assert profile["semantic_signature"]["input_vector"] == [
+        "request.args",
+        "next parameter",
+        "redirect target",
+        "url parameter",
+    ]
+    assert profile["semantic_signature"]["sink"] == [
+        "redirect(",
+        "location header",
+        "http redirect sink",
+    ]
+    assert profile["semantic_signature_source"] == ["fragment_registry"]
+
+
 def test_contract_marks_name_template_injection_as_compiler_supported(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
@@ -324,6 +365,35 @@ def test_contract_marks_name_template_injection_as_compiler_supported(tmp_path: 
     assert profile["compiler_supported"] is True
     assert payload["compiler_supported"] is True
     assert payload["compiler_strategy"] == "template_injection_render"
+
+
+def test_contract_populates_profile_signature_for_name_template_injection_without_research_semantics(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-TEMPLATE-INJECTION",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-template-injection",
+        requirement={
+            "vuln_name": "Template Injection",
+            "vuln_id": "NAME-TEMPLATE-INJECTION",
+            "language": "python",
+            "framework": "flask",
+            "pattern_id": "template-injection",
+        },
+        researcher_report={"researcher_report": {"verification_spec": {"success_text_markers": ["Exploit SUCCESS"]}}},
+    )
+
+    assert payload["semantic_contract"]["status"] == "aligned"
+    profile = payload["semantic_profile"]
+    assert profile["compiler_supported"] is True
+    assert profile["semantic_signature"]["sink"] == [
+        "render_template_string",
+        "jinja2 template rendering",
+        "template source construction",
+    ]
+    assert profile["semantic_signature_source"] == ["fragment_registry"]
 
 
 def test_contract_detects_foreign_family_terms_for_name_open_redirect(tmp_path: Path) -> None:

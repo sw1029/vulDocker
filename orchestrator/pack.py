@@ -248,21 +248,20 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
         reasons.append("pipeline:review_failed")
     if isinstance(eval_result, dict):
         reasons.extend(_eval_result_failure_reasons(eval_result))
-        if _bundle_requires_semantic_support(bundle):
-            semantic_supported = eval_result.get("semantic_supported")
-            if semantic_supported is None:
-                semantic = eval_result.get("semantic_consistency") or {}
-                if isinstance(semantic, dict):
-                    semantic_supported = semantic.get("supported")
-            if semantic_supported is False:
-                reasons.append("verify_semantic:unsupported")
-            semantic_status = str(eval_result.get("semantic_status") or "").strip().lower()
-            if not semantic_status:
-                semantic = eval_result.get("semantic_consistency") or {}
-                if isinstance(semantic, dict):
-                    semantic_status = str(semantic.get("status") or "").strip().lower()
-            if semantic_status in {"empty", "unsupported", "contradicted"}:
-                reasons.append(f"verify_semantic_status:{semantic_status}")
+        semantic_supported = eval_result.get("semantic_supported")
+        if semantic_supported is None:
+            semantic = eval_result.get("semantic_consistency") or {}
+            if isinstance(semantic, dict):
+                semantic_supported = semantic.get("supported")
+        if semantic_supported is False:
+            reasons.append("verify_semantic:unsupported")
+        semantic_status = str(eval_result.get("semantic_status") or "").strip().lower()
+        if not semantic_status:
+            semantic = eval_result.get("semantic_consistency") or {}
+            if isinstance(semantic, dict):
+                semantic_status = str(semantic.get("status") or "").strip().lower()
+        if semantic_status in {"empty", "unsupported", "contradicted"}:
+            reasons.append(f"verify_semantic_status:{semantic_status}")
     if isinstance(contract, dict):
         semantic_contract = contract.get("semantic_contract")
         if isinstance(semantic_contract, dict):

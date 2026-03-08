@@ -471,6 +471,18 @@ def _build_semantic_profile(
             verification_contract[key] = deepcopy(proposed_verification_contract.get(key))
 
     semantic_signature = _normalize_semantic_buckets(semantic_contract.get("semantic_signature"))
+    signature_source = semantic_contract.get("semantic_signature_source")
+    if isinstance(signature_source, str):
+        signature_source = [signature_source]
+    if not isinstance(signature_source, list):
+        signature_source = []
+    if not _semantic_signature_present(semantic_signature):
+        semantic_signature, default_signature_source = _default_profile_semantic_signature(
+            vuln_id=vuln_id,
+            requirement=requirement,
+        )
+        if default_signature_source and not signature_source:
+            signature_source = list(default_signature_source)
     profile: Dict[str, Any] = {
         "schema_version": SEMANTIC_PROFILE_SCHEMA_VERSION,
         "sid": sid,
@@ -502,10 +514,37 @@ def _build_semantic_profile(
         if isinstance(semantic_contract.get("evidence_relevance"), dict)
         else {},
     }
-    signature_source = semantic_contract.get("semantic_signature_source")
-    if isinstance(signature_source, list) and signature_source:
+    if signature_source:
         profile["semantic_signature_source"] = list(signature_source)
     return profile
+
+
+def _default_profile_semantic_signature(
+    *,
+    vuln_id: str,
+    requirement: Dict[str, Any],
+) -> tuple[Dict[str, list[str]], list[str]]:
+    requested_name = _requested_name(requirement, vuln_id)
+    pattern_id = _string_or_none(requirement.get("pattern_id")) if isinstance(requirement, dict) else None
+    try:
+        from agents.generator.flask_fragment_registry import fragment_semantic_signature
+
+        fragment_signature = _normalize_semantic_buckets(
+            fragment_semantic_signature(
+                vuln_id,
+                pattern_id=pattern_id or "",
+                raw_label=requested_name,
+            )
+        )
+    except Exception:
+        fragment_signature = _normalize_semantic_buckets({})
+    if _semantic_signature_present(fragment_signature):
+        return fragment_signature, ["fragment_registry"]
+
+    baseline_signature = _normalize_semantic_buckets(baseline_semantic_signature(vuln_id))
+    if _semantic_signature_present(baseline_signature):
+        return baseline_signature, ["baseline"]
+    return _normalize_semantic_buckets({}), []
 
 
 def _requested_name(requirement: Dict[str, Any], vuln_id: str) -> str:
@@ -764,6 +803,8 @@ def _resolve_semantic_contract(vuln_id: str, report: Dict[str, Any], guard_spec:
     report_signature = contract.get("semantic_signature") if isinstance(contract, dict) else None
     guard_signature = guard_spec.get("semantic_signature") if isinstance(guard_spec, dict) else None
     baseline_signature = _normalize_semantic_buckets(baseline_semantic_signature(vuln_id))
+    fragment_signature, _ = _default_profile_semantic_signature(vuln_id=vuln_id, requirement={"vuln_id": vuln_id})
+    fragment_signature_present = _semantic_signature_present(fragment_signature)
     has_baseline = any(baseline_signature.get(bucket) for bucket in baseline_signature)
     resolved_signature = _normalize_semantic_buckets(contract.get("semantic_signature") if isinstance(contract, dict) else {})
     if isinstance(guard_signature, dict) and guard_signature and "semantic_signature" not in contract:
@@ -774,6 +815,12 @@ def _resolve_semantic_contract(vuln_id: str, report: Dict[str, Any], guard_spec:
         contract["semantic_signature"] = baseline_signature
         contract["semantic_signature_source"] = ["baseline"]
         resolved_signature = baseline_signature
+    elif fragment_signature_present and is_free_form_name and not any(
+        resolved_signature.get(bucket) for bucket in resolved_signature
+    ):
+        contract["semantic_signature"] = fragment_signature
+        contract["semantic_signature_source"] = ["fragment_registry"]
+        resolved_signature = fragment_signature
     guard_confidence = guard_spec.get("confidence") if isinstance(guard_spec, dict) else None
     if isinstance(guard_confidence, str) and guard_confidence.strip():
         contract["guard_confidence"] = guard_confidence.strip().lower()

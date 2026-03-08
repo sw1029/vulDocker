@@ -265,7 +265,7 @@ class ReviewerService:
             )
         semantic_supported = result.get("semantic_supported")
         semantic_status = str(result.get("semantic_status") or "").strip().lower()
-        if semantic_supported is False and self._bundle_requires_semantic_support(bundle):
+        if semantic_supported is False:
             issues.append(
                 self._issue_stub(
                     bundle=bundle,

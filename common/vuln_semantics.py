@@ -19,10 +19,12 @@ _CANONICAL_NAME_ALIASES = {
 
 SUPPORTED_VULN_IDS = {
     "cwe-22",
+    "cwe-78",
     "cwe-79",
     "cwe-89",
     "cwe-352",
     "cwe-502",
+    "cwe-94",
     "cwe-918",
     "name-open-redirect",
     "name-template-injection",
@@ -154,6 +156,23 @@ _TEMPLATE_SINK_RE = re.compile(
 )
 _DESERIALIZATION_SINK_RE = re.compile(
     r"\b(?:pickle\.loads|yaml\.load|jsonpickle\.decode)\b",
+    re.IGNORECASE,
+)
+_COMMAND_SINK_RE = re.compile(
+    r"\b(?:subprocess\.(?:run|call|check_output|getoutput|Popen)|os\.system)\b",
+    re.IGNORECASE,
+)
+_COMMAND_EXEC_RE = re.compile(
+    r"shell\s*=\s*True|os\.system\s*\(",
+    re.IGNORECASE,
+)
+_COMMAND_INPUT_RE = re.compile(
+    r"\brequest\.(?:args|form|values|get_json|json)\b|cmd\s*=",
+    re.IGNORECASE,
+)
+_CODE_EXEC_RE = re.compile(r"\b(?:eval|exec)\s*\(", re.IGNORECASE)
+_CODE_INPUT_RE = re.compile(
+    r"\brequest\.(?:args|form|values|get_json|json)\b|code\s*=",
     re.IGNORECASE,
 )
 _SERIALIZED_INPUT_RE = re.compile(r"\brequest\.(?:get_data|data|json)\b", re.IGNORECASE)
@@ -330,8 +349,12 @@ def evaluate_manifest_semantics(vuln_id: str, manifest: Dict[str, Any]) -> Dict[
         report = _evaluate_cwe_89(combined_text)
     elif normalized == "cwe-22":
         report = _evaluate_cwe_22(combined_text)
+    elif normalized == "cwe-78":
+        report = _evaluate_cwe_78(combined_text)
     elif normalized == "cwe-79":
         report = _evaluate_cwe_79(combined_text)
+    elif normalized == "cwe-94":
+        report = _evaluate_cwe_94(combined_text)
     elif normalized == "cwe-502":
         report = _evaluate_cwe_502(combined_text)
     elif normalized == "name-open-redirect":
@@ -524,6 +547,32 @@ def _evaluate_cwe_918(combined_text: str) -> Dict[str, Any]:
     }
 
 
+def _evaluate_cwe_78(combined_text: str) -> Dict[str, Any]:
+    has_command_sink = bool(_COMMAND_SINK_RE.search(combined_text))
+    has_shell_execution = bool(_COMMAND_EXEC_RE.search(combined_text))
+    has_command_input = bool(_COMMAND_INPUT_RE.search(combined_text))
+    has_input_to_sink_flow = _has_command_input_flow(combined_text)
+    errors: List[str] = []
+    if not has_command_sink:
+        errors.append("missing command execution sink for CWE-78")
+    if has_command_sink and not has_shell_execution:
+        errors.append("missing shell execution indicator (shell=True or os.system) for CWE-78")
+    if has_command_sink and not has_command_input:
+        errors.append("missing request-controlled command input for CWE-78")
+    if has_command_sink and has_command_input and not has_input_to_sink_flow:
+        errors.append("missing request-controlled command-to-sink flow for CWE-78")
+    return {
+        "semantic_match": not errors,
+        "errors": errors,
+        "signals": {
+            "command_sink_present": has_command_sink,
+            "shell_execution_present": has_shell_execution,
+            "command_input_present": has_command_input,
+            "input_to_command_flow_present": has_input_to_sink_flow,
+        },
+    }
+
+
 def _evaluate_cwe_79(combined_text: str) -> Dict[str, Any]:
     has_template_sink = bool(_TEMPLATE_SINK_RE.search(combined_text))
     input_vars = _request_bound_vars(combined_text)
@@ -543,6 +592,28 @@ def _evaluate_cwe_79(combined_text: str) -> Dict[str, Any]:
             "template_sink_present": has_template_sink,
             "input_source_present": has_input_source,
             "input_reflection_flow_present": has_reflection_flow,
+        },
+    }
+
+
+def _evaluate_cwe_94(combined_text: str) -> Dict[str, Any]:
+    has_code_exec = bool(_CODE_EXEC_RE.search(combined_text))
+    has_code_input = bool(_CODE_INPUT_RE.search(combined_text))
+    has_input_to_exec_flow = _has_code_input_flow(combined_text)
+    errors: List[str] = []
+    if not has_code_exec:
+        errors.append("missing code execution sink for CWE-94")
+    if has_code_exec and not has_code_input:
+        errors.append("missing request-controlled code input for CWE-94")
+    if has_code_exec and has_code_input and not has_input_to_exec_flow:
+        errors.append("missing request-controlled code-to-exec flow for CWE-94")
+    return {
+        "semantic_match": not errors,
+        "errors": errors,
+        "signals": {
+            "code_exec_present": has_code_exec,
+            "code_input_present": has_code_input,
+            "input_to_exec_flow_present": has_input_to_exec_flow,
         },
     }
 
@@ -729,6 +800,40 @@ def _has_deserialization_input_flow(text: str) -> bool:
     for variable in _request_bound_vars(text):
         if re.search(
             rf"(pickle\.loads|yaml\.load|jsonpickle\.decode)\s*\(\s*{re.escape(variable)}\s*\)",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
+def _has_command_input_flow(text: str) -> bool:
+    if re.search(
+        r"(subprocess\.(?:run|call|check_output|getoutput|Popen)|os\.system)\s*\([^)]*request\.(?:args|form|values|get_json|json)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    for variable in _request_bound_vars(text):
+        if re.search(
+            rf"(subprocess\.(?:run|call|check_output|getoutput|Popen)|os\.system)\s*\([^)]*\b{re.escape(variable)}\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
+def _has_code_input_flow(text: str) -> bool:
+    if re.search(
+        r"(eval|exec)\s*\(\s*request\.(?:args|form|values|get_json|json)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    for variable in _request_bound_vars(text):
+        if re.search(
+            rf"(eval|exec)\s*\(\s*{re.escape(variable)}\s*\)",
             text,
             flags=re.IGNORECASE,
         ):
