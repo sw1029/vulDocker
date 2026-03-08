@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import orchestrator.pack as pack_mod
 import orchestrator.run_pipeline as run_pipeline
+from common.runtime_assets import ensure_runtime_asset_seed_manifest, record_generated_runtime_asset, record_runtime_asset_seed
 
 
 def test_prepare_fresh_run_state_clears_generated_outputs_but_keeps_plan_and_runtime_assets(
@@ -24,8 +25,28 @@ def test_prepare_fresh_run_state_clears_generated_outputs_but_keeps_plan_and_run
     artifacts_root.mkdir(parents=True, exist_ok=True)
     workspace_root.mkdir(parents=True, exist_ok=True)
     (metadata_root / "plan.json").write_text("{}", encoding="utf-8")
-    (metadata_root / "runtime_rules").mkdir(parents=True, exist_ok=True)
-    (metadata_root / "runtime_templates").mkdir(parents=True, exist_ok=True)
+    runtime_rules = metadata_root / "runtime_rules"
+    runtime_templates = metadata_root / "runtime_templates"
+    runtime_rules.mkdir(parents=True, exist_ok=True)
+    runtime_templates.mkdir(parents=True, exist_ok=True)
+    ensure_runtime_asset_seed_manifest(metadata_root)
+    seed_rule_source = tmp_path / "seed-rule.yaml"
+    seed_rule_source.write_text("cwe: NAME-SEEDED\n", encoding="utf-8")
+    seeded_rule = runtime_rules / "seeded.yaml"
+    seeded_rule.write_text("overwritten\n", encoding="utf-8")
+    record_runtime_asset_seed(
+        metadata_root,
+        kind="runtime_rules",
+        source=seed_rule_source,
+        destination=seeded_rule,
+    )
+    generated_rule = runtime_rules / "generated.yaml"
+    generated_rule.write_text("cwe: NAME-GENERATED\n", encoding="utf-8")
+    record_generated_runtime_asset(metadata_root, kind="runtime_rules", path=generated_rule)
+    generated_template = runtime_templates / "generated-template"
+    generated_template.mkdir(parents=True, exist_ok=True)
+    (generated_template / "template.json").write_text("{}", encoding="utf-8")
+    record_generated_runtime_asset(metadata_root, kind="runtime_templates", path=generated_template)
     (metadata_root / "manifest.json").write_text("{}", encoding="utf-8")
     (metadata_root / "loop_state.json").write_text("{}", encoding="utf-8")
     (metadata_root / "resolved_contract.json").write_text("{}", encoding="utf-8")
@@ -40,8 +61,12 @@ def test_prepare_fresh_run_state_clears_generated_outputs_but_keeps_plan_and_run
     run_pipeline._prepare_fresh_run_state(sid)
 
     assert (metadata_root / "plan.json").exists()
-    assert (metadata_root / "runtime_rules").exists()
-    assert (metadata_root / "runtime_templates").exists()
+    assert runtime_rules.exists()
+    assert runtime_templates.exists()
+    assert seeded_rule.exists()
+    assert seeded_rule.read_text(encoding="utf-8") == "cwe: NAME-SEEDED\n"
+    assert not generated_rule.exists()
+    assert not generated_template.exists()
     assert not (metadata_root / "manifest.json").exists()
     assert not (metadata_root / "loop_state.json").exists()
     assert not (metadata_root / "resolved_contract.json").exists()
@@ -66,6 +91,31 @@ def test_refresh_manifest_after_pack_rewrites_existing_success_manifest(tmp_path
     run_pipeline._refresh_manifest_after_pack(sid, {"sid": sid})
 
     assert calls == [(sid, "manifest.json")]
+
+
+def test_prepare_fresh_run_state_removes_tracked_generated_runtime_assets_without_seed_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-fresh-run-generated-only"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    runtime_rules = metadata_root / "runtime_rules"
+    runtime_rules.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "plan.json").write_text("{}", encoding="utf-8")
+    generated_rule = runtime_rules / "generated.yaml"
+    generated_rule.write_text("cwe: NAME-GENERATED\n", encoding="utf-8")
+    record_generated_runtime_asset(metadata_root, kind="runtime_rules", path=generated_rule)
+
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(run_pipeline, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+    monkeypatch.setattr(run_pipeline, "get_workspace_dir", lambda incoming_sid: tmp_path / "workspaces" / incoming_sid)
+
+    run_pipeline._prepare_fresh_run_state(sid)
+
+    assert (metadata_root / "plan.json").exists()
+    assert runtime_rules.exists()
+    assert not generated_rule.exists()
 
 
 def test_refresh_manifest_after_pack_rewrites_existing_failure_manifest(tmp_path: Path, monkeypatch) -> None:
@@ -627,6 +677,40 @@ def test_analyze_verify_failures_keeps_retryable_verify_mismatch_non_terminal(tm
 
     assert analysis["terminal_semantic_unsupported"] is False
     assert analysis["failure_count"] == 1
+
+
+def test_analyze_verify_failures_marks_terminal_low_trust_verification(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-terminal-low-trust-verify"
+    artifacts_root = tmp_path / "artifacts" / sid / "reports"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+    (artifacts_root / "evals.json").write_text(
+        json.dumps(
+            {
+                "overall_pass": False,
+                "results": [
+                    {
+                        "slug": "cwe-9999",
+                        "vuln_id": "CWE-9999",
+                        "verify_pass": False,
+                        "semantic_supported": True,
+                        "semantic_status": "aligned",
+                        "verification_trust": "low",
+                        "verification_policy_blocked": True,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    analysis = run_pipeline._analyze_verify_failures(sid)
+
+    assert analysis["terminal_semantic_unsupported"] is False
+    assert analysis["terminal_low_trust_verification"] is True
+    assert analysis["failure_count"] == 1
+    assert analysis["slugs"] == ["cwe-9999"]
 
 
 def test_compiler_contract_snapshot_deduplicates_resolved_and_legacy_contracts(tmp_path: Path, monkeypatch) -> None:

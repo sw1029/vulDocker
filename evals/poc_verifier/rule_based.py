@@ -11,7 +11,7 @@ from common.contracts import (
 )
 from common.guardrails import GuardEngine, build_guard_spec, load_guard_spec_for_sid
 from common.roles import role_matches
-from common.rules import RuleSpec, load_rule, load_rulespec
+from common.rules import RuleSpec, load_rule, load_rulespec, load_static_rule
 from common.vuln_semantics import evaluate_manifest_semantics, evaluate_workspace_semantics, semantic_error_summary
 from evals.assertions import run_assertions
 
@@ -63,10 +63,26 @@ def verify_with_rule(
                 "status": "unsupported",
             }
 
+    verification_rule_source = "declared_rule"
+    verification_trust = "high"
+    verification_trust_reason = "verification used a declared static/runtime rule contract"
+    compiler_supported = _contract_compiler_supported(contract_meta)
+    rule_origin = str(rule.get("origin") or "").strip().lower() if isinstance(rule, dict) else ""
     evidence: List[str] = []
     success = False
     if used_fallback_rule:
+        verification_rule_source = "generator_manifest_fallback"
+        verification_trust = "low"
+        verification_trust_reason = (
+            "verification contract was synthesized from generator_manifest.json because no static/runtime rule existed"
+        )
         evidence.append("Using generator_manifest.json PoC contract as fallback rule")
+    elif rule_origin == "runtime" and not load_static_rule(vuln_id) and compiler_supported is not True:
+        verification_rule_source = "runtime_rule_candidate"
+        verification_trust = "low"
+        verification_trust_reason = (
+            "verification used a runtime rule synthesized during the run for a non-compiler-supported family"
+        )
 
     # Structured sources first (run_summary/summary.json), then inline JSON snippets.
     struct_sources: List[Dict[str, Any]] = []
@@ -158,6 +174,20 @@ def verify_with_rule(
     if not evidence:
         evidence.append("Signature missing")
 
+    verification_policy_blocked = False
+    if (
+        success
+        and semantic_gate_required
+        and verification_trust == "low"
+        and _verifier_low_trust_unknown_policy(policy) == "fail_closed"
+    ):
+        success = False
+        verification_policy_blocked = True
+        evidence.append(
+            "low-trust verifier contract blocked by policy "
+            "(policy.verifier.low_trust_unknown_policy=fail_closed)"
+        )
+
     return {
         "exploit_pass": exploit_pass,
         "verify_pass": success,
@@ -168,6 +198,11 @@ def verify_with_rule(
         "semantic_status": semantic_status,
         "semantic_gate_required": semantic_gate_required,
         "runtime_assertion_pass": runtime_assertion_pass,
+        "verification_rule_source": verification_rule_source,
+        "verification_trust": verification_trust,
+        "verification_trust_reason": verification_trust_reason,
+        "verification_policy_blocked": verification_policy_blocked,
+        "terminal_failure_class": "low_trust_verification" if verification_policy_blocked else "",
         "evidence": ", ".join(evidence),
         "log_path": str(log_path),
         "status": "evaluated",
@@ -175,6 +210,20 @@ def verify_with_rule(
         "semantic_consistency": semantic_report,
         "guard_consistency": guard_consistency,
     }
+
+
+def _verifier_low_trust_unknown_policy(policy: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(policy, dict):
+        return "warn"
+    value = policy.get("low_trust_unknown_policy")
+    if value is None:
+        nested = policy.get("verifier")
+        if isinstance(nested, dict):
+            value = nested.get("low_trust_unknown_policy")
+    token = str(value or "warn").strip().lower()
+    if token not in {"warn", "fail_closed"}:
+        return "warn"
+    return token
 
 
 def _evaluate_runtime_assertions(
@@ -656,6 +705,20 @@ def _apply_generator_metadata_override(spec: RuleSpec, meta: Dict[str, Any]) -> 
             spec.runtime = runtime
 
 
+def _contract_compiler_supported(meta: Optional[Dict[str, Any]]) -> Optional[bool]:
+    if not isinstance(meta, dict):
+        return None
+    direct = meta.get("compiler_supported")
+    if isinstance(direct, bool):
+        return direct
+    profile = meta.get("semantic_profile")
+    if isinstance(profile, dict):
+        nested = profile.get("compiler_supported")
+        if isinstance(nested, bool):
+            return nested
+    return None
+
+
 def _workspace_contains(
     workspace_dirs: Iterable[Path],
     relative_path: str,
@@ -798,6 +861,15 @@ def _evaluate_semantic_consistency(
         signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")
     )
     status = str(semantic_contract.get("status") or "").strip().lower() if isinstance(semantic_contract, dict) else ""
+    if requires_semantic_support(vuln_id) and status in {"unsupported", "empty"}:
+        return {
+            "supported": False,
+            "semantic_match": False,
+            "errors": [],
+            "signals": {},
+            "source": "resolved_contract.semantic_contract" if semantic_contract else None,
+            "status": status,
+        }
     if (
         fallback_class == "generic_unsupported_family"
         and requires_semantic_support(vuln_id)

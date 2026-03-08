@@ -69,6 +69,89 @@ def test_bundle_promotion_is_blocked_by_medium_confidence_unknown_noise(tmp_path
     assert summary["eligible"] is False
 
 
+def test_bundle_promotion_is_blocked_by_low_verification_trust(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+
+    plan = {
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+        },
+        "features": {"multi_vuln": False},
+    }
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "metadata": {
+                        "compiler_family": "open_redirect",
+                        "stack_scaffold_id": "python/flask",
+                        "stack_scaffold_version": "1.0",
+                        "fragment_id": "redirect_next_route",
+                        "compose_mode": "registry",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "metadata": {
+                        "compiler_family": "open_redirect",
+                        "stack_scaffold_id": "python/flask",
+                        "stack_scaffold_version": "1.0",
+                        "fragment_id": "redirect_next_route",
+                        "compose_mode": "registry",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "cwe-89",
+                        "vuln_id": "CWE-89",
+                        "verify_pass": True,
+                        "semantic_supported": True,
+                        "semantic_status": "aligned",
+                        "verification_rule_source": "generator_manifest_fallback",
+                        "verification_trust": "low",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    promotion = _bundle_promotion_status(plan, bundle)
+
+    assert promotion["eligible"] is False
+    assert "verify_contract:generator_manifest_fallback" in promotion["reasons"]
+
+
 def test_bundle_promotion_is_blocked_when_known_family_verifier_reports_semantic_failure(tmp_path: Path) -> None:
     metadata_dir = tmp_path / "metadata"
     artifacts_dir = tmp_path / "artifacts"
@@ -113,6 +196,23 @@ def test_bundle_promotion_is_blocked_when_known_family_verifier_reports_semantic
                 "evidence_relevance": {},
             },
         },
+    )
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "metadata": {
+                        "compiler_family": "open_redirect",
+                        "stack_scaffold_id": "python/flask",
+                        "stack_scaffold_version": "1.0",
+                        "fragment_id": "redirect_next_route",
+                        "compose_mode": "registry",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
     )
     (artifacts_dir / "run" / "summary.json").write_text(json.dumps({"run_passed": True}), encoding="utf-8")
     (artifacts_dir / "reports" / "evals.json").write_text(
@@ -369,6 +469,23 @@ def test_bundle_promotion_is_blocked_when_semantic_support_is_missing_for_freefo
             },
         },
     )
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "metadata": {
+                        "compiler_family": "open_redirect",
+                        "stack_scaffold_id": "python/flask",
+                        "stack_scaffold_version": "1.0",
+                        "fragment_id": "redirect_next_route",
+                        "compose_mode": "registry",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     (artifacts_dir / "run" / "summary.json").write_text(
         json.dumps({"run_passed": True}, ensure_ascii=False),
         encoding="utf-8",
@@ -510,12 +627,43 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
             },
         },
     )
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "metadata": {
+                        "compiler_family": "open_redirect",
+                        "stack_scaffold_id": "python/flask",
+                        "stack_scaffold_version": "1.0",
+                        "fragment_id": "redirect_next_route",
+                        "compose_mode": "registry",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     (artifacts_dir / "run" / "summary.json").write_text(
         json.dumps({"run_passed": True}, ensure_ascii=False),
         encoding="utf-8",
     )
     (artifacts_dir / "reports" / "evals.json").write_text(
-        json.dumps({"results": [{"slug": "cwe-89", "vuln_id": "CWE-89", "verify_pass": True}]}, ensure_ascii=False),
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "cwe-89",
+                        "vuln_id": "CWE-89",
+                        "verify_pass": True,
+                        "verification_rule_source": "generator_manifest_fallback",
+                        "verification_trust": "low",
+                        "verification_trust_reason": "self-certifying fallback rule",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     (metadata_dir / "reviewer_report.json").write_text(
@@ -549,9 +697,16 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
     assert manifest["generation_summary"]["llm_stub_bundles"] == 1
     assert manifest["compiler_contract_summary"]["by_strategy"] == {"sqli_string_concat": 1}
     assert manifest["compiler_contract_summary"]["by_support_level"] == {"builtin_supported": 1}
+    assert manifest["verification_summary"]["by_rule_source"] == {"generator_manifest_fallback": 1}
+    assert manifest["verification_summary"]["by_trust"] == {"low": 1}
+    assert manifest["verification_summary"]["low_trust_bundles"] == 1
     assert manifest["bundles"][0]["provenance"]["generation_origin"] == "deterministic_fallback"
     assert manifest["bundles"][0]["provenance"]["fallback_used"] is True
     assert manifest["bundles"][0]["provenance"]["fallback_class"] == "generic_unsupported_family"
+    assert manifest["bundles"][0]["verification"]["rule_source"] == "generator_manifest_fallback"
+    assert manifest["bundles"][0]["verification"]["trust"] == "low"
+    assert manifest["verification_rule_source"] == "generator_manifest_fallback"
+    assert manifest["verification_trust"] == "low"
     assert manifest["bundles"][0]["compiler_contract"]["compiler_supported"] is False
     assert manifest["bundles"][0]["compiler_contract"]["compiler_strategy"] == "sqli_string_concat"
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "deterministic fallback dependent"
@@ -648,6 +803,11 @@ def test_write_manifest_classifies_compiler_generated_as_compiler_first(tmp_path
             "compiler_supported": True,
             "compiler_strategy": "open_redirect_reflect",
             "compiler_reason": "compiler strategy and scaffold are available",
+            "compiler_family": "open_redirect",
+            "stack_scaffold_id": "python/flask",
+            "stack_scaffold_version": "1.0",
+            "fragment_id": "redirect_next_route",
+            "compose_mode": "registry",
             "generation_origin": "compiler_generated",
             "fallback_used": False,
             "family_override_applied": False,
@@ -713,8 +873,17 @@ def test_write_manifest_classifies_compiler_generated_as_compiler_first(tmp_path
 
     assert manifest["compiler_supported"] is True
     assert manifest["compiler_strategy"] == "open_redirect_reflect"
+    assert manifest["compiler_family"] == "open_redirect"
+    assert manifest["stack_scaffold_id"] == "python/flask"
+    assert manifest["stack_scaffold_version"] == "1.0"
+    assert manifest["fragment_id"] == "redirect_next_route"
+    assert manifest["compose_mode"] == "registry"
+    assert manifest["verification_summary"]["by_rule_source"] == {}
+    assert manifest["verification_summary"]["by_trust"] == {}
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "compiler-first"
     assert manifest["compiler_contract_summary"]["supported_bundles"] == 1
+    assert manifest["bundles"][0]["compiler_contract"]["stack_scaffold_id"] == "python/flask"
+    assert manifest["bundles"][0]["compiler_contract"]["fragment_id"] == "redirect_next_route"
 
 
 def test_write_manifest_classifies_compiler_supported_known_family_without_static_rule_as_known_regression(

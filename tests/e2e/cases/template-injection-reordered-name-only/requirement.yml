@@ -1,0 +1,7 @@
+vuln_name: Injection in Jinja template
+seed: 4343
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 4343

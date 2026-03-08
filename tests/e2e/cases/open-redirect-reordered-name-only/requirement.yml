@@ -1,0 +1,7 @@
+vuln_name: Redirect open vulnerability
+seed: 4444
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 4444

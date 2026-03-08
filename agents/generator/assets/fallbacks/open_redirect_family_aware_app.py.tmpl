@@ -1,0 +1,20 @@
+# Asset-backed family-aware fallback template for Open Redirect.
+from flask import Flask, redirect, request
+
+app = Flask(__name__)
+
+
+@app.get('/health')
+def health():
+    return {'ok': True}
+
+
+@app.get('/go')
+def go():
+    # Open redirect via unvalidated redirect target supplied by the next parameter.
+    next_url = request.args.get('next', 'https://example.com')
+    return redirect(next_url, code=302)
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=__PORT__)

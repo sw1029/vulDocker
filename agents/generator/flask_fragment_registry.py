@@ -294,36 +294,106 @@ def _resolve_exact_fragment_strategy(vuln_id: str) -> str | None:
     return _EXACT_VULN_STRATEGIES.get(token)
 
 
+def _label_tokens(raw_label: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", str(raw_label or "").strip().lower())
+        if token
+    }
+
+
+def _label_has_tokens(tokens: set[str], *required: str) -> bool:
+    required_tokens = {str(item).strip().lower() for item in required if str(item).strip()}
+    return bool(required_tokens) and required_tokens.issubset(tokens)
+
+
 def resolve_fragment_strategy(vuln_id: str, pattern_id: str = "", raw_label: str = "") -> str | None:
     exact = _resolve_exact_fragment_strategy(vuln_id)
     if exact:
         return exact
     normalized_pattern = str(pattern_id or "").strip().lower()
     normalized_label = str(raw_label or "").strip().lower()
+    label_tokens = _label_tokens(raw_label)
     if (
         "open-redirect" in normalized_pattern
         or "open redirect" in normalized_label
         or "unvalidated redirect" in normalized_label
         or "unvalidated redirection" in normalized_label
+        or _label_has_tokens(label_tokens, "open", "redirect")
+        or _label_has_tokens(label_tokens, "unvalidated", "redirect")
+        or _label_has_tokens(label_tokens, "unvalidated", "redirection")
     ):
         return "open_redirect_reflect"
-    if "template-injection" in normalized_pattern or "ssti" in normalized_pattern or "template injection" in normalized_label:
+    if (
+        "template-injection" in normalized_pattern
+        or "ssti" in normalized_pattern
+        or "template injection" in normalized_label
+        or "ssti" in normalized_label
+        or _label_has_tokens(label_tokens, "template", "injection")
+        or _label_has_tokens(label_tokens, "server", "side", "template", "injection")
+        or _label_has_tokens(label_tokens, "jinja", "template", "injection")
+        or _label_has_tokens(label_tokens, "jinja2", "template", "injection")
+    ):
         return "template_injection_render"
-    if "path-traversal" in normalized_pattern or "path traversal" in normalized_label:
+    if (
+        "path-traversal" in normalized_pattern
+        or "path traversal" in normalized_label
+        or _label_has_tokens(label_tokens, "path", "traversal")
+        or _label_has_tokens(label_tokens, "directory", "traversal")
+        or _label_has_tokens(label_tokens, "file", "traversal")
+    ):
         return "path_traversal_file_read"
-    if "xss" in normalized_pattern or "cross-site scripting" in normalized_label:
+    if (
+        "xss" in normalized_pattern
+        or "cross-site scripting" in normalized_label
+        or "xss" in normalized_label
+        or _label_has_tokens(label_tokens, "cross", "site", "scripting")
+    ):
         return "xss_reflected"
-    if "ssrf" in normalized_pattern or "server-side request forgery" in normalized_label:
+    if (
+        "ssrf" in normalized_pattern
+        or "server-side request forgery" in normalized_label
+        or "ssrf" in normalized_label
+        or _label_has_tokens(label_tokens, "server", "side", "request", "forgery")
+    ):
         return "ssrf_loopback_fetch"
-    if "deserialization" in normalized_pattern or "insecure deserialization" in normalized_label:
+    if (
+        "deserialization" in normalized_pattern
+        or "insecure deserialization" in normalized_label
+        or "deserialization" in normalized_label
+        or _label_has_tokens(label_tokens, "insecure", "deserialization")
+        or _label_has_tokens(label_tokens, "unsafe", "deserialization")
+    ):
         return "deserialization_pickle_body"
-    if "command-injection" in normalized_pattern or "command injection" in normalized_label:
+    if (
+        "command-injection" in normalized_pattern
+        or "command injection" in normalized_label
+        or _label_has_tokens(label_tokens, "command", "injection")
+        or _label_has_tokens(label_tokens, "shell", "injection")
+        or _label_has_tokens(label_tokens, "os", "command", "injection")
+    ):
         return "command_injection_shell"
-    if "code-injection" in normalized_pattern or "code injection" in normalized_label:
+    if (
+        "code-injection" in normalized_pattern
+        or "code injection" in normalized_label
+        or _label_has_tokens(label_tokens, "code", "injection")
+        or _label_has_tokens(label_tokens, "eval", "injection")
+        or _label_has_tokens(label_tokens, "exec", "injection")
+    ):
         return "code_injection_eval"
-    if "sqli" in normalized_pattern or "sql injection" in normalized_label:
+    if (
+        "sqli" in normalized_pattern
+        or "sql injection" in normalized_label
+        or "sqli" in normalized_label
+        or _label_has_tokens(label_tokens, "sql", "injection")
+    ):
         return "sqli_string_concat"
-    if "csrf" in normalized_pattern or "cross site request forgery" in normalized_label:
+    if (
+        "csrf" in normalized_pattern
+        or "cross site request forgery" in normalized_label
+        or "csrf" in normalized_label
+        or _label_has_tokens(label_tokens, "cross", "site", "request", "forgery")
+    ):
         return "csrf_missing_token"
     return None
 

@@ -1,0 +1,7 @@
+# Asset-backed fallback bundle Dockerfile template.
+FROM python:3.11-slim
+WORKDIR /app
+COPY . /app
+RUN pip install --no-cache-dir -r requirements.txt
+EXPOSE __PORT__
+CMD ["python", "__SERVICE_PATH__"]

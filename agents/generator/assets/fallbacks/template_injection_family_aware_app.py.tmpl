@@ -1,0 +1,20 @@
+# Asset-backed family-aware fallback template for Template Injection.
+from flask import Flask, render_template_string, request
+
+app = Flask(__name__)
+
+
+@app.get('/health')
+def health():
+    return {'ok': True}
+
+
+@app.get('/greet')
+def greet():
+    name = request.args.get('name', 'Guest')
+    template = '<h1>Hello ' + name + '</h1>'
+    return render_template_string(template)
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=__PORT__)

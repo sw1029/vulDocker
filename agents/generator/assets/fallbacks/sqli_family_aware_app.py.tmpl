@@ -1,0 +1,45 @@
+from pathlib import Path
+import sqlite3
+from flask import Flask, jsonify, request
+
+# Asset-backed family-aware fallback template for SQLi.
+app = Flask(__name__)
+DB_PATH = Path('/tmp/sqli-demo.db')
+SCHEMA_SQL = '''
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT,
+    password TEXT
+);
+DELETE FROM users;
+INSERT INTO users (username, password) VALUES ('admin', 'secret');
+INSERT INTO users (username, password) VALUES ('guest', 'guest');
+'''
+
+def init_db() -> None:
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(SCHEMA_SQL)
+    conn.commit()
+    conn.close()
+
+@app.get('/health')
+def health():
+    return {'ok': True}
+
+@app.get('/login')
+def login():
+    query = (
+        "SELECT id, username FROM users "
+        "WHERE username = '" + request.args.get('username', '') + "' "
+        "AND password = '" + request.args.get('password', '') + "'"
+    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    rows = cur.execute(query).fetchall()
+    conn.close()
+    return jsonify({'match': bool(rows), 'rows': [dict(row) for row in rows], 'query': query})
+
+if __name__ == '__main__':
+    init_db()
+    app.run(host='0.0.0.0', port=__PORT__)

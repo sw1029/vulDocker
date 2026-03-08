@@ -1,6 +1,12 @@
 {
   "manifest": {
-    "overall_pass": true
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first"
   },
   "evals": [
     {
@@ -10,6 +16,8 @@
       "exit_code": 0,
       "compiler_supported": true,
       "compiler_strategy": "ssrf_loopback_fetch",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
       "evidence_contains": [
         "FLAG{SSRF_OK}"
       ]

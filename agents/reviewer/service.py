@@ -248,6 +248,30 @@ class ReviewerService:
         meta_dir = metadata_dir_for_bundle(self.plan, bundle)
         contract_path = meta_dir / "resolved_contract.json"
         contract_evidence = [str(contract_path)] if contract_path.exists() else []
+        verification_trust = str(result.get("verification_trust") or "").strip().lower()
+        verification_rule_source = str(result.get("verification_rule_source") or "").strip().lower()
+        verification_trust_reason = str(result.get("verification_trust_reason") or "").strip()
+
+        if verification_trust == "low":
+            label = verification_rule_source or "self-derived verifier contract"
+            detail = f"Verifier contract trust is low ({label})"
+            if verification_trust_reason:
+                detail += f": {verification_trust_reason}"
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="resolved_contract.json",
+                    line=1,
+                    issue=detail,
+                    fix_hint=(
+                        "Treat this bundle as inspection-only until a declared static/runtime rule or "
+                        "independent verifier path is available."
+                    ),
+                    evidence=contract_evidence,
+                    severity="medium",
+                    blocking=False,
+                )
+            )
 
         semantic = result.get("semantic_consistency")
         if isinstance(semantic, dict) and semantic.get("supported") and not semantic.get("semantic_match"):

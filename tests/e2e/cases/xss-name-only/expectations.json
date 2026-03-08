@@ -1,6 +1,12 @@
 {
   "manifest": {
-    "overall_pass": true
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first"
   },
   "evals": [
     {
@@ -9,7 +15,9 @@
       "run_passed": true,
       "exit_code": 0,
       "compiler_supported": true,
-      "compiler_strategy": "xss_reflected"
+      "compiler_strategy": "xss_reflected",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first"
     }
   ],
   "reviewer": {

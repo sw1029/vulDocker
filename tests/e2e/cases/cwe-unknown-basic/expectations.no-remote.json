@@ -4,6 +4,8 @@
     "promotion_eligible": false,
     "manifest_file": "failure_manifest.json",
     "pipeline_returncode": 1,
+    "generation_origin": "research_short_circuit",
+    "dynamicness_verdict": "pre-generation fail-closed",
     "generalization_class": "synthetic_regression",
     "counts_as_generalization": false
   },
@@ -15,6 +17,8 @@
       "exit_code": null,
       "promotion_eligible": false,
       "compiler_supported": false,
+      "generation_origin": "research_short_circuit",
+      "dynamicness_verdict": "pre-generation fail-closed",
       "generalization_class": "synthetic_regression",
       "counts_as_generalization": false
     }

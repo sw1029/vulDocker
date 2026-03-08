@@ -35,6 +35,7 @@ from common.plan import load_plan
 from common.prompts import build_guard_planner_prompt, build_researcher_prompt
 from common.researcher_report import extract_verification_spec, normalize_researcher_report_payload
 from common.roles import normalize_role
+from common.runtime_assets import record_generated_runtime_asset
 from common.rules import load_rule, load_static_rule, rule_filename_for_vuln_id
 from common.run_matrix import (
     VulnBundle,
@@ -2500,6 +2501,9 @@ class ResearcherService:
         filename = f"{rule_filename_for_vuln_id(bundle.vuln_id)}.yaml"
         path = self.runtime_rules_dir / filename
         path.write_text(yaml.safe_dump(rule, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        metadata_root = getattr(self, "metadata_root", None)
+        if isinstance(metadata_root, Path):
+            record_generated_runtime_asset(metadata_root, kind="runtime_rules", path=path)
         LOGGER.info("Candidate rule written to %s", path)
         return path
 
@@ -2522,6 +2526,9 @@ class ResearcherService:
         data["id"] = f"{bundle.vuln_id.lower()}-candidate"
         data["name"] = f"{bundle.vuln_id} candidate template"
         template_json.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        metadata_root = getattr(self, "metadata_root", None)
+        if isinstance(metadata_root, Path):
+            record_generated_runtime_asset(metadata_root, kind="runtime_templates", path=dest)
         return dest
 
     def _load_template_metadata(self, template_root: Path) -> Dict[str, Any]:

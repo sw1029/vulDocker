@@ -1,0 +1,17 @@
+from flask import Flask, request
+
+# Asset-backed generic unsupported fallback service template.
+app = Flask(__name__)
+
+@app.get('/health')
+def health():
+    return {'ok': True}
+
+@app.get('__REFLECT_PATH__')
+def reflect():
+    # Intentionally unsafe reflection: demonstrates a generic input-handling flaw.
+    value = request.args.get('q', '')
+    return f"<p>{value}</p>"  # no escaping
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=__PORT__)

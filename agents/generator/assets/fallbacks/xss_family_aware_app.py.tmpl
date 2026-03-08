@@ -1,0 +1,21 @@
+# Asset-backed family-aware fallback template for XSS.
+from flask import Flask, render_template_string, request
+
+app = Flask(__name__)
+
+
+@app.get('/health')
+def health():
+    return {'ok': True}
+
+
+@app.get('/search')
+def search():
+    # Reflected cross-site scripting: unescaped reflection of <script> payloads into a template response.
+    name = request.args.get('name', 'Guest')
+    template = "<div class='result'>" + name + "</div>"
+    return render_template_string(template)
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=__PORT__)

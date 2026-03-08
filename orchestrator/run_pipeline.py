@@ -30,6 +30,14 @@ from common.contracts import (
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
+from common.runtime_assets import (
+    GENERATED_RUNTIME_ASSETS_FILENAME,
+    RUNTIME_ASSET_SEEDS_FILENAME,
+    has_runtime_asset_seed_manifest,
+    purge_runtime_asset_dirs,
+    remove_generated_runtime_assets,
+    restore_seeded_runtime_assets,
+)
 from common.run_matrix import bundle_requirement, load_vuln_bundles, metadata_dir_for_bundle
 from orchestrator.loop_controller import LoopController
 
@@ -746,7 +754,17 @@ def _refresh_manifest_after_pack(sid: str, plan: Dict[str, Any]) -> None:
 
 def _prepare_fresh_run_state(sid: str) -> None:
     metadata_dir = ensure_dir(get_metadata_dir(sid))
-    keep_names = {"plan.json", "runtime_rules", "runtime_templates"}
+    if has_runtime_asset_seed_manifest(metadata_dir):
+        purge_runtime_asset_dirs(metadata_dir)
+    else:
+        remove_generated_runtime_assets(metadata_dir)
+    keep_names = {
+        "plan.json",
+        "runtime_rules",
+        "runtime_templates",
+        RUNTIME_ASSET_SEEDS_FILENAME,
+        GENERATED_RUNTIME_ASSETS_FILENAME,
+    }
     for child in list(metadata_dir.iterdir()):
         if child.name in keep_names:
             continue
@@ -754,6 +772,10 @@ def _prepare_fresh_run_state(sid: str) -> None:
             shutil.rmtree(child)
         else:
             child.unlink(missing_ok=True)
+    ensure_dir(metadata_dir / "runtime_rules")
+    ensure_dir(metadata_dir / "runtime_templates")
+    if has_runtime_asset_seed_manifest(metadata_dir):
+        restore_seeded_runtime_assets(metadata_dir)
 
     for target in (get_artifacts_dir(sid), get_workspace_dir(sid)):
         if target.exists():
@@ -906,10 +928,13 @@ def _analyze_verify_failures(sid: str) -> Dict[str, Any]:
     results = payload.get("results") or []
     failures: List[Dict[str, Any]] = []
     terminal_semantic_unsupported = bool(results)
+    terminal_low_trust_verification = bool(results)
     for entry in results:
         if not isinstance(entry, dict) or entry.get("verify_pass") is not False:
             continue
         failures.append(entry)
+        if entry.get("verification_policy_blocked") is not True:
+            terminal_low_trust_verification = False
         vuln_id = str(entry.get("vuln_id") or "").strip()
         semantic_supported = entry.get("semantic_supported")
         semantic_status = str(entry.get("semantic_status") or "").strip().lower()
@@ -922,8 +947,10 @@ def _analyze_verify_failures(sid: str) -> Dict[str, Any]:
 
     if not failures:
         terminal_semantic_unsupported = False
+        terminal_low_trust_verification = False
     return {
         "terminal_semantic_unsupported": terminal_semantic_unsupported,
+        "terminal_low_trust_verification": terminal_low_trust_verification,
         "failure_count": len(failures),
         "slugs": [
             str(entry.get("slug") or entry.get("vuln_id") or "unknown")
@@ -1199,10 +1226,25 @@ def main() -> None:
             if verify_analysis.get("terminal_semantic_unsupported"):
                 meta["terminal_failure_class"] = "semantic_support_missing"
                 meta["retry_recommended"] = False
+            elif verify_analysis.get("terminal_low_trust_verification"):
+                meta["terminal_failure_class"] = "low_trust_verification"
+                meta["retry_recommended"] = False
+                hint = (
+                    "Unknown/open-world lane was blocked by verifier low-trust policy. "
+                    "Provide a declared/compiler-backed rule contract or relax "
+                    "policy.verifier.low_trust_unknown_policy to warn for synthetic regression lanes."
+                )
             controller.record_failure(stage="VERIFY", reason=reason, fix_hint=hint, blocking=True, metadata=meta)
             if verify_analysis.get("terminal_semantic_unsupported"):
                 LOGGER.info(
                     "Stopping retries for %s after VERIFY: terminal semantic support failure (%s)",
+                    sid,
+                    ", ".join(verify_analysis.get("slugs") or []) or "unknown bundle",
+                )
+                break
+            if verify_analysis.get("terminal_low_trust_verification"):
+                LOGGER.info(
+                    "Stopping retries for %s after VERIFY: terminal low-trust verification policy block (%s)",
                     sid,
                     ", ".join(verify_analysis.get("slugs") or []) or "unknown bundle",
                 )

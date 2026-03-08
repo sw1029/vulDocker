@@ -90,6 +90,265 @@ def test_unknown_rule_based_verifier_uses_resolved_contract_semantic_contract(
     assert result["semantic_consistency"]["supported"] is True
     assert result["semantic_consistency"]["semantic_match"] is True
     assert result["semantic_consistency"]["source"] == "resolved_contract.semantic_contract"
+    assert result["verification_rule_source"] == "generator_manifest_fallback"
+    assert result["verification_trust"] == "low"
+
+
+def test_rule_based_verifier_fails_closed_when_unknown_contract_status_is_empty(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-semantic-empty"
+    slug = "cwe-9999"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / "app"
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, request\n"
+        "import sqlite3\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/users')\n"
+        "def users():\n"
+        "    user_id = request.args.get('id', '1')\n"
+        "    query = 'SELECT * FROM users WHERE id=' + user_id\n"
+        "    conn = sqlite3.connect('/tmp/app.db')\n"
+        "    conn.execute(query)\n"
+        "    return 'ok'\n"
+    )
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+                    ],
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "CWE-9999",
+            "success_signature": "Exploit SUCCESS",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["request.args"],
+                    "sink": ["execute("],
+                    "exploit_precondition": ["string concatenation"],
+                },
+                "semantic_signature_source": ["heuristic"],
+                "status": "empty",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-9999",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["exploit_pass"] is True
+    assert result["semantic_supported"] is False
+    assert result["semantic_status"] == "empty"
+    assert result["verify_pass"] is False
+
+
+def test_rule_based_verifier_can_fail_closed_on_low_trust_unknown_policy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    metadata_dir = repo_root / "metadata" / "sid-low-trust-policy"
+    workspace_dir = repo_root / "workspaces" / "sid-low-trust-policy" / "app"
+    run_dir = repo_root / "artifacts" / "sid-low-trust-policy" / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, request\n"
+        "import sqlite3\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/users')\n"
+        "def users():\n"
+        "    user_id = request.args.get('id', '1')\n"
+        "    query = 'SELECT * FROM users WHERE id=' + user_id\n"
+        "    conn = sqlite3.connect('/tmp/app.db')\n"
+        "    conn.execute(query)\n"
+        "    return 'ok'\n"
+    )
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+                    ],
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-low-trust-policy",
+            "slug": "cwe-9999",
+            "vuln_id": "CWE-9999",
+            "success_signature": "Exploit SUCCESS",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["user-controlled request parameter"],
+                    "sink": ["SQL query execution"],
+                    "exploit_precondition": ["input concatenated/interpolated into SQL sink"],
+                },
+                "semantic_signature_source": ["contract"],
+                "status": "aligned",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-9999",
+        run_dir / "run.log",
+        run_summary={"sid": "sid-low-trust-policy", "slug": "cwe-9999", "exit_code": 0},
+        policy={"require_exit_code_zero": True, "low_trust_unknown_policy": "fail_closed"},
+    )
+
+    assert result["exploit_pass"] is True
+    assert result["semantic_supported"] is True
+    assert result["verify_pass"] is False
+    assert result["verification_rule_source"] == "generator_manifest_fallback"
+    assert result["verification_trust"] == "low"
+    assert result["verification_policy_blocked"] is True
+    assert result["terminal_failure_class"] == "low_trust_verification"
+    assert "low-trust verifier contract blocked by policy" in result["evidence"]
+
+
+def test_evaluate_with_vuln_does_not_invoke_llm_after_low_trust_policy_block(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    metadata_dir = repo_root / "metadata" / "sid-low-trust-registry"
+    workspace_dir = repo_root / "workspaces" / "sid-low-trust-registry" / "app"
+    run_dir = repo_root / "artifacts" / "sid-low-trust-registry" / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, request\n"
+        "import sqlite3\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/users')\n"
+        "def users():\n"
+        "    user_id = request.args.get('id', '1')\n"
+        "    query = 'SELECT * FROM users WHERE id=' + user_id\n"
+        "    conn = sqlite3.connect('/tmp/app.db')\n"
+        "    conn.execute(query)\n"
+        "    return 'ok'\n"
+    )
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+                    ],
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-low-trust-registry",
+            "slug": "cwe-9999",
+            "vuln_id": "CWE-9999",
+            "success_signature": "Exploit SUCCESS",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["user-controlled request parameter"],
+                    "sink": ["SQL query execution"],
+                    "exploit_precondition": ["input concatenated/interpolated into SQL sink"],
+                },
+                "semantic_signature_source": ["contract"],
+                "status": "aligned",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+    monkeypatch.setattr(
+        "evals.poc_verifier.registry.llm_assisted_verify",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("llm_assisted_verify should not run")),
+    )
+
+    result = evaluate_with_vuln(
+        "CWE-9999",
+        run_dir / "run.log",
+        run_summary={"sid": "sid-low-trust-registry", "slug": "cwe-9999", "exit_code": 0},
+        plan_policy={"verifier": {"prefer_rule": True, "require_exit_code_zero": True, "low_trust_unknown_policy": "fail_closed"}},
+    )
+
+    assert result["verify_pass"] is False
+    assert result["verification_policy_blocked"] is True
+    assert result["verification_trust"] == "low"
+    assert result["terminal_failure_class"] == "low_trust_verification"
 
 
 def test_rule_based_verifier_fails_when_semantic_contract_has_contradictions(
@@ -385,6 +644,8 @@ def test_evaluate_with_vuln_runtime_assertions_do_not_bypass_semantic_contract(
     assert result["verify_pass"] is False
     assert result["semantic_consistency"]["supported"] is True
     assert result["semantic_consistency"]["semantic_match"] is False
+    assert result["verification_rule_source"] == "runtime_rule_candidate"
+    assert result["verification_trust"] == "low"
     assert "semantic mismatch:" in result["evidence"]
 
 

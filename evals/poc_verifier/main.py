@@ -22,6 +22,7 @@ from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir
 from common.plan import load_plan
 from common.contracts import load_generator_contract
+from common.runtime_assets import record_generated_runtime_asset
 from common.rules import load_rule, list_rules, load_static_rule
 from common.run_matrix import (
     artifacts_dir_for_bundle,
@@ -237,6 +238,7 @@ def _retry_with_runtime_rule(
     runtime_rules.mkdir(parents=True, exist_ok=True)
     rule_path = runtime_rules / f"{vuln_id}.yaml"
     rule_path.write_text(yaml.safe_dump(rule, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    record_generated_runtime_asset(metadata_root, kind="runtime_rules", path=rule_path)
 
     # Clear in-process caches so the retry sees the newly written rule.
     try:
@@ -256,12 +258,19 @@ def _retry_with_runtime_rule(
         plan_policy=plan.get("policy"),
     )
     retry.setdefault("status", "evaluated")
+    retry["verification_rule_source"] = "verifier_runtime_rule_fallback"
+    retry["verification_trust"] = "low"
+    retry["verification_trust_reason"] = (
+        "verifier synthesized a runtime rule from generator metadata because no declared static/runtime rule existed"
+    )
     retry["verifier_retry"] = {
         "attempted": True,
         "reason": "unsupported",
         "runtime_rule_path": str(rule_path),
         "success_signature": sig,
         "flag_token": flag_token,
+        "verification_rule_source": "verifier_runtime_rule_fallback",
+        "verification_trust": "low",
     }
     return retry
 

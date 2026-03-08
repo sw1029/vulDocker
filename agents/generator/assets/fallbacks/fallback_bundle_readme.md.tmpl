@@ -1,0 +1,8 @@
+<!-- Asset-backed fallback bundle README template. -->
+# __VULN_ID__ fallback bundle
+
+```bash
+docker build -t fallback-bundle .
+docker run -p __PORT__:__PORT__ fallback-bundle
+python poc.py --base-url http://127.0.0.1:__PORT__
+```

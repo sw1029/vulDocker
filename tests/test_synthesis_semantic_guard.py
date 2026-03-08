@@ -206,6 +206,8 @@ def test_family_aware_fallback_manifest_for_cwe89_passes_guard(tmp_path: Path) -
     assert manifest["metadata"]["generation_origin"] == "deterministic_fallback"
     service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
     poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for SQLi." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for SQLi." in poc_entry["content"]
     assert "SELECT id, username FROM users" in service_main["content"]
     assert "cur.execute(query)" in service_main["content"]
     assert "SQLi SUCCESS" in poc_entry["content"]
@@ -224,6 +226,8 @@ def test_family_aware_fallback_manifest_for_cwe352_passes_guard(tmp_path: Path) 
     assert manifest["metadata"]["generation_origin"] == "deterministic_fallback"
     service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
     poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for CSRF." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for CSRF." in poc_entry["content"]
     assert "@app.post('/transfer')" in service_main["content"]
     assert "session['user'] = user" in service_main["content"]
     assert "CSRF SUCCESS" in poc_entry["content"]
@@ -243,12 +247,48 @@ def test_family_aware_fallback_manifest_for_cwe79_passes_guard(tmp_path: Path) -
     assert manifest["metadata"]["fallback_class"] == "family_aware"
     service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
     poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for XSS." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for XSS." in poc_entry["content"]
     assert "render_template_string" in service_main["content"]
     assert "cross-site scripting" in service_main["content"].lower()
     assert "<script>alert(1)</script>" in poc_entry["content"]
     semantics = (report or {}).get("semantics") or {}
     assert semantics.get("supported") is True
     assert semantics.get("semantic_match") is True
+
+
+def test_family_aware_fallback_manifest_for_template_injection_uses_asset_templates(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "NAME-TEMPLATE-INJECTION")
+    manifest = engine._fallback_manifest()
+
+    errors, report = engine._guard_manifest(manifest)
+
+    assert not any("semantic mismatch:" in item for item in errors)
+    assert manifest["metadata"]["fallback_class"] == "family_aware"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for Template Injection." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for Template Injection." in poc_entry["content"]
+    assert "render_template_string" in service_main["content"]
+    assert "{{7*7}}" in poc_entry["content"]
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
+def test_generic_unsupported_fallback_manifest_uses_asset_templates(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "NAME-LDAP-INJECTION")
+    manifest = engine._fallback_manifest()
+
+    assert manifest["metadata"]["fallback_class"] == "generic_unsupported_family"
+    dockerfile = next(entry for entry in manifest["files"] if entry.get("path") == "Dockerfile")
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    readme = next(entry for entry in manifest["files"] if entry.get("path") == "README.md")
+    assert "Asset-backed fallback bundle Dockerfile template." in dockerfile["content"]
+    assert "Asset-backed generic unsupported fallback service template." in service_main["content"]
+    assert "Asset-backed generic unsupported fallback PoC template." in poc_entry["content"]
+    assert "Asset-backed fallback bundle README template." in readme["content"]
 
 
 def test_family_aware_fallback_manifest_for_cwe918_passes_guard(tmp_path: Path) -> None:
@@ -260,8 +300,34 @@ def test_family_aware_fallback_manifest_for_cwe918_passes_guard(tmp_path: Path) 
     assert not any("semantic mismatch:" in item for item in errors)
     assert manifest["metadata"]["fallback_class"] == "family_aware"
     service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for SSRF." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for SSRF." in poc_entry["content"]
     assert "requests.get" in service_main["content"]
     assert "/metadata" in service_main["content"]
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
+def test_family_aware_fallback_manifest_for_open_redirect_uses_asset_templates(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "NAME-OPEN-REDIRECT")
+    manifest = engine._fallback_manifest()
+
+    errors, report = engine._guard_manifest(manifest)
+
+    assert not any("semantic mismatch:" in item for item in errors)
+    assert manifest["metadata"]["fallback_class"] == "family_aware"
+    dockerfile = next(entry for entry in manifest["files"] if entry.get("path") == "Dockerfile")
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    readme = next(entry for entry in manifest["files"] if entry.get("path") == "README.md")
+    assert "Asset-backed fallback bundle Dockerfile template." in dockerfile["content"]
+    assert "Asset-backed family-aware fallback template for Open Redirect." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for Open Redirect." in poc_entry["content"]
+    assert "Asset-backed fallback bundle README template." in readme["content"]
+    assert "redirect(next_url, code=302)" in service_main["content"]
+    assert "allow_redirects=False" in poc_entry["content"]
     semantics = (report or {}).get("semantics") or {}
     assert semantics.get("supported") is True
     assert semantics.get("semantic_match") is True
@@ -276,8 +342,30 @@ def test_family_aware_fallback_manifest_for_cwe502_passes_guard(tmp_path: Path) 
     assert not any("guard semantic mismatch:" in item for item in errors)
     assert manifest["metadata"]["fallback_class"] == "family_aware"
     service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for Insecure Deserialization." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for Insecure Deserialization." in poc_entry["content"]
     assert "pickle.loads" in service_main["content"]
     assert "request.get_data" in service_main["content"]
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
+def test_family_aware_fallback_manifest_for_path_traversal_uses_asset_templates(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-22")
+    manifest = engine._fallback_manifest()
+
+    errors, report = engine._guard_manifest(manifest)
+
+    assert not any("semantic mismatch:" in item for item in errors)
+    assert manifest["metadata"]["fallback_class"] == "family_aware"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for Path Traversal." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for Path Traversal." in poc_entry["content"]
+    assert "os.path.join" in service_main["content"]
+    assert "../../../../etc/passwd" in poc_entry["content"]
     semantics = (report or {}).get("semantics") or {}
     assert semantics.get("supported") is True
     assert semantics.get("semantic_match") is True

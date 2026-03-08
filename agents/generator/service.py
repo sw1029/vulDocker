@@ -28,6 +28,7 @@ from common.contracts import build_generator_contract, load_semantic_profile, wr
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_generator_prompt
+from common.runtime_assets import record_generated_runtime_asset
 from common.rules import list_rules, load_rule, load_static_rule, rule_filename_for_vuln_id
 from common.run_matrix import (
     VulnBundle,
@@ -708,6 +709,9 @@ class GeneratorService:
         self.runtime_rules_dir.mkdir(parents=True, exist_ok=True)
         path = self.runtime_rules_dir / f"{rule_filename_for_vuln_id(rule['cwe'])}.yaml"
         path.write_text(yaml.safe_dump(rule, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        metadata_root = getattr(self, "metadata_root", None)
+        if isinstance(metadata_root, Path):
+            record_generated_runtime_asset(metadata_root, kind="runtime_rules", path=path)
         try:
             load_rule.cache_clear()  # type: ignore[attr-defined]
         except Exception:

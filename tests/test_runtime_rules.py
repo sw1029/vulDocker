@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -9,6 +10,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.rules import list_rules, load_rule
+from common.run_matrix import VulnBundle
+from evals.poc_verifier import main as verifier_main
 
 
 def test_load_rule_from_runtime_dir(tmp_path: Path) -> None:
@@ -114,3 +117,62 @@ def test_runtime_rule_full_override_applies_when_policy_enabled(tmp_path: Path) 
             os.environ.pop(allow_key, None)
         else:
             os.environ[allow_key] = original_allow
+
+
+def test_retry_with_runtime_rule_marks_self_derived_verification_as_low_trust(
+    tmp_path: Path, monkeypatch
+) -> None:
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir(parents=True)
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": "print('app')\n"},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+                    ],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_dir / "resolved_contract.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "resolved_contract@1.0",
+                "sid": "sid-runtime-retry",
+                "slug": "cwe-9999",
+                "vuln_id": "CWE-9999",
+                "success_signature": "Exploit SUCCESS",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        verifier_main,
+        "evaluate_with_vuln",
+        lambda *args, **kwargs: {"verify_pass": True, "status": "evaluated", "rule": "CWE-9999"},
+    )
+    load_rule.cache_clear()
+    list_rules.cache_clear()
+    try:
+        result = verifier_main._retry_with_runtime_rule(
+            {"paths": {"metadata": str(metadata_dir)}, "policy": {}},
+            VulnBundle(vuln_id="CWE-9999", slug="cwe-9999", workspace_subdir="app"),
+            tmp_path / "run.log",
+            requirement={"vuln_id": "CWE-9999"},
+            run_record={"sid": "sid-runtime-retry", "slug": "cwe-9999", "exit_code": 0},
+            original={"status": "unsupported"},
+        )
+    finally:
+        load_rule.cache_clear()
+        list_rules.cache_clear()
+
+    assert result["verification_rule_source"] == "verifier_runtime_rule_fallback"
+    assert result["verification_trust"] == "low"
+    assert result["verifier_retry"]["verification_rule_source"] == "verifier_runtime_rule_fallback"

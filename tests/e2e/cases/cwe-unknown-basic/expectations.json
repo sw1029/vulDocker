@@ -2,6 +2,11 @@
   "manifest": {
     "overall_pass": true,
     "promotion_eligible": false,
+    "pipeline_result": "success",
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generation_origin": "deterministic_fallback",
+    "dynamicness_verdict": "deterministic fallback dependent",
     "generalization_class": "synthetic_regression",
     "counts_as_generalization": false
   },
@@ -12,6 +17,8 @@
       "run_passed": true,
       "exit_code": 0,
       "promotion_eligible": false,
+      "generation_origin": "deterministic_fallback",
+      "dynamicness_verdict": "deterministic fallback dependent",
       "generalization_class": "synthetic_regression",
       "counts_as_generalization": false
     }

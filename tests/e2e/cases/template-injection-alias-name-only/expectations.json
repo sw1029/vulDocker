@@ -5,6 +5,8 @@
     "promotion_eligible": true,
     "manifest_file": "manifest.json",
     "pipeline_returncode": 0,
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first",
     "generalization_class": "real_free_form_positive",
     "counts_as_generalization": true
   },
@@ -17,6 +19,8 @@
       "promotion_eligible": true,
       "compiler_supported": true,
       "compiler_strategy": "template_injection_render",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
       "semantic_supported": true,
       "semantic_status": "aligned",
       "generalization_class": "real_free_form_positive",

@@ -1,0 +1,31 @@
+base_requirement: inputs/base_requirement.yml
+
+options:
+  multi_vuln_opt_in: false
+
+overrides:
+  requirement_id: E2E-UNKNOWN-LOW-TRUST-0001
+  intent: "E2E 회귀: unknown/open-world lane에서 low-trust verifier를 policy로 fail-closed"
+  vuln_ids:
+    - CWE-9999
+  multi_vuln: false
+  seed: 4242
+  variation_key:
+    mode: deterministic
+    self_consistency_k: 1
+    pattern_pool_seed: 4242
+  generator_mode: synthesis
+  executor:
+    allow_network: false
+    network_mode: none
+    sidecars: []
+  runtime:
+    allow_external_db: false
+  policy:
+    require_researcher_evidence: true
+    verifier:
+      prefer_rule: true
+      strict_flag_default: false
+      low_trust_unknown_policy: fail_closed
+  researcher:
+    search_policy: remote_required

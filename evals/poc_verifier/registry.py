@@ -85,6 +85,8 @@ def evaluate_with_vuln(
 
     if base_result.get("verify_pass"):
         return base_result
+    if base_result.get("verification_policy_blocked") is True:
+        return base_result
     semantic_gate_required = bool(base_result.get("semantic_gate_required"))
     semantic_supported = base_result.get("semantic_supported")
     semantic_status = str(base_result.get("semantic_status") or "").strip().lower()

@@ -124,6 +124,61 @@ def test_reviewer_surfaces_low_confidence_unknown_issue_without_blocking(tmp_pat
     assert any("confidence is low" in issue.get("issue", "").lower() for issue in summary["issues_sample"])
 
 
+def test_reviewer_surfaces_low_verifier_trust_issue_without_blocking(tmp_path: Path, monkeypatch) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    run_log = artifacts_dir / "run" / "run.log"
+    run_log.write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"exit_code": 0, "run_attempted": True, "sid": "sid-review", "slug": "cwe-9999"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "resolved_contract.json").write_text(
+        json.dumps({"semantic_contract": {"status": "aligned"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    service = ReviewerService.__new__(ReviewerService)
+    service.sid = "sid-review"
+    service.plan = {  # type: ignore[attr-defined]
+        "requirement": {},
+        "paths": {"metadata": str(metadata_dir), "artifacts": str(artifacts_dir)},
+    }
+    service.metadata_root = metadata_dir  # type: ignore[attr-defined]
+    service.loop_controller = _LoopStub()  # type: ignore[attr-defined]
+    service.llm = _LLMStub()  # type: ignore[attr-defined]
+    service.bundles = [VulnBundle(vuln_id="CWE-9999", slug="cwe-9999", workspace_subdir="app")]  # type: ignore[attr-defined]
+    service._scan_workspace = lambda bundle, exploit_success=False: []  # type: ignore[attr-defined]
+
+    def _fake_evaluate_with_vuln(*args, **kwargs) -> Dict[str, Any]:
+        return {
+            "verify_pass": True,
+            "status": "evaluated",
+            "evidence": "Exploit SUCCESS",
+            "semantic_supported": True,
+            "semantic_status": "aligned",
+            "guard_consistency": {
+                "available": True,
+                "required_but_missing": False,
+                "verifier": {"passed": True, "blocking": False, "violations": []},
+                "workspace": {"passed": True, "blocking": False, "violations": []},
+            },
+            "verification_rule_source": "runtime_rule_candidate",
+            "verification_trust": "low",
+            "verification_trust_reason": "runtime rule synthesized during the run",
+        }
+
+    monkeypatch.setattr("agents.reviewer.service.evaluate_with_vuln", _fake_evaluate_with_vuln)
+
+    service.run()
+
+    summary = json.loads((metadata_dir / "reviewer_report.json").read_text(encoding="utf-8"))
+    assert summary["blocking_bundles"] == []
+    assert any("verifier contract trust is low" in issue.get("issue", "").lower() for issue in summary["issues_sample"])
+
+
 def test_reviewer_skips_llm_feedback_for_clean_runs_by_default(tmp_path: Path) -> None:
     service = ReviewerService.__new__(ReviewerService)
     service.sid = "sid-review"

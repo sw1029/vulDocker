@@ -436,6 +436,12 @@ def build_generator_contract(
     payload["compiler_supported"] = bool(semantic_profile.get("compiler_supported"))
     payload["compiler_strategy"] = _string_or_none(semantic_profile.get("compiler_strategy"))
     payload["compiler_reason"] = _string_or_none(semantic_profile.get("compiler_reason"))
+    manifest_metadata = manifest.get("metadata") if isinstance(manifest, dict) else {}
+    if isinstance(manifest_metadata, dict):
+        for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
+            value = _string_or_none(manifest_metadata.get(key))
+            if value:
+                payload[key] = value
     return payload
 
 
@@ -837,8 +843,12 @@ def _resolve_semantic_contract(vuln_id: str, report: Dict[str, Any], guard_spec:
     guard_has_terms = _semantic_signature_present(guard_signature)
     resolved_has_terms = _semantic_signature_present(resolved_signature)
     baseline_counts_as_present = has_baseline and not is_free_form_name
+    quality = str(contract.get("quality") or "").strip().lower()
+    quality_insufficient = quality == "insufficient"
     if contradictions:
         status = "contradicted"
+    elif quality_insufficient:
+        status = "empty" if (resolved_has_terms or report_has_terms or guard_has_terms) else "unsupported"
     elif resolved_has_terms:
         status = "aligned"
     elif baseline_counts_as_present or report_has_terms or guard_has_terms:

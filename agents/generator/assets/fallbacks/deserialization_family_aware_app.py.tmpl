@@ -1,0 +1,30 @@
+# Asset-backed family-aware fallback template for Insecure Deserialization.
+from pathlib import Path
+import pickle
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+FLAG_PATH = Path('/tmp/deser-flag.txt')
+FLAG_VALUE = __FLAG_TOKEN__
+
+
+@app.get('/health')
+def health():
+    return {'ok': True}
+
+
+@app.post('/deserialize')
+def deserialize_payload():
+    # insecure deserialization of attacker-controlled serialized payload.
+    payload = request.get_data()
+    result = pickle.loads(payload)
+    return jsonify({'result': str(result)})
+
+
+def init_runtime_state() -> None:
+    FLAG_PATH.write_text(FLAG_VALUE, encoding='utf-8')
+
+
+if __name__ == '__main__':
+    init_runtime_state()
+    app.run(host='0.0.0.0', port=__PORT__)

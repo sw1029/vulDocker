@@ -1,0 +1,34 @@
+{
+  "manifest": {
+    "pipeline_result": "failure",
+    "promotion_eligible": false,
+    "manifest_file": "failure_manifest.json",
+    "pipeline_returncode": 1,
+    "generation_origin": "deterministic_fallback",
+    "dynamicness_verdict": "deterministic fallback dependent",
+    "generalization_class": "synthetic_regression",
+    "counts_as_generalization": false
+  },
+  "evals": [
+    {
+      "slug": "cwe-9999",
+      "verify_pass": false,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": false,
+      "generation_origin": "deterministic_fallback",
+      "dynamicness_verdict": "deterministic fallback dependent",
+      "generalization_class": "synthetic_regression",
+      "counts_as_generalization": false,
+      "verification_rule_source": "runtime_rule_candidate",
+      "verification_trust": "low",
+      "terminal_failure_class": "low_trust_verification",
+      "evidence_contains": [
+        "low-trust verifier contract blocked by policy"
+      ]
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

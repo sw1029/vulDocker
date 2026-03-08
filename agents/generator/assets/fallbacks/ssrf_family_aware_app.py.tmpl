@@ -1,0 +1,28 @@
+# Asset-backed family-aware fallback template for SSRF.
+import requests
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+FLAG_VALUE = __FLAG_TOKEN__
+
+
+@app.get('/health')
+def health():
+    return {'ok': True}
+
+
+@app.get('/metadata')
+def metadata():
+    return jsonify({'flag': FLAG_VALUE, 'service': 'metadata'})
+
+
+@app.get('/fetch')
+def fetch():
+    # server-side request forgery: user-controlled url reaches requests.get
+    target_url = request.args.get('url', 'http://127.0.0.1:8000/metadata')
+    resp = requests.get(target_url, timeout=2)
+    return resp.text, resp.status_code, {'Content-Type': resp.headers.get('Content-Type', 'text/plain')}
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=__PORT__)

@@ -1,0 +1,29 @@
+from flask import Flask, jsonify, request, session
+
+# Asset-backed family-aware fallback template for CSRF.
+app = Flask(__name__)
+app.secret_key = 'csrf-fallback-secret'
+BALANCES = {'victim': 1000, 'attacker': 0}
+
+@app.get('/health')
+def health():
+    return {'ok': True}
+
+@app.get('/login')
+def login():
+    user = request.args.get('user', 'victim')
+    session['user'] = user
+    BALANCES.setdefault(user, 1000)
+    return jsonify({'logged_in_as': user})
+
+@app.post('/transfer')
+def transfer():
+    user = session.get('user', 'victim')
+    recipient = request.form.get('recipient', 'attacker')
+    amount = int(request.form.get('amount', '250'))
+    BALANCES[recipient] = BALANCES.get(recipient, 0) + amount
+    BALANCES[user] = BALANCES.get(user, 1000) - amount
+    return jsonify({'ok': True, 'by': user, 'recipient': recipient, 'amount': amount, 'recipient_balance': BALANCES[recipient]})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=__PORT__)

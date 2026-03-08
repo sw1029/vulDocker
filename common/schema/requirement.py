@@ -19,6 +19,7 @@ VALID_GUARD_BUDGET_MODES = {"bundle_once", "per_candidate", "verifier_only", "bu
 VALID_GUARD_AUTOFIX_LEVELS = {"none", "manifest", "code"}
 VALID_GUARD_UNSUPPORTED_OP_POLICIES = {"normalize_retry", "fail", "warn"}
 VALID_GUARD_LOW_CONFIDENCE_POLICIES = {"warn", "guard_fallback", "fail_closed"}
+VALID_VERIFIER_LOW_TRUST_POLICIES = {"warn", "fail_closed"}
 DEFAULT_GUARD_SEMANTIC_REFRESH_THRESHOLD = 2
 DEFAULT_GUARD_FAILURE_FINGERPRINT_WINDOW = 3
 VALID_SEARCH_FILTER_KEYS = {"include_domains", "exclude_domains", "time_range", "country", "search_lang"}
@@ -119,6 +120,41 @@ VULN_PROFILE_DEFAULTS = {
         "user_deps": ["requests==2.31.0"],
     },
 }
+FRAGMENT_STRATEGY_VULN_IDS = {
+    "sqli_string_concat": "CWE-89",
+    "csrf_missing_token": "CWE-352",
+    "path_traversal_file_read": "CWE-22",
+    "command_injection_shell": "CWE-78",
+    "code_injection_eval": "CWE-94",
+    "xss_reflected": "CWE-79",
+    "ssrf_loopback_fetch": "CWE-918",
+    "deserialization_pickle_body": "CWE-502",
+    "template_injection_render": "NAME-TEMPLATE-INJECTION",
+    "open_redirect_reflect": "NAME-OPEN-REDIRECT",
+}
+
+
+def _mapped_vuln_id_with_source(value: Any) -> tuple[str, str]:
+    label = _normalize_vuln_label(value)
+    if not label:
+        return "", ""
+    mapped = VULN_NAME_ALIASES.get(label, "")
+    if mapped:
+        return mapped, "alias"
+    for pattern, inferred in VULN_NAME_HEURISTICS:
+        if pattern.search(label):
+            return inferred, "heuristic"
+    try:
+        from agents.generator.flask_fragment_registry import resolve_fragment_strategy
+
+        strategy = resolve_fragment_strategy("", raw_label=str(value or ""))
+    except Exception:
+        strategy = None
+    if isinstance(strategy, str) and strategy.strip():
+        mapped = FRAGMENT_STRATEGY_VULN_IDS.get(strategy.strip())
+        if mapped:
+            return mapped, "fragment_strategy_fallback"
+    return "", ""
 
 
 def _as_bool(value: Any) -> bool:
@@ -156,16 +192,8 @@ def _normalize_vuln_label(value: Any) -> str:
 
 
 def _mapped_vuln_id(value: Any) -> str:
-    label = _normalize_vuln_label(value)
-    if not label:
-        return ""
-    mapped = VULN_NAME_ALIASES.get(label, "")
-    if mapped:
-        return mapped
-    for pattern, inferred in VULN_NAME_HEURISTICS:
-        if pattern.search(label):
-            return inferred
-    return ""
+    mapped, _source = _mapped_vuln_id_with_source(value)
+    return mapped
 
 
 def _named_vuln_label(requirement: Dict[str, Any]) -> str:
@@ -195,6 +223,49 @@ def slugify_vuln_id(value: str) -> str:
 
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "vuln"
+
+
+def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str, Any]:
+    for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name"):
+        raw = requirement.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        mapped, source = _mapped_vuln_id_with_source(raw)
+        if mapped:
+            return {
+                "input": raw.strip(),
+                "resolved_vuln_id": mapped,
+                "source": source or "unknown",
+            }
+        synthetic = f"NAME-{slugify_vuln_id(raw).upper()}"
+        return {
+            "input": raw.strip(),
+            "resolved_vuln_id": synthetic,
+            "source": "synthetic_name",
+        }
+
+    for key in ("vuln_id", "cwe_id", "cve_id"):
+        raw = requirement.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        mapped, source = _mapped_vuln_id_with_source(raw)
+        resolved = mapped or _coerce_identifier(raw) or str(primary_vuln or "").strip()
+        resolution_source = "explicit_identifier"
+        if mapped and resolved != raw.strip():
+            resolution_source = f"explicit_{source or 'alias'}"
+        return {
+            "input": raw.strip(),
+            "resolved_vuln_id": resolved,
+            "source": resolution_source,
+        }
+
+    if primary_vuln:
+        return {
+            "input": primary_vuln,
+            "resolved_vuln_id": primary_vuln,
+            "source": "resolved_only",
+        }
+    return {}
 
 
 class RequirementValidationError(ValueError):
@@ -242,6 +313,9 @@ def normalize_requirement(
     normalized_req["vuln_id"] = effective[0]
     normalized_req["vuln_ids"] = effective
     normalized_req["multi_vuln"] = multi_vuln
+    name_resolution = _name_resolution(normalized_req, effective[0])
+    if name_resolution:
+        normalized_req["name_resolution"] = name_resolution
     _apply_minimal_input_defaults(normalized_req, effective, warnings)
     _normalize_research_policy(normalized_req, effective, warnings)
     _normalize_pipeline_policy(normalized_req, effective, warnings)
@@ -305,6 +379,22 @@ def _pattern_default_for_name(raw_name: str) -> str:
     label = _normalize_vuln_label(raw_name)
     if not label:
         return "generic-web-vuln"
+    canonical = _mapped_vuln_id(raw_name)
+    canonical_pattern_aliases = {
+        "CWE-89": "sqli-string-concat",
+        "CWE-352": "csrf",
+        "CWE-22": "path-traversal",
+        "CWE-78": "command-injection",
+        "CWE-94": "code-injection",
+        "CWE-79": "xss-reflected",
+        "CWE-918": "ssrf-url-fetch",
+        "CWE-502": "insecure-deserialization",
+        "NAME-TEMPLATE-INJECTION": "template-injection",
+        "NAME-OPEN-REDIRECT": "open-redirect",
+    }
+    mapped = canonical_pattern_aliases.get(canonical)
+    if mapped:
+        return mapped
     pattern_aliases = {
         "sql injection": "sqli-string-concat",
         "sqli": "sqli-string-concat",
@@ -557,7 +647,31 @@ def _normalize_pipeline_policy(
     else:
         policy["require_researcher_evidence"] = remote_required
     _normalize_guard_policy(policy, has_unknown=has_unknown, warnings=warnings)
+    _normalize_verifier_policy(policy, has_unknown=has_unknown, warnings=warnings)
     requirement["policy"] = policy
+
+
+def _normalize_verifier_policy(
+    policy: Dict[str, Any],
+    *,
+    has_unknown: bool,
+    warnings: List[str],
+) -> None:
+    verifier = policy.get("verifier") or {}
+    if not isinstance(verifier, dict):
+        verifier = {}
+    low_trust_policy = str(verifier.get("low_trust_unknown_policy") or "warn").strip().lower()
+    if low_trust_policy not in VALID_VERIFIER_LOW_TRUST_POLICIES:
+        warnings.append(
+            "policy.verifier.low_trust_unknown_policy must be one of "
+            f"{sorted(VALID_VERIFIER_LOW_TRUST_POLICIES)}; falling back to warn"
+        )
+        low_trust_policy = "warn"
+    if has_unknown and low_trust_policy == "warn":
+        verifier["low_trust_unknown_policy"] = "warn"
+    else:
+        verifier["low_trust_unknown_policy"] = low_trust_policy
+    policy["verifier"] = verifier
 
 
 def _normalize_guard_policy(

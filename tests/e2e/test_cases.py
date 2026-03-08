@@ -213,6 +213,8 @@ def test_template_injection_name_only_case(tmp_path: Path) -> None:
     )
     bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-template-injection")
     assert "Using generator_manifest.json PoC contract as fallback rule" not in str(bundle.get("evidence") or "")
+    assert bundle["verification_rule_source"] == "declared_rule"
+    assert bundle["verification_trust"] == "high"
     assert summary["reviewer"]["blocking_bundles"] == []
 
 
@@ -290,6 +292,47 @@ def test_template_injection_alias_name_only_case(tmp_path: Path) -> None:
     )
     bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-template-injection")
     assert "Using generator_manifest.json PoC contract as fallback rule" not in str(bundle.get("evidence") or "")
+    assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
+def test_template_injection_reordered_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/template-injection-reordered-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "template_injection_render"
+    assert summary["name_resolution"]["source"] == "fragment_strategy_fallback"
+    assert summary["name_resolution"]["resolved_vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert summary["generalization_class"] == "real_free_form_positive"
+    assert summary["counts_as_generalization"] is True
+    assert any(
+        bundle["slug"] == "name-template-injection"
+        and bundle.get("verify_pass")
+        and bundle.get("compiler_supported") is True
+        and bundle.get("counts_as_generalization") is True
+        for bundle in summary["bundles"]
+    )
     assert summary["reviewer"]["blocking_bundles"] == []
 
 
@@ -560,6 +603,50 @@ def test_open_redirect_alias_name_only_case(tmp_path: Path) -> None:
 
 
 @pytest.mark.e2e
+def test_open_redirect_reordered_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/open-redirect-reordered-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is True
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "open_redirect_reflect"
+    assert summary["name_resolution"]["source"] == "fragment_strategy_fallback"
+    assert summary["name_resolution"]["resolved_vuln_id"] == "NAME-OPEN-REDIRECT"
+    assert summary["generalization_class"] == "real_free_form_positive"
+    assert summary["counts_as_generalization"] is True
+    assert any(
+        bundle["slug"] == "name-open-redirect"
+        and bundle.get("verify_pass")
+        and bundle.get("promotion_eligible")
+        and bundle.get("compiler_supported") is True
+        and bundle.get("counts_as_generalization") is True
+        for bundle in summary["bundles"]
+    )
+    assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
 def test_ldap_injection_negative_case(tmp_path: Path) -> None:
     reason = _skip_reason()
     if reason:
@@ -735,6 +822,57 @@ def test_unknown_cwe_live_tavily_case(tmp_path: Path) -> None:
         and bundle.get("promotion_eligible") is False
         and bundle.get("generalization_class") == "synthetic_regression"
         and bundle.get("counts_as_generalization") is False
+        and bundle.get("verification_rule_source") == "runtime_rule_candidate"
+        and bundle.get("verification_trust") == "low"
         for bundle in summary["bundles"]
     )
     assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
+def test_unknown_cwe_live_low_trust_fail_closed_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+    if not _tavily_key_available():
+        if _live_gate_required():
+            pytest.fail("Tavily API key is required for mandatory live unknown gate")
+        pytest.skip("Tavily API key is not configured in env or config/api_keys.ini")
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/cwe-unknown-low-trust-fail-closed"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    env = os.environ.copy()
+    env["VUL_WEB_SEARCH_PROVIDER"] = "tavily"
+    env.pop("VUL_WEB_SEARCH_ENDPOINT", None)
+    if get_tavily_api_key():
+        env.pop("VUL_WEB_SEARCH_API_KEY", None)
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, env=env)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["pipeline_result"] == "failure"
+    assert summary["manifest_file"] == "failure_manifest.json"
+    assert summary["promotion_eligible"] is False
+    assert any(
+        bundle["slug"] == "cwe-9999"
+        and bundle.get("verify_pass") is False
+        and bundle.get("run_passed") is True
+        and bundle.get("verification_rule_source") == "runtime_rule_candidate"
+        and bundle.get("verification_trust") == "low"
+        and bundle.get("terminal_failure_class") == "low_trust_verification"
+        and "low-trust verifier contract blocked by policy" in str(bundle.get("evidence") or "")
+        for bundle in summary["bundles"]
+    )

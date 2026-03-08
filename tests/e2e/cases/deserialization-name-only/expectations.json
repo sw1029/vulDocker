@@ -1,6 +1,12 @@
 {
   "manifest": {
-    "overall_pass": true
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first"
   },
   "evals": [
     {
@@ -8,8 +14,11 @@
       "verify_pass": true,
       "run_passed": true,
       "exit_code": 0,
+      "promotion_eligible": true,
       "compiler_supported": true,
-      "compiler_strategy": "deserialization_pickle_body"
+      "compiler_strategy": "deserialization_pickle_body",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first"
     }
   ],
   "reviewer": {

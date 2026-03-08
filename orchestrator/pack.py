@@ -81,6 +81,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
     generation_summary = _generation_summary(bundles)
     generalization_summary = _generalization_summary(bundles)
     compiler_contract_summary = _compiler_contract_summary(bundles)
+    verification_summary = _verification_summary(bundles)
     pipeline_result = _pipeline_result(sid)
     manifest = {
         "sid": sid,
@@ -100,6 +101,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         "generation_summary": generation_summary,
         "generalization_summary": generalization_summary,
         "compiler_contract_summary": compiler_contract_summary,
+        "verification_summary": verification_summary,
         "performance": performance,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {
@@ -107,17 +109,45 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
             "diversity": _load_json(reports_dir / "diversity.json"),
         },
     }
+    requirement = plan.get("requirement") if isinstance(plan, dict) else {}
+    if isinstance(requirement, dict):
+        name_resolution = requirement.get("name_resolution")
+        if isinstance(name_resolution, dict) and name_resolution:
+            manifest["name_resolution"] = name_resolution
     failure = _failure_summary(sid)
     if failure:
         manifest["failure"] = failure
     if len(bundles) == 1:
+        provenance = bundles[0].get("provenance") or {}
+        if isinstance(provenance.get("generation_origin"), str) and provenance.get("generation_origin", "").strip():
+            manifest["generation_origin"] = provenance["generation_origin"].strip()
+        dynamicness = bundles[0].get("dynamicness") or {}
+        if isinstance(dynamicness.get("verdict"), str) and dynamicness.get("verdict", "").strip():
+            manifest["dynamicness_verdict"] = dynamicness["verdict"].strip()
+        if isinstance(dynamicness.get("reason"), str) and dynamicness.get("reason", "").strip():
+            manifest["dynamicness_reason"] = dynamicness["reason"].strip()
         compiler_contract = bundles[0].get("compiler_contract") or {}
         if isinstance(compiler_contract.get("compiler_supported"), bool):
             manifest["compiler_supported"] = compiler_contract["compiler_supported"]
-        for key in ("compiler_strategy", "compiler_reason"):
+        for key in (
+            "compiler_strategy",
+            "compiler_reason",
+            "compiler_family",
+            "stack_scaffold_id",
+            "stack_scaffold_version",
+            "fragment_id",
+            "compose_mode",
+        ):
             value = compiler_contract.get(key)
             if isinstance(value, str) and value.strip():
                 manifest[key] = value.strip()
+        verification = bundles[0].get("verification") or {}
+        if isinstance(verification.get("rule_source"), str) and verification.get("rule_source", "").strip():
+            manifest["verification_rule_source"] = verification["rule_source"].strip()
+        if isinstance(verification.get("trust"), str) and verification.get("trust", "").strip():
+            manifest["verification_trust"] = verification["trust"].strip()
+        if isinstance(verification.get("trust_reason"), str) and verification.get("trust_reason", "").strip():
+            manifest["verification_trust_reason"] = verification["trust_reason"].strip()
         generalization = bundles[0].get("generalization") or {}
         class_name = generalization.get("class")
         if isinstance(class_name, str) and class_name.strip():
@@ -217,6 +247,15 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
                 "run_summary": run_record,
                 "eval_result": eval_record,
             },
+            "verification": {
+                "rule_source": (eval_record or {}).get("verification_rule_source")
+                if isinstance(eval_record, dict)
+                else None,
+                "trust": (eval_record or {}).get("verification_trust") if isinstance(eval_record, dict) else None,
+                "trust_reason": (eval_record or {}).get("verification_trust_reason")
+                if isinstance(eval_record, dict)
+                else None,
+            },
             "researcher_report": _existing(researcher_report),
             "generator_template": _existing(generator_template),
             "reviewer_report": _existing(reviewer_report),
@@ -248,6 +287,13 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
         reasons.append("pipeline:review_failed")
     if isinstance(eval_result, dict):
         reasons.extend(_eval_result_failure_reasons(eval_result))
+        verification_trust = str(eval_result.get("verification_trust") or "").strip().lower()
+        verification_rule_source = str(eval_result.get("verification_rule_source") or "").strip().lower()
+        if verification_trust == "low":
+            if verification_rule_source:
+                reasons.append(f"verify_contract:{verification_rule_source}")
+            else:
+                reasons.append("verify_contract:low_trust")
         semantic_supported = eval_result.get("semantic_supported")
         if semantic_supported is None:
             semantic = eval_result.get("semantic_consistency") or {}
@@ -694,6 +740,13 @@ def _generalization_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _bundle_compiler_contract(metadata_dir: Path) -> Dict[str, Any]:
     profile = load_semantic_profile(metadata_dir) or {}
     contract = load_generator_contract(metadata_dir) or {}
+    generator_manifest_payload = _load_json(metadata_dir / "generator_manifest.json") or {}
+    generator_manifest = (
+        generator_manifest_payload.get("manifest")
+        if isinstance(generator_manifest_payload.get("manifest"), dict)
+        else generator_manifest_payload
+    )
+    generator_meta = generator_manifest.get("metadata") if isinstance(generator_manifest, dict) else {}
     payload: Dict[str, Any] = {}
     compiler_supported = contract.get("compiler_supported")
     if isinstance(compiler_supported, bool):
@@ -712,6 +765,19 @@ def _bundle_compiler_contract(metadata_dir: Path) -> Dict[str, Any]:
     family = profile.get("family")
     if isinstance(family, str) and family.strip():
         payload["family"] = family.strip()
+    if isinstance(generator_meta, dict):
+        for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
+            value = generator_meta.get(key)
+            if isinstance(value, str) and value.strip():
+                payload[key] = value.strip()
+    for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
+        if key in payload:
+            continue
+        value = contract.get(key) if isinstance(contract, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            value = profile.get(key) if isinstance(profile, dict) else None
+        if isinstance(value, str) and value.strip():
+            payload[key] = value.strip()
     if not payload:
         return {}
     return payload
@@ -739,6 +805,30 @@ def _compiler_contract_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "unsupported_bundles": max(0, len(bundles) - supported_bundles),
         "by_strategy": strategies,
         "by_support_level": support_levels,
+    }
+
+
+def _verification_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_rule_source: Dict[str, int] = {}
+    by_trust: Dict[str, int] = {}
+    low_trust_bundles = 0
+    for entry in bundles:
+        verification = entry.get("verification") or {}
+        if not isinstance(verification, dict):
+            continue
+        rule_source = str(verification.get("rule_source") or "").strip()
+        trust = str(verification.get("trust") or "").strip()
+        if rule_source:
+            by_rule_source[rule_source] = by_rule_source.get(rule_source, 0) + 1
+        if trust:
+            by_trust[trust] = by_trust.get(trust, 0) + 1
+            if trust.lower() == "low":
+                low_trust_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "by_rule_source": by_rule_source,
+        "by_trust": by_trust,
+        "low_trust_bundles": low_trust_bundles,
     }
 
 

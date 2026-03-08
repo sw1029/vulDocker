@@ -4,7 +4,9 @@
     "pipeline_result": "success",
     "promotion_eligible": true,
     "manifest_file": "manifest.json",
-    "pipeline_returncode": 0
+    "pipeline_returncode": 0,
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first"
   },
   "evals": [
     {
@@ -15,6 +17,8 @@
       "promotion_eligible": true,
       "compiler_supported": true,
       "compiler_strategy": "path_traversal_file_read",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
       "semantic_supported": true,
       "semantic_status": "aligned"
     }

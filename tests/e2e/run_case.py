@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.schema import normalize_requirement
+from common.runtime_assets import ensure_runtime_asset_seed_manifest, record_runtime_asset_seed
 from orchestrator import plan as plan_module
 
 
@@ -111,18 +112,23 @@ def _write_plan(requirement: Dict[str, Any], *, multi_vuln_opt_in: bool) -> Dict
     return plan
 
 
-def _copy_asset(source: Path, destination_dir: Path) -> None:
+def _copy_asset(source: Path, destination_dir: Path) -> Path:
     destination_dir.mkdir(parents=True, exist_ok=True)
+    destination = destination_dir / source.name
     if source.is_dir():
-        shutil.copytree(source, destination_dir / source.name, dirs_exist_ok=True)
+        shutil.copytree(source, destination, dirs_exist_ok=True)
     else:
-        shutil.copy2(source, destination_dir / source.name)
+        shutil.copy2(source, destination)
+    return destination
 
 
 def _materialize_runtime_assets(sid: str, runtime_assets: Dict[str, List[Path]]) -> None:
-    if not runtime_assets:
-        return
     metadata_root = REPO_ROOT / "metadata" / sid
+    ensure_runtime_asset_seed_manifest(metadata_root)
+    kind_map = {
+        "rules": "runtime_rules",
+        "templates": "runtime_templates",
+    }
     for kind, entries in runtime_assets.items():
         if kind == "rules":
             dest_root = metadata_root / "runtime_rules"
@@ -131,7 +137,11 @@ def _materialize_runtime_assets(sid: str, runtime_assets: Dict[str, List[Path]])
         else:
             continue
         for entry in entries:
-            _copy_asset(entry, dest_root)
+            destination = _copy_asset(entry, dest_root)
+            record_runtime_asset_seed(metadata_root, kind=kind_map[kind], source=entry, destination=destination)
+
+    for dirname in ("runtime_rules", "runtime_templates"):
+        (metadata_root / dirname).mkdir(parents=True, exist_ok=True)
 
 
 def _ensure_docker_ready(env: Dict[str, str]) -> None:
@@ -195,9 +205,17 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "promotion_reasons": (bundle.get("promotion") or {}).get("reasons") or [],
                 "semantic_supported": eval_result.get("semantic_supported"),
                 "semantic_status": eval_result.get("semantic_status"),
+                "verification_rule_source": eval_result.get("verification_rule_source"),
+                "verification_trust": eval_result.get("verification_trust"),
+                "verification_trust_reason": eval_result.get("verification_trust_reason"),
                 "compiler_supported": compiler_contract.get("compiler_supported"),
                 "compiler_strategy": compiler_contract.get("compiler_strategy"),
                 "compiler_reason": compiler_contract.get("compiler_reason"),
+                "compiler_family": compiler_contract.get("compiler_family"),
+                "stack_scaffold_id": compiler_contract.get("stack_scaffold_id"),
+                "stack_scaffold_version": compiler_contract.get("stack_scaffold_version"),
+                "fragment_id": compiler_contract.get("fragment_id"),
+                "compose_mode": compiler_contract.get("compose_mode"),
                 "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
                 "dynamicness_verdict": (bundle.get("dynamicness") or {}).get("verdict"),
                 "dynamicness_reason": (bundle.get("dynamicness") or {}).get("reason"),
@@ -219,6 +237,15 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "compiler_supported": manifest.get("compiler_supported"),
         "compiler_strategy": manifest.get("compiler_strategy"),
         "compiler_reason": manifest.get("compiler_reason"),
+        "compiler_family": manifest.get("compiler_family"),
+        "stack_scaffold_id": manifest.get("stack_scaffold_id"),
+        "stack_scaffold_version": manifest.get("stack_scaffold_version"),
+        "fragment_id": manifest.get("fragment_id"),
+        "compose_mode": manifest.get("compose_mode"),
+        "name_resolution": manifest.get("name_resolution") or {},
+        "generation_origin": manifest.get("generation_origin"),
+        "dynamicness_verdict": manifest.get("dynamicness_verdict"),
+        "dynamicness_reason": manifest.get("dynamicness_reason"),
         "generalization_class": manifest.get("generalization_class"),
         "counts_as_generalization": manifest.get("counts_as_generalization"),
         "generalization_reason": manifest.get("generalization_reason"),
@@ -280,6 +307,32 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"pipeline_returncode expected {manifest_expect['pipeline_returncode']!r} but observed {summary.get('pipeline_returncode')!r}"
             )
+    if "generation_origin" in manifest_expect:
+        actual = str(summary.get("generation_origin") or "")
+        if actual != str(manifest_expect["generation_origin"]):
+            errors.append(
+                f"generation_origin expected {manifest_expect['generation_origin']!r} but observed {summary.get('generation_origin')!r}"
+            )
+    if "dynamicness_verdict" in manifest_expect:
+        actual = str(summary.get("dynamicness_verdict") or "")
+        if actual != str(manifest_expect["dynamicness_verdict"]):
+            errors.append(
+                f"dynamicness_verdict expected {manifest_expect['dynamicness_verdict']!r} but observed {summary.get('dynamicness_verdict')!r}"
+            )
+    name_resolution_expect = manifest_expect.get("name_resolution")
+    if isinstance(name_resolution_expect, dict):
+        actual = summary.get("name_resolution") or {}
+        for key, expected in name_resolution_expect.items():
+            if actual.get(key) != expected:
+                errors.append(
+                    f"name_resolution.{key} expected {expected!r} but observed {actual.get(key)!r}"
+                )
+    for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
+        if key not in manifest_expect:
+            continue
+        actual = str(summary.get(key) or "")
+        if actual != str(manifest_expect[key]):
+            errors.append(f"{key} expected {manifest_expect[key]!r} but observed {summary.get(key)!r}")
     if "generalization_class" in manifest_expect:
         actual = str(summary.get("generalization_class") or "")
         if actual != str(manifest_expect["generalization_class"]):
@@ -324,6 +377,21 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: compiler_strategy expected {entry['compiler_strategy']!r} but was {bundle.get('compiler_strategy')!r}"
             )
+        if "generation_origin" in entry and str(bundle.get("generation_origin") or "") != str(entry["generation_origin"]):
+            errors.append(
+                f"bundle {bundle['slug']}: generation_origin expected {entry['generation_origin']!r} but was {bundle.get('generation_origin')!r}"
+            )
+        if "dynamicness_verdict" in entry and str(bundle.get("dynamicness_verdict") or "") != str(entry["dynamicness_verdict"]):
+            errors.append(
+                f"bundle {bundle['slug']}: dynamicness_verdict expected {entry['dynamicness_verdict']!r} but was {bundle.get('dynamicness_verdict')!r}"
+            )
+        for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
+            if key not in entry:
+                continue
+            if str(bundle.get(key) or "") != str(entry[key]):
+                errors.append(
+                    f"bundle {bundle['slug']}: {key} expected {entry[key]!r} but was {bundle.get(key)!r}"
+                )
         if "semantic_supported" in entry and bundle.get("semantic_supported") != entry["semantic_supported"]:
             errors.append(
                 f"bundle {bundle['slug']}: semantic_supported expected {entry['semantic_supported']!r} but was {bundle.get('semantic_supported')!r}"
@@ -332,6 +400,14 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: semantic_status expected {entry['semantic_status']!r} but was {bundle.get('semantic_status')!r}"
             )
+        if "verification_rule_source" in entry and str(bundle.get("verification_rule_source") or "") != str(entry["verification_rule_source"]):
+            errors.append(
+                f"bundle {bundle['slug']}: verification_rule_source expected {entry['verification_rule_source']!r} but was {bundle.get('verification_rule_source')!r}"
+            )
+        if "verification_trust" in entry and str(bundle.get("verification_trust") or "") != str(entry["verification_trust"]):
+            errors.append(
+                f"bundle {bundle['slug']}: verification_trust expected {entry['verification_trust']!r} but was {bundle.get('verification_trust')!r}"
+            )
         if "generalization_class" in entry and str(bundle.get("generalization_class") or "") != str(entry["generalization_class"]):
             errors.append(
                 f"bundle {bundle['slug']}: generalization_class expected {entry['generalization_class']!r} but was {bundle.get('generalization_class')!r}"
@@ -339,6 +415,10 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
         if "counts_as_generalization" in entry and bundle.get("counts_as_generalization") is not entry["counts_as_generalization"]:
             errors.append(
                 f"bundle {bundle['slug']}: counts_as_generalization expected {entry['counts_as_generalization']!r} but was {bundle.get('counts_as_generalization')!r}"
+            )
+        if "terminal_failure_class" in entry and str(bundle.get("terminal_failure_class") or "") != str(entry["terminal_failure_class"]):
+            errors.append(
+                f"bundle {bundle['slug']}: terminal_failure_class expected {entry['terminal_failure_class']!r} but was {bundle.get('terminal_failure_class')!r}"
             )
         evidence = bundle.get("evidence") or ""
         for token in entry.get("evidence_contains", []):

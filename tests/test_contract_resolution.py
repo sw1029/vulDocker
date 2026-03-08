@@ -102,6 +102,35 @@ def test_contract_uses_researcher_proposal_when_rule_is_missing(tmp_path: Path) 
     assert payload["contract_stage"] == "research_seed"
 
 
+def test_contract_marks_insufficient_unknown_semantics_as_empty(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-9999",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-9999",
+        researcher_report={
+            "researcher_report": {
+                "semantic_signature": {
+                    "input_vector": ["request.args"],
+                    "sink": ["execute("],
+                    "exploit_precondition": ["string concatenation"],
+                },
+                "semantic_signature_source": ["heuristic"],
+                "quality": "insufficient",
+                "quality_reason": "remote evidence missing",
+            }
+        },
+    )
+
+    semantic_contract = payload["semantic_contract"]
+    assert semantic_contract["semantic_signature_source"] == ["heuristic"]
+    assert semantic_contract["quality"] == "insufficient"
+    assert semantic_contract["status"] == "empty"
+    assert payload["semantic_profile"]["derived_assertions"]["semantic_status"] == "empty"
+
+
 def test_contract_uses_cwe918_rule_defined_markers(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",

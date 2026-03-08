@@ -74,6 +74,12 @@
 이전 success `manifest.json`이 다음 failure rerun에 남아 current truth를 오염시키는 문제는 1차 해소되었다.
 다만 rerun overwrite 자체가 사라진 것은 아니므로, raw SID는 여전히 immutable evidence key가 아니다.
 
+추가로 이번 갱신에서는 runtime asset freshness도 한 단계 더 보강되었다.
+
+- official harness(`tests/e2e/run_case.py`)는 now-default로 빈 seed manifest라도 기록해 `runtime_rules/`, `runtime_templates/`를 rerun 전에 완전히 purge한 뒤 seeded asset만 restore한다.
+- pipeline 자체도 generated runtime rule/template를 별도 manifest로 추적해, raw `run_pipeline.py --sid ...` rerun에서도 tracked generated asset은 시작 시 제거한다.
+- 즉 official E2E evidence에서는 runtime asset carry-over가 훨씬 더 강하게 차단되며, direct raw runner는 여전히 conservative하지만 최소한 tracked generated asset 기준 stale rule/template 누적은 줄었다.
+
 따라서 이 문서에서는 evidence를 다음 두 class로 분리한다.
 
 - `historical snapshot`: 과거 세션에서 확보되었으나 현재 workspace artifact와 1:1로 일치한다고 보장할 수 없는 기록
@@ -88,11 +94,11 @@
 - command: `python -m pytest -q tests`
 - observed_at: 2026-03-08 KST
 - evidence_class: `current workspace rerun`
-- result: `222 passed, 19 skipped`
+- result: `239 passed, 22 skipped`
 
 이 수치는 unit/integration truth다.
 하지만 `tests/e2e/test_cases.py`는 `VULD_RUN_E2E=1` 없이는 skip되므로, 이 수치를 Docker E2E 완성도와 동일시하면 안 된다.
-이번 갱신 이후 공식 E2E full rerun도 별도로 다시 확인했고, `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs`는 `17 passed, 2 skipped`였다.
+이번 갱신 이후 공식 E2E full rerun도 별도로 다시 확인했고, `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs`는 `20 passed, 2 skipped`였다.
 
 ### 2.2 현재 공식 E2E source-of-truth 범위
 
@@ -107,11 +113,13 @@
 - `code-injection-alias-name-only`
 - `template-injection-name-only`
 - `template-injection-alias-name-only`
+- `template-injection-reordered-name-only`
 - `path-traversal-name-only`
 - `xss-name-only`
 - `deserialization-name-only`
 - `open-redirect-name-only`
 - `open-redirect-alias-name-only`
+- `open-redirect-reordered-name-only`
 - `ldap-injection-negative`
 - `unknown_cwe_synthesis_case`
 - `unknown_cwe_live_tavily_case`
@@ -125,8 +133,11 @@
 - unknown lane은 이제 negative synthesis case와 live Tavily case가 expectations 수준에서도 분리되어 존재한다.
 - live unknown case는 explicit synthetic id `CWE-9999` 기반이지 real free-form `vuln_name only` case가 아니다.
 - 이번 갱신으로 `Server Side Template Injection` 같은 known alias도 canonical `NAME-TEMPLATE-INJECTION`으로 normalize되어 official E2E positive lane에 편입되었다.
+- 추가로 `Injection in Jinja template`, `Redirect open vulnerability` 같은 reordered/free-form phrase도 shared fragment strategy fallback을 통해 canonical supported family로 normalize되어 official E2E positive lane에 편입되었다.
 - 이번 구현으로 compiler-supported positive lane(SQLi/CSRF/SSRF/Command Injection/Code Injection/Template Injection/Path Traversal/XSS/Insecure Deserialization/Open Redirect)과 unsupported free-form negative lane(LDAP Injection)은 더 이상 Tavily availability를 전제하지 않는다.
-- current workspace rerun 기준 official E2E는 `17 passed, 2 skipped`로 green이고, skip 2개는 repeatability gate다.
+- current workspace rerun 기준 official E2E는 `20 passed, 2 skipped`로 green이고, skip 2개는 repeatability gate다.
+- 이번 갱신으로 official E2E expectations도 `compiler_supported`/`compiler_strategy`만이 아니라 bundle-level `generation_origin`, `dynamicness_verdict`까지 직접 검증한다. 즉 current official acceptance는 “capability metadata상 compiler-covered”를 넘어서 “실제 run provenance가 compiler-generated/compiler-first인지”를 함께 본다.
+- 추가로 representative official case(`cwe-89-basic`, `template-injection-name-only`, `open-redirect-name-only`)는 `compiler_family`, `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode`까지 expectation에서 직접 검증한다. 즉 일부 핵심 lane은 “compiler-first”뿐 아니라 “registry-backed scaffold/fragment compose”도 source-of-truth에 포함된다.
 - 남은 공식 coverage hole은 이제 remote provider drift 자체보다 unknown/open-world compiler 부재와 synthetic unknown lane 해석 쪽에 더 가깝다.
 
 ### 2.3 Provider 상태
@@ -172,9 +183,10 @@
 
 | lane | 결과 | provider_condition | generation_origin | dynamicness | evidence_class | observed_at | command | sid | 핵심 관찰 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| synthetic unknown live `cwe-unknown-basic` | pass | `llm_degraded` | `deterministic_fallback` | `deterministic fallback dependent` | `current workspace rerun` | 2026-03-08 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --mode deterministic --no-snapshot --output-dir /tmp/vuld-stage2-reruns/cwe-unknown-basic` | `sid-d2ff12df4e6d` | `verify_pass=true`와 `run_passed=true`는 닫히지만 `promotion.eligible=false`이며 manifest에 `generalization_class=synthetic_regression`, `counts_as_generalization=false`가 남는다. explicit synthetic id + inherited SQLi-like pattern 기반 regression lane이다 |
+| synthetic unknown live `cwe-unknown-basic` | pass | `llm_degraded` | `deterministic_fallback` | `deterministic fallback dependent` | `current workspace rerun` | 2026-03-08 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --mode deterministic --no-snapshot --output-dir /tmp/vuld-gap-unknown-live6` | `sid-d2ff12df4e6d` | `verify_pass=true`와 `run_passed=true`는 닫히지만 `promotion.eligible=false`이며 manifest에 `generalization_class=synthetic_regression`, `counts_as_generalization=false`가 남는다. latest rerun에서는 verifier가 `verification_rule_source=runtime_rule_candidate`, `verification_trust=low`를 surface하고 promotion reason `verify_contract:runtime_rule_candidate`, reviewer issue `Verifier contract trust is low (runtime_rule_candidate)`, manifest `verification_summary.by_trust.low=1`까지 함께 남는다. 즉 explicit synthetic id + inherited SQLi-like pattern 기반 regression lane이며, current success는 low-trust verification success다 |
+| synthetic unknown live strict `cwe-unknown-low-trust-fail-closed` | fail-closed | `llm_degraded` | `deterministic_fallback` | `deterministic fallback dependent` | `current workspace rerun` | 2026-03-08 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-low-trust-fail-closed --mode deterministic --no-snapshot --output-dir /tmp/vuld-gap-unknown-live-fail-closed` | `sid-d2ff12df4e6d` | `policy.verifier.low_trust_unknown_policy=fail_closed`를 주면 같은 unknown live lane도 `verify_pass=false`, `run_passed=true`, `terminal_failure_class=low_trust_verification`, `retry_count=0`으로 종료한다. verifier는 `verification_policy_blocked=true`와 evidence `low-trust verifier contract blocked by policy ...`를 남기고, registry는 이 결과를 다시 LLM fallback으로 덮어쓰지 않는다 |
 | real free-form `vuln_name: LDAP Injection` | fail-closed | `not_probed` | `research_short_circuit` | `pre-generation fail-closed` | `current workspace rerun` | 2026-03-08 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/ldap-injection-negative --mode deterministic --no-snapshot --output-dir /tmp/vuld-postfix/ldap-negative` | `sid-2a995570da6f` | 이번 갱신으로 preseeded `semantic_profile`가 unsupported free-form `NAME-*`를 RESEARCH 실행 전에 차단한다. latest rerun에서는 `failure_manifest.json`, `terminal_failure_class=semantic_support_missing`, `retry_count=0`, `total_duration_s≈0.052s`까지 내려갔다 |
-| synthetic unknown no-remote `cwe-unknown-basic` | fail-closed | `remote_provider_unavailable` | `research_short_circuit` | `pre-generation fail-closed` | `current workspace rerun` | 2026-03-08 KST | `VUL_WEB_SEARCH_PROVIDER=none python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --expectations tests/e2e/cases/cwe-unknown-basic/expectations.no-remote.json --mode deterministic --no-snapshot --output-dir /tmp/vuld-review/unknown-none-postfix` | `sid-d2ff12df4e6d` | no-remote negative regression은 `terminal_failure_class=remote_provider_unavailable`, `provider_health_state=remote_provider_unavailable`, `retry_count=0`, `generation_origin=research_short_circuit`, `dynamicness=pre-generation fail-closed`까지 surface된다 |
+| synthetic unknown no-remote `cwe-unknown-basic` | fail-closed | `remote_provider_unavailable` | `research_short_circuit` | `pre-generation fail-closed` | `current workspace rerun` | 2026-03-08 KST | `VUL_WEB_SEARCH_PROVIDER=none python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --expectations tests/e2e/cases/cwe-unknown-basic/expectations.no-remote.json --mode deterministic --no-snapshot --output-dir /tmp/vuld-gap-unknown-none-final` | `sid-d2ff12df4e6d` | no-remote negative regression은 `terminal_failure_class=remote_provider_unavailable`, `provider_health_state=remote_provider_unavailable`, `retry_count=0`, `generation_origin=research_short_circuit`, `dynamicness=pre-generation fail-closed`까지 surface된다. additional rerun 기준 `resolved_contract.semantic_contract.status=empty`와 `semantic_profile.derived_assertions.semantic_status=empty`도 확인되어, insufficient heuristic semantics가 더 이상 `aligned`로 남지 않는다 |
 
 #### 2.4.3 post-fix 성능 snapshot
 
@@ -185,15 +197,19 @@
 - Command Injection official: `7.026s`
 - Code Injection official: `6.675s`
 - Template Injection official: `7.118s`
+- Template Injection rerun after fallback assetization sweep: `6.630s`
 - Template Injection alias canonicalized rerun: `7.341s`
 - Path Traversal official: `6.907s`
 - XSS official: `6.987s`
 - synthetic unknown live: `19.443s`
 - SSRF official: `6.772s`
+- SSRF rerun after fallback assetization sweep: `6.713s`
 - Insecure Deserialization official: `6.721s`
 - Open Redirect free-form positive: `7.403s`
+- Open Redirect free-form positive rerun after fallback assetization: `6.545s`
 - Open Redirect alias canonicalized rerun: `12.220s`
 - LDAP Injection negative: `0.052s`
+- synthetic unknown live strict fail-closed: `14.267s`
 
 추가 관찰:
 
@@ -213,14 +229,15 @@
 compiler/static supported bundle을 remote-required researcher에서 분리한 뒤, representative lane을 다시 확인했다.
 
 - command root: `/tmp/vuld-postfix/*`
-- unit/integration precheck: `python -m pytest -q tests` -> `222 passed, 19 skipped`
-- official E2E full rerun: `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs` -> `17 passed, 2 skipped`
+- unit/integration precheck: `python -m pytest -q tests` -> `239 passed, 22 skipped`
+- official E2E full rerun: `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs` -> `20 passed, 2 skipped`
 - Path Traversal / Template Injection: latest targeted rerun에서 둘 다 `compiler-first`, provider `not_probed`, RESEARCH `0.0s skipped`, 약 `7s` 수준으로 닫혔다
 - Template Injection alias(`Server Side Template Injection`)도 latest targeted rerun에서 `compiler-first`, provider `not_probed`, RESEARCH `0.0s skipped`, `real_free_form_positive`로 닫혔다
 - Open Redirect alias(`Unvalidated Redirect`)도 latest targeted rerun에서 `compiler-first`, provider `not_probed`, `real_free_form_positive`로 닫혔다
 - LDAP Injection negative: latest targeted rerun에서 `failure_manifest.json`, `pre-generation fail-closed`, 약 `0.052s`
 - `CWE-9999` no-remote negative: `VUL_WEB_SEARCH_PROVIDER=none` + dedicated negative expectations로 fail-closed validation이 별도 고정되었고, representative rerun 기준 `remote_provider_unavailable`, `provider_health_state=remote_provider_unavailable`, `retry_count=0`, `~1.650s`
-- `CWE-9999` live Tavily: 여전히 `synthetic_regression` + `deterministic fallback dependent` success lane이다
+- `CWE-9999` live Tavily: 여전히 `synthetic_regression` + `deterministic fallback dependent` success lane이지만, latest rerun에서는 `verification_rule_source=runtime_rule_candidate`, `verification_trust=low`, promotion reason `verify_contract:runtime_rule_candidate`가 함께 surface된다
+- `CWE-9999` live strict fail-closed: 같은 lane에 `policy.verifier.low_trust_unknown_policy=fail_closed`를 주면 latest rerun에서 `run_passed=true`, `verification_policy_blocked=true`, `terminal_failure_class=low_trust_verification`, `retry_count=0`으로 종료한다
 
 ### 2.5 Current truth 요약
 
@@ -230,8 +247,8 @@ compiler/static supported bundle을 remote-required researcher에서 분리한 �
 real free-form `vuln_name: Template Injection`, `vuln_name: Open Redirect`뿐 아니라 supported alias `Server Side Template Injection`, `Unvalidated Redirect`도 name-only 입력만으로 remote search 없이 positive lane을 닫을 수 있다.
 반면 compiler-first 경로는 SQLi, CSRF, Command Injection, Code Injection, Template Injection, Path Traversal, XSS, SSRF, Insecure Deserialization, Open Redirect 열 family에 한정되어 있고,
 unsupported free-form `NAME-*` lane은 LDAP Injection 기준 preseeded semantic profile로 거의 즉시 fail-closed된다.
-추가로 current manifest는 `generalization_summary` / `generalization_class` / `counts_as_generalization`를 surface해 known-family regression, real free-form positive, synthetic regression, unsupported free-form negative를 구분한다. 이번 갱신으로 compiler-supported known/free-form family는 더 이상 default minimal-input path에서 Tavily availability에 묶이지 않고, supported free-form alias도 canonical `NAME-*` family로 정규화할 수 있게 되었다. 또한 compiler-supported free-form family의 `semantic_profile`과 `resolved_contract.semantic_contract`는 researcher를 skip하더라도 shared fragment registry 또는 baseline에서 canonical `semantic_signature`를 backfill해, contract/profile artifact가 더 이상 empty placeholder로만 남지 않는다. 추가로 이번 턴 구현으로 PACK 이후 manifest를 한 번 더 갱신해 `manifest.performance`와 `performance_summary.json` 사이 stale drift도 제거되었다.
-따라서 현 시점 최상위 남은 과제는 “unknown/open-world compiler 부재”, “synthetic unknown lane의 policy/acceptance 고정”, “compiler-derived runtime rule 이후에도 남는 verifier 독립성 상한”, 그리고 “shared fragment registry의 외부 자산화와 template debt의 구조적 전환”까지 포함한다.
+추가로 current manifest와 E2E summary는 `generalization_summary` / `generalization_class` / `counts_as_generalization`뿐 아니라 `verification_rule_source` / `verification_trust`도 surface해 known-family regression, real free-form positive, synthetic regression, unsupported free-form negative를 더 명확히 구분한다. manifest top-level에도 `verification_summary`가 추가되어 `by_rule_source`, `by_trust`, `low_trust_bundles`를 집계한다. 이번 갱신으로 compiler-supported known/free-form family는 더 이상 default minimal-input path에서 Tavily availability에 묶이지 않고, supported free-form alias도 canonical `NAME-*` family로 정규화할 수 있게 되었다. 또한 compiler-supported free-form family의 `semantic_profile`과 `resolved_contract.semantic_contract`는 researcher를 skip하더라도 shared fragment registry 또는 baseline에서 canonical `semantic_signature`를 backfill해, contract/profile artifact가 더 이상 empty placeholder로만 남지 않는다. 추가로 insufficient researcher evidence가 있는 unknown lane은 contract 단계에서 `semantic_contract.status=empty`로 정규화되며, synthetic unknown live lane은 verifier success가 나오더라도 `runtime_rule_candidate/low` trust와 reviewer low-trust issue가 함께 남아 promotion에서 차단된다. 이제 같은 lane에 `policy.verifier.low_trust_unknown_policy=fail_closed`를 주면 verifier가 `verification_policy_blocked=true`를 남기고 VERIFY stage terminal failure(`low_trust_verification`)로 종료한다. PACK 이후 manifest를 한 번 더 갱신해 `manifest.performance`와 `performance_summary.json` 사이 stale drift도 제거되었다.
+따라서 현 시점 최상위 남은 과제는 “unknown/open-world compiler 부재”, “synthetic unknown lane에서 `warn`을 default로 둘지 `fail_closed`를 official acceptance로 끌어올릴지의 policy 고정”, “compiler-derived runtime rule 이후에도 남는 verifier 독립성 상한”, 그리고 “shared fragment registry의 외부 자산화와 template debt의 구조적 전환”까지 포함한다.
 
 ## 3. 현재 구현의 실제 생성 방식과 의존 구조
 
@@ -312,7 +329,7 @@ current code 기준 family-aware deterministic fallback이 명시적으로 구�
 | Template Injection | free-form name -> `NAME-*` | `semantic_profile -> template_injection_render -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
 | XSS | known-name -> `CWE-79` | `semantic_profile -> xss_reflected -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
 | Insecure Deserialization | known-name -> `CWE-502` | `semantic_profile -> deserialization_pickle_body -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
-| synthetic unknown live | explicit `CWE-9999` | runtime rule + inherited SQLi-like semantics + deterministic fallback | 없음 | 높음 | regression lane이지 generalization lane이 아님 |
+| synthetic unknown live | explicit `CWE-9999` | researcher/runtime rule candidate + inherited SQLi-like semantics + deterministic fallback | 없음 | 높음 | regression lane이지 generalization lane이 아니며, latest rerun에서는 `verification_trust=low`가 명시된다 |
 | Open Redirect | free-form name -> `NAME-OPEN-REDIRECT` | `semantic_profile -> open_redirect_reflect -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
 | real free-form unsupported | `vuln_name -> NAME-*` | generic unsupported fallback | 없음 | 낮음 | LDAP Injection 같은 lane은 현재 fail-closed negative regression으로 정렬됨 |
 
@@ -347,10 +364,10 @@ current code 기준 family-aware deterministic fallback이 명시적으로 구�
 
 | 계층 | current 상태 | 완성도 판정 | 근거 |
 | --- | --- | --- | --- |
-| name normalization | `vuln_name -> CWE-*` 또는 canonical `NAME-*` 정규화, `pattern_id`/stack profile 기본값 주입, supported alias(`Server Side Template Injection`, `Unvalidated Redirect`) canonicalization | 중상 | free-form 입력을 canonical identifier와 기본 stack으로 내리는 경로는 안정적이고, 이번 갱신으로 일부 supported free-form alias도 exact phrase가 아니라 canonical family로 정렬된다 |
+| name normalization | `vuln_name -> CWE-*` 또는 canonical `NAME-*` 정규화, `pattern_id`/stack profile 기본값 주입, supported alias(`Server Side Template Injection`, `Unvalidated Redirect`) canonicalization, compiler fragment strategy 기반 token-order-insensitive fallback | 중상 | free-form 입력을 canonical identifier와 기본 stack으로 내리는 경로는 안정적이고, 이번 갱신으로 일부 supported free-form alias도 exact phrase뿐 아니라 reordered token phrase(`Injection in Jinja template`, `Redirect open vulnerability`, `Injection in shell command`) 수준까지 canonical family로 정렬된다. 다만 이것도 open-world semantic understanding이 아니라 supported family catalog robustness 강화로 보는 편이 정확하다 |
 | semantic inference | researcher가 `semantic_signature`, `evidence_relevance`, `verification_spec`, `guard_spec` 생성 | 중 | semantic basis는 만들 수 있으나 evidence quality와 compiler feasibility가 완전히 분리된 것은 아니다. 다만 compiler/static supported bundle은 default path에서 RESEARCH를 skip할 수 있게 되었다 |
 | semantic_profile / compiler contract | `resolved_contract.json`와 별도 `semantic_profile.json`에 family/support_level/compiler_strategy/compiler_supported/compiler_reason가 surface됨. compiler-supported free-form family는 researcher를 skip해도 shared fragment registry/baseline에서 canonical `semantic_signature`를 backfill한다 | 중상 | semantic basis와 compiler feasibility를 artifact로 명시할 수 있게 되었고, 이제 unsupported early stop뿐 아니라 default search policy / RESEARCH skip도 이 verdict를 직접 소비한다. 현재는 `resolved_contract.semantic_contract`도 `aligned` + `semantic_signature_source=fragment_registry`까지 surface되지만, verifier의 최종 positive truth source는 여전히 `generator_manifest` service-side semantics가 우선이다 |
-| runtime rule/guard derivation | runtime rule writer/loader, compiler-derived runtime rule, guard spec fallback, verifier semantic gate 존재 | 중상 | service-side semantic scope까지 반영되며 verifier trust는 개선되었다. built-in semantic evaluator support가 XSS/Insecure Deserialization/Open Redirect/Template Injection까지 확장되었고, compiler-generated `NAME-*` lane은 runtime rule을 generator가 직접 파생해 manifest fallback 의존을 일부 줄였다 |
+| runtime rule/guard derivation | runtime rule writer/loader, compiler-derived runtime rule, guard spec fallback, verifier semantic gate 존재 | 중상 | service-side semantic scope까지 반영되며 verifier trust는 개선되었다. built-in semantic evaluator support가 XSS/Insecure Deserialization/Open Redirect/Template Injection까지 확장되었고, compiler-generated `NAME-*` lane은 runtime rule을 generator가 직접 파생해 manifest fallback 의존을 일부 줄였다. 추가로 current workspace에서는 `verification_rule_source` / `verification_trust`를 surface해 unknown live lane의 self-derived runtime rule candidate를 low-trust로 구분한다 |
 | semantic-to-code generation | SQLi/CSRF/Command Injection/Code Injection/Template Injection/Path Traversal/XSS/SSRF/Insecure Deserialization/Open Redirect에 `semantic_profile -> compiler_generated` path가 연결됨. 현재 compiler-covered 열 family 모두 `python/flask` scaffold + family fragment metadata를 남긴다. unknown 계열은 여전히 fallback 중심 | 중상 | compiler-first coverage는 열 family까지 넓어졌고, free-form generalization evidence도 Template Injection과 Open Redirect로 유지된다. 이번 hardening으로 Code Injection까지 `known_family_regression`으로 정렬되었지만, 남은 주요 hole은 unknown/open-world lane이다 |
 | template dependence reduction | built-in template 의존은 줄었고, compiler-covered 열 family 모두 `stack_scaffold_id` + `fragment_id`를 남기는 shared registry-backed compose path로 이동했다. 이번 갱신으로 `python/flask` scaffold metadata와 Dockerfile template, compiler target 기본 매핑, fragment metadata 일부, Flask fragment code 일부, Flask PoC templates 일부가 각각 asset으로 분리되었다 | 중상 | filesystem template dependence는 줄었고 compiler path 전반이 registry-backed provenance를 남기기 시작했다. 다만 extra file builders와 일부 compose logic는 여전히 Python 모듈에 집중되어 있어 scaffold 외부화는 partial이고, 완전한 자산 분리까지는 도달하지 못했다 |
 | unsupported lane early exit | real free-form `NAME-*` + `support_level=unsupported`는 preseeded semantic profile 기준으로 RESEARCH 실행 전 terminal failure로 종료됨 | 중상 | LDAP Injection이 약 `0.052s` / `retry_count=0`까지 내려갔다. 다만 `deferred` family와 broader unsupported taxonomy는 아직 더 세분화해야 한다 |
@@ -381,8 +398,11 @@ current code 기준 family-aware deterministic fallback이 명시적으로 구�
 5. 이번 턴 구현으로 fragment metadata(`family`, `fragment_id`, `pattern_tags`, `service_side_tokens`, `semantic_signature`, `requirements_content`)도 `agents/generator/assets/flask-fragments.json`으로 이동해, runtime rule/guard/evaluator가 소비하는 의미 계층 일부가 코드 밖 자산으로 분리되었다.
 6. 추가로 Flask fragment의 `import_block`, `route_block`, `app_setup_block`, `startup_block`도 `agents/generator/assets/flask-fragment-code.json`으로 이동해 route/service 초기화 코드 하드코딩 일부까지 asset catalog로 밀어냈다.
 7. 추가로 각 family의 PoC script template도 `agents/generator/assets/flask-pocs/*.py.tmpl`로 이동해, compiler registry 내부의 PoC 문자열 하드코딩도 크게 줄었다.
-8. 다만 synthetic unknown 계열과 unsupported family는 여전히 `agents/generator/synthesis.py` fallback에 많이 머물러 있고, extra file builders와 일부 compose logic는 아직 `agents/generator/flask_fragment_registry.py`라는 Python 모듈 안에 정의되어 있다.
-9. 즉 template debt가 사라진 것이 아니라 상당 부분 shared registry-backed compiler asset으로 이동했고, 남은 debt는 “복사형 template debt”보다 “Python module형 registry/hardcoded fallback debt”에 더 가깝다.
+8. synthetic unknown 계열과 unsupported family는 여전히 `agents/generator/synthesis.py` fallback orchestration에 머물러 있고, extra file builders와 일부 compose logic는 아직 `agents/generator/flask_fragment_registry.py`라는 Python 모듈 안에 정의되어 있다.
+9. 이번 추가 구현으로 active synthetic unknown lane에 실제로 사용되는 SQLi family-aware fallback service/PoC도 `agents/generator/assets/fallbacks/sqli_family_aware_*.py.tmpl` asset으로 분리되어, 적어도 current hot path의 fallback hardcoding 일부는 Python 문자열에서 asset template로 이동했다.
+10. 추가로 generic unsupported reflect fallback, CSRF, Open Redirect, Template Injection, XSS, SSRF, Insecure Deserialization, Path Traversal family-aware fallback service/PoC가 모두 `agents/generator/assets/fallbacks/*.py.tmpl` asset으로 분리되었다. Template Injection fallback에는 이번 라운드에서 PoC template도 추가되어 family-aware fallback bundle completeness가 조금 더 올라갔다.
+11. 추가로 이번 라운드에서 fallback bundle의 공통 `Dockerfile`/`README`도 `agents/generator/assets/fallbacks/fallback_bundle_dockerfile.tmpl`, `agents/generator/assets/fallbacks/fallback_bundle_readme.md.tmpl`로 이동해, `synthesis.py` 안의 공통 compose string hardcoding도 한 단계 더 줄었다.
+12. 즉 current debt는 더 이상 “개별 family fallback 문자열”보다 “Python module형 registry/compose logic + single-scaffold orchestration debt”에 더 가깝다. template debt가 사라진 것은 아니지만, 적어도 current family-aware fallback body와 fallback bundle 공통 compose artifact는 거의 전부 asset template로 이동했다.
 
 이 구조의 장점:
 
@@ -567,6 +587,12 @@ semantic support가 없는 상태에서는 성공 manifest 또는 promotion succ
 이번 턴 구현으로 stale generated state carry-over는 1차 차단되었지만,
 raw SID를 historical evidence locator로 쓰는 문서 방식은 여전히 부정확하다.
 
+다만 official harness 관점에서는 이번 갱신으로 freshness가 더 강해졌다.
+
+- `tests/e2e/run_case.py`는 runtime asset seed manifest를 남기고 rerun마다 `runtime_rules/`, `runtime_templates/`를 purge 후 restore한다.
+- same harness는 summary/expectation validation에서 `generation_origin`, `dynamicness_verdict`까지 읽는다.
+- 따라서 official acceptance evidence는 이전보다 raw runner artifact drift에 덜 취약하다.
+
 ### 4.3 P1: synthetic unknown lane과 real free-form lane의 혼선
 
 현재 `cwe-unknown-basic` live lane은 다음 이유로 generalization 증거가 아니다.
@@ -574,6 +600,7 @@ raw SID를 historical evidence locator로 쓰는 문서 방식은 여전히 부�
 - explicit synthetic id `CWE-9999`
 - base requirement에서 `pattern_id: sqli-string-concat`를 상속
 - semantic contract가 SQLi-like signature로 정렬될 수 있음
+- latest rerun 기준 verifier도 `verification_rule_source=runtime_rule_candidate`, `verification_trust=low`를 surface함
 - 따라서 open-world free-form unknown이라기보다 synthetic regression lane
 
 문서, CI summary, acceptance에서 이 lane을 “free-form name-only success evidence”로 쓰면 안 된다.
@@ -586,6 +613,7 @@ raw SID를 historical evidence locator로 쓰는 문서 방식은 여전히 부�
 
 - current green lane은 `compiler-first`와 `deterministic fallback dependent`가 공존하며, 어느 쪽도 아직 `trusted dynamic`과 동의어가 아니다.
 - 남은 핵심 mismatch는 synthetic unknown lane을 negative no-remote regression과 live Tavily regression으로 분리해 읽어야 한다는 점이다.
+- 이번 갱신으로 official E2E acceptance는 bundle-level `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, 또는 negative/fallback lane의 corresponding provenance까지 기대치로 고정하기 시작했다.
 
 즉 current acceptance에서 “mandatory official lane = 모두 operationally green”은 현재는 대체로 맞지만,
 이를 곧바로 “동적 생성이 provenance 상으로 충분히 일반화되었다”와 동의어로 쓰면 안 된다.
@@ -621,6 +649,7 @@ current known lane degraded success는 분명한 개선이다.
 - Template Injection/Open Redirect free-form positive lane은 현재 `compiler-first success`
 - 즉 provider degraded에서도 artifact truth는 남기고 known lane 일부를 닫을 수 있음
 - 하지만 pure dynamic synthesis recovery로 집계하면 안 됨
+- synthetic unknown live도 latest rerun 기준 asset-backed SQLi family-aware fallback을 사용하지만, 여전히 `runtime_rule_candidate/low` verifier trust와 `synthetic_regression` class에 머문다
 
 ### 4.7 P1 partially resolved: RESEARCH-stage taxonomy surface는 개선됐지만 아직 coarse하다
 
@@ -632,6 +661,21 @@ current known lane degraded success는 분명한 개선이다.
 - `evidence_low_relevance`
 - `provider_degraded`
 - `semantic_support_missing`
+
+### 4.7.1 P1 partially resolved in this turn: verifier self-certification on unknown lane is now surfaced but not eliminated
+
+이 항목은 이번 턴 구현으로 “숨겨진 문제”에서 “보이는 문제”로 이동했다.
+
+- 이전에는 unknown/open-world lane이 `generator_manifest fallback` 또는 researcher/runtime rule candidate를 통해 self-derived verification을 해도 summary에서 구분이 약했다.
+- 현재는 verifier result, manifest bundle summary, E2E summary에 `verification_rule_source`와 `verification_trust`가 surface된다.
+- 추가로 manifest top-level `verification_summary`와 reviewer issue sample에도 low-trust 상태가 남는다.
+- latest `CWE-9999` live rerun에서는 `verification_rule_source=runtime_rule_candidate`, `verification_trust=low`, promotion reason `verify_contract:runtime_rule_candidate`, reviewer issue `Verifier contract trust is low (runtime_rule_candidate)`가 함께 남는다.
+
+다만 이것이 verifier 독립성 문제를 해결한 것은 아니다.
+
+- current synthetic unknown live는 여전히 low-trust verification success다.
+- 즉 `verify_pass=true`가 곧 independent verification을 의미하지 않는다.
+- 남은 과제는 unknown/open-world lane에서 researcher/runtime-rule candidate를 diagnostics 또는 inspection artifact로만 제한할지, 아니면 stronger external evidence/second verifier를 붙일지 policy를 고정하는 것이다.
 
 ### 4.8 P1: semantic-to-code compiler coverage가 일부 family에 한정된다
 
@@ -664,6 +708,10 @@ runtime candidate template는 current code 기준 static template clone이다.
 따라서 현재 상태를 “template dependence reduction”이라고 부르면 과장이다.
 정확한 표현은 다음이다.
 
+- filesystem template copy 의존은 줄었고, representative compiler-first acceptance는 이제 registry-backed scaffold/fragment provenance까지 본다.
+- 그러나 runtime model 자체는 아직 `python/flask` 단일 scaffold에 강하게 편중되어 있다.
+- 즉 current improvement는 “template -> compiler registry/scaffold” 전환이지, “stack/runtime 다양성까지 일반화된 동적 생성”은 아니다.
+
 - static template dependence 일부를 runtime metadata 아래로 이동시켰다.
 - 그와 별개로 SQLi/CSRF/Command Injection/Code Injection/Template Injection/Path Traversal/Open Redirect/XSS/SSRF/Insecure Deserialization은 filesystem template 없이 compiler-generated bundle로 닫히도록 개선되었다.
 - 다만 취약점 family별 full workspace copy 대신 scaffold/fragment compile로 바뀌기 전까지는, 이것 역시 template debt reduction의 완결이 아니라 relocation + in-code hardcoding 증가로 보는 편이 정확하다.
@@ -686,6 +734,18 @@ verifier의 공식 top-level verdict는 다음 필드를 가진다.
 | `semantic_supported` | `bool` | semantic verdict를 내릴 수 있는 유효 semantic basis가 있었는지 |
 | `semantic_source` | `str \| null` | semantic basis source. 예: `resolved_contract.semantic_contract`, `builtin_semantics`, `runtime_rule.semantic_signature`, `null` |
 | `semantic_status` | `aligned \| contradicted \| unsupported \| empty` | semantic contract의 상태 |
+| `verification_rule_source` | `str` | `declared_rule`, `runtime_rule_candidate`, `generator_manifest_fallback`, `verifier_runtime_rule_fallback` 등 verifier contract provenance |
+| `verification_trust` | `str` | `high`, `low` 등 verifier contract 신뢰도 |
+| `verification_trust_reason` | `str` | trust 판정 이유 |
+| `verification_policy_blocked` | `bool` | strict verifier policy가 low-trust unknown verdict를 fail-closed로 차단했는지 |
+
+manifest/report 집계 필드:
+
+| field | type | 의미 |
+| --- | --- | --- |
+| `verification_summary.by_rule_source` | `dict[str,int]` | 어떤 verifier contract provenance가 몇 번 쓰였는지 |
+| `verification_summary.by_trust` | `dict[str,int]` | verifier trust 등급별 bundle 수 |
+| `verification_summary.low_trust_bundles` | `int` | low-trust verifier bundle 수 |
 
 ### 5.2 `verify_pass` 판정식
 
@@ -708,6 +768,13 @@ verifier의 공식 top-level verdict는 다음 필드를 가진다.
 
 즉 unsupported semantic 상태에서는 exploit marker만 맞아도 최종 success가 될 수 없다.
 
+추가 규칙:
+
+- default policy(`policy.verifier.low_trust_unknown_policy=warn`)에서는 `verification_trust`를 `verify_pass` 계산식에 직접 곱하지 않는다.
+- 이 기본 모드에서는 `verification_trust=low`가 reviewer/pack/promotion에서 non-promotable signal로 취급된다.
+- optional strict policy(`policy.verifier.low_trust_unknown_policy=fail_closed`)에서는 unknown/open-world lane의 `verification_trust=low` verdict를 VERIFY 단계에서 즉시 fail-closed하고, `verification_policy_blocked=true`, `terminal_failure_class=low_trust_verification`를 남긴다.
+- strict policy로 차단된 verdict는 registry가 다시 LLM fallback으로 덮어쓰지 않고 base verifier result를 그대로 유지한다.
+
 ### 5.3 `semantic_contract.status` 표준화
 
 `semantic_contract.status`는 아래 enum으로 표준화한다.
@@ -717,13 +784,14 @@ verifier의 공식 top-level verdict는 다음 필드를 가진다.
 | `aligned` | semantic signature가 non-empty이고 requested family와 정렬됨 |
 | `contradicted` | contradiction 또는 foreign-family semantic term이 검출됨 |
 | `unsupported` | 요청 family를 검증할 신뢰 가능한 semantic basis가 없음 |
-| `empty` | semantic_signature가 존재하더라도 모든 bucket이 empty |
+| `empty` | semantic_signature가 비어 있거나, 일부 heuristic term이 있어도 evidence quality가 insufficient라 support로 쓰기 부족한 상태 |
 
 규칙:
 
 - `empty`는 `aligned`가 아니다.
 - `unsupported`는 “현재 시스템이 semantic truth를 만들지 못했다”는 의미다.
 - `contradicted`는 reviewer/pack blocking 사유다.
+- researcher evidence quality가 `insufficient`면 non-empty heuristic signature가 있어도 `aligned`로 승격하지 않고 `empty`로 정렬한다.
 
 ### 5.4 `semantic_supported` 판정 규칙
 
@@ -738,6 +806,7 @@ verifier의 공식 top-level verdict는 다음 필드를 가진다.
 - empty semantic signature
 - marker-only runtime assertion만 있고 family semantics가 없는 경우
 - source는 존재하지만 semantic buckets가 모두 비어 있는 경우
+- source는 존재하지만 researcher evidence quality가 insufficient라 semantic support로 쓰기 어려운 경우
 
 ### 5.5 provenance 규격 추가: `fallback_class`
 
@@ -802,6 +871,7 @@ mid-term 목표는 unsupported `NAME-*` lane의 default 경로에서 제거하�
 - `verify_pass=true`
 - `semantic_supported=true`
 - `semantic_status=aligned`
+- `verification_trust != low`
 - reviewer non-blocking
 - semantic contradiction 없음
 - `fallback_class != generic_unsupported_family`
@@ -810,6 +880,7 @@ mid-term 목표는 unsupported `NAME-*` lane의 default 경로에서 제거하�
 
 - `semantic_supported=false`
 - `semantic_status in {unsupported, empty, contradicted}`
+- `verification_trust=low`
 - `fallback_class=generic_unsupported_family`
 - reviewer blocking
 - guard mismatch
@@ -1151,15 +1222,16 @@ current status:
 
 | 구분 | corrected acceptance |
 | --- | --- |
-| Unit tests | `python -m pytest -q tests` 기준 최소 `222 passed, 19 skipped` 유지 또는 상향 |
+| Unit tests | `python -m pytest -q tests` 기준 최소 `239 passed, 22 skipped` 유지 또는 상향 |
 | E2E truth | 기본 pytest pass와 분리된 공식 live E2E set 유지 |
-| Evidence integrity | lane 표는 `provider_condition`, `generation_origin`, `dynamicness`, `evidence_class`, `observed_at`, `command`, `sid`를 함께 기록 |
+| Evidence integrity | lane 표는 `provider_condition`, `generation_origin`, `dynamicness`, `evidence_class`, `observed_at`, `command`, `sid`를 함께 기록한다. official harness는 runtime asset seed manifest를 통해 rerun마다 `runtime_rules/`, `runtime_templates/`를 purge/restore하고, expectation에서도 `generation_origin`, `dynamicness_verdict`를 함께 검증한다 |
 | SID handling | raw SID를 immutable evidence처럼 서술하지 않음 |
 | Verdict truth | `verify_pass = exploit_pass && guard_pass && semantic_gate_pass` |
 | Semantic gating | static rule 부재 또는 free-form `NAME-*`에서 `semantic_supported=false`면 fail-closed |
 | Semantic schema | `semantic_supported`, `semantic_source`, `semantic_status`가 surface됨 |
 | Failure-path provenance | failure artifact에도 `llm_stub_used`, `fallback_used`, `fallback_class`, `family_override_applied`, `provider_health_state`, 그리고 필요한 경우 `generation_origin=research_short_circuit`가 남음 |
 | Failure artifact availability | review/pack block이어도 inspection 가능한 `failure_manifest.json`이 남음 |
+| Runtime asset freshness | official harness rerun은 seeded runtime asset만 restore하고 previous generated runtime rule/template carry-over를 허용하지 않아야 한다. raw runner는 최소 tracked generated runtime asset cleanup을 수행해야 한다 |
 | Manifest semantics | success run은 `manifest.json`, failure run은 `failure_manifest.json`만 남도록 정렬되어야 한다. filename alone으로 끝내지 않고 `pipeline_result`와 `promotion.eligible`를 함께 본다 |
 | Researcher normalization | stub researcher report에도 canonical `vuln_id` 기록 |
 | Semantic profile | `NAME-*` 또는 static rule 부재 bundle에는 canonical `semantic_profile` artifact가 존재해야 함. compiler-supported free-form family는 researcher skip path에서도 non-empty `semantic_signature`를 가져야 함 |
@@ -1171,12 +1243,13 @@ current status:
 | Compiler-first generation | compiler-covered family는 scaffold + vuln fragment path를 primary generation path로 사용하고, runtime template clone은 legacy/compatibility path로만 집계 |
 | Compiler provenance detail | registry-backed compiler bundle은 가능한 경우 `stack_scaffold_id`, `fragment_id`, `compose_mode` 같은 scaffold/fragment provenance를 metadata에 남겨야 함 |
 | Scaffold asset provenance | compiler scaffold는 가능하면 별도 asset catalog version(`stack_scaffold_version`)까지 metadata에 남겨야 함 |
+| Representative registry acceptance | 최소 representative compiler-first lane에서는 official expectation이 `compiler_family`, `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode`까지 직접 검증해야 함 |
 | Template dependence reduction | compiler-covered family의 success claim은 full template copy 또는 runtime template clone에 의존하지 않아야 함 |
 | Reviewer / Pack gating | `promotion.eligible`는 bundle 종류와 무관하게 evaluator가 explicit `semantic_supported=false` 또는 `semantic_status in {unsupported, empty, contradicted}`를 surface하면 차단되어야 함 |
-| Official lanes | 코드상 official live set은 SQLi/CSRF/Command Injection/Code Injection/Code Injection alias/SSRF/Template Injection/Template Injection alias/Path Traversal/XSS/Deserialization/Open Redirect/Open Redirect alias/LDAP negative + unknown synthesis/live다. current rerun 기준 official E2E는 `17 passed, 2 skipped`이며, skip 2개는 repeatability gate다 |
+| Official lanes | 코드상 official live set은 SQLi/CSRF/Command Injection/Code Injection/Code Injection alias/SSRF/Template Injection/Template Injection alias/Template Injection reordered/Open Redirect/Open Redirect alias/Open Redirect reordered/Path Traversal/XSS/Deserialization/LDAP negative + unknown synthesis/live + unknown live strict fail-closed다. current rerun 기준 official E2E는 `20 passed, 2 skipped`이며, skip 2개는 repeatability gate다 |
 | Synthetic unknown handling | `CWE-9999`는 regression lane이지 generalization lane이 아니며, manifest/E2E summary에 `generalization_class=synthetic_regression`, `counts_as_generalization=false`가 surface된다 |
 | Free-form negative regression | `LDAP Injection`과 다른 unsupported `NAME-*` lane은 degraded/stub path에서 false-positive pass가 재현되지 않아야 함 |
-| Free-form positive evidence | compiler-first 또는 equivalent non-template path로 만든 real free-form positive case 최소 1개. `compiler_supported=true`, `fallback_class!=generic_unsupported_family`, `promotion.eligible=true`가 조건 |
+| Free-form positive evidence | compiler-first 또는 equivalent non-template path로 만든 real free-form positive case 최소 1개. 최소 조건은 `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, `fallback_class!=generic_unsupported_family`, `promotion.eligible=true`다. `compiler_supported=true`만으로는 충분하지 않다. representative lane에서는 registry-backed scaffold/fragment provenance까지 같이 보는 편이 더 안전하다 |
 | Performance | known degraded lane, compiler-first lane, unsupported negative lane 수치를 provenance-aware 분류와 함께 보고, quality defect를 덮는 성공 지표로 사용하지 않음 |
 
 ## 8. 이번 문서 갱신의 실측 근거
@@ -1214,6 +1287,15 @@ current status:
 - `python tests/e2e/run_case.py --case tests/e2e/cases/deserialization-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-deser-e2e-compiler-4`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/open-redirect-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-open-redirect-e2e-compiler-keep`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/open-redirect-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-open-redirect-20260308-4`
+- `python -m pytest -q tests/test_run_pipeline_failure_resolution.py`
+- `python -m pytest -q tests/test_pack_promotion.py tests/test_contract_resolution.py tests/test_runtime_rules.py`
+- `python -m pytest -q tests/test_requirement_policy_defaults.py tests/test_pack_promotion.py tests/test_flask_fragment_registry.py`
+- `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -k 'cwe89_basic_case or template_injection_name_only_case or ldap_injection_negative_case or unknown_cwe_synthesis_case' -rs`
+- `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -k 'cwe89_basic_case or template_injection_name_only_case or open_redirect_name_only_case' -rs`
+- `python tests/e2e/run_case.py --case tests/e2e/cases/template-injection-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-template-20260308`
+- `python tests/e2e/run_case.py --case tests/e2e/cases/ldap-injection-negative --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-ldap-20260308`
+- `VUL_WEB_SEARCH_PROVIDER=none python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --expectations tests/e2e/cases/cwe-unknown-basic/expectations.no-remote.json --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-unknown-none-20260308`
+- `python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-unknown-live-20260308`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/ldap-injection-negative --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-ldap-negative-20260308-4`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/cwe-unknown-basic --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-unknown-20260308-2`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/open-redirect-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-e2e-open-redirect-postfix`
@@ -1238,10 +1320,11 @@ current status:
 
 ### 8.2 이번 문서에서 current truth로 채택한 핵심 관찰
 
-- 공식 E2E full rerun은 `17 passed, 2 skipped`였고, 새 `command-injection-name-only`, `code-injection-name-only`, `code-injection-alias-name-only`, `template-injection-alias-name-only`, `open-redirect-alias-name-only` case도 green이었다.
-- 기본 테스트 스위트는 latest rerun 기준 `222 passed, 19 skipped`까지 상향되었다.
+- 공식 E2E full rerun은 `20 passed, 2 skipped`였고, 새 `command-injection-name-only`, `code-injection-name-only`, `code-injection-alias-name-only`, `template-injection-alias-name-only`, `template-injection-reordered-name-only`, `open-redirect-alias-name-only`, `open-redirect-reordered-name-only` case도 green이었다.
+- 기본 테스트 스위트는 latest rerun 기준 `239 passed, 22 skipped`까지 상향되었다.
 - `Server Side Template Injection`은 이제 canonical `NAME-TEMPLATE-INJECTION`으로 normalize되어 same compiler-first positive lane으로 닫힌다. 같은 canonical requirement로 collapse되므로 original Template Injection case와 SID(`sid-60ae4e071b9f`)도 공유한다.
 - ad-hoc `Unvalidated Redirect` rerun과 official `open-redirect-alias-name-only` case도 canonical `NAME-OPEN-REDIRECT`로 collapse되어 same Open Redirect compiler-first lane으로 닫혔다.
+- same change set에서 `Injection in Jinja template`, `Redirect open vulnerability`도 fragment-strategy fallback을 통해 각각 canonical `NAME-TEMPLATE-INJECTION`, `NAME-OPEN-REDIRECT`로 normalize되어 official E2E positive lane으로 닫혔다. 이는 exact alias layer를 넘는 token-order-insensitive supported-family robustness의 근거다.
 - SQLi, CSRF, Command Injection, Code Injection, SSRF, Template Injection, XSS, Insecure Deserialization official lane은 current workspace에서 pass했다.
 - SQLi는 `sqli_string_concat`, CSRF는 `csrf_missing_token` compiler path로 승격되었고, 둘 다 current rerun 기준 `compiler-first`, `promotion.eligible=true`까지 닫혔다.
 - Path Traversal official lane은 이번 갱신에서 추가되었고, current workspace에서 `compiler_strategy=path_traversal_file_read`, `compiler-first`, `promotion.eligible=true`까지 닫혔다.
@@ -1253,7 +1336,10 @@ current status:
 - 이번 추가 구현으로 fallback guard `generator_assertions`와 exact compiler-covered family의 default semantic signature도 shared fragment registry에서 직접 파생되기 시작했다.
 - current manifest/E2E summary는 known-family lane을 `known_family_regression`, real free-form positive lane을 `real_free_form_positive`, synthetic unknown lane을 `synthetic_regression`, unsupported negative lane을 `unsupported_free_form_negative`로 구분한다.
 - 이번 hardening으로 `normalize_vuln_id`가 `NAME-*`를 canonical하게 보존하고, `NAME-OPEN-REDIRECT` / `NAME-TEMPLATE-INJECTION`도 foreign-family semantic contradiction 검출을 수행한다. 즉 free-form positive lane에서 SQLi/SSTI/XSS term contamination을 자동 용인하지 않는다.
+- 추가로 name normalization은 shared fragment strategy fallback을 사용해 일부 reordered token phrase도 canonical family로 정렬한다. latest unit rerun 기준 `Injection in shell command -> CWE-78`, `Injection in Jinja template -> NAME-TEMPLATE-INJECTION`, `Redirect open vulnerability -> NAME-OPEN-REDIRECT`가 기본 pattern/profile까지 함께 정렬된다.
 - 이번 추가 구현으로 compiler-covered 열 family(SQLi/CSRF/Command Injection/Code Injection/Path Traversal/SSRF/XSS/Insecure Deserialization/Open Redirect/Template Injection)는 모두 `python/flask` scaffold + registry fragment compose metadata를 남기기 시작했다. current rerun의 `metadata/<sid>/generator_manifest.json`에는 `stack_scaffold_id`, `fragment_id`, `compose_mode=registry`가 실제로 남는다.
+- same change set에서 single-bundle `manifest.json`/E2E summary도 `compiler_family`, `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode`를 mirror할 수 있게 되었고, representative official case는 이를 expectation으로 직접 검증한다.
+- 추가로 plan requirement/manifest는 `name_resolution.input`, `name_resolution.resolved_vuln_id`, `name_resolution.source`를 surface한다. current free-form positive evidence는 이제 alias-based인지, heuristic인지, fragment-strategy fallback인지를 artifact 수준에서 구분할 수 있다.
 - 이번 추가 구현으로 compiler target 기본 매핑도 `agents/generator/assets/compiler-targets.json`으로 분리되어, strategy -> default target 하드코딩 일부가 코드 밖 asset으로 이동했다.
 - `cwe-unknown-basic` live lane도 current workspace에서는 pass했지만, 이는 explicit `CWE-9999` + inherited SQLi-like pattern 기반 synthetic regression이며 `promotion.eligible=false`, `counts_as_generalization=false`로 surface된다.
 - `Open Redirect`는 real free-form `vuln_name only` case이며, 이번 구현 후 `semantic_profile.support_level=compiler_supported`와 `open_redirect_reflect` compiler path로 `verify_pass=true`, `promotion.eligible=true`, `compiler-first`까지 닫힌다.
@@ -1288,6 +1374,9 @@ current status:
 - same change set 기준 unknown no-remote failure는 더 이상 3-loop를 소모하지 않고 single-shot terminal failure로 종료한다.
 - `allow_intentional_vuln=true`인 failure run에서도 현재는 `failure_manifest.json`만 남고 `manifest.json`은 남지 않도록 정렬되었다.
 - same SID rerun에서도 이전 success `manifest.json`이 남지 않도록 fresh-run cleanup이 추가되었다.
+- 이번 추가 구현으로 pipeline가 생성한 runtime rule/template는 `generated_runtime_assets.json`에 추적되며 raw `run_pipeline.py --sid ...` rerun 시작 시 제거된다.
+- same change set에서 official harness(`tests/e2e/run_case.py`)는 빈 seed manifest라도 생성해 `runtime_rules/`/`runtime_templates/`를 rerun 전에 purge한 뒤 seeded asset만 restore한다. 따라서 official E2E evidence는 previous generated runtime asset carry-over에 훨씬 덜 취약하다.
+- 추가로 official E2E expectation schema는 bundle-level `generation_origin`, `dynamicness_verdict`를 직접 검증하기 시작했다. 즉 current official acceptance는 `compiler_supported=true`라는 capability metadata만으로는 pass를 선언하지 않는다.
 
 ## 9. 즉시 착수 work package
 
@@ -1295,6 +1384,9 @@ current status:
 
 1. E2E harness semantics 보강
    - 완료: `tests/e2e/run_case.py`가 expected-negative case에서 non-zero exit와 `failure_manifest.json`을 읽고 기대치를 검증할 수 있게 수정
+   - 추가 완료: E2E summary/expectation validation이 bundle-level `generation_origin`, `dynamicness_verdict`까지 읽고 official acceptance에서 provenance를 직접 고정
+   - 추가 완료: official harness가 runtime asset seed manifest를 작성하고 rerun마다 `runtime_rules/`, `runtime_templates/`를 purge 후 seeded asset만 restore
+   - 추가 완료: representative compiler-first case는 `compiler_family`, `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode`까지 expectation으로 직접 고정
 2. manifest / failure_manifest semantics 정리
    - 완료: `allow_intentional_vuln=true`여도 failure run이 `failure_manifest.json`만 남기도록 정렬
 3. unsupported negative lane retry 절감
@@ -1305,6 +1397,7 @@ current status:
    - 부분 완료: top-level/bundle failure summary와 `research_short_circuit` provenance가 same semantic verdict를 surface
    - 추가 완료: `NAME-*` canonical normalization 보정, free-form foreign-family semantic contradiction detection, compiler-supported known family의 generalization class 정렬
    - 추가 완료: default search policy / `require_researcher_evidence` / RESEARCH skip이 compiler/static supported verdict를 직접 소비
+   - 추가 완료: single-bundle manifest/summary도 compiler scaffold/fragment provenance(`compiler_family`, `stack_scaffold_id`, `fragment_id`, `compose_mode`)를 mirror할 수 있게 정렬
    - 남은 일: broader compiler-first generator path / acceptance gating 확장
 5. compiler skeleton 도입
    - 부분 완료: `agents/generator/compiler.py`와 shared registry module(`agents/generator/flask_fragment_registry.py`) 기반 `sqli_string_concat`, `csrf_missing_token`, `command_injection_shell`, `code_injection_eval`, `open_redirect_reflect`, `template_injection_render`, `path_traversal_file_read`, `xss_reflected`, `ssrf_loopback_fetch`, `deserialization_pickle_body` 구현
@@ -1329,7 +1422,12 @@ current status:
    - 추가 완료: built-in semantic evaluator support를 Open Redirect/Template Injection/XSS/Insecure Deserialization까지 확장하고, representative rerun에서 `semantic_source=generator_manifest`를 재검증
    - 추가 완료: researcher service-side `file_contains` token derivation이 shared fragment registry metadata를 직접 소비
    - 추가 완료: fallback guard `generator_assertions`와 exact compiler-covered family의 default semantic signature가 shared fragment registry metadata를 직접 소비
-   - 남은 일: registry metadata에서 runtime rule / guard / evaluator assertion을 더 완전하게 자동 파생하고, unknown lane으로 잘못 새지 않도록 strict/loose resolution policy를 명시화
+   - 추가 완료: verifier result와 manifest/E2E summary에 `verification_rule_source` / `verification_trust` / `verification_trust_reason`를 surface하고, unknown live lane의 runtime rule candidate를 low-trust로 분류
+   - 추가 완료: reviewer가 low-trust verifier contract를 non-blocking quality issue로 surface하고, manifest top-level `verification_summary`가 trust/rule-source 분포를 집계
+   - 추가 완료: insufficient researcher semantics는 `semantic_contract.status=empty`로 정규화되어 no-remote unknown lane과 semantic taxonomy 충돌을 줄였다
+   - 추가 완료: `policy.verifier.low_trust_unknown_policy`를 `warn|fail_closed`로 정규화하고, strict mode에서는 unknown low-trust verdict를 `verification_policy_blocked=true` + `terminal_failure_class=low_trust_verification`로 종료
+   - 추가 완료: strict policy로 막힌 verifier result는 registry가 LLM fallback으로 덮어쓰지 않도록 short-circuit
+   - 남은 일: registry metadata에서 runtime rule / guard / evaluator assertion을 더 완전하게 자동 파생하고, unknown lane으로 잘못 새지 않도록 strict/loose resolution policy를 더 세분화
 10. 공식 negative / positive free-form acceptance 편입
    - 완료: LDAP Injection negative regression
    - 완료: Template Injection positive free-form evidence
@@ -1342,17 +1440,30 @@ current status:
    - 부분 완료: runtime template clone과 built-in template를 legacy/compatibility asset으로 재분류하고, compiler-covered family success claim에서 제외
    - 추가 완료: compiler-covered 열 family 모두 registry-backed scaffold/fragment provenance를 남기기 시작했다
    - 추가 완료: registry asset 자체를 `compiler.py` 내부 문자열 중복에서 분리해 shared module(`agents/generator/flask_fragment_registry.py`)로 승격
-   - 남은 일: shared registry module을 외부 data asset/DSL 수준으로 더 분리하고 `synthesis.py` fallback debt까지 같은 체계로 흡수
+   - 추가 완료: active synthetic unknown lane에 실제 사용되는 SQLi family-aware fallback service/PoC를 `agents/generator/assets/fallbacks/sqli_family_aware_*.py.tmpl` asset으로 분리
+   - 추가 완료: generic unsupported reflect fallback과 CSRF family-aware fallback service/PoC도 각각 fallback asset template로 분리
+   - 추가 완료: Open Redirect family-aware fallback service/PoC도 `agents/generator/assets/fallbacks/open_redirect_family_aware_*.py.tmpl` asset으로 분리
+   - 추가 완료: Template Injection/XSS/SSRF/Insecure Deserialization/Path Traversal family-aware fallback service/PoC도 각각 fallback asset template로 분리
+   - 추가 완료: fallback bundle의 공통 `Dockerfile`/`README`도 asset template로 분리
+   - 남은 일: shared registry module을 외부 data asset/DSL 수준으로 더 분리하고, `synthesis.py` 안에 남은 build/run metadata, `poc.cmd`, single-scaffold assumption을 data-driven layer로 이동
 13. next compiler-first expansion
    - 우선순위: shared registry의 외부 data asset화 + evaluator/guard auto-derive, 이후 second scaffold / richer sidecar-backed family 검토
-14. PACK/performance surface consistency
+14. name-only robustness hardening
+   - 추가 완료: requirement normalization이 shared fragment strategy fallback을 통해 일부 reordered token phrase를 canonical supported family로 정렬
+   - 남은 일: 이 robustness를 broader open-world semantic family discovery와 혼동하지 않도록 unsupported unknown lane과의 경계를 유지
+15. PACK/performance surface consistency
    - 완료: PACK subprocess 이후 manifest를 재기록해 `manifest.performance`와 `performance_summary.json`의 `provider_health_state` / `total_duration_s` 드리프트를 제거
-15. research failure taxonomy hardening
+   - 추가 완료: single-bundle manifest/summary에도 `generation_origin`, `dynamicness_verdict`, `dynamicness_reason`를 mirror해 acceptance와 문서 표를 더 직접 정렬
+16. research failure taxonomy hardening
    - 추가 완료: `remote_provider_unavailable`, `remote_evidence_missing`, `evidence_low_relevance`, `provider_degraded`를 RESEARCH terminal failure class 후보로 분리
    - 추가 완료: no-remote synthetic unknown regression은 same-run 3-loop 재시도 대신 single-shot fail-closed
    - 남은 일: provider degraded와 low-relevance를 performance/provider surface까지 더 정교하게 반영
+17. runtime generated asset tracking
+   - 추가 완료: researcher/generator/verifier가 생성한 runtime rule/template를 `generated_runtime_assets.json`으로 추적
+   - 추가 완료: raw `run_pipeline.py --sid ...` rerun 시작 시 tracked generated runtime asset을 정리
+   - 남은 일: seed manifest 없이도 historical untracked runtime asset을 deterministic하게 판별/정리하는 정책을 더 정교하게 다듬을 수 있다
 
 ## 10. 한 문장 요약
 
-현재 레포는 known lane(SQLi/CSRF/Command Injection/Code Injection/SSRF/Path Traversal/XSS/Insecure Deserialization)과 real free-form `Template Injection`, `Open Redirect`, 그리고 canonical alias `Server Side Template Injection`까지 compiler-first path로 지원하고 이 compiler-supported family들은 default minimal-input path에서 remote search 없이도 닫히며 unsupported free-form `NAME-*` lane은 LDAP Injection 기준 preseeded semantic profile로 거의 즉시 fail-closed되고 synthetic unknown lane도 no-remote negative/live Tavily regression으로 분리되었으며 manifest/performance surface stale mismatch도 해소되었지만,
-free-form 이름 기반 동적 Docker 생성의 generalization 상한은 여전히 unknown/open-world compiler 부재와 `python/flask` 단일 scaffold 편중, compiler-derived runtime rule 이후에도 남는 verifier 독립성 상한에 의해 제한되므로 이후 우선순위는 `family-aware fallback bundle의 scaffold/fragment 자산화`, `shared registry module의 외부 data asset화`, 그리고 second scaffold / sidecar-backed richer family 쪽으로 이동한다.
+현재 레포는 known lane(SQLi/CSRF/Command Injection/Code Injection/SSRF/Path Traversal/XSS/Insecure Deserialization)과 real free-form `Template Injection`, `Open Redirect`, 그리고 canonical alias `Server Side Template Injection`까지 compiler-first path로 지원하고 이 compiler-supported family들은 default minimal-input path에서 remote search 없이도 닫히며 unsupported free-form `NAME-*` lane은 LDAP Injection 기준 preseeded semantic profile로 거의 즉시 fail-closed되고 synthetic unknown lane도 no-remote negative/live Tavily regression과 strict fail-closed policy lane으로 분리되었으며 current family-aware fallback body와 fallback bundle 공통 Dockerfile/README까지 거의 전부 asset template로 이동했지만,
+free-form 이름 기반 동적 Docker 생성의 generalization 상한은 여전히 unknown/open-world compiler 부재와 `python/flask` 단일 scaffold 편중, low-trust runtime-rule candidate에 기대는 unknown verifier path, compiler-derived runtime rule 이후에도 남는 verifier 독립성 상한, 그리고 `synthesis.py` 안에 남아 있는 build/run metadata와 compose/orchestration hardcoding에 의해 제한되므로 이후 우선순위는 `shared registry module의 외부 data asset화`, `fallback compose layer의 DSL화`, `unknown/open-world lane의 verifier policy 재설계`, 그리고 second scaffold / sidecar-backed richer family 쪽으로 이동한다.
