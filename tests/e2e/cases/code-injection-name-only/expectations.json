@@ -1,0 +1,29 @@
+{
+  "manifest": {
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generalization_class": "known_family_regression",
+    "counts_as_generalization": false
+  },
+  "evals": [
+    {
+      "slug": "cwe-94",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": true,
+      "compiler_supported": true,
+      "compiler_strategy": "code_injection_eval",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "generalization_class": "known_family_regression",
+      "counts_as_generalization": false
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

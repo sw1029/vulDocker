@@ -1,0 +1,227 @@
+{
+  "csrf_missing_token": {
+    "import_block": [
+      "from flask import Flask, jsonify, request, session"
+    ],
+    "route_block": [
+      "@app.get('/login')",
+      "def login():",
+      "    user = request.args.get('user', 'victim')",
+      "    session['user'] = user",
+      "    BALANCES.setdefault(user, 1000)",
+      "    return jsonify({'logged_in_as': user})",
+      "",
+      "@app.post('/transfer')",
+      "def transfer():",
+      "    # Registry-backed compiler fragment: state-changing endpoint accepts cookie-authenticated POST with no CSRF token.",
+      "    user = session.get('user', 'victim')",
+      "    recipient = request.form.get('recipient', 'attacker')",
+      "    amount = int(request.form.get('amount', '250'))",
+      "    BALANCES[recipient] = BALANCES.get(recipient, 0) + amount",
+      "    BALANCES[user] = BALANCES.get(user, 1000) - amount",
+      "    return jsonify({'ok': True, 'by': user, 'recipient': recipient, 'amount': amount, 'recipient_balance': BALANCES[recipient], 'flag': 'FLAG-csrf-demo-token'})"
+    ],
+    "app_setup_block": [
+      "app.secret_key = 'csrf-compiler-secret'",
+      "BALANCES = {'victim': 1000, 'attacker': 0}"
+    ],
+    "startup_block": []
+  },
+  "command_injection_shell": {
+    "import_block": [
+      "import subprocess",
+      "from flask import Flask, jsonify, request"
+    ],
+    "route_block": [
+      "@app.get('/run')",
+      "def run_command():",
+      "    # Registry-backed compiler fragment: user-controlled cmd reaches subprocess.check_output(..., shell=True).",
+      "    cmd = request.args.get('cmd', 'echo safe')",
+      "    output = subprocess.check_output(cmd, shell=True, text=True)",
+      "    return jsonify({'ok': True, 'cmd': cmd, 'output': output})"
+    ],
+    "app_setup_block": [],
+    "startup_block": []
+  },
+  "code_injection_eval": {
+    "import_block": [
+      "from pathlib import Path",
+      "from flask import Flask, jsonify, request"
+    ],
+    "route_block": [
+      "@app.get('/eval')",
+      "def evaluate_code():",
+      "    # Registry-backed compiler fragment: user-controlled code reaches eval().",
+      "    code = request.args.get('code', '21 + 21')",
+      "    result = eval(code)",
+      "    return jsonify({'ok': True, 'code': code, 'result': str(result)})"
+    ],
+    "app_setup_block": [
+      "FLAG_PATH = Path('/tmp/code-injection-flag.txt')",
+      "FLAG_VALUE = 'FLAG{CODEI_OK}'",
+      "",
+      "def init_runtime_state() -> None:",
+      "    FLAG_PATH.write_text(FLAG_VALUE, encoding='utf-8')"
+    ],
+    "startup_block": [
+      "    init_runtime_state()"
+    ]
+  },
+  "open_redirect_reflect": {
+    "import_block": [
+      "from flask import Flask, redirect, request"
+    ],
+    "route_block": [
+      "@app.get('/go')",
+      "def go():",
+      "    # Registry-backed compiler fragment: unvalidated user-controlled next parameter reaches redirect().",
+      "    next_url = request.args.get('next', 'https://example.com')",
+      "    return redirect(next_url, code=302)"
+    ],
+    "app_setup_block": [],
+    "startup_block": []
+  },
+  "template_injection_render": {
+    "import_block": [
+      "from flask import Flask, render_template_string, request"
+    ],
+    "route_block": [
+      "@app.get('/greet')",
+      "def greet():",
+      "    # Registry-backed compiler fragment: user input is concatenated into template source.",
+      "    name = request.args.get('name', 'Guest')",
+      "    template = '<h1>Hello ' + name + '</h1>'",
+      "    return render_template_string(template)"
+    ],
+    "app_setup_block": [],
+    "startup_block": []
+  },
+  "xss_reflected": {
+    "import_block": [
+      "from flask import Flask, render_template_string, request"
+    ],
+    "route_block": [
+      "@app.get('/search')",
+      "def search():",
+      "    # Registry-backed compiler fragment: unescaped user input is reflected into template output.",
+      "    name = request.args.get('name', 'Guest')",
+      "    template = \"<div class='result'>\" + name + \"</div>\"",
+      "    return render_template_string(template)"
+    ],
+    "app_setup_block": [],
+    "startup_block": []
+  },
+  "path_traversal_file_read": {
+    "import_block": [
+      "from pathlib import Path",
+      "from flask import Flask, Response, request"
+    ],
+    "route_block": [
+      "@app.get('/download')",
+      "def download():",
+      "    path = request.args.get('path', 'note.txt')",
+      "    # Registry-backed compiler fragment: attacker can request ../secret.txt to escape BASE_DIR.",
+      "    target = BASE_DIR / path",
+      "    try:",
+      "        body = target.read_text(encoding='utf-8', errors='ignore')",
+      "    except OSError as exc:",
+      "        return Response(f'error: {exc}', status=404, mimetype='text/plain')",
+      "    return Response(body, mimetype='text/plain')"
+    ],
+    "app_setup_block": [
+      "BASE_DIR = Path('/app/files')",
+      "SECRET_PATH = Path('/app/secret.txt')"
+    ],
+    "startup_block": []
+  },
+  "sqli_string_concat": {
+    "import_block": [
+      "from pathlib import Path",
+      "import sqlite3",
+      "from flask import Flask, jsonify, request"
+    ],
+    "route_block": [
+      "@app.get('/login')",
+      "def login():",
+      "    # Registry-backed compiler fragment: request input is concatenated into a SQL query string.",
+      "    query = (",
+      "        \"SELECT id, username FROM users \"",
+      "        \"WHERE username = '\" + request.args.get('username', '') + \"' \"",
+      "        \"AND password = '\" + request.args.get('password', '') + \"'\"",
+      "    )",
+      "    conn = sqlite3.connect(DB_PATH)",
+      "    conn.row_factory = sqlite3.Row",
+      "    cur = conn.cursor()",
+      "    rows = cur.execute(query).fetchall()",
+      "    conn.close()",
+      "    return jsonify({'match': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': 'FLAG-sqli-demo-token'})"
+    ],
+    "app_setup_block": [
+      "DB_PATH = Path('/tmp/sqli-demo.db')",
+      "SCHEMA_SQL = '''",
+      "CREATE TABLE IF NOT EXISTS users (",
+      "    id INTEGER PRIMARY KEY AUTOINCREMENT,",
+      "    username TEXT,",
+      "    password TEXT",
+      ");",
+      "DELETE FROM users;",
+      "INSERT INTO users (username, password) VALUES ('admin', 'secret');",
+      "INSERT INTO users (username, password) VALUES ('guest', 'guest');",
+      "'''",
+      "",
+      "def init_db() -> None:",
+      "    conn = sqlite3.connect(DB_PATH)",
+      "    conn.executescript(SCHEMA_SQL)",
+      "    conn.commit()",
+      "    conn.close()"
+    ],
+    "startup_block": [
+      "    init_db()"
+    ]
+  },
+  "ssrf_loopback_fetch": {
+    "import_block": [
+      "import requests",
+      "from flask import Flask, jsonify, request"
+    ],
+    "route_block": [
+      "@app.get('/metadata')",
+      "def metadata():",
+      "    return jsonify({'flag': 'FLAG{SSRF_OK}', 'service': 'metadata'})",
+      "",
+      "@app.get('/fetch')",
+      "def fetch():",
+      "    # Registry-backed compiler fragment: user-controlled url reaches requests.get.",
+      "    target_url = request.args.get('url', 'http://127.0.0.1:{{port}}/metadata')",
+      "    resp = requests.get(target_url, timeout=2)",
+      "    return resp.text, resp.status_code, {'Content-Type': resp.headers.get('Content-Type', 'text/plain')}"
+    ],
+    "app_setup_block": [],
+    "startup_block": []
+  },
+  "deserialization_pickle_body": {
+    "import_block": [
+      "from pathlib import Path",
+      "import pickle",
+      "from flask import Flask, jsonify, request"
+    ],
+    "route_block": [
+      "@app.post('/deserialize')",
+      "def deserialize_payload():",
+      "    # Registry-backed compiler fragment: insecure deserialization of attacker-controlled serialized payload.",
+      "    payload = request.get_data()",
+      "    result = pickle.loads(payload)",
+      "    return jsonify({'result': str(result)})"
+    ],
+    "app_setup_block": [
+      "FLAG_PATH = Path('/tmp/deser-flag.txt')",
+      "FLAG_VALUE = 'FLAG{DESER_OK}'",
+      "",
+      "def init_runtime_state() -> None:",
+      "    FLAG_PATH.write_text(FLAG_VALUE, encoding='utf-8')"
+    ],
+    "startup_block": [
+      "    init_runtime_state()"
+    ]
+  }
+}

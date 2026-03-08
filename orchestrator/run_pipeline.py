@@ -725,6 +725,25 @@ def _write_failure_summary_manifest(sid: str, plan: Dict[str, Any]) -> None:
         LOGGER.warning("Failed to write failure summary manifest for %s: %s", sid, exc)
 
 
+def _refresh_manifest_after_pack(sid: str, plan: Dict[str, Any]) -> None:
+    metadata_dir = get_metadata_dir(sid)
+    manifest_path = metadata_dir / "manifest.json"
+    failure_manifest_path = metadata_dir / "failure_manifest.json"
+    if manifest_path.exists():
+        filename = "manifest.json"
+    elif failure_manifest_path.exists():
+        filename = "failure_manifest.json"
+    else:
+        return
+
+    try:
+        from orchestrator import pack as pack_mod
+
+        pack_mod.write_manifest(sid, plan, filename=filename)
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        LOGGER.warning("Failed to refresh manifest after PACK for %s: %s", sid, exc)
+
+
 def _prepare_fresh_run_state(sid: str) -> None:
     metadata_dir = ensure_dir(get_metadata_dir(sid))
     keep_names = {"plan.json", "runtime_rules", "runtime_templates"}
@@ -1237,6 +1256,8 @@ def main() -> None:
             )
             if rc != 0:
                 _write_failure_summary_manifest(sid, plan)
+            else:
+                _refresh_manifest_after_pack(sid, plan)
 
         return
 
@@ -1257,6 +1278,8 @@ def main() -> None:
         )
         if rc != 0:
             _write_failure_summary_manifest(sid, plan)
+        else:
+            _refresh_manifest_after_pack(sid, plan)
     raise SystemExit(1)
 
 

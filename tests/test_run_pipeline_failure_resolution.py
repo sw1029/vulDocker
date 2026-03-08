@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import orchestrator.pack as pack_mod
 import orchestrator.run_pipeline as run_pipeline
 
 
@@ -46,6 +47,44 @@ def test_prepare_fresh_run_state_clears_generated_outputs_but_keeps_plan_and_run
     assert not (metadata_root / "resolved_contract.json").exists()
     assert not (artifacts_root / "reports" / "evals.json").exists()
     assert not (workspace_root / "app").exists()
+
+
+def test_refresh_manifest_after_pack_rewrites_existing_success_manifest(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-refresh-success"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "manifest.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+
+    def _fake_write_manifest(incoming_sid: str, plan: dict, *, filename: str = "manifest.json") -> Path:
+        calls.append((incoming_sid, filename))
+        return metadata_root / filename
+
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "write_manifest", _fake_write_manifest)
+
+    run_pipeline._refresh_manifest_after_pack(sid, {"sid": sid})
+
+    assert calls == [(sid, "manifest.json")]
+
+
+def test_refresh_manifest_after_pack_rewrites_existing_failure_manifest(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-refresh-failure"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "failure_manifest.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+
+    def _fake_write_manifest(incoming_sid: str, plan: dict, *, filename: str = "manifest.json") -> Path:
+        calls.append((incoming_sid, filename))
+        return metadata_root / filename
+
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "write_manifest", _fake_write_manifest)
+
+    run_pipeline._refresh_manifest_after_pack(sid, {"sid": sid})
+
+    assert calls == [(sid, "failure_manifest.json")]
 
 
 def test_latest_generator_failure_falls_back_to_bundle_paths(tmp_path: Path, monkeypatch) -> None:

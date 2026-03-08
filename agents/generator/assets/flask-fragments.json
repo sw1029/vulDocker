@@ -1,0 +1,172 @@
+{
+  "csrf_missing_token": {
+    "family": "csrf",
+    "fragment_id": "csrf_state_change_route",
+    "pattern_tags": ["compiler_generated", "csrf"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for CSRF.",
+    "service_description": "python/flask registry-backed CSRF service.",
+    "poc_description": "Registry-backed CSRF PoC.",
+    "success_signature": "CSRF SUCCESS",
+    "flag_token": "FLAG-csrf-demo-token",
+    "service_side_tokens": ["request.form", "@app.post('/transfer')"],
+    "semantic_signature": {
+      "input_vector": ["cross-site request", "cookie-authenticated session"],
+      "sink": ["state-changing endpoint (POST/PUT/DELETE/PATCH)"],
+      "exploit_precondition": ["missing CSRF token validation"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "command_injection_shell": {
+    "family": "command_injection",
+    "fragment_id": "shell_command_exec_route",
+    "pattern_tags": ["compiler_generated", "command_injection"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for command injection.",
+    "service_description": "python/flask registry-backed command injection service.",
+    "poc_description": "Registry-backed command injection PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{CMDI_OK}",
+    "service_side_tokens": ["subprocess.check_output", "shell=True", "request.args.get('cmd'"],
+    "semantic_signature": {
+      "input_vector": ["request.args", "command parameter"],
+      "sink": ["subprocess", "os.system", "shell=True"],
+      "exploit_precondition": ["command injection", "user input in command"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "code_injection_eval": {
+    "family": "code_injection",
+    "fragment_id": "eval_code_exec_route",
+    "pattern_tags": ["compiler_generated", "code_injection"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for code injection.",
+    "service_description": "python/flask registry-backed code injection service.",
+    "poc_description": "Registry-backed code injection PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{CODEI_OK}",
+    "service_side_tokens": ["eval(code)", "request.args.get('code'"],
+    "semantic_signature": {
+      "input_vector": ["request.args", "code parameter"],
+      "sink": ["eval(", "exec("],
+      "exploit_precondition": ["code injection", "user input reaches eval"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "open_redirect_reflect": {
+    "family": "open_redirect",
+    "fragment_id": "redirect_next_route",
+    "pattern_tags": ["compiler_generated", "open_redirect"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for open redirect.",
+    "service_description": "python/flask registry-backed open redirect service.",
+    "poc_description": "Registry-backed open redirect PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{OPEN_REDIRECT_OK}",
+    "service_side_tokens": ["redirect(", "request.args.get('next'"],
+    "semantic_signature": {
+      "input_vector": ["request.args", "next parameter", "redirect target", "url parameter"],
+      "sink": ["redirect(", "location header", "http redirect sink"],
+      "exploit_precondition": ["open redirect", "unvalidated redirect target", "external redirect"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "template_injection_render": {
+    "family": "template_injection",
+    "fragment_id": "render_template_string_concat",
+    "pattern_tags": ["compiler_generated", "template_injection"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for template injection.",
+    "service_description": "python/flask registry-backed template injection service.",
+    "poc_description": "Registry-backed template injection PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{SSTI_OK}",
+    "service_side_tokens": ["render_template_string", "template = '<h1>Hello ' + name"],
+    "semantic_signature": {
+      "input_vector": ["request.args", "request.form", "query parameter", "user-controlled request parameter"],
+      "sink": ["render_template_string", "jinja2 template rendering", "template source construction"],
+      "exploit_precondition": ["template injection", "server-side template injection", "user-controlled template source"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "xss_reflected": {
+    "family": "xss",
+    "fragment_id": "render_reflect_route",
+    "pattern_tags": ["compiler_generated", "xss"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for reflected XSS.",
+    "service_description": "python/flask registry-backed reflected XSS service.",
+    "poc_description": "Registry-backed reflected XSS PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{XSS_OK}",
+    "service_side_tokens": ["render_template_string", "request.args"],
+    "semantic_signature": {
+      "input_vector": ["request.args", "query parameter", "user input"],
+      "sink": ["render_template_string", "template response"],
+      "exploit_precondition": ["<script>", "unescaped reflection", "cross-site scripting"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "path_traversal_file_read": {
+    "family": "path_traversal",
+    "fragment_id": "file_read_download_route",
+    "pattern_tags": ["compiler_generated", "path_traversal"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for path traversal.",
+    "service_description": "python/flask registry-backed path traversal service.",
+    "poc_description": "Registry-backed path traversal PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{PATH_TRAVERSAL_OK}",
+    "service_side_tokens": ["request.args", "target = BASE_DIR / path"],
+    "semantic_signature": {
+      "input_vector": ["request.args", "path parameter"],
+      "sink": ["open(", "send_file", "send_from_directory"],
+      "exploit_precondition": ["../", "os.path.join", "path traversal"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "sqli_string_concat": {
+    "family": "sql_injection",
+    "fragment_id": "login_query_concat_route",
+    "pattern_tags": ["compiler_generated", "sql_injection"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for SQL injection.",
+    "service_description": "python/flask registry-backed SQL injection service.",
+    "poc_description": "Registry-backed SQL injection PoC.",
+    "success_signature": "SQLi SUCCESS",
+    "flag_token": "FLAG-sqli-demo-token",
+    "service_side_tokens": ["request.args", "cur.execute"],
+    "semantic_signature": {
+      "input_vector": ["user-controlled request parameter", "request.args"],
+      "sink": ["SQL query execution", "sqlite3.execute", "cur.execute"],
+      "exploit_precondition": ["input concatenated/interpolated into SQL sink", "sql injection"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "ssrf_loopback_fetch": {
+    "family": "ssrf",
+    "fragment_id": "loopback_fetch_route",
+    "pattern_tags": ["compiler_generated", "ssrf"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for SSRF.",
+    "service_description": "python/flask registry-backed SSRF service.",
+    "poc_description": "Registry-backed SSRF PoC.",
+    "success_signature": "FLAG{SSRF_OK}",
+    "flag_token": "FLAG{SSRF_OK}",
+    "service_side_tokens": ["requests.get", "/metadata"],
+    "semantic_signature": {
+      "input_vector": ["request.args", "url parameter", "user-controlled url"],
+      "sink": ["requests.get", "urllib.request", "http client request"],
+      "exploit_precondition": ["server-side request forgery", "169.254.169.254"]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "deserialization_pickle_body": {
+    "family": "deserialization",
+    "fragment_id": "unsafe_pickle_body_route",
+    "pattern_tags": ["compiler_generated", "deserialization"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for insecure deserialization.",
+    "service_description": "python/flask registry-backed insecure deserialization service.",
+    "poc_description": "Registry-backed insecure deserialization PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{DESER_OK}",
+    "service_side_tokens": ["pickle.loads", "request.get_data"],
+    "semantic_signature": {
+      "input_vector": ["request.data", "serialized payload"],
+      "sink": ["pickle.loads", "yaml.load", "jsonpickle.decode"],
+      "exploit_precondition": ["untrusted deserialization", "attacker-controlled serialized input"]
+    },
+    "requirements_content": "Flask==3.0.0\n"
+  }
+}

@@ -402,6 +402,78 @@ def test_command_injection_name_only_case(tmp_path: Path) -> None:
 
 
 @pytest.mark.e2e
+def test_code_injection_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/code-injection-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "code_injection_eval"
+    assert any(
+        bundle["slug"] == "cwe-94"
+        and bundle.get("verify_pass")
+        and bundle.get("compiler_supported") is True
+        for bundle in summary["bundles"]
+    )
+    assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
+def test_code_injection_alias_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/code-injection-alias-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "code_injection_eval"
+    assert any(
+        bundle["slug"] == "cwe-94"
+        and bundle.get("verify_pass")
+        and bundle.get("compiler_supported") is True
+        for bundle in summary["bundles"]
+    )
+    assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
 def test_open_redirect_name_only_case(tmp_path: Path) -> None:
     reason = _skip_reason()
     if reason:

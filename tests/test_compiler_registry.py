@@ -123,6 +123,29 @@ def test_command_injection_registry_manifest_records_scaffold_and_fragment_metad
     assert result.manifest["poc"]["flag_token"] == "FLAG{CMDI_OK}"
 
 
+def test_code_injection_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
+    result = compile_manifest(
+        sid="sid-registry-codei",
+        requirement={"vuln_id": "CWE-94", "vuln_name": "Code Injection"},
+        semantic_profile=_semantic_profile(
+            "code_injection_eval",
+            requested_name="Code Injection",
+            normalized_vuln_id="CWE-94",
+        ),
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/flask"
+    assert metadata["stack_scaffold_version"] == "1.0"
+    assert metadata["fragment_id"] == "eval_code_exec_route"
+    assert metadata["compose_mode"] == "registry"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    assert "code = request.args.get('code', '21 + 21')" in service_main["content"]
+    assert "result = eval(code)" in service_main["content"]
+    assert result.manifest["poc"]["flag_token"] == "FLAG{CODEI_OK}"
+
+
 def test_sqli_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
     result = compile_manifest(
         sid="sid-registry-sqli",

