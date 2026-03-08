@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
-from common.contracts import load_generator_contract
+from common.contracts import load_generator_contract, load_semantic_profile
 from common.rules import load_static_rule
 from common.run_matrix import (
     artifacts_dir_for_bundle,
@@ -79,6 +79,8 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
     performance = _load_json(metadata_dir / "performance_summary.json")
     promotion = _promotion_summary(bundles)
     generation_summary = _generation_summary(bundles)
+    generalization_summary = _generalization_summary(bundles)
+    compiler_contract_summary = _compiler_contract_summary(bundles)
     pipeline_result = _pipeline_result(sid)
     manifest = {
         "sid": sid,
@@ -96,6 +98,8 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         "bundles": bundles,
         "promotion": promotion,
         "generation_summary": generation_summary,
+        "generalization_summary": generalization_summary,
+        "compiler_contract_summary": compiler_contract_summary,
         "performance": performance,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {
@@ -103,7 +107,31 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
             "diversity": _load_json(reports_dir / "diversity.json"),
         },
     }
+    failure = _failure_summary(sid)
+    if failure:
+        manifest["failure"] = failure
+    if len(bundles) == 1:
+        compiler_contract = bundles[0].get("compiler_contract") or {}
+        if isinstance(compiler_contract.get("compiler_supported"), bool):
+            manifest["compiler_supported"] = compiler_contract["compiler_supported"]
+        for key in ("compiler_strategy", "compiler_reason"):
+            value = compiler_contract.get(key)
+            if isinstance(value, str) and value.strip():
+                manifest[key] = value.strip()
+        generalization = bundles[0].get("generalization") or {}
+        class_name = generalization.get("class")
+        if isinstance(class_name, str) and class_name.strip():
+            manifest["generalization_class"] = class_name.strip()
+        if isinstance(generalization.get("counts_as_generalization"), bool):
+            manifest["counts_as_generalization"] = generalization["counts_as_generalization"]
+        reason = generalization.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            manifest["generalization_reason"] = reason.strip()
     manifest_path = metadata_dir / filename
+    stale_name = "failure_manifest.json" if filename == "manifest.json" else "manifest.json"
+    stale_path = metadata_dir / stale_name
+    if stale_path.exists():
+        stale_path.unlink()
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     LOGGER.info("Manifest written to %s", manifest_path)
     return manifest_path
@@ -146,16 +174,35 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
         run_record = run_map.get(bundle.slug, {})
         eval_record = eval_map.get(bundle.slug) or eval_map.get(bundle.vuln_id)
         promotion = _bundle_promotion_status(plan, bundle)
-        provenance = _bundle_generation_provenance(metadata_dir, generator_payload)
+        failure = _bundle_failure_summary(sid, bundle)
+        provenance = _bundle_generation_provenance(
+            sid,
+            bundle,
+            metadata_dir,
+            generator_payload,
+            bundle_failure=failure,
+        )
         dynamicness = _bundle_dynamicness_verdict(provenance)
+        compiler_contract = _bundle_compiler_contract(metadata_dir)
+        generalization = _bundle_generalization_verdict(
+            bundle,
+            pattern_id=pattern_id,
+            promotion=promotion,
+            dynamicness=dynamicness,
+            compiler_contract=compiler_contract,
+            provenance=provenance,
+        )
 
         bundle_entry = {
             "vuln_id": bundle.vuln_id,
             "slug": bundle.slug,
             "pattern_id": pattern_id,
             "promotion": promotion,
+            "failure": failure,
             "provenance": provenance,
             "dynamicness": dynamicness,
+            "generalization": generalization,
+            "compiler_contract": compiler_contract,
             "deps_digest": dep_digest,
             "paths": {
                 "workspace": str(workspace_dir),
@@ -201,6 +248,21 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
         reasons.append("pipeline:review_failed")
     if isinstance(eval_result, dict):
         reasons.extend(_eval_result_failure_reasons(eval_result))
+        if _bundle_requires_semantic_support(bundle):
+            semantic_supported = eval_result.get("semantic_supported")
+            if semantic_supported is None:
+                semantic = eval_result.get("semantic_consistency") or {}
+                if isinstance(semantic, dict):
+                    semantic_supported = semantic.get("supported")
+            if semantic_supported is False:
+                reasons.append("verify_semantic:unsupported")
+            semantic_status = str(eval_result.get("semantic_status") or "").strip().lower()
+            if not semantic_status:
+                semantic = eval_result.get("semantic_consistency") or {}
+                if isinstance(semantic, dict):
+                    semantic_status = str(semantic.get("status") or "").strip().lower()
+            if semantic_status in {"empty", "unsupported", "contradicted"}:
+                reasons.append(f"verify_semantic_status:{semantic_status}")
     if isinstance(contract, dict):
         semantic_contract = contract.get("semantic_contract")
         if isinstance(semantic_contract, dict):
@@ -222,6 +284,20 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
                     reasons.append("unknown_evidence:low_confidence")
                 elif confidence == "medium" and negative_ratio >= 0.30:
                     reasons.append("unknown_evidence:medium_confidence_high_negative_ratio")
+        provenance = contract.get("provenance")
+        if isinstance(provenance, dict):
+            fallback_class = str(provenance.get("fallback_class") or "").strip().lower()
+            if fallback_class == "generic_unsupported_family":
+                reasons.append("fallback:generic_unsupported_family")
+    profile = load_semantic_profile(metadata_dir)
+    if isinstance(profile, dict):
+        support_level = str(profile.get("support_level") or "").strip().lower()
+        compiler_supported = profile.get("compiler_supported")
+        compiler_reason = str(profile.get("compiler_reason") or "").strip()
+        if support_level == "unsupported" and compiler_supported is False:
+            reasons.append("compiler:unsupported")
+            if compiler_reason:
+                reasons.append(f"compiler_reason:{compiler_reason}")
     return {
         "eligible": not reasons,
         "reasons": reasons,
@@ -314,8 +390,12 @@ def _promotion_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _bundle_generation_provenance(
+    sid: str,
+    bundle,
     metadata_dir: Path,
     generator_template: Optional[Dict[str, Any]] = None,
+    *,
+    bundle_failure: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     contract = load_generator_contract(metadata_dir) or {}
     provenance = contract.get("provenance") if isinstance(contract, dict) else {}
@@ -350,7 +430,7 @@ def _bundle_generation_provenance(
         return None
 
     payload: Dict[str, Any] = {}
-    for key in ("generation_origin", "template_id", "source"):
+    for key in ("generation_origin", "template_id", "source", "fallback_class"):
         value = _read_str(key)
         if value:
             payload[key] = value
@@ -362,6 +442,10 @@ def _bundle_generation_provenance(
         failure_payload = _latest_failure_provenance(metadata_dir)
         if failure_payload:
             payload.update(failure_payload)
+    if not payload:
+        loop_payload = _loop_failure_provenance(sid, bundle, bundle_failure=bundle_failure)
+        if loop_payload:
+            payload.update(loop_payload)
     return payload
 
 
@@ -385,12 +469,103 @@ def _latest_failure_provenance(metadata_dir: Path) -> Dict[str, Any]:
     if latest.get("fallback_used") is True:
         provenance["generation_origin"] = "deterministic_fallback"
         provenance["fallback_used"] = True
+    fallback_class = str(latest.get("fallback_class") or "").strip()
+    if fallback_class:
+        provenance["fallback_class"] = fallback_class
     if latest.get("family_override_applied") is True:
         provenance["family_override_applied"] = True
         provenance.setdefault("generation_origin", "family_override")
     if latest.get("llm_stub_used") is True:
         provenance["llm_stub_used"] = True
     return provenance
+
+
+def _load_loop_state(sid: str) -> Dict[str, Any]:
+    return _load_json(get_metadata_dir(sid) / "loop_state.json") or {}
+
+
+def _last_failure_entry(sid: str) -> Dict[str, Any]:
+    state = _load_loop_state(sid)
+    history = state.get("history") if isinstance(state, dict) else []
+    if not isinstance(history, list):
+        return {}
+    for entry in reversed(history):
+        if isinstance(entry, dict) and entry.get("success") is False:
+            return entry
+    return {}
+
+
+def _failure_summary(sid: str) -> Dict[str, Any]:
+    entry = _last_failure_entry(sid)
+    if not entry:
+        return {}
+    summary: Dict[str, Any] = {}
+    for key in ("stage", "reason", "fix_hint", "timestamp"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            summary[key] = value.strip()
+    metadata = entry.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("terminal_failure_class", "retry_recommended"):
+            if key in metadata:
+                summary[key] = metadata.get(key)
+        if metadata:
+            summary["metadata"] = metadata
+    return summary
+
+
+def _bundle_failure_summary(sid: str, bundle) -> Dict[str, Any]:
+    entry = _last_failure_entry(sid)
+    if not entry:
+        return {}
+    metadata = entry.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    unsupported = metadata.get("unsupported_bundles")
+    if isinstance(unsupported, list) and unsupported:
+        matched = False
+        for item in unsupported:
+            if not isinstance(item, dict):
+                continue
+            if item.get("slug") == bundle.slug or item.get("vuln_id") == bundle.vuln_id:
+                matched = True
+                break
+        if not matched:
+            return {}
+    summary = _failure_summary(sid)
+    if not summary:
+        return {}
+    summary["bundle_slug"] = bundle.slug
+    summary["vuln_id"] = bundle.vuln_id
+    return summary
+
+
+def _loop_failure_provenance(
+    sid: str,
+    bundle,
+    *,
+    bundle_failure: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    failure = bundle_failure or _bundle_failure_summary(sid, bundle)
+    if not isinstance(failure, dict) or not failure:
+        return {}
+    stage = str(failure.get("stage") or "").strip().upper()
+    terminal_failure_class = str(failure.get("terminal_failure_class") or "").strip().lower()
+    if stage == "RESEARCH" and terminal_failure_class in {
+        "semantic_support_missing",
+        "remote_provider_unavailable",
+        "remote_evidence_missing",
+        "evidence_low_relevance",
+        "provider_degraded",
+        "research_insufficient",
+    }:
+        return {
+            "generation_origin": "research_short_circuit",
+            "source": "loop_state",
+            "failure_class": terminal_failure_class,
+            "fallback_used": False,
+        }
+    return {}
 
 
 def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -427,6 +602,154 @@ def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _bundle_generalization_verdict(
+    bundle,
+    *,
+    pattern_id: Optional[str],
+    promotion: Dict[str, Any],
+    dynamicness: Dict[str, Any],
+    compiler_contract: Dict[str, Any],
+    provenance: Dict[str, Any],
+) -> Dict[str, Any]:
+    vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
+    pattern = str(pattern_id or "").strip()
+    dynamicness_verdict = str((dynamicness or {}).get("verdict") or "").strip().lower()
+    support_level = str((compiler_contract or {}).get("support_level") or "").strip().lower()
+    fallback_class = str((provenance or {}).get("fallback_class") or "").strip().lower()
+    promotion_eligible = bool((promotion or {}).get("eligible"))
+    generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
+
+    if vuln_id == "CWE-9999":
+        reason = "explicit synthetic unknown identifier remains a regression lane"
+        if pattern:
+            reason = f"{reason}; inherited pattern_id={pattern}"
+        return {
+            "class": "synthetic_regression",
+            "counts_as_generalization": False,
+            "reason": reason,
+        }
+
+    if vuln_id.startswith("NAME-"):
+        if support_level == "unsupported" or generation_origin == "research_short_circuit":
+            return {
+                "class": "unsupported_free_form_negative",
+                "counts_as_generalization": False,
+                "reason": "free-form NAME-* family is unsupported and intentionally fail-closed",
+            }
+        if (
+            promotion_eligible
+            and dynamicness_verdict in {"compiler-first", "trusted dynamic"}
+            and fallback_class != "generic_unsupported_family"
+        ):
+            return {
+                "class": "real_free_form_positive",
+                "counts_as_generalization": True,
+                "reason": f"free-form vuln_name lane closed via {dynamicness_verdict} without generic fallback",
+            }
+        return {
+            "class": "real_free_form_non_generalizing",
+            "counts_as_generalization": False,
+            "reason": "free-form NAME-* lane exists but is not yet strong enough to count as generalization evidence",
+        }
+
+    if support_level in {"builtin_supported", "compiler_supported"} or compiler_contract.get("compiler_supported") is True:
+        return {
+            "class": "known_family_regression",
+            "counts_as_generalization": False,
+            "reason": "compiler-supported or builtin-supported known family regression lane",
+        }
+
+    if not load_static_rule(vuln_id):
+        return {
+            "class": "unknown_regression",
+            "counts_as_generalization": False,
+            "reason": "unknown identifier without a static rule is treated as a regression lane",
+        }
+
+    return {
+        "class": "known_family_regression",
+        "counts_as_generalization": False,
+        "reason": "known/static-rule family regression lane",
+    }
+
+
+def _generalization_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_class: Dict[str, int] = {}
+    positive_generalization_bundles = 0
+    for entry in bundles:
+        generalization = entry.get("generalization") or {}
+        if not isinstance(generalization, dict):
+            continue
+        class_name = str(generalization.get("class") or "").strip()
+        if class_name:
+            by_class[class_name] = by_class.get(class_name, 0) + 1
+        if generalization.get("counts_as_generalization") is True:
+            positive_generalization_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "positive_generalization_bundles": positive_generalization_bundles,
+        "by_class": by_class,
+    }
+
+
+def _bundle_compiler_contract(metadata_dir: Path) -> Dict[str, Any]:
+    profile = load_semantic_profile(metadata_dir) or {}
+    contract = load_generator_contract(metadata_dir) or {}
+    payload: Dict[str, Any] = {}
+    compiler_supported = contract.get("compiler_supported")
+    if isinstance(compiler_supported, bool):
+        payload["compiler_supported"] = compiler_supported
+    elif isinstance(profile.get("compiler_supported"), bool):
+        payload["compiler_supported"] = profile.get("compiler_supported")
+    for key in ("compiler_strategy", "compiler_reason"):
+        value = contract.get(key)
+        if not isinstance(value, str) or not value.strip():
+            value = profile.get(key)
+        if isinstance(value, str) and value.strip():
+            payload[key] = value.strip()
+    support_level = profile.get("support_level")
+    if isinstance(support_level, str) and support_level.strip():
+        payload["support_level"] = support_level.strip()
+    family = profile.get("family")
+    if isinstance(family, str) and family.strip():
+        payload["family"] = family.strip()
+    if not payload:
+        return {}
+    return payload
+
+
+def _compiler_contract_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    strategies: Dict[str, int] = {}
+    support_levels: Dict[str, int] = {}
+    supported_bundles = 0
+    for entry in bundles:
+        compiler_contract = entry.get("compiler_contract") or {}
+        if not isinstance(compiler_contract, dict):
+            continue
+        if compiler_contract.get("compiler_supported") is True:
+            supported_bundles += 1
+        strategy = str(compiler_contract.get("compiler_strategy") or "").strip()
+        if strategy:
+            strategies[strategy] = strategies.get(strategy, 0) + 1
+        support_level = str(compiler_contract.get("support_level") or "").strip()
+        if support_level:
+            support_levels[support_level] = support_levels.get(support_level, 0) + 1
+    return {
+        "bundle_count": len(bundles),
+        "supported_bundles": supported_bundles,
+        "unsupported_bundles": max(0, len(bundles) - supported_bundles),
+        "by_strategy": strategies,
+        "by_support_level": support_levels,
+    }
+
+
+def _bundle_requires_semantic_support(bundle) -> bool:
+    vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
+    if vuln_id.startswith("NAME-"):
+        return True
+    return not bool(load_static_rule(vuln_id))
+
+
 def _bundle_dynamicness_verdict(provenance: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(provenance, dict) or not provenance:
         return {
@@ -444,6 +767,28 @@ def _bundle_dynamicness_verdict(provenance: Dict[str, Any]) -> Dict[str, Any]:
             "verdict": "deterministic fallback dependent",
             "trusted": False,
             "reason": "deterministic fallback generation path was used",
+        }
+    if origin == "research_short_circuit":
+        failure_class = str(provenance.get("failure_class") or "").strip().lower()
+        reason = "generation was skipped after research precheck"
+        if failure_class == "semantic_support_missing":
+            reason = "generation was skipped after semantic support precheck"
+        elif failure_class in {"remote_provider_unavailable", "remote_evidence_missing"}:
+            reason = "generation was skipped after remote evidence precheck"
+        elif failure_class == "evidence_low_relevance":
+            reason = "generation was skipped after evidence relevance precheck"
+        elif failure_class == "provider_degraded":
+            reason = "generation was skipped after provider health precheck"
+        return {
+            "verdict": "pre-generation fail-closed",
+            "trusted": False,
+            "reason": reason,
+        }
+    if origin == "compiler_generated":
+        return {
+            "verdict": "compiler-first",
+            "trusted": False,
+            "reason": "compiler-generated scaffold/fragment path was used",
         }
     if origin in {"built_in_template", "runtime_template_clone"}:
         return {
@@ -476,6 +821,7 @@ def _collect_indices(metadata_dir: Path, artifacts_dir: Path) -> Dict[str, Optio
         "generator_runs": _existing(metadata_dir / "generator_runs.json"),
         "reviewer_report": _existing(metadata_dir / "reviewer_report.json"),
         "reviewer_reports_index": _existing(metadata_dir / "reviewer_reports.json"),
+        "semantic_profile": _existing(metadata_dir / "semantic_profile.json"),
         "run_index": _existing(artifacts_dir / "run" / "index.json"),
         "evals": _existing(artifacts_dir / "reports" / "evals.json"),
         "diversity": _existing(artifacts_dir / "reports" / "diversity.json"),
@@ -505,7 +851,8 @@ def main() -> None:
     plan = load_plan(args.sid)
     assert_review_passed(args.sid, plan, args.allow_intentional_vuln)
     snapshot_workspace(args.sid)
-    write_manifest(args.sid, plan)
+    filename = "manifest.json" if _pipeline_result(args.sid) == "success" else "failure_manifest.json"
+    write_manifest(args.sid, plan, filename=filename)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from common.contracts import build_generator_contract, load_generator_contract, write_generator_contract
+from common.contracts import (
+    build_generator_contract,
+    load_generator_contract,
+    requires_semantic_support,
+    write_generator_contract,
+)
 
 
 def test_contract_uses_rule_defined_success_markers(tmp_path: Path) -> None:
@@ -30,6 +35,26 @@ def test_contract_uses_rule_defined_success_markers(tmp_path: Path) -> None:
     assert payload["semantic_contract"]["status"] == "aligned"
     assert payload["semantic_contract"]["contradictions"] == []
     assert payload["semantic_contract"]["semantic_signature"]["sink"] == ["SQL query execution"]
+    assert payload["semantic_profile"]["compiler_supported"] is True
+    assert payload["compiler_strategy"] == "sqli_string_concat"
+
+
+def test_contract_marks_cwe352_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-352",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-352",
+        requirement={"vuln_name": "CSRF", "vuln_id": "CWE-352", "language": "python", "framework": "flask"},
+    )
+
+    profile = payload["semantic_profile"]
+    assert profile["family"] == "csrf"
+    assert profile["compiler_strategy"] == "csrf_missing_token"
+    assert profile["compiler_supported"] is True
+    assert payload["compiler_supported"] is True
 
 
 def test_contract_uses_researcher_proposal_when_rule_is_missing(tmp_path: Path) -> None:
@@ -91,6 +116,64 @@ def test_contract_uses_cwe918_rule_defined_markers(tmp_path: Path) -> None:
     assert payload["flag_token"] == "FLAG{SSRF_OK}"
     assert payload["semantic_contract"]["semantic_signature_source"] == ["baseline"]
     assert payload["semantic_contract"]["status"] == "aligned"
+    assert payload["semantic_profile"]["compiler_supported"] is True
+    assert payload["compiler_strategy"] == "ssrf_loopback_fetch"
+
+
+def test_contract_marks_cwe79_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-79",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-79",
+        requirement={"vuln_name": "Reflected XSS", "vuln_id": "CWE-79", "language": "python", "framework": "flask"},
+    )
+
+    profile = payload["semantic_profile"]
+    assert profile["family"] == "xss"
+    assert profile["support_level"] == "builtin_supported"
+    assert profile["compiler_strategy"] == "xss_reflected"
+    assert profile["compiler_supported"] is True
+    assert payload["compiler_supported"] is True
+    assert payload["compiler_strategy"] == "xss_reflected"
+
+
+def test_contract_marks_cwe502_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-502",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-502",
+        requirement={"vuln_name": "Insecure Deserialization", "vuln_id": "CWE-502", "language": "python", "framework": "flask"},
+    )
+
+    profile = payload["semantic_profile"]
+    assert profile["family"] == "deserialization"
+    assert profile["compiler_strategy"] == "deserialization_pickle_body"
+    assert profile["compiler_supported"] is True
+    assert payload["compiler_supported"] is True
+
+
+def test_contract_marks_cwe22_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-22",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-22",
+        requirement={"vuln_name": "Path Traversal", "vuln_id": "CWE-22", "language": "python", "framework": "flask"},
+    )
+
+    profile = payload["semantic_profile"]
+    assert profile["family"] == "path_traversal"
+    assert profile["compiler_strategy"] == "path_traversal_file_read"
+    assert profile["compiler_supported"] is True
+    assert payload["compiler_supported"] is True
 
 
 def test_contract_records_semantic_contradiction_against_known_baseline(tmp_path: Path) -> None:
@@ -151,6 +234,130 @@ def test_contract_records_foreign_family_terms_for_known_baseline(tmp_path: Path
     assert any("foreign-family term 'server-side request forgery'" in item for item in semantic_contract["contradictions"])
 
 
+def test_contract_marks_unsupported_when_freeform_semantics_are_empty(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        researcher_report={"researcher_report": {"verification_spec": {"success_text_markers": ["Exploit SUCCESS"]}}},
+    )
+
+    assert requires_semantic_support("NAME-OPEN-REDIRECT") is True
+    assert payload["semantic_contract"]["status"] == "unsupported"
+    assert payload["semantic_contract"]["contradictions"] == []
+
+
+def test_contract_surfaces_semantic_profile_and_compiler_verdict(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "language": "python",
+            "framework": "flask",
+        },
+        researcher_report={
+            "researcher_report": {
+                "semantic_signature": {
+                    "input_vector": ["next parameter"],
+                    "sink": ["redirect(", "Location header"],
+                    "exploit_precondition": ["open redirect", "unvalidated redirect target"],
+                },
+                "verification_spec": {"success_text_markers": ["Exploit SUCCESS"]},
+            }
+        },
+    )
+
+    profile = payload["semantic_profile"]
+    assert profile["schema_version"] == "semantic_profile@1.0"
+    assert profile["requested_name"] == "Open Redirect"
+    assert profile["family"] == "open_redirect"
+    assert profile["support_level"] == "compiler_supported"
+    assert profile["compiler_strategy"] == "open_redirect_reflect"
+    assert profile["compiler_supported"] is True
+    assert "available" in profile["compiler_reason"]
+    assert payload["compiler_supported"] is True
+    assert payload["compiler_strategy"] == "open_redirect_reflect"
+
+
+def test_contract_marks_name_template_injection_as_compiler_supported(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-TEMPLATE-INJECTION",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-template-injection",
+        requirement={
+            "vuln_name": "Template Injection",
+            "vuln_id": "NAME-TEMPLATE-INJECTION",
+            "language": "python",
+            "framework": "flask",
+        },
+        researcher_report={
+            "researcher_report": {
+                "semantic_signature": {
+                    "input_vector": ["request.args", "query parameter"],
+                    "sink": ["render_template_string", "jinja2 template rendering from string"],
+                    "exploit_precondition": [
+                        "user input is embedded into template source string (concatenation/interpolation)",
+                        "template string is rendered server-side without escaping/sandboxing",
+                    ],
+                },
+                "verification_spec": {"success_text_markers": ["Exploit SUCCESS"]},
+            }
+        },
+    )
+
+    profile = payload["semantic_profile"]
+    assert profile["family"] == "template_injection"
+    assert profile["support_level"] == "compiler_supported"
+    assert profile["compiler_strategy"] == "template_injection_render"
+    assert profile["compiler_supported"] is True
+    assert payload["compiler_supported"] is True
+    assert payload["compiler_strategy"] == "template_injection_render"
+
+
+def test_contract_detects_foreign_family_terms_for_name_open_redirect(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "language": "python",
+            "framework": "flask",
+        },
+        researcher_report={
+            "researcher_report": {
+                "semantic_signature": {
+                    "input_vector": ["next parameter"],
+                    "sink": ["render_template_string"],
+                    "exploit_precondition": ["server-side template injection"],
+                },
+                "verification_spec": {"success_text_markers": ["Exploit SUCCESS"]},
+            }
+        },
+    )
+
+    semantic_contract = payload["semantic_contract"]
+    assert semantic_contract["status"] == "contradicted"
+    assert any("foreign-family term 'render_template_string'" in item for item in semantic_contract["contradictions"])
+    assert any("foreign-family term 'server-side template injection'" in item for item in semantic_contract["contradictions"])
+
+
 def test_write_generator_contract_mirrors_resolved_and_legacy_files(tmp_path: Path) -> None:
     payload = {
         "schema_version": "resolved_contract@1.0",
@@ -164,6 +371,27 @@ def test_write_generator_contract_mirrors_resolved_and_legacy_files(tmp_path: Pa
         "service_port": 5000,
         "base_url": "http://127.0.0.1:5000",
         "output_mode": "auto",
+        "compiler_supported": False,
+        "compiler_strategy": "sqli_string_concat",
+        "compiler_reason": "compiler scaffold registry not implemented",
+        "semantic_profile": {
+            "schema_version": "semantic_profile@1.0",
+            "sid": "sid-contract",
+            "slug": "cwe-89",
+            "requested_name": "CWE-89",
+            "normalized_vuln_id": "CWE-89",
+            "family": "sql_injection",
+            "support_level": "builtin_supported",
+            "compiler_strategy": "sqli_string_concat",
+            "compiler_supported": False,
+            "compiler_reason": "compiler scaffold registry not implemented",
+            "stack_profile": {"language": "python", "framework": "flask"},
+            "scenario_shape": {"service_entry": "app.py", "poc_entry": "poc.py", "service_port": 5000},
+            "semantic_signature": {"input_vector": [], "sink": [], "exploit_precondition": []},
+            "verification_contract": {"success_signature": "SQLi SUCCESS", "output_mode": "auto"},
+            "derived_assertions": {"semantic_gate_required": False},
+            "evidence_relevance": {},
+        },
     }
 
     written = write_generator_contract(tmp_path, payload)
@@ -171,6 +399,7 @@ def test_write_generator_contract_mirrors_resolved_and_legacy_files(tmp_path: Pa
     assert written.name == "resolved_contract.json"
     assert (tmp_path / "resolved_contract.json").exists()
     assert (tmp_path / "generator_contract.json").exists()
+    assert (tmp_path / "semantic_profile.json").exists()
     loaded = load_generator_contract(tmp_path)
     assert loaded is not None
     assert loaded["success_signature"] == "SQLi SUCCESS"
@@ -183,6 +412,7 @@ def test_contract_provenance_prefers_generator_manifest_metadata(tmp_path: Path)
             {
                 "generation_origin": "deterministic_fallback",
                 "fallback_used": True,
+                "fallback_class": "generic_unsupported_family",
                 "family_override_applied": False,
                 "llm_stub_used": True,
                 "manifest": {
@@ -210,9 +440,11 @@ def test_contract_provenance_prefers_generator_manifest_metadata(tmp_path: Path)
 
     assert payload["generation_origin"] == "deterministic_fallback"
     assert payload["fallback_used"] is True
+    assert payload["fallback_class"] == "generic_unsupported_family"
     assert payload["family_override_applied"] is False
     assert payload["llm_stub_used"] is True
     assert payload["provenance"]["source"] == "generator_manifest"
+    assert payload["provenance"]["fallback_class"] == "generic_unsupported_family"
 
 
 def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_path: Path) -> None:
@@ -248,3 +480,31 @@ def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_
     assert payload["llm_stub_used"] is False
     assert payload["provenance"]["template_id"] == "flask_sqlite_raw"
     assert payload["provenance"]["source"] == "generator_template"
+
+
+def test_contract_rule_resolution_supports_name_prefixed_runtime_rules(tmp_path: Path, monkeypatch) -> None:
+    runtime_rules = tmp_path / "runtime_rules"
+    runtime_rules.mkdir(parents=True)
+    (runtime_rules / "name-open-redirect.yaml").write_text("cwe: NAME-OPEN-REDIRECT\nversion: 2\n", encoding="utf-8")
+    monkeypatch.setenv("VULD_RUNTIME_RULE_DIRS", str(runtime_rules))
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        researcher_report={
+            "researcher_report": {
+                "semantic_signature": {
+                    "input_vector": ["request.args", "next parameter"],
+                    "sink": ["redirect(", "location header"],
+                    "exploit_precondition": ["open redirect", "unvalidated redirect target"],
+                }
+            }
+        },
+    )
+
+    assert payload["rule_resolution"]["normalized_id"] == "name-open-redirect"
+    assert payload["rule_resolution"]["selected_source"] == "runtime"

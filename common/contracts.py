@@ -23,8 +23,9 @@ from common.researcher_report import (
     extract_verification_spec,
     normalize_researcher_report_payload,
 )
-from common.rules import load_rule, load_rulespec
+from common.rules import load_rule, load_rulespec, load_static_rule
 from common.vuln_semantics import (
+    FAMILY_CANONICAL_TAGS,
     baseline_semantic_signature,
     family_canonical_tags,
     normalize_vuln_id,
@@ -35,6 +36,67 @@ DEFAULT_APP_PORT = 5000
 RESOLVED_CONTRACT_SCHEMA_VERSION = "resolved_contract@1.0"
 RESOLVED_CONTRACT_FILENAME = "resolved_contract.json"
 LEGACY_CONTRACT_FILENAME = "generator_contract.json"
+SEMANTIC_PROFILE_SCHEMA_VERSION = "semantic_profile@1.0"
+SEMANTIC_PROFILE_FILENAME = "semantic_profile.json"
+SEMANTIC_STATUS_VALUES = {"aligned", "contradicted", "unsupported", "empty"}
+
+_SEMANTIC_PROFILE_DEFAULTS: Dict[str, Dict[str, str]] = {
+    "CWE-89": {
+        "family": "sql_injection",
+        "support_level": "builtin_supported",
+        "compiler_strategy": "sqli_string_concat",
+    },
+    "CWE-352": {
+        "family": "csrf",
+        "support_level": "builtin_supported",
+        "compiler_strategy": "csrf_missing_token",
+    },
+    "CWE-22": {
+        "family": "path_traversal",
+        "support_level": "builtin_supported",
+        "compiler_strategy": "path_traversal_file_read",
+    },
+    "CWE-918": {
+        "family": "ssrf",
+        "support_level": "builtin_supported",
+        "compiler_strategy": "ssrf_loopback_fetch",
+    },
+    "CWE-78": {
+        "family": "command_injection",
+        "support_level": "builtin_supported",
+        "compiler_strategy": "command_injection_shell",
+    },
+    "CWE-94": {
+        "family": "code_injection",
+        "support_level": "builtin_supported",
+        "compiler_strategy": "code_injection_eval",
+    },
+    "CWE-79": {
+        "family": "xss",
+        "support_level": "builtin_supported",
+        "compiler_strategy": "xss_reflected",
+    },
+    "CWE-502": {
+        "family": "deserialization",
+        "support_level": "builtin_supported",
+        "compiler_strategy": "deserialization_pickle_body",
+    },
+    "NAME-OPEN-REDIRECT": {
+        "family": "open_redirect",
+        "support_level": "compiler_supported",
+        "compiler_strategy": "open_redirect_reflect",
+    },
+    "NAME-TEMPLATE-INJECTION": {
+        "family": "template_injection",
+        "support_level": "compiler_supported",
+        "compiler_strategy": "template_injection_render",
+    },
+    "NAME-LDAP-INJECTION": {
+        "family": "ldap_injection",
+        "support_level": "unsupported",
+        "compiler_strategy": "",
+    },
+}
 
 
 def _resolved_contract_path(metadata_dir: Path) -> Path:
@@ -43,6 +105,10 @@ def _resolved_contract_path(metadata_dir: Path) -> Path:
 
 def _legacy_contract_path(metadata_dir: Path) -> Path:
     return metadata_dir / LEGACY_CONTRACT_FILENAME
+
+
+def _semantic_profile_path(metadata_dir: Path) -> Path:
+    return metadata_dir / SEMANTIC_PROFILE_FILENAME
 
 
 def load_generator_contract(metadata_dir: Path) -> Optional[Dict[str, Any]]:
@@ -58,12 +124,85 @@ def load_generator_contract(metadata_dir: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
+def load_semantic_profile(metadata_dir: Path) -> Optional[Dict[str, Any]]:
+    path = _semantic_profile_path(metadata_dir)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            return data
+    contract = load_generator_contract(metadata_dir)
+    if isinstance(contract, dict):
+        profile = contract.get("semantic_profile")
+        if isinstance(profile, dict):
+            return profile
+    return None
+
+
+def requires_semantic_support(vuln_id: str) -> bool:
+    token = str(vuln_id or "").strip().upper()
+    if token.startswith("NAME-"):
+        return True
+    return not bool(load_static_rule(vuln_id))
+
+
+def compiler_support_summary(vuln_id: str) -> Dict[str, Any]:
+    """Return the default compiler support verdict for a vuln family.
+
+    This is the pre-research/pre-generation lower-bound view derived from the
+    canonical family mapping plus the currently implemented compiler registry.
+    """
+
+    defaults = _semantic_profile_defaults(vuln_id)
+    support_level = str(defaults.get("support_level") or "unsupported").strip().lower()
+    compiler_strategy = _string_or_none(defaults.get("compiler_strategy")) or ""
+    compiler_available = _compiler_strategy_supported(compiler_strategy)
+    if support_level == "unsupported":
+        compiler_supported = False
+        compiler_reason = "semantic family unsupported for compiler-backed generation"
+    elif support_level == "deferred":
+        compiler_supported = False
+        compiler_reason = "family has deterministic fallback coverage but no compiler-backed path yet"
+    elif not compiler_strategy:
+        compiler_supported = False
+        compiler_reason = "no compiler strategy mapped for this family"
+    elif not compiler_available:
+        compiler_supported = False
+        compiler_reason = "compiler scaffold registry not implemented"
+    else:
+        compiler_supported = True
+        compiler_reason = "compiler strategy and scaffold are available"
+    return {
+        "family": defaults.get("family") or _fallback_family_label(vuln_id),
+        "support_level": support_level,
+        "compiler_strategy": compiler_strategy or None,
+        "compiler_supported": compiler_supported,
+        "compiler_reason": compiler_reason,
+        "static_rule": bool(load_static_rule(vuln_id)),
+    }
+
+
+def can_resolve_without_remote_research(vuln_id: str) -> bool:
+    """Whether the current release has a non-remote lower-bound path for a vuln."""
+
+    summary = compiler_support_summary(vuln_id)
+    return bool(summary.get("static_rule") or summary.get("compiler_supported"))
+
+
 def write_generator_contract(metadata_dir: Path, payload: Dict[str, Any]) -> Path:
     resolved_path = _resolved_contract_path(metadata_dir)
     legacy_path = _legacy_contract_path(metadata_dir)
     text = json.dumps(payload, indent=2, ensure_ascii=False)
     resolved_path.write_text(text, encoding="utf-8")
     legacy_path.write_text(text, encoding="utf-8")
+    profile = payload.get("semantic_profile")
+    if isinstance(profile, dict):
+        _semantic_profile_path(metadata_dir).write_text(
+            json.dumps(profile, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     return resolved_path
 
 
@@ -76,6 +215,7 @@ def build_generator_contract(
     generator_mode: str = "",
     bundle_slug: str = "",
     researcher_report: Optional[Dict[str, Any]] = None,
+    requirement: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a normalized generator contract for a single bundle.
 
@@ -267,6 +407,9 @@ def build_generator_contract(
     fallback_used = _bool_or_none(provenance.get("fallback_used")) if provenance else None
     if fallback_used is not None:
         payload["fallback_used"] = fallback_used
+    fallback_class = _string_or_none(provenance.get("fallback_class")) if provenance else None
+    if fallback_class:
+        payload["fallback_class"] = fallback_class
     family_override_applied = _bool_or_none(provenance.get("family_override_applied")) if provenance else None
     if family_override_applied is not None:
         payload["family_override_applied"] = family_override_applied
@@ -279,7 +422,172 @@ def build_generator_contract(
         payload["semantic_signature"] = semantic_contract["semantic_signature"]
     if semantic_contract.get("semantic_signature_source"):
         payload["semantic_signature_source"] = semantic_contract["semantic_signature_source"]
+    semantic_profile = _build_semantic_profile(
+        sid=sid,
+        bundle_slug=bundle_slug,
+        vuln_id=vuln_id,
+        requirement=requirement or {},
+        semantic_contract=semantic_contract,
+        proposed_verification_contract=proposal or {},
+        resolved=payload["resolved"],
+        rule_resolution=payload["rule_resolution"],
+    )
+    payload["semantic_profile"] = semantic_profile
+    payload["compiler_supported"] = bool(semantic_profile.get("compiler_supported"))
+    payload["compiler_strategy"] = _string_or_none(semantic_profile.get("compiler_strategy"))
+    payload["compiler_reason"] = _string_or_none(semantic_profile.get("compiler_reason"))
     return payload
+
+
+def _build_semantic_profile(
+    *,
+    sid: str,
+    bundle_slug: str,
+    vuln_id: str,
+    requirement: Dict[str, Any],
+    semantic_contract: Dict[str, Any],
+    proposed_verification_contract: Dict[str, Any],
+    resolved: Dict[str, Any],
+    rule_resolution: Dict[str, Any],
+) -> Dict[str, Any]:
+    defaults = _semantic_profile_defaults(vuln_id)
+    compiler_summary = compiler_support_summary(vuln_id)
+    support_level = str(compiler_summary.get("support_level") or "unsupported").strip().lower()
+    compiler_strategy = _string_or_none(compiler_summary.get("compiler_strategy")) or ""
+    compiler_supported = bool(compiler_summary.get("compiler_supported"))
+    compiler_reason = _string_or_none(compiler_summary.get("compiler_reason")) or ""
+
+    verification_contract = {
+        "success_signature": _string_or_none(resolved.get("success_signature")),
+        "flag_token": _string_or_none(resolved.get("flag_token")),
+        "output_mode": _string_or_none(resolved.get("output_mode")) or "auto",
+    }
+    if isinstance(proposed_verification_contract.get("assertion_program"), list):
+        verification_contract["assertion_program"] = deepcopy(
+            proposed_verification_contract.get("assertion_program") or []
+        )
+    for key in ("success_mode", "json_success_key", "json_success_value", "json_flag_key", "override_static"):
+        if key in proposed_verification_contract:
+            verification_contract[key] = deepcopy(proposed_verification_contract.get(key))
+
+    semantic_signature = _normalize_semantic_buckets(semantic_contract.get("semantic_signature"))
+    profile: Dict[str, Any] = {
+        "schema_version": SEMANTIC_PROFILE_SCHEMA_VERSION,
+        "sid": sid,
+        "slug": bundle_slug,
+        "requested_name": _requested_name(requirement, vuln_id),
+        "normalized_vuln_id": str(vuln_id or "").strip(),
+        "family": defaults.get("family") or _fallback_family_label(vuln_id),
+        "support_level": support_level,
+        "compiler_strategy": compiler_strategy,
+        "compiler_supported": compiler_supported,
+        "compiler_reason": compiler_reason,
+        "stack_profile": _stack_profile(requirement),
+        "scenario_shape": {
+            "service_entry": _string_or_none(resolved.get("service_entry")) or "app.py",
+            "poc_entry": _string_or_none(resolved.get("poc_entry")) or "poc.py",
+            "service_port": resolved.get("service_port") or DEFAULT_APP_PORT,
+            "base_url": _string_or_none(resolved.get("base_url")),
+        },
+        "semantic_signature": semantic_signature,
+        "verification_contract": verification_contract,
+        "derived_assertions": {
+            "semantic_gate_required": requires_semantic_support(vuln_id),
+            "semantic_status": _string_or_none(semantic_contract.get("status")) or "unsupported",
+            "rule_source": _string_or_none(rule_resolution.get("selected_source")) or "none",
+            "service_entry": _string_or_none(resolved.get("service_entry")) or "app.py",
+            "service_port": resolved.get("service_port") or DEFAULT_APP_PORT,
+        },
+        "evidence_relevance": deepcopy(semantic_contract.get("evidence_relevance"))
+        if isinstance(semantic_contract.get("evidence_relevance"), dict)
+        else {},
+    }
+    signature_source = semantic_contract.get("semantic_signature_source")
+    if isinstance(signature_source, list) and signature_source:
+        profile["semantic_signature_source"] = list(signature_source)
+    return profile
+
+
+def _requested_name(requirement: Dict[str, Any], vuln_id: str) -> str:
+    if isinstance(requirement, dict):
+        for key in ("vuln_name", "requested_name", "name"):
+            value = _string_or_none(requirement.get(key))
+            if value:
+                return value
+        value = _string_or_none(requirement.get("vuln_id"))
+        if value:
+            return value
+    token = str(vuln_id or "").strip()
+    if token.upper().startswith("NAME-"):
+        return token[5:].replace("-", " ")
+    return token
+
+
+def _stack_profile(requirement: Dict[str, Any]) -> Dict[str, Any]:
+    runtime = requirement.get("runtime") if isinstance(requirement, dict) else {}
+    runtime = runtime if isinstance(runtime, dict) else {}
+    return {
+        "language": _string_or_none(requirement.get("language") if isinstance(requirement, dict) else None) or "python",
+        "framework": _string_or_none(requirement.get("framework") if isinstance(requirement, dict) else None) or "flask",
+        "base_image": _string_or_none(runtime.get("base_image"))
+        or _string_or_none(requirement.get("base_image") if isinstance(requirement, dict) else None)
+        or "python:3.11-slim",
+        "package_manager": _string_or_none(runtime.get("package_manager"))
+        or _string_or_none(requirement.get("package_manager") if isinstance(requirement, dict) else None)
+        or "pip",
+        "generator_mode": _string_or_none(requirement.get("generator_mode") if isinstance(requirement, dict) else None)
+        or "synthesis",
+    }
+
+
+def _semantic_profile_defaults(vuln_id: str) -> Dict[str, str]:
+    token = normalize_vuln_id(vuln_id).upper().replace("_", "-")
+    if not token:
+        token = str(vuln_id or "").strip().upper().replace("_", "-")
+    defaults = _SEMANTIC_PROFILE_DEFAULTS.get(token)
+    if defaults:
+        return dict(defaults)
+    if token.startswith("NAME-"):
+        return {
+            "family": token[5:].lower().replace("-", "_"),
+            "support_level": "unsupported",
+            "compiler_strategy": "",
+        }
+    if load_static_rule(vuln_id):
+        normalized = normalize_vuln_id(vuln_id).replace("-", "_")
+        return {
+            "family": normalized or "builtin_family",
+            "support_level": "builtin_supported",
+            "compiler_strategy": "",
+        }
+    return {
+        "family": _fallback_family_label(vuln_id),
+        "support_level": "unsupported",
+        "compiler_strategy": "",
+    }
+
+
+def _fallback_family_label(vuln_id: str) -> str:
+    token = str(vuln_id or "").strip().lower().replace("-", "_")
+    if token.startswith("name_"):
+        return token[5:] or "unsupported_family"
+    if token.startswith("cwe_"):
+        return token
+    if token:
+        return token
+    return "unsupported_family"
+
+
+def _compiler_strategy_supported(strategy: str) -> bool:
+    token = str(strategy or "").strip()
+    if not token:
+        return False
+    try:
+        from agents.generator.compiler import supported_compiler_strategies
+
+        return token in supported_compiler_strategies()
+    except Exception:
+        return False
 
 
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -342,11 +650,30 @@ def _resolve_generation_provenance(
     if llm_stub_used is not None:
         provenance["llm_stub_used"] = llm_stub_used
 
+    fallback_class = _fallback_class_from_payload(manifest_payload)
+    if fallback_class is None and isinstance(template_summary, dict):
+        fallback_class = _string_or_none(template_summary.get("fallback_class"))
+    if fallback_class:
+        provenance["fallback_class"] = fallback_class
+
     template_id = _string_or_none(template_summary.get("template_id")) if isinstance(template_summary, dict) else None
     if template_id:
         provenance["template_id"] = template_id
 
     return provenance
+
+
+def _fallback_class_from_payload(payload: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    direct = _string_or_none(payload.get("fallback_class"))
+    if direct:
+        return direct
+    manifest = _unwrap_manifest(payload)
+    metadata = manifest.get("metadata") if isinstance(manifest, dict) else None
+    if isinstance(metadata, dict):
+        return _string_or_none(metadata.get("fallback_class"))
+    return None
 
 
 def _dig(mapping: Dict[str, Any], *keys: str) -> Any:
@@ -433,6 +760,7 @@ def _normalize_proposed_verification_contract(report: Dict[str, Any]) -> Optiona
 
 def _resolve_semantic_contract(vuln_id: str, report: Dict[str, Any], guard_spec: Dict[str, Any]) -> Dict[str, Any]:
     contract = extract_semantic_contract(report)
+    is_free_form_name = str(vuln_id or "").strip().upper().startswith("NAME-")
     report_signature = contract.get("semantic_signature") if isinstance(contract, dict) else None
     guard_signature = guard_spec.get("semantic_signature") if isinstance(guard_spec, dict) else None
     baseline_signature = _normalize_semantic_buckets(baseline_semantic_signature(vuln_id))
@@ -442,7 +770,7 @@ def _resolve_semantic_contract(vuln_id: str, report: Dict[str, Any], guard_spec:
         contract["semantic_signature"] = guard_signature
         contract.setdefault("semantic_signature_source", ["guard_spec"])
         resolved_signature = _normalize_semantic_buckets(guard_signature)
-    elif has_baseline and not any(resolved_signature.get(bucket) for bucket in resolved_signature):
+    elif has_baseline and not is_free_form_name and not any(resolved_signature.get(bucket) for bucket in resolved_signature):
         contract["semantic_signature"] = baseline_signature
         contract["semantic_signature_source"] = ["baseline"]
         resolved_signature = baseline_signature
@@ -454,10 +782,23 @@ def _resolve_semantic_contract(vuln_id: str, report: Dict[str, Any], guard_spec:
         signature=resolved_signature,
         report_signature=report_signature if isinstance(report_signature, dict) else {},
         guard_signature=guard_signature if isinstance(guard_signature, dict) else {},
+        require_expected_terms=not is_free_form_name,
     )
     contract["authority"] = "resolved_contract.semantic_contract"
     contract["contradictions"] = contradictions
-    contract["status"] = "contradicted" if contradictions else "aligned"
+    report_has_terms = _semantic_signature_present(report_signature)
+    guard_has_terms = _semantic_signature_present(guard_signature)
+    resolved_has_terms = _semantic_signature_present(resolved_signature)
+    baseline_counts_as_present = has_baseline and not is_free_form_name
+    if contradictions:
+        status = "contradicted"
+    elif resolved_has_terms:
+        status = "aligned"
+    elif baseline_counts_as_present or report_has_terms or guard_has_terms:
+        status = "empty"
+    else:
+        status = "unsupported"
+    contract["status"] = status
     return contract
 
 
@@ -467,6 +808,7 @@ def _semantic_contract_contradictions(
     signature: Any,
     report_signature: Dict[str, Any],
     guard_signature: Dict[str, Any],
+    require_expected_terms: bool = True,
 ) -> list[str]:
     resolved = _normalize_semantic_buckets(signature)
     report_norm = _normalize_semantic_buckets(report_signature)
@@ -477,7 +819,7 @@ def _semantic_contract_contradictions(
     for bucket in ("input_vector", "sink", "exploit_precondition"):
         expected = baseline.get(bucket) or []
         observed = resolved.get(bucket) or []
-        if expected and not observed:
+        if require_expected_terms and expected and not observed:
             contradictions.append(f"semantic_contract missing expected {bucket} for {vuln_id}")
         elif expected and observed and not _semantic_bucket_overlap(expected, observed):
             contradictions.append(f"semantic_contract {bucket} conflicts with baseline {vuln_id} semantics")
@@ -513,6 +855,11 @@ def _normalize_semantic_buckets(signature: Any) -> Dict[str, list[str]]:
     return normalized
 
 
+def _semantic_signature_present(signature: Any) -> bool:
+    normalized = _normalize_semantic_buckets(signature)
+    return any(normalized.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition"))
+
+
 def _semantic_bucket_overlap(lhs: list[str], rhs: list[str]) -> bool:
     for left in lhs:
         left_aliases = semantic_term_aliases(left)
@@ -531,16 +878,7 @@ def _foreign_family_semantic_terms(vuln_id: str, *, bucket: str, values: list[st
     if not allowed:
         return []
     foreign_tags: dict[str, str] = {}
-    for candidate in (
-        "cwe-89",
-        "cwe-352",
-        "cwe-22",
-        "cwe-918",
-        "cwe-78",
-        "cwe-94",
-        "cwe-79",
-        "cwe-502",
-    ):
+    for candidate in sorted(FAMILY_CANONICAL_TAGS):
         if candidate == normalized:
             continue
         for tag in family_canonical_tags(candidate):
@@ -686,6 +1024,10 @@ def _normalized_rule_id(vuln_id: str) -> str:
     token = (vuln_id or "").strip().lower()
     if not token:
         return "cwe-unknown"
+    if token.startswith("name_"):
+        token = token.replace("_", "-", 1)
+    if token.startswith("name-"):
+        return token
     if token.startswith("cwe_"):
         token = token.replace("_", "-", 1)
     if token.startswith("cwe-"):
@@ -708,8 +1050,12 @@ def _runtime_rule_dirs() -> list[Path]:
 
 
 __all__ = [
+    "can_resolve_without_remote_research",
+    "compiler_support_summary",
     "DEFAULT_APP_PORT",
     "build_generator_contract",
     "load_generator_contract",
+    "load_semantic_profile",
+    "requires_semantic_support",
     "write_generator_contract",
 ]

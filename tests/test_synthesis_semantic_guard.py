@@ -232,6 +232,57 @@ def test_family_aware_fallback_manifest_for_cwe352_passes_guard(tmp_path: Path) 
     assert semantics.get("semantic_match") is True
 
 
+def test_family_aware_fallback_manifest_for_cwe79_passes_guard(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-79")
+    manifest = engine._fallback_manifest()
+
+    errors, report = engine._guard_manifest(manifest)
+
+    assert not any("semantic mismatch:" in item for item in errors)
+    assert manifest["metadata"]["generation_origin"] == "deterministic_fallback"
+    assert manifest["metadata"]["fallback_class"] == "family_aware"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "render_template_string" in service_main["content"]
+    assert "cross-site scripting" in service_main["content"].lower()
+    assert "<script>alert(1)</script>" in poc_entry["content"]
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
+def test_family_aware_fallback_manifest_for_cwe918_passes_guard(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-918")
+    manifest = engine._fallback_manifest()
+
+    errors, report = engine._guard_manifest(manifest)
+
+    assert not any("semantic mismatch:" in item for item in errors)
+    assert manifest["metadata"]["fallback_class"] == "family_aware"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "requests.get" in service_main["content"]
+    assert "/metadata" in service_main["content"]
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
+def test_family_aware_fallback_manifest_for_cwe502_passes_guard(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-502")
+    manifest = engine._fallback_manifest()
+
+    errors, report = engine._guard_manifest(manifest)
+
+    assert not any("guard semantic mismatch:" in item for item in errors)
+    assert manifest["metadata"]["fallback_class"] == "family_aware"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "pickle.loads" in service_main["content"]
+    assert "request.get_data" in service_main["content"]
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
 def test_semantic_guard_accepts_cwe918_same_container_loopback_indicator(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "CWE-918")
     manifest = {

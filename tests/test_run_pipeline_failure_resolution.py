@@ -11,6 +11,43 @@ if str(REPO_ROOT) not in sys.path:
 import orchestrator.run_pipeline as run_pipeline
 
 
+def test_prepare_fresh_run_state_clears_generated_outputs_but_keeps_plan_and_runtime_assets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-fresh-run"
+    metadata_root = tmp_path / "metadata" / sid
+    artifacts_root = tmp_path / "artifacts" / sid
+    workspace_root = tmp_path / "workspaces" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "plan.json").write_text("{}", encoding="utf-8")
+    (metadata_root / "runtime_rules").mkdir(parents=True, exist_ok=True)
+    (metadata_root / "runtime_templates").mkdir(parents=True, exist_ok=True)
+    (metadata_root / "manifest.json").write_text("{}", encoding="utf-8")
+    (metadata_root / "loop_state.json").write_text("{}", encoding="utf-8")
+    (metadata_root / "resolved_contract.json").write_text("{}", encoding="utf-8")
+    (artifacts_root / "reports").mkdir(parents=True, exist_ok=True)
+    (artifacts_root / "reports" / "evals.json").write_text("{}", encoding="utf-8")
+    (workspace_root / "app").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(run_pipeline, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+    monkeypatch.setattr(run_pipeline, "get_workspace_dir", lambda incoming_sid: tmp_path / "workspaces" / incoming_sid)
+
+    run_pipeline._prepare_fresh_run_state(sid)
+
+    assert (metadata_root / "plan.json").exists()
+    assert (metadata_root / "runtime_rules").exists()
+    assert (metadata_root / "runtime_templates").exists()
+    assert not (metadata_root / "manifest.json").exists()
+    assert not (metadata_root / "loop_state.json").exists()
+    assert not (metadata_root / "resolved_contract.json").exists()
+    assert not (artifacts_root / "reports" / "evals.json").exists()
+    assert not (workspace_root / "app").exists()
+
+
 def test_latest_generator_failure_falls_back_to_bundle_paths(tmp_path: Path, monkeypatch) -> None:
     sid = "sid-failure-path"
     metadata_root = tmp_path / "metadata" / sid
@@ -133,7 +170,84 @@ def test_record_deferred_refresh_marks_loop_state(tmp_path: Path, monkeypatch) -
     assert metadata["planned_next_action"]["retry_stage"] == "RESEARCH"
 
 
-def test_can_skip_researcher_for_known_static_without_required_evidence(monkeypatch) -> None:
+def test_terminal_research_failure_from_semantic_profile_marks_unsupported_name_bundle(tmp_path: Path) -> None:
+    sid = "sid-terminal-profile"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "semantic_profile.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "semantic_profile@1.0",
+                "sid": sid,
+                "slug": "name-ldap-injection",
+                "normalized_vuln_id": "NAME-LDAP-INJECTION",
+                "family": "ldap_injection",
+                "support_level": "unsupported",
+                "compiler_supported": False,
+                "compiler_reason": "semantic family unsupported for compiler-backed generation",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_root),
+            "artifacts": str(tmp_path / "artifacts" / sid),
+            "workspace": str(tmp_path / "workspaces" / sid / "app"),
+        },
+        "requirement": {"vuln_id": "NAME-LDAP-INJECTION"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-LDAP-INJECTION", "slug": "name-ldap-injection", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+
+    outcome = run_pipeline._terminal_research_failure_from_semantic_profile(plan)
+
+    assert outcome["terminal"] is True
+    assert outcome["terminal_failure_class"] == "semantic_support_missing"
+    assert "name-ldap-injection" in outcome["reason"]
+
+
+def test_terminal_research_failure_from_semantic_profile_allows_compiler_supported_name_bundle(tmp_path: Path) -> None:
+    sid = "sid-compiler-profile"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "semantic_profile.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "semantic_profile@1.0",
+                "sid": sid,
+                "slug": "name-open-redirect",
+                "normalized_vuln_id": "NAME-OPEN-REDIRECT",
+                "family": "open_redirect",
+                "support_level": "compiler_supported",
+                "compiler_supported": True,
+                "compiler_strategy": "open_redirect_reflect",
+                "compiler_reason": "compiler strategy and scaffold are available",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_root),
+            "artifacts": str(tmp_path / "artifacts" / sid),
+            "workspace": str(tmp_path / "workspaces" / sid / "app"),
+        },
+        "requirement": {"vuln_id": "NAME-OPEN-REDIRECT"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+
+    outcome = run_pipeline._terminal_research_failure_from_semantic_profile(plan)
+
+    assert outcome["terminal"] is False
+
+
+def test_can_skip_researcher_for_known_static_without_required_evidence() -> None:
     plan = {
         "requirement": {"researcher": {}},
         "policy": {"require_researcher_evidence": False},
@@ -144,24 +258,96 @@ def test_can_skip_researcher_for_known_static_without_required_evidence(monkeypa
             ]
         },
     }
-    monkeypatch.setattr(run_pipeline, "load_static_rule", lambda vuln_id: {"cwe": vuln_id})
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is True
+
+
+def test_can_skip_researcher_for_compiler_supported_without_required_evidence() -> None:
+    plan = {
+        "requirement": {"researcher": {}},
+        "policy": {"require_researcher_evidence": False},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "CWE-22", "slug": "cwe-22", "workspace_subdir": "app"},
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"},
+            ]
+        },
+    }
 
     assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is True
 
 
-def test_cannot_skip_researcher_when_required_or_refresh_requested(monkeypatch) -> None:
+def test_cannot_skip_researcher_when_required_or_refresh_requested() -> None:
     plan = {
         "requirement": {"researcher": {}},
         "policy": {"require_researcher_evidence": True},
         "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-9999", "slug": "cwe-9999", "workspace_subdir": "app"}]},
     }
-    monkeypatch.setattr(run_pipeline, "load_static_rule", lambda vuln_id: {})
-
     assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is False
     assert run_pipeline._can_skip_researcher(
         {"requirement": {"researcher": {}}, "policy": {"require_researcher_evidence": False}, "run_matrix": plan["run_matrix"]},
         refresh_requested=True,
     ) is False
+
+
+def test_research_failure_details_uses_insufficient_evidence_reason(tmp_path: Path) -> None:
+    sid = "sid-research-failure"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    report_path = metadata_root / "researcher_report.json"
+    health_path = metadata_root / "search_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "provider": "custom",
+                "configured": False,
+                "last_error": "VUL_WEB_SEARCH_ENDPOINT is not configured",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(
+        json.dumps(
+            {
+                "quality": "insufficient",
+                "quality_reason": "Insufficient researcher evidence for CWE-9999: search_policy=remote_required requires at least one remote hit, but none were found.",
+                "search_health_path": str(health_path),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_root),
+            "artifacts": str(tmp_path / "artifacts" / sid),
+            "workspace": str(tmp_path / "workspaces" / sid / "app"),
+        },
+        "requirement": {"vuln_id": "CWE-9999"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-9999", "slug": "cwe-9999", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+
+    reason, fix_hint, metadata = run_pipeline._research_failure_details(plan, 1)
+
+    assert "Insufficient researcher evidence" in reason
+    assert "Configure the remote search provider" in fix_hint
+    assert metadata["search_provider"] == "custom"
+    assert metadata["terminal_failure_class"] == "remote_provider_unavailable"
+    assert metadata["retry_recommended"] is False
+
+
+def test_should_retry_research_failure_false_for_terminal_class() -> None:
+    metadata = {"terminal_failure_class": "remote_evidence_missing", "retry_recommended": False}
+
+    assert run_pipeline._should_retry_research_failure(metadata) is False
+
+
+def test_should_retry_research_failure_true_for_unclassified_failure() -> None:
+    metadata = {"exit_code": 1}
+
+    assert run_pipeline._should_retry_research_failure(metadata) is True
 
 
 def test_write_perf_summary_records_retry_and_provider_health(tmp_path: Path, monkeypatch) -> None:
@@ -184,7 +370,12 @@ def test_write_perf_summary_records_retry_and_provider_health(tmp_path: Path, mo
         json.dumps(
             {
                 "schema_version": "resolved_contract@1.0",
+                "slug": "cwe-89",
+                "vuln_id": "CWE-89",
                 "llm_stub_used": True,
+                "compiler_supported": False,
+                "compiler_strategy": "sqli_string_concat",
+                "compiler_reason": "compiler scaffold registry not implemented",
                 "provenance": {"llm_stub_used": True},
             },
             ensure_ascii=False,
@@ -204,6 +395,10 @@ def test_write_perf_summary_records_retry_and_provider_health(tmp_path: Path, mo
     assert payload["retry_count"] == 1
     assert payload["provider_health_state"] == "llm_degraded"
     assert payload["llm_stub_used"] is True
+    assert payload["compiler_supported"] is False
+    assert payload["compiler_strategy"] == "sqli_string_concat"
+    assert payload["compiler_reason"] == "compiler scaffold registry not implemented"
+    assert payload["compiler_contracts"][0]["compiler_supported"] is False
 
 
 def test_write_perf_summary_uses_failure_records_for_llm_health(tmp_path: Path, monkeypatch) -> None:
@@ -251,3 +446,173 @@ def test_write_perf_summary_uses_failure_records_for_llm_health(tmp_path: Path, 
     assert payload["provider_health_state"] == "llm_degraded"
     assert payload["llm_stub_used"] is True
     assert payload["llm_failure_class"] == "quota_exhausted"
+
+
+def test_write_perf_summary_marks_compiler_only_lane_as_not_probed(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-perf-compiler-only"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "resolved_contract.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "resolved_contract@1.0",
+                "slug": "cwe-918",
+                "vuln_id": "CWE-918",
+                "compiler_supported": True,
+                "compiler_strategy": "ssrf_loopback_fetch",
+                "compiler_reason": "compiler strategy and scaffold are available",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "GENERATOR", "duration_s": 1.5, "returncode": 0, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 0, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["provider_health_state"] == "not_probed"
+    assert payload["compiler_supported"] is True
+    assert payload["compiler_strategy"] == "ssrf_loopback_fetch"
+
+
+def test_write_perf_summary_surfaces_remote_provider_unavailable_failure_class(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-perf-remote-unavailable"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "search_health.json").write_text(
+        json.dumps(
+            {
+                "provider": "none",
+                "configured": False,
+                "degraded": False,
+                "remote_result_count": 0,
+                "last_error": "search_policy requires remote search, but no remote provider is configured",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_root / "loop_state.json").write_text(
+        json.dumps(
+            {
+                "history": [
+                    {
+                        "stage": "RESEARCH",
+                        "reason": "remote provider unavailable",
+                        "success": False,
+                        "timestamp": "2026-03-08T06:38:26.539948+00:00",
+                        "metadata": {
+                            "terminal_failure_class": "remote_provider_unavailable",
+                            "retry_recommended": False,
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "RESEARCH", "duration_s": 1.5, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 0, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["provider_health_state"] == "remote_provider_unavailable"
+
+
+def test_analyze_verify_failures_marks_terminal_semantic_unsupported(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-terminal-verify"
+    artifacts_root = tmp_path / "artifacts" / sid / "reports"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+    (artifacts_root / "evals.json").write_text(
+        json.dumps(
+            {
+                "overall_pass": False,
+                "results": [
+                    {
+                        "slug": "name-ldap-injection",
+                        "vuln_id": "NAME-LDAP-INJECTION",
+                        "verify_pass": False,
+                        "semantic_supported": False,
+                        "semantic_status": "unsupported",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    analysis = run_pipeline._analyze_verify_failures(sid)
+
+    assert analysis["terminal_semantic_unsupported"] is True
+    assert analysis["failure_count"] == 1
+    assert analysis["slugs"] == ["name-ldap-injection"]
+
+
+def test_analyze_verify_failures_keeps_retryable_verify_mismatch_non_terminal(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-retryable-verify"
+    artifacts_root = tmp_path / "artifacts" / sid / "reports"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+    (artifacts_root / "evals.json").write_text(
+        json.dumps(
+            {
+                "overall_pass": False,
+                "results": [
+                    {
+                        "slug": "cwe-89",
+                        "vuln_id": "CWE-89",
+                        "verify_pass": False,
+                        "semantic_supported": True,
+                        "semantic_status": "contradicted",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    analysis = run_pipeline._analyze_verify_failures(sid)
+
+    assert analysis["terminal_semantic_unsupported"] is False
+    assert analysis["failure_count"] == 1
+
+
+def test_compiler_contract_snapshot_deduplicates_resolved_and_legacy_contracts(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-compiler-contracts"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "resolved_contract@1.0",
+        "sid": sid,
+        "slug": "name-open-redirect",
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "compiler_supported": False,
+        "compiler_strategy": "open_redirect_reflect",
+        "compiler_reason": "family has deterministic fallback coverage but no compiler-backed path yet",
+        "semantic_profile": {
+            "family": "open_redirect",
+            "support_level": "deferred",
+        },
+    }
+    for name in ("resolved_contract.json", "generator_contract.json"):
+        (metadata_root / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+
+    snapshot = run_pipeline._compiler_contract_snapshot(sid)
+
+    assert len(snapshot) == 1
+    assert snapshot[0]["compiler_strategy"] == "open_redirect_reflect"
+    assert snapshot[0]["support_level"] == "deferred"

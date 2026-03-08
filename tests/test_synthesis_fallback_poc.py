@@ -153,6 +153,10 @@ def test_template_injection_stabilizer_rewrites_poc_deterministically(tmp_path: 
             "success_signature": "OK: arithmetic marker present",
             "flag_token": "SSTI_OK",
         },
+        "run": {
+            "command": "python app.py",
+            "port": 8000,
+        },
     }
     template = {
         "cmd": "python poc.py --base-url {{base_url}}",
@@ -167,6 +171,8 @@ def test_template_injection_stabilizer_rewrites_poc_deterministically(tmp_path: 
     ast.parse(poc_content)
     assert "DEFAULT_PAYLOAD = 'SSTI_OK {{7*7}}'" in poc_content
     assert "ROUTE_CANDIDATES = ['/greet', '/display_name', '/hello', '/']" in poc_content
+    assert "ap.add_argument('--base-url', default='http://127.0.0.1:5000')" not in poc_content
+    assert "ap.add_argument('--base-url', default='http://127.0.0.1:8000')" in poc_content
     assert "print('49')" in poc_content
     assert updated["poc"]["success_signature"] == "OK: arithmetic marker present"
     assert updated["poc"]["flag_token"] == "SSTI_OK"

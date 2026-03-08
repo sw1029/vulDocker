@@ -8,6 +8,8 @@
       "verify_pass": true,
       "run_passed": true,
       "exit_code": 0,
+      "compiler_supported": true,
+      "compiler_strategy": "ssrf_loopback_fetch",
       "evidence_contains": [
         "FLAG{SSRF_OK}"
       ]

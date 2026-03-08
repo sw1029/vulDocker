@@ -1,0 +1,24 @@
+{
+  "scaffold_id": "python/flask",
+  "version": "1.0",
+  "language": "python",
+  "framework": "flask",
+  "base_image": "python:3.11-slim",
+  "workdir": "/app",
+  "requirements_path": "requirements.txt",
+  "install_command": "pip install --no-cache-dir -r requirements.txt",
+  "service_entry": "app.py",
+  "service_host": "0.0.0.0",
+  "health_route": {
+    "path": "/health",
+    "response": "{'ok': True}"
+  },
+  "dockerfile_template": [
+    "FROM {{base_image}}",
+    "WORKDIR {{workdir}}",
+    "COPY . {{workdir}}",
+    "RUN {{install_command}}",
+    "EXPOSE {{port}}",
+    "CMD [\"python\", \"{{service_path}}\"]"
+  ]
+}

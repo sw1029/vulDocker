@@ -210,6 +210,93 @@ def test_rule_based_verifier_fails_when_guard_consistency_blocks(
     assert "guard mismatch:" in result["evidence"]
 
 
+def test_freeform_name_rule_based_verifier_fails_closed_when_semantic_support_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-open-redirect"
+    slug = "name-open-redirect"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / "app"
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/reflect')\n"
+        "def reflect():\n"
+        "    value = request.args.get('q', '')\n"
+        "    return f'<p>{value}</p>'\n"
+    )
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_origin": "deterministic_fallback",
+                "fallback_used": True,
+                "fallback_class": "generic_unsupported_family",
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+                    ],
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "success_signature": "Exploit SUCCESS",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "fallback_used": True,
+            "fallback_class": "generic_unsupported_family",
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": [],
+                    "sink": [],
+                    "exploit_precondition": [],
+                },
+                "semantic_signature_source": ["empty"],
+                "status": "unsupported",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "NAME-OPEN-REDIRECT",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["exploit_pass"] is True
+    assert result["semantic_supported"] is False
+    assert result["semantic_status"] == "unsupported"
+    assert result["verify_pass"] is False
+    assert "semantic support missing" in result["evidence"]
+
+
 def test_evaluate_with_vuln_runtime_assertions_do_not_bypass_semantic_contract(
     tmp_path: Path,
     monkeypatch,
@@ -299,3 +386,173 @@ def test_evaluate_with_vuln_runtime_assertions_do_not_bypass_semantic_contract(
     assert result["semantic_consistency"]["supported"] is True
     assert result["semantic_consistency"]["semantic_match"] is False
     assert "semantic mismatch:" in result["evidence"]
+
+
+def test_rule_based_verifier_ignores_poc_only_semantic_hits_for_unknown_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-scope"
+    slug = "name-scope"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / "app"
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/')\n"
+        "def home():\n"
+        "    return 'safe response'\n"
+    )
+    poc_text = (
+        "# request.args render_template_string template response <script> "
+        "unescaped reflection cross-site scripting\n"
+        "print('Exploit SUCCESS')\n"
+    )
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": poc_text},
+                    ],
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "NAME-SCOPE",
+            "success_signature": "Exploit SUCCESS",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["request.args", "query parameter"],
+                    "sink": ["render_template_string", "template response"],
+                    "exploit_precondition": ["<script>", "unescaped reflection", "cross-site scripting"],
+                },
+                "semantic_signature_source": ["contract"],
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "NAME-SCOPE",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["exploit_pass"] is True
+    assert result["semantic_consistency"]["supported"] is True
+    assert result["semantic_consistency"]["semantic_match"] is False
+    assert result["verify_pass"] is False
+
+
+def test_freeform_open_redirect_can_pass_when_semantics_and_service_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-open-redirect-pass"
+    slug = "name-open-redirect"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / "app"
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, redirect, request\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/go')\n"
+        "def go():\n"
+        "    # open redirect via unvalidated redirect target\n"
+        "    next_url = request.args.get('next', 'https://example.com')\n"
+        "    return redirect(next_url, code=302)\n"
+    )
+    poc_text = "print('Exploit SUCCESS')\n"
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_origin": "deterministic_fallback",
+                "fallback_used": True,
+                "fallback_class": "family_aware",
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": poc_text},
+                    ],
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "success_signature": "Exploit SUCCESS",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "fallback_used": True,
+            "fallback_class": "family_aware",
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["request.args", "next parameter", "redirect target"],
+                    "sink": ["redirect(", "location header", "http redirect sink"],
+                    "exploit_precondition": ["open redirect", "unvalidated redirect target", "external redirect"],
+                },
+                "semantic_signature_source": ["pattern", "heuristic"],
+                "status": "aligned",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "NAME-OPEN-REDIRECT",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is True
+    assert result["semantic_supported"] is True
+    assert result["semantic_status"] == "aligned"
+    assert result["semantic_consistency"]["source"] == "generator_manifest"

@@ -11,6 +11,7 @@ from common.logging import get_logger
 from common.llm import LLMClient
 from common.prompts import build_llm_verifier_prompt
 from common.rules import RuleSpec, load_rulespec
+from evals.assertions import run_assertions
 
 LOGGER = get_logger(__name__)
 DEFAULT_LOG_EXCERPT = 6000

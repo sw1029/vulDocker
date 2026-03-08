@@ -40,3 +40,34 @@ def test_template_planner_can_be_force_enabled_from_requirement() -> None:
     service.requirement = {"template_plan_enabled": True}  # type: ignore[attr-defined]
 
     assert service._should_generate_template_plan(_context()) is True  # type: ignore[attr-defined]
+
+
+def test_hybrid_template_fallback_requires_compatible_template() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {"vuln_id": "NAME-LDAP-INJECTION", "pattern_id": "generic-web-vuln"}  # type: ignore[attr-defined]
+    service._allow_external_db = lambda: False  # type: ignore[attr-defined]
+
+    class _Template:
+        def __init__(self, tags: list[str], pattern_id: str, requires_external_db: bool = False) -> None:
+            self.tags = tags
+            self.pattern_id = pattern_id
+            self.requires_external_db = requires_external_db
+
+    class _Registry:
+        templates = [
+            _Template(["cwe-89", "sqlite"], "sqli-sqlite-raw"),
+            _Template(["cwe-352", "csrf"], "csrf-missing-token"),
+        ]
+
+    service._get_registry = lambda: _Registry()  # type: ignore[attr-defined]
+    assert service._has_compatible_template() is False  # type: ignore[attr-defined]
+
+    service.requirement = {"vuln_id": "NAME-TEMPLATE-INJECTION", "pattern_id": "template-injection"}  # type: ignore[attr-defined]
+
+    class _CompatibleRegistry:
+        templates = [
+            _Template(["name-template-injection", "flask"], "template-injection"),
+        ]
+
+    service._get_registry = lambda: _CompatibleRegistry()  # type: ignore[attr-defined]
+    assert service._has_compatible_template() is True  # type: ignore[attr-defined]

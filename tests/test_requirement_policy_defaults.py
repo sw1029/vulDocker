@@ -8,6 +8,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.schema import normalize_requirement
+from common.contracts import can_resolve_without_remote_research
 
 
 def _base_requirement(vuln_id: str) -> dict:
@@ -136,6 +137,47 @@ def test_freeform_vuln_name_gets_synthetic_identifier_and_generic_defaults() -> 
     assert requirement["vuln_label"] == "Template Injection"
     assert requirement["language"] == "python"
     assert requirement["framework"] == "flask"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
+
+
+def test_template_injection_alias_is_canonicalized_to_supported_name_family() -> None:
+    normalized = normalize_requirement({"vuln_name": "Server Side Template Injection"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert requirement["pattern_id"] == "template-injection"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
+
+
+def test_open_redirect_alias_is_canonicalized_to_supported_name_family() -> None:
+    normalized = normalize_requirement({"vuln_name": "Unvalidated Redirect"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-OPEN-REDIRECT"
+    assert requirement["pattern_id"] == "open-redirect"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
+
+
+def test_explicit_name_alias_vuln_id_is_treated_as_supported_family() -> None:
+    normalized = normalize_requirement({"vuln_id": "NAME-SERVER-SIDE-TEMPLATE-INJECTION"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert can_resolve_without_remote_research(requirement["vuln_id"]) is True
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
+
+
+def test_compiler_supported_known_family_without_static_rule_defaults_to_remote_prefer() -> None:
+    normalized = normalize_requirement({"vuln_name": "Path Traversal"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "CWE-22"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
 
 
 def test_vuln_name_heuristics_match_non_exact_family_phrase() -> None:

@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from common.roles import normalize_role, role_matches
-from common.rules import load_static_rule
 from common.vuln_semantics import (
     evaluate_manifest_semantics,
     evaluate_workspace_semantics,
+    is_service_side_workspace_path,
     normalize_vuln_id,
     semantic_error_summary,
 )
@@ -42,9 +42,11 @@ class GuardEngine:
     """Evaluate dynamic guard assertions across generator/verifier/reviewer."""
 
     def __init__(self, vuln_id: str, guard_spec: Optional[GuardSpec | Dict[str, Any]]) -> None:
+        from common.contracts import can_resolve_without_remote_research
+
         self.vuln_id = str(vuln_id or "").strip()
         self.normalized_vuln_id = normalize_vuln_id(self.vuln_id)
-        self.is_known = bool(load_static_rule(self.vuln_id))
+        self.is_known = can_resolve_without_remote_research(self.vuln_id)
         self.spec = self._parse_spec(guard_spec)
         self.policy_snapshot = default_guard_policy_snapshot(
             self.spec.policy_snapshot if isinstance(self.spec, GuardSpec) else None
@@ -331,12 +333,17 @@ def _collect_manifest_text(manifest: Dict[str, Any]) -> str:
 def _collect_workspace_text(workspace_dirs: Sequence[Path]) -> Tuple[str, int]:
     chunks: List[str] = []
     count = 0
-    exts = {".py", ".js", ".ts", ".php", ".rb", ".java", ".go", ".sql", ".md", ".txt"}
     for root in workspace_dirs:
         if not root.exists():
             continue
         for path in sorted(root.rglob("*")):
-            if not path.is_file() or path.suffix.lower() not in exts:
+            if not path.is_file():
+                continue
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                rel = path
+            if not is_service_side_workspace_path(rel):
                 continue
             try:
                 content = path.read_text(encoding="utf-8")
@@ -468,6 +475,30 @@ def _semantic_token_alias_present(text: str, token: str) -> bool:
             "target =",
         ]
         return any(alias in text for alias in aliases)
+    if token in {"redirect target", "next parameter", "return_to parameter", "redirect url"}:
+        aliases = [
+            "request.args.get('next'",
+            'request.args.get("next"',
+            "request.args.get('url'",
+            'request.args.get("url"',
+            "request.args.get('target'",
+            'request.args.get("target"',
+            "next_url",
+            "redirect_url",
+            "target_url",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"redirect(", "location header", "http redirect sink", "redirect response"}:
+        aliases = [
+            "redirect(",
+            "flask.redirect",
+            "response.headers['location']",
+            'response.headers["location"]',
+            "location header",
+            "302",
+            "303",
+        ]
+        return any(alias in text for alias in aliases)
     if token in {"requests.get", "urllib.request", "http client request"} or "server-side request forgery" in token:
         aliases = [
             "requests.get",
@@ -475,6 +506,18 @@ def _semantic_token_alias_present(text: str, token: str) -> bool:
             "urllib.request",
             "urlopen(",
             "server-side request forgery",
+        ]
+        return any(alias in text for alias in aliases)
+    if "open redirect" in token or "unvalidated redirect" in token or "external redirect" in token:
+        aliases = [
+            "open redirect",
+            "unvalidated redirect",
+            "external redirect",
+            "redirect(",
+            "next_url",
+            "redirect_url",
+            "target_url",
+            "location header",
         ]
         return any(alias in text for alias in aliases)
     if token in {"subprocess", "os.system", "shell=true"} or "command injection" in token:

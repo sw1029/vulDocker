@@ -560,6 +560,48 @@ def test_rule_from_verification_spec_prefers_printed_success_marker_over_weak_re
     assert rule["verification"]["require_flag"] is False
 
 
+def test_rule_from_verification_spec_adds_service_side_pattern_for_open_redirect() -> None:
+    service = _service_stub("NAME-OPEN-REDIRECT")
+    service.requirement = {"vuln_id": "NAME-OPEN-REDIRECT", "vuln_name": "Open Redirect"}  # type: ignore[attr-defined]
+    bundle = type("Bundle", (), {"vuln_id": "NAME-OPEN-REDIRECT"})()
+
+    rule = service._rule_from_verification_spec(  # type: ignore[attr-defined]
+        bundle,
+        {
+            "success_text_markers": ["Exploit SUCCESS"],
+        },
+    )
+
+    patterns = rule["patterns"]
+    assert any(
+        pattern.get("type") == "file_contains"
+        and pattern.get("path") == "{{service_entry}}"
+        and pattern.get("contains") == "redirect("
+        for pattern in patterns
+    )
+
+
+def test_rule_from_verification_spec_adds_service_side_pattern_for_template_injection() -> None:
+    service = _service_stub("NAME-TEMPLATE-INJECTION")
+    service.requirement = {"vuln_id": "NAME-TEMPLATE-INJECTION", "vuln_name": "Template Injection"}  # type: ignore[attr-defined]
+    bundle = type("Bundle", (), {"vuln_id": "NAME-TEMPLATE-INJECTION"})()
+
+    rule = service._rule_from_verification_spec(  # type: ignore[attr-defined]
+        bundle,
+        {
+            "success_text_markers": ["Exploit SUCCESS"],
+        },
+    )
+
+    patterns = rule["patterns"]
+    assert any(
+        pattern.get("type") == "file_contains"
+        and pattern.get("path") == "{{service_entry}}"
+        and pattern.get("contains") == "render_template_string"
+        for pattern in patterns
+    )
+
+
 def test_align_verifier_assertions_drops_weak_response_marker_for_template_injection() -> None:
     service = _service_stub("NAME-TEMPLATE-INJECTION")
     payload = {
@@ -600,6 +642,9 @@ def test_fallback_guard_spec_uses_normalized_runtime_verification_spec_for_templ
     service.requirement = {"vuln_id": "NAME-TEMPLATE-INJECTION"}  # type: ignore[attr-defined]
     service._allow_runtime_rule_override_static = lambda: False  # type: ignore[attr-defined]
     service._report_confidence = lambda report: "high"  # type: ignore[attr-defined]
+    service._fallback_generator_assertions = (  # type: ignore[attr-defined]
+        lambda bundle: ResearcherService._fallback_generator_assertions(service, bundle)
+    )
     bundle = type("Bundle", (), {"vuln_id": "NAME-TEMPLATE-INJECTION", "slug": "name-template-injection"})()
 
     payload = service._fallback_guard_spec(  # type: ignore[attr-defined]
@@ -622,5 +667,50 @@ def test_fallback_guard_spec_uses_normalized_runtime_verification_spec_for_templ
         item.get("op") == "manifest_field_contains" and item.get("string") == "OK: SSTI confirmed"
         for item in generator_assertions
     )
+    assert any(
+        item.get("op") == "manifest_field_contains"
+        and item.get("field") == "metadata.fragment_id"
+        and item.get("string") == "render_template_string_concat"
+        for item in generator_assertions
+    )
+    assert any(
+        item.get("op") == "manifest_field_contains"
+        and item.get("field") == "metadata.compose_mode"
+        and item.get("string") == "registry"
+        for item in generator_assertions
+    )
     assert any(item.get("op") == "contains" and item.get("string") == "OK: SSTI confirmed" for item in verifier_assertions)
     assert not any(item.get("string") == "49" for item in verifier_assertions if item.get("op") == "contains")
+
+
+def test_default_semantic_signature_prefers_shared_registry_for_compiler_family() -> None:
+    service = _service_stub("CWE-89")
+    service.requirement = {"vuln_id": "CWE-89"}  # type: ignore[attr-defined]
+    bundle = type("Bundle", (), {"vuln_id": "CWE-89", "slug": "cwe-89"})()
+
+    signature = ResearcherService._default_semantic_signature(service, bundle)
+
+    assert "request.args" in signature["input_vector"]
+    assert "SQL query execution" in signature["sink"]
+    assert "sql injection" in signature["exploit_precondition"]
+
+
+def test_resolve_semantic_signature_for_open_redirect_uses_pattern_defaults() -> None:
+    service = _service_stub("NAME-OPEN-REDIRECT")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "pattern_id": "open-redirect",
+        "vuln_name": "Open Redirect",
+    }
+    bundle = type("Bundle", (), {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect"})()
+
+    signature, sources = service._resolve_semantic_signature(  # type: ignore[attr-defined]
+        {"semantic_signature": {}},
+        bundle,
+    )
+
+    assert signature["input_vector"]
+    assert signature["sink"]
+    assert signature["exploit_precondition"]
+    assert "redirect(" in signature["sink"]
+    assert any(source in {"pattern", "heuristic", "default"} for source in sources)

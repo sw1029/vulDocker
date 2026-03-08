@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from common.contracts import can_resolve_without_remote_research
+
 RULES_ROOT = Path(__file__).resolve().parents[2] / "docs" / "evals" / "rules"
 VALID_SEARCH_POLICIES = {"remote_required", "remote_prefer", "local_only"}
 VALID_GUARD_ENFORCEMENTS = {"block_both", "block_unknown", "warn_only"}
@@ -35,6 +37,13 @@ VULN_NAME_ALIASES = {
     "ssrf": "CWE-918",
     "insecure deserialization": "CWE-502",
     "deserialization": "CWE-502",
+    "server side template injection": "NAME-TEMPLATE-INJECTION",
+    "template injection": "NAME-TEMPLATE-INJECTION",
+    "ssti": "NAME-TEMPLATE-INJECTION",
+    "open redirect": "NAME-OPEN-REDIRECT",
+    "unvalidated redirect": "NAME-OPEN-REDIRECT",
+    "unvalidated redirection": "NAME-OPEN-REDIRECT",
+    "open redirection": "NAME-OPEN-REDIRECT",
 }
 VULN_NAME_HEURISTICS = (
     (re.compile(r"\b(sql injection|sqli)\b"), "CWE-89"),
@@ -45,6 +54,8 @@ VULN_NAME_HEURISTICS = (
     (re.compile(r"\b(cross[ -]?site scripting|xss)\b"), "CWE-79"),
     (re.compile(r"\b(server[ -]?side request forgery|ssrf)\b"), "CWE-918"),
     (re.compile(r"\b(insecure deserialization|unsafe deserialization|deserialization)\b"), "CWE-502"),
+    (re.compile(r"\b(server[ -]?side template injection|template injection|ssti)\b"), "NAME-TEMPLATE-INJECTION"),
+    (re.compile(r"\b(open redirect|open redirection|unvalidated redirect|unvalidated redirection)\b"), "NAME-OPEN-REDIRECT"),
 )
 DEFAULT_STACK_PROFILE = {
     "language": "python",
@@ -320,7 +331,7 @@ def _pattern_default_for_name(raw_name: str) -> str:
         return mapped
     if "template injection" in label or "ssti" in label:
         return "template-injection"
-    if "open redirect" in label:
+    if "open redirect" in label or "unvalidated redirect" in label or "unvalidated redirection" in label:
         return "open-redirect"
     if label == "xxe" or "xml external entity" in label:
         return "xxe"
@@ -470,8 +481,8 @@ def _normalize_research_policy(
     researcher = requirement.get("researcher") or {}
     if not isinstance(researcher, dict):
         researcher = {}
-    has_unknown = any(not _has_static_rule(vuln_id) for vuln_id in effective_vuln_ids)
-    default_policy = "remote_required" if has_unknown else "remote_prefer"
+    remote_required = any(not can_resolve_without_remote_research(vuln_id) for vuln_id in effective_vuln_ids)
+    default_policy = "remote_required" if remote_required else "remote_prefer"
     raw_policy = str(researcher.get("search_policy") or default_policy).strip().lower()
     if raw_policy not in VALID_SEARCH_POLICIES:
         warnings.append(
@@ -537,13 +548,14 @@ def _normalize_pipeline_policy(
     if not isinstance(policy, dict):
         policy = {}
     has_unknown = any(not _has_static_rule(vuln_id) for vuln_id in effective_vuln_ids)
+    remote_required = any(not can_resolve_without_remote_research(vuln_id) for vuln_id in effective_vuln_ids)
     policy["allow_runtime_rule_override_static"] = _as_bool(
         policy.get("allow_runtime_rule_override_static", False)
     )
     if "require_researcher_evidence" in policy:
         policy["require_researcher_evidence"] = _as_bool(policy.get("require_researcher_evidence"))
     else:
-        policy["require_researcher_evidence"] = has_unknown
+        policy["require_researcher_evidence"] = remote_required
     _normalize_guard_policy(policy, has_unknown=has_unknown, warnings=warnings)
     requirement["policy"] = policy
 

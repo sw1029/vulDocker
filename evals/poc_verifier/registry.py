@@ -85,6 +85,13 @@ def evaluate_with_vuln(
 
     if base_result.get("verify_pass"):
         return base_result
+    semantic_gate_required = bool(base_result.get("semantic_gate_required"))
+    semantic_supported = base_result.get("semantic_supported")
+    semantic_status = str(base_result.get("semantic_status") or "").strip().lower()
+    if semantic_gate_required and (
+        semantic_supported is False or semantic_status in {"unsupported", "empty"}
+    ):
+        return base_result
 
     # RuleSpec 요약 정보를 evidence_rules로 전달해 LLM verifier가
     # 정책/시그니처와 더 잘 정렬되도록 한다.

@@ -145,22 +145,32 @@ def _ensure_docker_ready(env: Dict[str, str]) -> None:
         raise CaseError("docker daemon is not reachable") from exc
 
 
-def _run_command(command: Sequence[str], env: Dict[str, str]) -> None:
-    subprocess.run(command, cwd=REPO_ROOT, env=env, check=True)
+def _run_command(command: Sequence[str], env: Dict[str, str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=REPO_ROOT, env=env, check=check, text=True, capture_output=True)
 
 
-def _execute_pipeline(sid: str, mode: str, env: Dict[str, str]) -> None:
+def _execute_pipeline(sid: str, mode: str, env: Dict[str, str]) -> subprocess.CompletedProcess[str]:
     # E2E cases should exercise the same loop-aware runner used by CI/ops.
-    _run_command(
+    return _run_command(
         [sys.executable, "orchestrator/run_pipeline.py", "--sid", sid, "--mode", mode],
         env,
+        check=False,
     )
 
 
-def _load_manifest_summary(sid: str) -> Dict[str, Any]:
-    manifest_path = REPO_ROOT / "metadata" / sid / "manifest.json"
-    if not manifest_path.exists():
-        raise CaseError(f"manifest not found for SID {sid}")
+def _manifest_path_for_sid(sid: str) -> Path:
+    metadata_dir = REPO_ROOT / "metadata" / sid
+    manifest_path = metadata_dir / "manifest.json"
+    failure_manifest_path = metadata_dir / "failure_manifest.json"
+    if manifest_path.exists():
+        return manifest_path
+    if failure_manifest_path.exists():
+        return failure_manifest_path
+    raise CaseError(f"manifest not found for SID {sid}")
+
+
+def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) -> Dict[str, Any]:
+    manifest_path = _manifest_path_for_sid(sid)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     reports = (manifest.get("reports") or {}).get("evals") or {}
     reviewer_path = REPO_ROOT / "metadata" / sid / "reviewer_report.json"
@@ -170,6 +180,7 @@ def _load_manifest_summary(sid: str) -> Dict[str, Any]:
         artifacts = bundle.get("artifacts") or {}
         eval_result = artifacts.get("eval_result") or {}
         run_summary = artifacts.get("run_summary") or {}
+        compiler_contract = bundle.get("compiler_contract") or {}
         bundles.append(
             {
                 "slug": bundle.get("slug"),
@@ -180,17 +191,46 @@ def _load_manifest_summary(sid: str) -> Dict[str, Any]:
                 "exit_code": run_summary.get("exit_code"),
                 "run_log": run_summary.get("run_log"),
                 "rule": eval_result.get("rule"),
+                "promotion_eligible": (bundle.get("promotion") or {}).get("eligible"),
+                "promotion_reasons": (bundle.get("promotion") or {}).get("reasons") or [],
+                "semantic_supported": eval_result.get("semantic_supported"),
+                "semantic_status": eval_result.get("semantic_status"),
+                "compiler_supported": compiler_contract.get("compiler_supported"),
+                "compiler_strategy": compiler_contract.get("compiler_strategy"),
+                "compiler_reason": compiler_contract.get("compiler_reason"),
+                "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
+                "dynamicness_verdict": (bundle.get("dynamicness") or {}).get("verdict"),
+                "dynamicness_reason": (bundle.get("dynamicness") or {}).get("reason"),
+                "generalization_class": (bundle.get("generalization") or {}).get("class"),
+                "counts_as_generalization": (bundle.get("generalization") or {}).get("counts_as_generalization"),
+                "generalization_reason": (bundle.get("generalization") or {}).get("reason"),
+                "failure_reason": (bundle.get("failure") or {}).get("reason"),
+                "terminal_failure_class": (bundle.get("failure") or {}).get("terminal_failure_class"),
             }
         )
     return {
         "sid": sid,
         "overall_pass": reports.get("overall_pass"),
+        "pipeline_result": manifest.get("pipeline_result"),
+        "promotion_eligible": (manifest.get("promotion") or {}).get("eligible"),
+        "promotion_reasons": (manifest.get("promotion") or {}).get("reasons") or [],
+        "compiler_contract_summary": manifest.get("compiler_contract_summary") or {},
+        "generalization_summary": manifest.get("generalization_summary") or {},
+        "compiler_supported": manifest.get("compiler_supported"),
+        "compiler_strategy": manifest.get("compiler_strategy"),
+        "compiler_reason": manifest.get("compiler_reason"),
+        "generalization_class": manifest.get("generalization_class"),
+        "counts_as_generalization": manifest.get("counts_as_generalization"),
+        "generalization_reason": manifest.get("generalization_reason"),
+        "pipeline_returncode": pipeline_returncode,
+        "failure": manifest.get("failure") or {},
         "bundles": bundles,
         "reviewer": {
             "blocking_bundles": reviewer.get("blocking_bundles") or [],
             "issues_sample": reviewer.get("issues_sample") or [],
         },
         "manifest_path": str(manifest_path),
+        "manifest_file": manifest_path.name,
         "reviewer_path": str(reviewer_path) if reviewer_path.exists() else None,
     }
 
@@ -216,6 +256,43 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"overall_pass expected {manifest_expect['overall_pass']!r} but observed {summary.get('overall_pass')!r}"
             )
+    if "pipeline_result" in manifest_expect:
+        actual = str(summary.get("pipeline_result") or "")
+        if actual != str(manifest_expect["pipeline_result"]):
+            errors.append(
+                f"pipeline_result expected {manifest_expect['pipeline_result']!r} but observed {summary.get('pipeline_result')!r}"
+            )
+    if "promotion_eligible" in manifest_expect:
+        actual = bool(summary.get("promotion_eligible"))
+        if actual != bool(manifest_expect["promotion_eligible"]):
+            errors.append(
+                f"promotion_eligible expected {manifest_expect['promotion_eligible']!r} but observed {summary.get('promotion_eligible')!r}"
+            )
+    if "manifest_file" in manifest_expect:
+        actual = str(summary.get("manifest_file") or "")
+        if actual != str(manifest_expect["manifest_file"]):
+            errors.append(
+                f"manifest_file expected {manifest_expect['manifest_file']!r} but observed {summary.get('manifest_file')!r}"
+            )
+    if "pipeline_returncode" in manifest_expect:
+        actual = summary.get("pipeline_returncode")
+        if actual != manifest_expect["pipeline_returncode"]:
+            errors.append(
+                f"pipeline_returncode expected {manifest_expect['pipeline_returncode']!r} but observed {summary.get('pipeline_returncode')!r}"
+            )
+    if "generalization_class" in manifest_expect:
+        actual = str(summary.get("generalization_class") or "")
+        if actual != str(manifest_expect["generalization_class"]):
+            errors.append(
+                f"generalization_class expected {manifest_expect['generalization_class']!r} but observed {summary.get('generalization_class')!r}"
+            )
+    if "counts_as_generalization" in manifest_expect:
+        actual = summary.get("counts_as_generalization")
+        if actual is not manifest_expect["counts_as_generalization"]:
+            errors.append(
+                "counts_as_generalization expected "
+                f"{manifest_expect['counts_as_generalization']!r} but observed {summary.get('counts_as_generalization')!r}"
+            )
     bundle_index = _bundle_index(summary)
     for entry in expectations.get("evals", []):
         key = (entry.get("slug") or entry.get("vuln_id") or "").lower()
@@ -235,10 +312,42 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: exit_code expected {entry['exit_code']} but was {bundle.get('exit_code')}"
             )
+        if "promotion_eligible" in entry and bool(bundle.get("promotion_eligible")) != bool(entry["promotion_eligible"]):
+            errors.append(
+                f"bundle {bundle['slug']}: promotion_eligible expected {entry['promotion_eligible']} but was {bundle.get('promotion_eligible')}"
+            )
+        if "compiler_supported" in entry and bundle.get("compiler_supported") != entry["compiler_supported"]:
+            errors.append(
+                f"bundle {bundle['slug']}: compiler_supported expected {entry['compiler_supported']!r} but was {bundle.get('compiler_supported')!r}"
+            )
+        if "compiler_strategy" in entry and str(bundle.get("compiler_strategy") or "") != str(entry["compiler_strategy"]):
+            errors.append(
+                f"bundle {bundle['slug']}: compiler_strategy expected {entry['compiler_strategy']!r} but was {bundle.get('compiler_strategy')!r}"
+            )
+        if "semantic_supported" in entry and bundle.get("semantic_supported") != entry["semantic_supported"]:
+            errors.append(
+                f"bundle {bundle['slug']}: semantic_supported expected {entry['semantic_supported']!r} but was {bundle.get('semantic_supported')!r}"
+            )
+        if "semantic_status" in entry and str(bundle.get("semantic_status")) != str(entry["semantic_status"]):
+            errors.append(
+                f"bundle {bundle['slug']}: semantic_status expected {entry['semantic_status']!r} but was {bundle.get('semantic_status')!r}"
+            )
+        if "generalization_class" in entry and str(bundle.get("generalization_class") or "") != str(entry["generalization_class"]):
+            errors.append(
+                f"bundle {bundle['slug']}: generalization_class expected {entry['generalization_class']!r} but was {bundle.get('generalization_class')!r}"
+            )
+        if "counts_as_generalization" in entry and bundle.get("counts_as_generalization") is not entry["counts_as_generalization"]:
+            errors.append(
+                f"bundle {bundle['slug']}: counts_as_generalization expected {entry['counts_as_generalization']!r} but was {bundle.get('counts_as_generalization')!r}"
+            )
         evidence = bundle.get("evidence") or ""
         for token in entry.get("evidence_contains", []):
             if token not in evidence:
                 errors.append(f"bundle {bundle['slug']}: evidence missing substring '{token}'")
+        compiler_reason = str(bundle.get("compiler_reason") or "")
+        for token in entry.get("compiler_reason_contains", []):
+            if token not in compiler_reason:
+                errors.append(f"bundle {bundle['slug']}: compiler_reason missing substring '{token}'")
     reviewer_expect = expectations.get("reviewer") or {}
     reviewer = summary.get("reviewer") or {}
     if "blocking_bundles" in reviewer_expect:
@@ -291,8 +400,8 @@ def execute_case(case_dir: Path, *, requirement_path: Optional[Path], expectatio
         env[str(key)] = str(value)
     _materialize_runtime_assets(sid, case_spec.runtime_assets)
     _ensure_docker_ready(env)
-    _execute_pipeline(sid, mode, env)
-    summary = _load_manifest_summary(sid)
+    proc = _execute_pipeline(sid, mode, env)
+    summary = _load_manifest_summary(sid, pipeline_returncode=proc.returncode)
     destination = output_dir or (case_dir / "outputs" / sid)
     summary_path = _write_summary(summary, plan.get("requirement", case_spec.requirement), destination)
     if snapshot:
@@ -302,6 +411,18 @@ def execute_case(case_dir: Path, *, requirement_path: Optional[Path], expectatio
     if resolved_expectations_path and resolved_expectations_path.exists():
         expectations_data = json.loads(resolved_expectations_path.read_text(encoding="utf-8"))
         _validate_expectations(summary, expectations_data)
+    elif proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        raise CaseError(
+            f"pipeline exited with non-zero status {proc.returncode} without expectations to validate it"
+            + (f"\nSTDERR:\n{stderr}" if stderr else "")
+        )
+    if expectations_data and proc.returncode != 0 and summary.get("manifest_file") not in {"failure_manifest.json", "manifest.json"}:
+        stderr = (proc.stderr or "").strip()
+        raise CaseError(
+            f"pipeline exited with non-zero status {proc.returncode} and no usable manifest was written"
+            + (f"\nSTDERR:\n{stderr}" if stderr else "")
+        )
     print(f"[E2E] Summary written to {summary_path}")
     if expectations_data:
         print(f"[E2E] Expectations satisfied for {case_spec.name}")

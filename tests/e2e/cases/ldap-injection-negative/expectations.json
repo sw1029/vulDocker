@@ -1,0 +1,23 @@
+{
+  "manifest": {
+    "overall_pass": false,
+    "pipeline_result": "failure",
+    "promotion_eligible": false,
+    "manifest_file": "failure_manifest.json",
+    "pipeline_returncode": 1,
+    "generalization_class": "unsupported_free_form_negative",
+    "counts_as_generalization": false
+  },
+  "evals": [
+    {
+      "slug": "name-ldap-injection",
+      "promotion_eligible": false,
+      "compiler_supported": false,
+      "generalization_class": "unsupported_free_form_negative",
+      "counts_as_generalization": false,
+      "compiler_reason_contains": [
+        "unsupported"
+      ]
+    }
+  ]
+}

@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from common.contracts import build_generator_contract, write_generator_contract
+from common.contracts import (
+    build_generator_contract,
+    can_resolve_without_remote_research,
+    write_generator_contract,
+)
 from common.deps.stdlib import load_stdlib_spec
 from common.guardrails import (
     GENERATOR_OP_ALIASES,
@@ -44,6 +48,11 @@ from common.vuln_semantics import (
     family_canonical_tags,
     normalize_vuln_id,
     semantic_term_aliases,
+)
+from agents.generator.flask_fragment_registry import (
+    fragment_guard_generator_assertions,
+    fragment_semantic_signature,
+    service_side_file_contains_tokens,
 )
 from orchestrator.plugins import ReactLoop, ReactSpan
 from rag.static_loader import load_static_context
@@ -399,6 +408,7 @@ class ResearcherService:
             generator_mode="research_seed",
             bundle_slug=slug,
             researcher_report=report,
+            requirement=self.requirement,
         )
         return write_generator_contract(self.metadata_dir, payload)
 
@@ -470,8 +480,8 @@ class ResearcherService:
             vuln_id = str(self.requirement.get("vuln_id") or "").strip()
             if not vuln_id:
                 return False
-            return not bool(load_static_rule(vuln_id))
-        return not bool(load_static_rule(bundle.vuln_id))
+            return not can_resolve_without_remote_research(vuln_id)
+        return not can_resolve_without_remote_research(bundle.vuln_id)
 
     def _require_researcher_evidence(self, bundle: VulnBundle | None) -> bool:
         plan_policy = self.plan.get("policy") or {}
@@ -1163,11 +1173,23 @@ class ResearcherService:
         vuln_id = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
         rule = load_rule(vuln_id)
         success_signature = str(rule.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
-        assertions: List[Dict[str, Any]] = [
-            {"op": "role_exists", "role": "service_main"},
-            {"op": "role_exists", "role": "poc_entry"},
-            {"op": "manifest_field_contains", "field": "poc.success_signature", "string": success_signature},
-        ]
+        pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
+        raw_label = self._raw_vuln_label()
+        assertions = fragment_guard_generator_assertions(vuln_id, pattern_id=pattern_id, raw_label=raw_label)
+        if not assertions:
+            assertions = [
+                {"op": "role_exists", "role": "service_main"},
+                {"op": "role_exists", "role": "poc_entry"},
+            ]
+        assertions.append(
+            {
+                "op": "manifest_field_contains",
+                "field": "poc.success_signature",
+                "string": success_signature,
+                "intent": "contract",
+                "stability": "high",
+            }
+        )
         return assertions
 
     def _build_and_write_guard_spec(
@@ -1349,11 +1371,25 @@ class ResearcherService:
         flag_token = verification_spec.get("flag_token")
         if not isinstance(flag_token, str) or (has_static and not can_override_static):
             flag_token = str(rule.get("flag_token") or "")
-        generator_assertions: List[Dict[str, Any]] = [
-            {"op": "role_exists", "role": "service_main"},
-            {"op": "role_exists", "role": "poc_entry"},
-            {"op": "manifest_field_contains", "field": "poc.success_signature", "string": success_marker},
+        generator_assertions = self._fallback_generator_assertions(bundle)
+        generator_assertions = [
+            item
+            for item in generator_assertions
+            if not (
+                isinstance(item, dict)
+                and str(item.get("op") or "").strip().lower() == "manifest_field_contains"
+                and str(item.get("field") or "").strip() == "poc.success_signature"
+            )
         ]
+        generator_assertions.append(
+            {
+                "op": "manifest_field_contains",
+                "field": "poc.success_signature",
+                "string": success_marker,
+                "intent": "contract",
+                "stability": "high",
+            }
+        )
         verifier_assertions: List[Dict[str, Any]] = [{"op": "contains", "string": success_marker}]
         if flag_token:
             verifier_assertions.append({"op": "contains", "string": flag_token})
@@ -1823,6 +1859,9 @@ class ResearcherService:
             if "deserialization" in pattern_id:
                 family_terms.extend(["insecure deserialization", "deserialization"])
                 exploit_terms.extend(["pickle.loads", "yaml.load", "jsonpickle.decode"])
+            if "open-redirect" in pattern_id:
+                family_terms.extend(["open redirect", "redirect target", "next parameter"])
+                exploit_terms.extend(["redirect(", "location header", "external redirect"])
             if "template-injection" in pattern_id or "ssti" in pattern_id:
                 family_terms.extend(["template injection", "server-side template injection", "ssti"])
                 exploit_terms.extend(["render_template_string", "jinja2", "{{7*7}}", "template rendering"])
@@ -1900,6 +1939,19 @@ class ResearcherService:
                 "pickle deserialization",
             ]
         if "template-injection" in normalized_pattern or "ssti" in normalized_pattern:
+            return [
+                "sql injection",
+                "sqli",
+                "csrf",
+                "cross-site request forgery",
+                "ssrf",
+                "server-side request forgery",
+                "path traversal",
+                "directory traversal",
+                "yaml deserialization",
+                "pickle deserialization",
+            ]
+        if "open-redirect" in normalized_pattern:
             return [
                 "sql injection",
                 "sqli",
@@ -1995,6 +2047,8 @@ class ResearcherService:
             )
         )
         baseline_signature = normalize_semantic_signature(baseline_semantic_signature(normalized_vuln))
+        if normalized_vuln.startswith("name-") and self._signature_has_terms(pattern_signature):
+            return pattern_signature, ["pattern"]
         if self._signature_has_terms(baseline_signature):
             merged: Dict[str, List[str]] = {
                 "input_vector": list(baseline_signature.get("input_vector") or []),
@@ -2211,6 +2265,15 @@ class ResearcherService:
             add("sink", "render_template_string", "template response", "innerHTML")
             add("exploit_precondition", "<script>", "unescaped reflection", "cross-site scripting")
 
+        is_open_redirect = (
+            "open-redirect" in pattern_id
+            or any(token in raw_vuln_label for token in ["open redirect", "unvalidated redirect"])
+        )
+        if is_open_redirect:
+            add("input_vector", "request.args", "next parameter", "redirect target", "url parameter")
+            add("sink", "redirect(", "location header", "http redirect sink")
+            add("exploit_precondition", "open redirect", "unvalidated redirect target", "external redirect")
+
         is_deserialization = (
             vuln_id in {"cwe-502", "cwe_502"}
             or "deserialization" in pattern_id
@@ -2275,6 +2338,13 @@ class ResearcherService:
 
     def _default_semantic_signature(self, bundle: VulnBundle | None) -> Dict[str, Any]:
         normalized = self._normalized_vuln_id(bundle) or "cwe-unknown"
+        registry_signature = fragment_semantic_signature(
+            bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or normalized),
+            pattern_id=str(self.requirement.get("pattern_id") or ""),
+            raw_label=self._raw_vuln_label(),
+        )
+        if any(registry_signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
+            return registry_signature
         baseline = baseline_semantic_signature(normalized)
         if any(baseline.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
             return baseline
@@ -2364,6 +2434,25 @@ class ResearcherService:
                 "exploit_precondition": [
                     "user input is embedded into template source string (concatenation/interpolation)",
                     "template string is rendered server-side without escaping/sandboxing",
+                ],
+            }
+        if "open-redirect" in normalized_pattern or "open redirect" in normalized_label:
+            return {
+                "input_vector": [
+                    "request.args",
+                    "next parameter",
+                    "redirect target",
+                    "url parameter",
+                ],
+                "sink": [
+                    "redirect(",
+                    "location header",
+                    "http redirect sink",
+                ],
+                "exploit_precondition": [
+                    "open redirect",
+                    "unvalidated redirect target",
+                    "external redirect",
                 ],
             }
         return {
@@ -2595,6 +2684,7 @@ class ResearcherService:
                     "contains": markers[0],
                 }
             ]
+            rule["patterns"].extend(self._service_side_rule_patterns(bundle))
         # Legacy compatibility fields: used by generator augmentation and
         # rule_based fallback logic when runtime assertions are absent/disabled.
         if markers:
@@ -2669,6 +2759,21 @@ class ResearcherService:
         else:
             candidate_rule["override_scope"] = "none"
         return candidate_rule
+
+    def _service_side_rule_patterns(self, bundle: VulnBundle) -> List[Dict[str, str]]:
+        vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
+        pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
+        raw_label = self._raw_vuln_label().strip().lower()
+
+        def file_contains(token: str) -> Dict[str, str]:
+            return {
+                "type": "file_contains",
+                "path": "{{service_entry}}",
+                "contains": token,
+            }
+
+        tokens = service_side_file_contains_tokens(vuln_id, pattern_id=pattern_id, raw_label=raw_label)
+        return [file_contains(token) for token in tokens]
 
     def _generate_candidate_template(self, bundle: VulnBundle) -> Path | None:
         vuln_id = (bundle.vuln_id or "").strip().lower()

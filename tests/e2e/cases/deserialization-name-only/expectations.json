@@ -7,7 +7,9 @@
       "slug": "cwe-502",
       "verify_pass": true,
       "run_passed": true,
-      "exit_code": 0
+      "exit_code": 0,
+      "compiler_supported": true,
+      "compiler_strategy": "deserialization_pickle_body"
     }
   ],
   "reviewer": {

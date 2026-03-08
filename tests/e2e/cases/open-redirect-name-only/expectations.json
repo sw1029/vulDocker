@@ -4,23 +4,23 @@
     "pipeline_result": "success",
     "promotion_eligible": true,
     "manifest_file": "manifest.json",
-    "pipeline_returncode": 0
+    "pipeline_returncode": 0,
+    "generalization_class": "real_free_form_positive",
+    "counts_as_generalization": true
   },
   "evals": [
     {
-      "slug": "cwe-352",
+      "slug": "name-open-redirect",
       "verify_pass": true,
       "run_passed": true,
       "exit_code": 0,
       "promotion_eligible": true,
       "compiler_supported": true,
-      "compiler_strategy": "csrf_missing_token",
+      "compiler_strategy": "open_redirect_reflect",
       "semantic_supported": true,
       "semantic_status": "aligned",
-      "evidence_contains": [
-        "CSRF SUCCESS",
-        "FLAG-csrf-demo-token"
-      ]
+      "generalization_class": "real_free_form_positive",
+      "counts_as_generalization": true
     }
   ],
   "reviewer": {

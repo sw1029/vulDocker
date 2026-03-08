@@ -24,11 +24,11 @@ from common.guardrails import (
 from common.hints import normalize_hint_payload
 from common.llm import LLMClient
 from common.logging import get_logger
-from common.contracts import build_generator_contract, write_generator_contract
+from common.contracts import build_generator_contract, load_semantic_profile, write_generator_contract
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_generator_prompt
-from common.rules import load_rule, load_static_rule
+from common.rules import list_rules, load_rule, load_static_rule, rule_filename_for_vuln_id
 from common.run_matrix import (
     VulnBundle,
     bundle_requirement,
@@ -40,6 +40,8 @@ from rag import latest_failure_context, load_boilerplate, load_hints, load_stati
 from orchestrator.loop_controller import LoopController
 
 from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits, SynthesisOutcome
+from .compiler import CompilerResult, compile_manifest
+from .flask_fragment_registry import FLASK_FRAGMENT_REGISTRY
 
 LOGGER = get_logger(__name__)
 
@@ -464,6 +466,10 @@ class GeneratorService:
     def run(self) -> None:
         context = self._build_context()
         self._ensure_loop_started()
+        compiled = self._run_compiler_if_supported()
+        if compiled:
+            self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
+            return
         if self.generator_mode == "synthesis":
             self._run_synthesis_with_loops(context)
             return
@@ -472,13 +478,27 @@ class GeneratorService:
                 self._run_synthesis_with_loops(context)
                 return
             except ManifestValidationError as exc:
+                if not self._has_compatible_template():
+                    LOGGER.warning(
+                        "Synthesis guard rejected all candidates for %s and no compatible template exists; preserving failure. %s",
+                        self.sid,
+                        exc,
+                    )
+                    raise
                 LOGGER.warning(
-                    "Synthesis guard rejected all candidates for %s; falling back to template. %s",
+                    "Synthesis guard rejected all candidates for %s; falling back to compatible template. %s",
                     self.sid,
                     exc,
                 )
             except Exception as exc:  # pragma: no cover - safety net
-                LOGGER.warning("Hybrid synthesis failure (%s); using template path.", exc)
+                if not self._has_compatible_template():
+                    LOGGER.warning(
+                        "Hybrid synthesis failure (%s) and no compatible template exists for %s; preserving failure.",
+                        exc,
+                        self.sid,
+                    )
+                    raise
+                LOGGER.warning("Hybrid synthesis failure (%s); using compatible template path.", exc)
             self._run_template(context, mode_label="hybrid-template")
             return
         # In template mode, attempt a compatibility check first; if no viable
@@ -493,6 +513,210 @@ class GeneratorService:
             self._run_synthesis_with_loops(context)
             return
         self._run_template(context, mode_label="template")
+
+    def _run_compiler_if_supported(self) -> Optional[CompilerResult]:
+        semantic_profile = load_semantic_profile(self.metadata_dir) or {}
+        if not isinstance(semantic_profile, dict) or not semantic_profile:
+            semantic_profile = self._seed_semantic_profile_for_compiler()
+        if not isinstance(semantic_profile, dict):
+            return None
+        if semantic_profile.get("compiler_supported") is not True:
+            return None
+        result = compile_manifest(
+            sid=self.sid,
+            requirement=self.requirement,
+            semantic_profile=semantic_profile,
+        )
+        if result is None:
+            return None
+        written_files = self._materialize_compiler_manifest(result.manifest)
+        added_user_deps = self._apply_user_deps_to_workspace()
+        self._record_user_deps_metadata(added_user_deps)
+        self._write_compiler_records(result, written_files)
+        self._write_compiler_runtime_rule(result)
+        self._write_generator_contract(mode_label="compiler")
+        LOGGER.info(
+            "Compiler strategy %s materialized %s files for %s",
+            result.strategy,
+            len(written_files),
+            self.sid,
+        )
+        return result
+
+    def _seed_semantic_profile_for_compiler(self) -> Dict[str, Any]:
+        vuln_id = str(self.requirement.get("vuln_id") or "").strip() or "UNKNOWN"
+        slug = self.bundle.slug if self.bundle else ""
+        payload = build_generator_contract(
+            sid=self.sid,
+            vuln_id=vuln_id,
+            metadata_dir=self.metadata_dir,
+            workspace_dir=None,
+            generator_mode="compiler_seed",
+            bundle_slug=slug,
+            requirement=self.requirement,
+        )
+        write_generator_contract(self.metadata_dir, payload)
+        profile = payload.get("semantic_profile")
+        return profile if isinstance(profile, dict) else {}
+
+    def _materialize_compiler_manifest(self, manifest: Dict[str, Any]) -> List[str]:
+        if self.workspace.exists():
+            shutil.rmtree(self.workspace)
+        ensure_dir(self.workspace)
+        written: List[str] = []
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            rel_path = Path(str(entry.get("path") or "").strip())
+            if not rel_path or rel_path.is_absolute():
+                continue
+            destination = self.workspace / rel_path
+            ensure_dir(destination.parent)
+            destination.write_text(str(entry.get("content") or ""), encoding="utf-8")
+            written.append(str(rel_path))
+        return written
+
+    def _write_compiler_records(self, result: CompilerResult, written_files: List[str]) -> None:
+        files = result.manifest.get("files") or []
+        summary = {
+            "index": 1,
+            "score": 1.0,
+            "violations": [],
+            "accepted": True,
+            "manifest_digest": "",
+            "file_paths": [entry.get("path") for entry in files if isinstance(entry, dict)],
+            "pattern_tags": result.manifest.get("pattern_tags", []),
+            "raw_excerpt": f"compiler:{result.strategy}",
+            "static_report": {"score": 1.0, "source": "compiler"},
+            "dep_guard": {},
+            "fallback_used": False,
+            "fallback_class": "",
+            "family_override_applied": False,
+            "llm_stub_used": False,
+            "llm_failure_class": "",
+            "llm_failure_message": "",
+        }
+        candidates_payload = {"mode": "compiler", "candidates": [summary]}
+        (self.metadata_dir / "generator_candidates.json").write_text(
+            json.dumps(candidates_payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        manifest_payload = {
+            "sid": self.sid,
+            "slug": self.bundle.slug if self.bundle else "",
+            "vuln_id": str(self.requirement.get("vuln_id") or "").strip() or "UNKNOWN",
+            "mode": "compiler",
+            "limits": self.synthesis_limits.to_dict(),
+            "workspace_root": str(self.workspace),
+            "selected_candidate": summary,
+            "manifest": result.manifest,
+            "failure_context": "",
+            "hints_digest": "",
+            "rag_snapshot_digest": "",
+            "user_deps": self.user_deps,
+            "requires_external_db": False,
+            "guard_spec_available": bool(self._load_guard_spec_dict()),
+            "guard_policy": {},
+            "generation_origin": "compiler_generated",
+            "fallback_used": False,
+            "fallback_class": None,
+            "family_override_applied": False,
+            "llm_stub_used": False,
+            "llm_failure_class": "",
+            "llm_failure_message": "",
+            "compiler_strategy": result.strategy,
+            "provenance": {
+                "generation_origin": "compiler_generated",
+                "fallback_used": False,
+                "fallback_class": None,
+                "family_override_applied": False,
+                "llm_stub_used": False,
+            },
+            "written_files": written_files,
+        }
+        (self.metadata_dir / "generator_manifest.json").write_text(
+            json.dumps(manifest_payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _write_compiler_runtime_rule(self, result: CompilerResult) -> None:
+        spec = FLASK_FRAGMENT_REGISTRY.get(result.strategy)
+        if spec is None:
+            return
+        manifest = result.manifest if isinstance(result.manifest, dict) else {}
+        poc = manifest.get("poc") if isinstance(manifest.get("poc"), dict) else {}
+        success_signature = str(poc.get("success_signature") or "").strip()
+        if not success_signature:
+            return
+        flag_token = str(poc.get("flag_token") or "").strip()
+        service_entry = "app.py"
+        poc_entry = "poc.py"
+        for entry in manifest.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            role = str(entry.get("role") or "").strip().lower()
+            path = str(entry.get("path") or "").strip()
+            if role == "service_main" and path:
+                service_entry = path
+            elif role == "poc_entry" and path:
+                poc_entry = path
+
+        assertion_program: List[Dict[str, Any]] = [{"op": "contains", "string": success_signature}]
+        if flag_token:
+            assertion_program.append({"op": "contains", "string": flag_token})
+
+        patterns: List[Dict[str, Any]] = []
+        for token in spec.service_side_tokens:
+            if not token:
+                continue
+            patterns.append({"type": "file_contains", "path": service_entry, "contains": token})
+        patterns.append({"type": "poc_contains", "path": poc_entry, "contains": success_signature})
+        if flag_token:
+            patterns.append({"type": "poc_contains", "path": poc_entry, "contains": flag_token})
+
+        rule = {
+            "cwe": str(self.requirement.get("vuln_id") or manifest.get("metadata", {}).get("cwe") or "UNKNOWN"),
+            "version": 2,
+            "scenario_type": "web-poc",
+            "origin": "runtime",
+            "override_scope": "none",
+            "verification": {
+                "source": "runtime",
+                "require_flag": bool(flag_token),
+                "flag_mode": "strict" if flag_token else "none",
+                "exit_code": "zero",
+            },
+            "output": {"mode": "auto", "format": "auto"},
+            "llm": {"assist_default": False, "assertion_budget": 8},
+            "runtime": {
+                "success_mode": "text",
+                "success_text_markers": [success_signature],
+                "flag_token": flag_token or None,
+                "assertion_program": assertion_program,
+            },
+            "patterns": patterns,
+            "success_signature": success_signature,
+            "strict_flag": bool(flag_token),
+            "service_entry": service_entry,
+            "poc_entry": poc_entry,
+        }
+        if flag_token:
+            rule["flag_token"] = flag_token
+
+        import yaml
+
+        self.runtime_rules_dir.mkdir(parents=True, exist_ok=True)
+        path = self.runtime_rules_dir / f"{rule_filename_for_vuln_id(rule['cwe'])}.yaml"
+        path.write_text(yaml.safe_dump(rule, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        try:
+            load_rule.cache_clear()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            list_rules.cache_clear()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        LOGGER.info("Compiler-derived runtime rule written to %s", path)
 
     def _ensure_loop_started(self) -> None:
         if self.loop_controller.current_loop == 0:
@@ -686,6 +910,7 @@ class GeneratorService:
             workspace_dir=self.workspace,
             generator_mode=mode_label,
             bundle_slug=slug,
+            requirement=self.requirement,
         )
         path = write_generator_contract(self.metadata_dir, payload)
         LOGGER.info("Generator contract written to %s", path)
@@ -843,6 +1068,23 @@ class GeneratorService:
             vuln_match = req_vuln in t.tags
             db_match = req_db == t.db
             if vuln_match and db_match:
+                return True
+        return False
+
+    def _has_compatible_template(self) -> bool:
+        allow_external = self._allow_external_db()
+        req_vuln = str(self.requirement.get("vuln_id") or "").strip().lower()
+        req_pattern = str(self.requirement.get("pattern_id") or "").strip().lower()
+        if not req_vuln and not req_pattern:
+            return False
+        templates = self._get_registry().templates
+        for template in templates:
+            if not allow_external and template.requires_external_db:
+                continue
+            tags = set(template.tags)
+            if req_vuln and req_vuln in tags:
+                return True
+            if req_pattern and req_pattern == (template.pattern_id or "").lower():
                 return True
         return False
 

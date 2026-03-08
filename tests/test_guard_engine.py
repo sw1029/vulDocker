@@ -82,6 +82,12 @@ def test_unknown_cwe_missing_guard_is_closed_by_default() -> None:
     assert engine.should_fail_when_missing_spec() is True
 
 
+def test_compiler_supported_name_family_missing_guard_is_not_closed_by_default() -> None:
+    engine = GuardEngine("NAME-OPEN-REDIRECT", None)
+    assert engine.available is False
+    assert engine.should_fail_when_missing_spec() is False
+
+
 def test_guard_engine_regex_ops_supported() -> None:
     spec = build_guard_spec(
         sid="sid-test",

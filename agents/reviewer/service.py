@@ -263,6 +263,24 @@ class ReviewerService:
                     blocking=True,
                 )
             )
+        semantic_supported = result.get("semantic_supported")
+        semantic_status = str(result.get("semantic_status") or "").strip().lower()
+        if semantic_supported is False and self._bundle_requires_semantic_support(bundle):
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="resolved_contract.json",
+                    line=1,
+                    issue=(
+                        f"Verifier semantic support missing for {bundle.vuln_id}"
+                        + (f" (status={semantic_status})" if semantic_status else "")
+                    ),
+                    fix_hint="Provide a non-empty aligned semantic contract or keep this bundle in failure/inspection-only state.",
+                    evidence=contract_evidence,
+                    severity="critical",
+                    blocking=True,
+                )
+            )
 
         guard = result.get("guard_consistency")
         if not isinstance(guard, dict):
@@ -301,6 +319,12 @@ class ReviewerService:
                 )
             )
         return issues
+
+    def _bundle_requires_semantic_support(self, bundle: VulnBundle) -> bool:
+        vuln_id = str(bundle.vuln_id or "").strip().upper()
+        if vuln_id.startswith("NAME-"):
+            return True
+        return not bool(load_static_rule(vuln_id))
 
     def _llm_feedback(
         self,

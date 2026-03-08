@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from common.contracts import load_generator_contract as load_resolved_contract
+from common.contracts import (
+    load_generator_contract as load_resolved_contract,
+    requires_semantic_support,
+)
 from common.guardrails import GuardEngine, build_guard_spec, load_guard_spec_for_sid
 from common.roles import role_matches
 from common.rules import RuleSpec, load_rule, load_rulespec
@@ -100,14 +103,28 @@ def verify_with_rule(
     evidence.extend(pattern_evidence)
 
     semantic_report = _evaluate_semantic_consistency(vuln_id, workspace_dirs, generator_manifest, contract_meta)
-    semantic_pass = True
-    if semantic_report.get("supported"):
+    semantic_supported = bool(semantic_report.get("supported"))
+    semantic_source = semantic_report.get("source")
+    semantic_status = str(semantic_report.get("status") or "").strip().lower()
+    if semantic_status not in {"aligned", "contradicted", "unsupported", "empty"}:
+        if semantic_supported:
+            semantic_status = "aligned" if bool(semantic_report.get("semantic_match")) else "contradicted"
+        else:
+            semantic_status = "unsupported"
+    semantic_gate_required = requires_semantic_support(vuln_id)
+    semantic_pass = False
+    if semantic_supported:
         semantic_pass = bool(semantic_report.get("semantic_match"))
         if semantic_pass:
             evidence.append("Semantic consistency check passed")
         else:
             evidence.append(f"semantic mismatch: {semantic_error_summary(semantic_report)}")
             success = False
+    elif semantic_gate_required:
+        evidence.append(
+            f"semantic support missing for {vuln_id}: status={semantic_status or 'unsupported'}"
+        )
+        success = False
 
     guard_consistency = _evaluate_guard_consistency(
         vuln_id=vuln_id,
@@ -146,6 +163,10 @@ def verify_with_rule(
         "verify_pass": success,
         "semantic_pass": semantic_pass,
         "guard_pass": guard_pass,
+        "semantic_supported": semantic_supported,
+        "semantic_source": semantic_source,
+        "semantic_status": semantic_status,
+        "semantic_gate_required": semantic_gate_required,
         "runtime_assertion_pass": runtime_assertion_pass,
         "evidence": ", ".join(evidence),
         "log_path": str(log_path),
@@ -762,19 +783,47 @@ def _evaluate_semantic_consistency(
             "warnings": [],
             "signals": {},
             "source": "resolved_contract.semantic_contract",
+            "status": "contradicted",
+        }
+
+    fallback_class = ""
+    if isinstance(contract_meta, dict):
+        fallback_class = str(contract_meta.get("fallback_class") or "").strip().lower()
+        if not fallback_class:
+            provenance = contract_meta.get("provenance")
+            if isinstance(provenance, dict):
+                fallback_class = str(provenance.get("fallback_class") or "").strip().lower()
+    signature = semantic_contract.get("semantic_signature") if isinstance(semantic_contract, dict) else None
+    signature_present = isinstance(signature, dict) and any(
+        signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")
+    )
+    status = str(semantic_contract.get("status") or "").strip().lower() if isinstance(semantic_contract, dict) else ""
+    if (
+        fallback_class == "generic_unsupported_family"
+        and requires_semantic_support(vuln_id)
+        and (not signature_present or status in {"unsupported", "empty"})
+    ):
+        return {
+            "supported": False,
+            "semantic_match": False,
+            "errors": [],
+            "signals": {},
+            "source": "resolved_contract.semantic_contract" if semantic_contract else None,
+            "status": status if status in {"unsupported", "empty"} else "unsupported",
         }
 
     if isinstance(generator_manifest, dict):
         report = evaluate_manifest_semantics(vuln_id, generator_manifest)
         if report.get("supported"):
             report["source"] = "generator_manifest"
+            report["status"] = "aligned" if report.get("semantic_match") else "contradicted"
             return report
     for workspace in workspace_roots:
         report = evaluate_workspace_semantics(vuln_id, workspace)
         if report.get("supported"):
             report["source"] = str(workspace)
+            report["status"] = "aligned" if report.get("semantic_match") else "contradicted"
             return report
-    signature = semantic_contract.get("semantic_signature") if isinstance(semantic_contract, dict) else None
     if isinstance(signature, dict) and any(signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
         spec = build_guard_spec(
             sid=str((contract_meta or {}).get("sid") or "semantic-contract"),
@@ -794,11 +843,16 @@ def _evaluate_semantic_consistency(
             "warnings": list(evaluation.warnings or []),
             "signals": signature_details.get("signals") if isinstance(signature_details, dict) else {},
             "source": "resolved_contract.semantic_contract",
+            "status": "aligned" if evaluation.passed else "contradicted",
         }
+    status = str(semantic_contract.get("status") or "").strip().lower() if isinstance(semantic_contract, dict) else ""
+    if status not in {"unsupported", "empty"}:
+        status = "unsupported"
     return {
         "supported": False,
-        "semantic_match": True,
+        "semantic_match": False,
         "errors": [],
         "signals": {},
-        "source": None,
+        "source": "resolved_contract.semantic_contract" if semantic_contract else None,
+        "status": status,
     }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -19,11 +20,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from common.contracts import (
+    build_generator_contract,
+    can_resolve_without_remote_research,
+    load_semantic_profile,
+    requires_semantic_support,
+    write_generator_contract,
+)
 from common.logging import get_logger
-from common.paths import get_artifacts_dir, get_metadata_dir
+from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
-from common.rules import load_static_rule
-from common.run_matrix import load_vuln_bundles
+from common.run_matrix import bundle_requirement, load_vuln_bundles, metadata_dir_for_bundle
 from orchestrator.loop_controller import LoopController
 
 LOGGER = get_logger(__name__)
@@ -57,6 +64,77 @@ def _tail_text(path: Path, limit_chars: int = 2200) -> str:
     if not text:
         return ""
     return text[-limit_chars:]
+
+
+def _research_failure_details(plan: Dict[str, Any], rc: int) -> Tuple[str, str, Dict[str, Any]]:
+    default_reason = f"Researcher failed with exit code {rc}"
+    default_fix_hint = "Check LLM provider configuration / API key / network connectivity."
+    bundles = load_vuln_bundles(plan)
+    for bundle in bundles:
+        metadata_dir = metadata_dir_for_bundle(plan, bundle)
+        report = _load_json(metadata_dir / "researcher_report.json") or {}
+        if not isinstance(report, dict):
+            continue
+        quality = str(report.get("quality") or "").strip().lower()
+        quality_reason = str(report.get("quality_reason") or "").strip()
+        search_health_path = report.get("search_health_path")
+        metadata: Dict[str, Any] = {"exit_code": rc}
+        if isinstance(search_health_path, str) and search_health_path.strip():
+            metadata["search_health_path"] = search_health_path.strip()
+            health = _load_json(Path(search_health_path.strip()))
+            if isinstance(health, dict):
+                provider = str(health.get("provider") or "").strip()
+                last_error = str(health.get("last_error") or "").strip()
+                configured = bool(health.get("configured"))
+                degraded = bool(health.get("degraded"))
+                remote_result_count = int(health.get("remote_result_count") or 0)
+                metadata["search_configured"] = configured
+                if degraded:
+                    metadata["search_degraded"] = degraded
+                metadata["remote_result_count"] = remote_result_count
+                if provider:
+                    metadata["search_provider"] = provider
+                if last_error:
+                    metadata["search_error"] = last_error
+        if quality == "insufficient" and quality_reason:
+            terminal_failure_class = "research_insufficient"
+            retry_recommended = False
+            if metadata.get("search_degraded") is True:
+                terminal_failure_class = "provider_degraded"
+            elif metadata.get("search_configured") is False:
+                terminal_failure_class = "remote_provider_unavailable"
+            elif "low relevance score" in quality_reason.lower():
+                terminal_failure_class = "evidence_low_relevance"
+            elif "remote_required" in quality_reason or "remote provenance is required" in quality_reason:
+                terminal_failure_class = "remote_evidence_missing"
+            metadata["terminal_failure_class"] = terminal_failure_class
+            metadata["retry_recommended"] = retry_recommended
+            if "remote_required" in quality_reason or "remote provenance is required" in quality_reason:
+                fix_hint = "Configure the remote search provider or relax researcher.search_policy / policy.require_researcher_evidence."
+            elif "low relevance score" in quality_reason.lower():
+                fix_hint = "Improve evidence quality or lower the researcher evidence threshold for this lane."
+            else:
+                fix_hint = "Review researcher evidence policy and provider configuration for this lane."
+            return quality_reason, fix_hint, metadata
+    return default_reason, default_fix_hint, {"exit_code": rc}
+
+
+def _should_retry_research_failure(metadata: Dict[str, Any]) -> bool:
+    if not isinstance(metadata, dict):
+        return True
+    if metadata.get("retry_recommended") is False:
+        return False
+    terminal_failure_class = str(metadata.get("terminal_failure_class") or "").strip().lower()
+    if terminal_failure_class in {
+        "semantic_support_missing",
+        "remote_provider_unavailable",
+        "remote_evidence_missing",
+        "evidence_low_relevance",
+        "provider_degraded",
+        "research_insufficient",
+    }:
+        return False
+    return True
 
 
 def _latest_generator_failure(sid: str) -> Dict[str, Any] | None:
@@ -296,6 +374,30 @@ def _researcher_force_run(plan: Dict[str, Any]) -> bool:
     return _as_bool(value)
 
 
+def _seed_generator_contracts(plan: Dict[str, Any]) -> None:
+    sid = str(plan.get("sid") or "").strip()
+    requirement = plan.get("requirement") or {}
+    if not sid or not isinstance(requirement, dict):
+        return
+    for bundle in load_vuln_bundles(plan):
+        metadata_dir = metadata_dir_for_bundle(plan, bundle)
+        if load_semantic_profile(metadata_dir):
+            continue
+        vuln_id = str(bundle.vuln_id or "").strip()
+        if not vuln_id:
+            continue
+        payload = build_generator_contract(
+            sid=sid,
+            vuln_id=vuln_id,
+            metadata_dir=metadata_dir,
+            workspace_dir=None,
+            generator_mode="pipeline_seed",
+            bundle_slug=bundle.slug,
+            requirement=bundle_requirement(requirement, bundle),
+        )
+        write_generator_contract(metadata_dir, payload)
+
+
 def _can_skip_researcher(plan: Dict[str, Any], *, refresh_requested: bool) -> bool:
     if refresh_requested:
         return False
@@ -307,7 +409,49 @@ def _can_skip_researcher(plan: Dict[str, Any], *, refresh_requested: bool) -> bo
     bundles = load_vuln_bundles(plan)
     if not bundles:
         return False
-    return all(bool(load_static_rule(bundle.vuln_id)) for bundle in bundles)
+    return all(can_resolve_without_remote_research(bundle.vuln_id) for bundle in bundles)
+
+
+def _terminal_research_failure_from_semantic_profile(plan: Dict[str, Any]) -> Dict[str, Any]:
+    relevant_bundles = []
+    unsupported_findings = []
+    for bundle in load_vuln_bundles(plan):
+        vuln_id = str(bundle.vuln_id or "").strip()
+        if not vuln_id.upper().startswith("NAME-"):
+            continue
+        if not requires_semantic_support(vuln_id):
+            continue
+        relevant_bundles.append(bundle)
+        profile = load_semantic_profile(metadata_dir_for_bundle(plan, bundle)) or {}
+        support_level = str(profile.get("support_level") or "").strip().lower()
+        compiler_supported = profile.get("compiler_supported")
+        if support_level == "unsupported" and compiler_supported is False:
+            unsupported_findings.append(
+                {
+                    "slug": bundle.slug,
+                    "vuln_id": vuln_id,
+                    "support_level": support_level,
+                    "compiler_reason": str(profile.get("compiler_reason") or "").strip(),
+                }
+            )
+    terminal = bool(relevant_bundles) and len(unsupported_findings) == len(relevant_bundles)
+    reason_lines = []
+    for finding in unsupported_findings:
+        line = f"- {finding['slug']} ({finding['vuln_id']}): support_level={finding['support_level']}"
+        compiler_reason = str(finding.get("compiler_reason") or "").strip()
+        if compiler_reason:
+            line += f", compiler_reason={compiler_reason}"
+        reason_lines.append(line)
+    reason = ""
+    if terminal and reason_lines:
+        reason = "Semantic profile marks unsupported free-form family before generation:\n" + "\n".join(reason_lines)
+    return {
+        "terminal": terminal,
+        "bundles": unsupported_findings,
+        "reason": reason,
+        "retry_recommended": False,
+        "terminal_failure_class": "semantic_support_missing",
+    }
 
 
 def _record_perf_event(
@@ -352,6 +496,7 @@ def _write_perf_summary(sid: str, events: List[Dict[str, Any]]) -> None:
     provider_health_state = _provider_health_state(sid)
     llm_stub_used = _pipeline_llm_stub_used(sid)
     llm_failure_class = _pipeline_llm_failure_class(sid)
+    compiler_contracts = _compiler_contract_snapshot(sid)
     payload = {
         "sid": sid,
         "events": events,
@@ -360,8 +505,17 @@ def _write_perf_summary(sid: str, events: List[Dict[str, Any]]) -> None:
         "provider_health_state": provider_health_state,
         "llm_stub_used": llm_stub_used,
         "llm_failure_class": llm_failure_class,
+        "compiler_contracts": compiler_contracts,
         "total_duration_s": round(total, 3),
     }
+    if len(compiler_contracts) == 1:
+        contract = compiler_contracts[0]
+        if isinstance(contract.get("compiler_supported"), bool):
+            payload["compiler_supported"] = contract["compiler_supported"]
+        for key in ("compiler_strategy", "compiler_reason"):
+            value = contract.get(key)
+            if isinstance(value, str) and value.strip():
+                payload[key] = value.strip()
     _write_json(get_metadata_dir(sid) / "performance_summary.json", payload)
 
 
@@ -381,38 +535,43 @@ def _provider_health_state(sid: str) -> str:
     search_health = _load_json(get_metadata_dir(sid) / "search_health.json") or {}
     search_degraded = bool(search_health.get("degraded")) if isinstance(search_health, dict) else False
     llm_stub_used = _pipeline_llm_stub_used(sid)
+    compiler_contracts = _compiler_contract_snapshot(sid)
+    terminal_failure_class = ""
+    loop_state = _load_json(get_metadata_dir(sid) / "loop_state.json") or {}
+    history = loop_state.get("history") if isinstance(loop_state, dict) else []
+    if isinstance(history, list):
+        for entry in reversed(history):
+            if not isinstance(entry, dict) or entry.get("success") is not False:
+                continue
+            metadata = entry.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            terminal_failure_class = str(metadata.get("terminal_failure_class") or "").strip().lower()
+            if terminal_failure_class:
+                break
     if search_degraded and llm_stub_used:
         return "search_and_llm_degraded"
     if llm_stub_used:
         return "llm_degraded"
     if search_degraded:
         return "search_degraded"
+    if terminal_failure_class in {
+        "remote_provider_unavailable",
+        "remote_evidence_missing",
+        "evidence_low_relevance",
+        "provider_degraded",
+    }:
+        return terminal_failure_class
     if isinstance(search_health, dict) and search_health:
         if bool(search_health.get("configured")) or int(search_health.get("remote_result_count") or 0) > 0:
             return "healthy"
+    if compiler_contracts:
+        return "not_probed"
     return "unknown"
 
 
 def _pipeline_llm_stub_used(sid: str) -> bool:
-    metadata_root = get_metadata_dir(sid)
-    candidate_paths = [
-        metadata_root / "resolved_contract.json",
-        metadata_root / "generator_contract.json",
-        metadata_root / "generator_manifest.json",
-        metadata_root / "generator_template.json",
-    ]
-    bundles_dir = metadata_root / "bundles"
-    if bundles_dir.exists():
-        for bundle_dir in sorted(path for path in bundles_dir.iterdir() if path.is_dir()):
-            candidate_paths.extend(
-                [
-                    bundle_dir / "resolved_contract.json",
-                    bundle_dir / "generator_contract.json",
-                    bundle_dir / "generator_manifest.json",
-                    bundle_dir / "generator_template.json",
-                ]
-            )
-    for path in candidate_paths:
+    for path in _contract_candidate_paths(sid):
         payload = _load_json(path)
         if not isinstance(payload, dict):
             continue
@@ -439,25 +598,7 @@ def _payload_llm_stub_used(payload: Dict[str, Any]) -> bool:
 
 
 def _pipeline_llm_failure_class(sid: str) -> str:
-    metadata_root = get_metadata_dir(sid)
-    candidate_paths = [
-        metadata_root / "resolved_contract.json",
-        metadata_root / "generator_contract.json",
-        metadata_root / "generator_manifest.json",
-        metadata_root / "generator_template.json",
-    ]
-    bundles_dir = metadata_root / "bundles"
-    if bundles_dir.exists():
-        for bundle_dir in sorted(path for path in bundles_dir.iterdir() if path.is_dir()):
-            candidate_paths.extend(
-                [
-                    bundle_dir / "resolved_contract.json",
-                    bundle_dir / "generator_contract.json",
-                    bundle_dir / "generator_manifest.json",
-                    bundle_dir / "generator_template.json",
-                ]
-            )
-    for path in candidate_paths:
+    for path in _contract_candidate_paths(sid):
         payload = _load_json(path)
         if not isinstance(payload, dict):
             continue
@@ -503,6 +644,78 @@ def _failure_record_llm_failure_class(record: Dict[str, Any]) -> str:
     return ""
 
 
+def _contract_candidate_paths(sid: str) -> List[Path]:
+    metadata_root = get_metadata_dir(sid)
+    candidate_paths = [
+        metadata_root / "resolved_contract.json",
+        metadata_root / "generator_contract.json",
+        metadata_root / "generator_manifest.json",
+        metadata_root / "generator_template.json",
+    ]
+    bundles_dir = metadata_root / "bundles"
+    if bundles_dir.exists():
+        for bundle_dir in sorted(path for path in bundles_dir.iterdir() if path.is_dir()):
+            candidate_paths.extend(
+                [
+                    bundle_dir / "resolved_contract.json",
+                    bundle_dir / "generator_contract.json",
+                    bundle_dir / "generator_manifest.json",
+                    bundle_dir / "generator_template.json",
+                ]
+            )
+    return candidate_paths
+
+
+def _compiler_contract_snapshot(sid: str) -> List[Dict[str, Any]]:
+    snapshots: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in _contract_candidate_paths(sid):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        slug = payload.get("slug")
+        vuln_id = payload.get("vuln_id")
+        compiler_supported = payload.get("compiler_supported")
+        compiler_strategy = payload.get("compiler_strategy")
+        compiler_reason = payload.get("compiler_reason")
+        profile = payload.get("semantic_profile")
+        if isinstance(profile, dict):
+            if not isinstance(compiler_supported, bool):
+                compiler_supported = profile.get("compiler_supported")
+            if not isinstance(compiler_strategy, str) or not compiler_strategy.strip():
+                compiler_strategy = profile.get("compiler_strategy")
+            if not isinstance(compiler_reason, str) or not compiler_reason.strip():
+                compiler_reason = profile.get("compiler_reason")
+        if not isinstance(compiler_supported, bool) and not (
+            isinstance(compiler_strategy, str) and compiler_strategy.strip()
+        ):
+            continue
+        if not (isinstance(slug, str) and slug.strip()) and not (isinstance(vuln_id, str) and vuln_id.strip()):
+            continue
+        key = json.dumps({"slug": slug, "vuln_id": vuln_id}, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry: Dict[str, Any] = {
+            "slug": slug,
+            "vuln_id": vuln_id,
+            "path": str(path),
+        }
+        if isinstance(compiler_supported, bool):
+            entry["compiler_supported"] = compiler_supported
+        if isinstance(compiler_strategy, str) and compiler_strategy.strip():
+            entry["compiler_strategy"] = compiler_strategy.strip()
+        if isinstance(compiler_reason, str) and compiler_reason.strip():
+            entry["compiler_reason"] = compiler_reason.strip()
+        if isinstance(profile, dict):
+            for key_name in ("support_level", "family"):
+                value = profile.get(key_name)
+                if isinstance(value, str) and value.strip():
+                    entry[key_name] = value.strip()
+        snapshots.append(entry)
+    return snapshots
+
+
 def _write_failure_summary_manifest(sid: str, plan: Dict[str, Any]) -> None:
     try:
         from orchestrator import pack as pack_mod
@@ -510,6 +723,23 @@ def _write_failure_summary_manifest(sid: str, plan: Dict[str, Any]) -> None:
         pack_mod.write_manifest(sid, plan, filename="failure_manifest.json")
     except Exception as exc:  # pragma: no cover - defensive logging only
         LOGGER.warning("Failed to write failure summary manifest for %s: %s", sid, exc)
+
+
+def _prepare_fresh_run_state(sid: str) -> None:
+    metadata_dir = ensure_dir(get_metadata_dir(sid))
+    keep_names = {"plan.json", "runtime_rules", "runtime_templates"}
+    for child in list(metadata_dir.iterdir()):
+        if child.name in keep_names:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink(missing_ok=True)
+
+    for target in (get_artifacts_dir(sid), get_workspace_dir(sid)):
+        if target.exists():
+            shutil.rmtree(target)
+        ensure_dir(target)
 
 
 def _summarize_executor_error(sid: str, *, stage: str) -> Tuple[str, str, Dict[str, Any]]:
@@ -651,6 +881,39 @@ def _overall_verify_pass(sid: str) -> bool:
     return bool(payload.get("overall_pass"))
 
 
+def _analyze_verify_failures(sid: str) -> Dict[str, Any]:
+    evals_path = get_artifacts_dir(sid) / "reports" / "evals.json"
+    payload = _load_json(evals_path) or {}
+    results = payload.get("results") or []
+    failures: List[Dict[str, Any]] = []
+    terminal_semantic_unsupported = bool(results)
+    for entry in results:
+        if not isinstance(entry, dict) or entry.get("verify_pass") is not False:
+            continue
+        failures.append(entry)
+        vuln_id = str(entry.get("vuln_id") or "").strip()
+        semantic_supported = entry.get("semantic_supported")
+        semantic_status = str(entry.get("semantic_status") or "").strip().lower()
+        if not requires_semantic_support(vuln_id):
+            terminal_semantic_unsupported = False
+            continue
+        if semantic_supported is False and semantic_status in {"unsupported", "empty"}:
+            continue
+        terminal_semantic_unsupported = False
+
+    if not failures:
+        terminal_semantic_unsupported = False
+    return {
+        "terminal_semantic_unsupported": terminal_semantic_unsupported,
+        "failure_count": len(failures),
+        "slugs": [
+            str(entry.get("slug") or entry.get("vuln_id") or "unknown")
+            for entry in failures
+            if isinstance(entry, dict)
+        ],
+    }
+
+
 def _review_blocking(sid: str) -> bool:
     report_path = get_metadata_dir(sid) / "reviewer_report.json"
     payload = _load_json(report_path) or {}
@@ -673,18 +936,50 @@ def main() -> None:
     args = parse_args()
     sid = args.sid
     plan = load_plan(sid)
+    _prepare_fresh_run_state(sid)
     loop_cfg = plan.get("loop", {"max_loops": 3})
     controller = LoopController(sid, max_loops=int(loop_cfg.get("max_loops", 3)))
     perf_events: List[Dict[str, Any]] = []
     if controller.current_loop == 0:
         controller.start_loop()
+    _seed_generator_contracts(plan)
 
     researcher_ran = False
     researcher_refresh_requested = False
     while True:
         if not args.skip_researcher and (args.researcher_every_loop or researcher_refresh_requested or not researcher_ran):
+            terminal_profile = _terminal_research_failure_from_semantic_profile(plan)
+            if terminal_profile.get("terminal"):
+                _record_perf_event(
+                    sid,
+                    perf_events,
+                    loop=controller.current_loop,
+                    stage="RESEARCH",
+                    duration_s=0.0,
+                    returncode=1,
+                    note="preseeded semantic profile unsupported",
+                )
+                controller.record_failure(
+                    stage="RESEARCH",
+                    reason=str(terminal_profile.get("reason") or "semantic profile unsupported"),
+                    fix_hint=(
+                        "Add compiler-backed support for this family or keep the request in "
+                        "inspection-only / negative regression mode."
+                    ),
+                    blocking=True,
+                    metadata={
+                        "terminal_failure_class": terminal_profile.get("terminal_failure_class"),
+                        "retry_recommended": False,
+                        "unsupported_bundles": terminal_profile.get("bundles") or [],
+                    },
+                )
+                LOGGER.info(
+                    "Stopping before RESEARCH for %s: preseeded semantic_profile marked all relevant free-form bundles unsupported",
+                    sid,
+                )
+                break
             if not args.researcher_every_loop and _can_skip_researcher(plan, refresh_requested=researcher_refresh_requested):
-                note = "researcher skipped: known static rule path"
+                note = "researcher skipped: compiler/static supported path"
                 controller.record_success(stage="RESEARCH", note=note)
                 _record_perf_event(
                     sid,
@@ -710,16 +1005,46 @@ def main() -> None:
                     returncode=rc,
                 )
                 if rc != 0:
+                    failure_reason, fix_hint, failure_meta = _research_failure_details(plan, rc)
                     controller.record_failure(
                         stage="RESEARCH",
-                        reason=f"Researcher failed with exit code {rc}",
-                        fix_hint="Check LLM provider configuration / API key / network connectivity.",
+                        reason=failure_reason,
+                        fix_hint=fix_hint,
                         blocking=True,
-                        metadata={"exit_code": rc},
+                        metadata=failure_meta,
                     )
+                    if not _should_retry_research_failure(failure_meta):
+                        LOGGER.info(
+                            "Stopping retries for %s after RESEARCH: terminal research failure (%s)",
+                            sid,
+                            str(failure_meta.get("terminal_failure_class") or "research_failure"),
+                        )
+                        break
                     if controller.should_continue():
                         controller.start_loop()
                         continue
+                    break
+                _seed_generator_contracts(plan)
+                terminal_profile = _terminal_research_failure_from_semantic_profile(plan)
+                if terminal_profile.get("terminal"):
+                    controller.record_failure(
+                        stage="RESEARCH",
+                        reason=str(terminal_profile.get("reason") or "semantic profile unsupported"),
+                        fix_hint=(
+                            "Add compiler-backed support for this family or keep the request in "
+                            "inspection-only / negative regression mode."
+                        ),
+                        blocking=True,
+                        metadata={
+                            "terminal_failure_class": terminal_profile.get("terminal_failure_class"),
+                            "retry_recommended": False,
+                            "unsupported_bundles": terminal_profile.get("bundles") or [],
+                        },
+                    )
+                    LOGGER.info(
+                        "Stopping before GENERATOR for %s: semantic_profile marked all relevant free-form bundles unsupported",
+                        sid,
+                    )
                     break
                 controller.record_success(stage="RESEARCH", note="researcher succeeded")
                 researcher_ran = True
@@ -851,7 +1176,18 @@ def main() -> None:
         )
         if not _overall_verify_pass(sid):
             reason, hint, meta = _summarize_verify_failure(sid)
+            verify_analysis = _analyze_verify_failures(sid)
+            if verify_analysis.get("terminal_semantic_unsupported"):
+                meta["terminal_failure_class"] = "semantic_support_missing"
+                meta["retry_recommended"] = False
             controller.record_failure(stage="VERIFY", reason=reason, fix_hint=hint, blocking=True, metadata=meta)
+            if verify_analysis.get("terminal_semantic_unsupported"):
+                LOGGER.info(
+                    "Stopping retries for %s after VERIFY: terminal semantic support failure (%s)",
+                    sid,
+                    ", ".join(verify_analysis.get("slugs") or []) or "unknown bundle",
+                )
+                break
             if controller.should_continue():
                 controller.start_loop()
                 continue

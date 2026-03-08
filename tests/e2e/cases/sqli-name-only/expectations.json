@@ -1,6 +1,10 @@
 {
   "manifest": {
-    "overall_pass": true
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0
   },
   "evals": [
     {
@@ -8,6 +12,11 @@
       "verify_pass": true,
       "run_passed": true,
       "exit_code": 0,
+      "promotion_eligible": true,
+      "compiler_supported": true,
+      "compiler_strategy": "sqli_string_concat",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
       "evidence_contains": [
         "SQLi SUCCESS",
         "FLAG-sqli-demo-token"

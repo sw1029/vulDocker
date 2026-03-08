@@ -1,17 +1,20 @@
 {
   "manifest": {
-    "overall_pass": true,
+    "pipeline_result": "failure",
     "promotion_eligible": false,
+    "manifest_file": "failure_manifest.json",
+    "pipeline_returncode": 1,
     "generalization_class": "synthetic_regression",
     "counts_as_generalization": false
   },
   "evals": [
     {
       "slug": "cwe-9999",
-      "verify_pass": true,
-      "run_passed": true,
-      "exit_code": 0,
+      "verify_pass": false,
+      "run_passed": false,
+      "exit_code": null,
       "promotion_eligible": false,
+      "compiler_supported": false,
       "generalization_class": "synthetic_regression",
       "counts_as_generalization": false
     }

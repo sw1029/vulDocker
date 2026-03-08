@@ -8,19 +8,15 @@
   },
   "evals": [
     {
-      "slug": "cwe-352",
+      "slug": "cwe-22",
       "verify_pass": true,
       "run_passed": true,
       "exit_code": 0,
       "promotion_eligible": true,
       "compiler_supported": true,
-      "compiler_strategy": "csrf_missing_token",
+      "compiler_strategy": "path_traversal_file_read",
       "semantic_supported": true,
-      "semantic_status": "aligned",
-      "evidence_contains": [
-        "CSRF SUCCESS",
-        "FLAG-csrf-demo-token"
-      ]
+      "semantic_status": "aligned"
     }
   ],
   "reviewer": {
