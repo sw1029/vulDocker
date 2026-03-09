@@ -600,6 +600,7 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
             "family_override_applied": False,
             "llm_stub_used": True,
             "llm_fixture_used": False,
+            "service_env": {"APP_PORT": "5000", "DB_HOST": "sqli-db"},
             "semantic_profile": {
                 "schema_version": "semantic_profile@1.0",
                 "sid": sid,
@@ -721,6 +722,11 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
     assert manifest["verification_trust"] == "low"
     assert manifest["bundles"][0]["compiler_contract"]["compiler_supported"] is False
     assert manifest["bundles"][0]["compiler_contract"]["compiler_strategy"] == "sqli_string_concat"
+    assert manifest["bundles"][0]["compiler_contract"]["service_env"] == {
+        "APP_PORT": "5000",
+        "DB_HOST": "sqli-db",
+    }
+    assert manifest["service_env"] == {"APP_PORT": "5000", "DB_HOST": "sqli-db"}
     assert manifest["bundles"][0]["lower_bound"]["effective_non_remote_available"] is True
     assert manifest["bundles"][0]["executor_feasibility"]["status"] == "not_required"
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "deterministic fallback dependent"

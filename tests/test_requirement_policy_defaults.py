@@ -322,6 +322,42 @@ def test_explicit_plaintext_vuln_id_is_promoted_to_synthetic_name() -> None:
     assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
 
 
+def test_single_token_plaintext_vuln_id_is_promoted_to_synthetic_name() -> None:
+    normalized = normalize_requirement({"vuln_id": "Foobar"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-FOOBAR"
+    assert (requirement.get("name_resolution") or {}).get("resolved_vuln_id") == "NAME-FOOBAR"
+    assert (requirement.get("name_resolution") or {}).get("source") == "synthetic_name"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+
+
+def test_single_token_vuln_name_is_promoted_to_synthetic_name() -> None:
+    normalized = normalize_requirement({"vuln_name": "Foobar"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-FOOBAR"
+    assert requirement["vuln_ids"] == ["NAME-FOOBAR"]
+    assert (requirement.get("name_resolution") or {}).get("resolved_vuln_id") == "NAME-FOOBAR"
+    assert (requirement.get("name_resolution") or {}).get("source") == "synthetic_name"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+
+
+def test_single_token_vuln_ids_entry_is_promoted_to_synthetic_name() -> None:
+    normalized = normalize_requirement({"vuln_ids": ["Foobar"]})
+    requirement = normalized.requirement
+
+    assert normalized.requested_vuln_ids == ["NAME-FOOBAR"]
+    assert requirement["vuln_id"] == "NAME-FOOBAR"
+    assert requirement["vuln_ids"] == ["NAME-FOOBAR"]
+    assert (requirement.get("name_resolution") or {}).get("resolved_vuln_id") == "NAME-FOOBAR"
+    assert (requirement.get("name_resolution") or {}).get("source") == "synthetic_name"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+
+
 def test_explicit_cwe_identifier_alias_is_canonicalized() -> None:
     normalized = normalize_requirement({"vuln_id": "CWE89"})
     requirement = normalized.requirement

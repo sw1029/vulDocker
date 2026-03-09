@@ -216,6 +216,7 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "stack_scaffold_version": compiler_contract.get("stack_scaffold_version"),
                 "fragment_id": compiler_contract.get("fragment_id"),
                 "compose_mode": compiler_contract.get("compose_mode"),
+                "service_env": compiler_contract.get("service_env"),
                 "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
                 "llm_fixture_used": (bundle.get("provenance") or {}).get("llm_fixture_used"),
                 "dynamicness_verdict": (bundle.get("dynamicness") or {}).get("verdict"),
@@ -248,6 +249,7 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "stack_scaffold_version": manifest.get("stack_scaffold_version"),
         "fragment_id": manifest.get("fragment_id"),
         "compose_mode": manifest.get("compose_mode"),
+        "service_env": manifest.get("service_env"),
         "name_resolution": manifest.get("name_resolution") or {},
         "generation_origin": manifest.get("generation_origin"),
         "verification_rule_source": manifest.get("verification_rule_source"),
@@ -371,6 +373,12 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"executor_feasibility_status expected {manifest_expect['executor_feasibility_status']!r} but observed {summary.get('executor_feasibility_status')!r}"
             )
+    if "service_env" in manifest_expect:
+        actual = summary.get("service_env") or {}
+        if actual != manifest_expect["service_env"]:
+            errors.append(
+                f"service_env expected {manifest_expect['service_env']!r} but observed {summary.get('service_env')!r}"
+            )
     name_resolution_expect = manifest_expect.get("name_resolution")
     if isinstance(name_resolution_expect, dict):
         actual = summary.get("name_resolution") or {}
@@ -405,6 +413,14 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             if actual.get(key) != expected:
                 errors.append(
                     f"partial_progress_summary.{key} expected {expected!r} but observed {actual.get(key)!r}"
+                )
+    failure_expect = manifest_expect.get("failure")
+    if isinstance(failure_expect, dict):
+        actual = summary.get("failure") or {}
+        for key, expected in failure_expect.items():
+            if actual.get(key) != expected:
+                errors.append(
+                    f"failure.{key} expected {expected!r} but observed {actual.get(key)!r}"
                 )
     bundle_index = _bundle_index(summary)
     for entry in expectations.get("evals", []):
@@ -457,6 +473,10 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
         if "executor_feasibility_status" in entry and str(bundle.get("executor_feasibility_status") or "") != str(entry["executor_feasibility_status"]):
             errors.append(
                 f"bundle {bundle['slug']}: executor_feasibility_status expected {entry['executor_feasibility_status']!r} but was {bundle.get('executor_feasibility_status')!r}"
+            )
+        if "service_env" in entry and (bundle.get("service_env") or {}) != entry["service_env"]:
+            errors.append(
+                f"bundle {bundle['slug']}: service_env expected {entry['service_env']!r} but was {bundle.get('service_env')!r}"
             )
         for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
             if key not in entry:

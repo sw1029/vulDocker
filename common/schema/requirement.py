@@ -75,6 +75,18 @@ def _synthetic_name_vuln_id(value: str) -> str:
     return f"NAME-{slugify_vuln_id(cleaned).upper()}"
 
 
+def _looks_like_explicit_identifier(value: str) -> bool:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    if lowered.startswith(("cwe", "cve", "name-")):
+        return True
+    if cleaned.isdigit():
+        return True
+    return False
+
+
 def _coerce_vuln_reference(
     value: Any,
     *,
@@ -89,17 +101,14 @@ def _coerce_vuln_reference(
     if mapped:
         mapped_value, source = _mapped_vuln_id_with_source(cleaned)
         return mapped_value, source or "alias"
-    lowered = cleaned.lower()
-    if lowered.startswith(("cwe", "cve")):
+    if _looks_like_explicit_identifier(cleaned):
         return cleaned.replace(" ", "").replace("_", "-").upper(), "explicit_identifier"
-    if cleaned.isdigit():
-        return cleaned, "explicit_identifier"
-    if re.fullmatch(r"[A-Za-z0-9.-]+", cleaned):
-        return cleaned.replace(" ", "").upper(), "explicit_identifier"
     if allow_synthetic_name:
         synthetic = _synthetic_name_vuln_id(cleaned)
         if synthetic:
             return synthetic, "synthetic_name"
+    if re.fullmatch(r"[A-Za-z0-9.-]+", cleaned):
+        return cleaned.replace(" ", "").upper(), "explicit_identifier"
     return "", ""
 
 

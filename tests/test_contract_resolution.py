@@ -66,6 +66,52 @@ def test_contract_uses_mysql_compiler_strategy_for_external_db_runtime(tmp_path:
     assert payload["resolved"]["service_env"]["DB_NAME"] == "sqliapp"
 
 
+def test_contract_uses_catalog_driven_mysql_service_env_with_custom_sidecar_values(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-89",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-89",
+        requirement={
+            "vuln_name": "SQL Injection",
+            "vuln_id": "CWE-89",
+            "pattern_id": "sqli-union-mysql",
+            "language": "python",
+            "framework": "flask",
+            "runtime": {"db": "mysql", "allow_external_db": True, "db_name": "runtime_db"},
+            "executor": {
+                "allow_network": True,
+                "network_mode": "bridge",
+                "sidecars": [
+                    {
+                        "name": "mysql-main",
+                        "type": "mysql",
+                        "aliases": ["db-internal"],
+                        "env": {
+                            "MYSQL_USER": "custom_user",
+                            "MYSQL_PASSWORD": "custom_pw",
+                            "MYSQL_DATABASE": "custom_db",
+                        },
+                    }
+                ],
+            },
+        },
+    )
+
+    assert payload["compiler_strategy"] == "sqli_string_concat_mysql"
+    assert payload["service_env"] == {
+        "APP_PORT": "5000",
+        "DB_HOST": "db-internal",
+        "DB_PORT": "3306",
+        "DB_USER": "custom_user",
+        "DB_PASSWORD": "custom_pw",
+        "DB_NAME": "custom_db",
+    }
+    assert payload["resolved"]["service_env"]["DB_HOST"] == "db-internal"
+
+
 def test_contract_marks_cwe352_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",

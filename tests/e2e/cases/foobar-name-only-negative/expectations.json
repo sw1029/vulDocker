@@ -1,0 +1,38 @@
+{
+  "manifest": {
+    "overall_pass": false,
+    "pipeline_result": "failure",
+    "promotion_eligible": false,
+    "manifest_file": "failure_manifest.json",
+    "pipeline_returncode": 1,
+    "generation_origin": "research_short_circuit",
+    "dynamicness_verdict": "pre-generation fail-closed",
+    "generalization_class": "unsupported_free_form_negative",
+    "counts_as_generalization": false,
+    "provider_health_state": "not_probed",
+    "name_resolution": {
+      "input": "Foobar",
+      "resolved_vuln_id": "NAME-FOOBAR",
+      "source": "synthetic_name"
+    },
+    "failure": {
+      "stage": "RESEARCH",
+      "terminal_failure_class": "semantic_support_missing"
+    }
+  },
+  "evals": [
+    {
+      "slug": "name-foobar",
+      "promotion_eligible": false,
+      "compiler_supported": false,
+      "generation_origin": "research_short_circuit",
+      "dynamicness_verdict": "pre-generation fail-closed",
+      "terminal_failure_class": "semantic_support_missing",
+      "generalization_class": "unsupported_free_form_negative",
+      "counts_as_generalization": false,
+      "compiler_reason_contains": [
+        "unsupported"
+      ]
+    }
+  ]
+}

@@ -97,6 +97,8 @@ def _catalog_payload() -> Dict[str, Dict[str, Any]]:
         normalized_entry["fragment_strategy"] = str(entry.get("fragment_strategy") or "").strip()
         runtime = entry.get("runtime")
         normalized_entry["runtime"] = dict(runtime) if isinstance(runtime, dict) else {}
+        runtime_surface = entry.get("runtime_surface")
+        normalized_entry["runtime_surface"] = dict(runtime_surface) if isinstance(runtime_surface, dict) else {}
         user_deps = entry.get("user_deps")
         normalized_entry["user_deps"] = [
             str(item).strip() for item in user_deps or [] if isinstance(item, str) and str(item).strip()
@@ -145,12 +147,14 @@ def _catalog_payload() -> Dict[str, Dict[str, Any]]:
                 for item in raw_variant.get("pattern_aliases") or []
                 if normalize_vuln_label(item)
             ]
+            runtime_surface = raw_variant.get("runtime_surface")
             variants.append(
                 {
                     "fragment_strategy": fragment_strategy,
                     "runtime_db": runtime_db,
                     "pattern_aliases": pattern_aliases,
                     "require_allow_external_db": _as_bool(raw_variant.get("require_allow_external_db")),
+                    "runtime_surface": dict(runtime_surface) if isinstance(runtime_surface, dict) else {},
                 }
             )
         normalized_entry["strategy_variants"] = variants
@@ -298,6 +302,27 @@ def resolve_compiler_strategy(vuln_id: str, requirement: Optional[Dict[str, Any]
     return str(entry.get("fragment_strategy") or "").strip()
 
 
+def resolve_runtime_surface_spec(strategy: str, requirement: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    token = str(strategy or "").strip()
+    if not token:
+        return {}
+    for entry in _catalog_payload().values():
+        if not isinstance(entry, dict):
+            continue
+        for variant in entry.get("strategy_variants") or []:
+            if not isinstance(variant, dict):
+                continue
+            if str(variant.get("fragment_strategy") or "").strip() != token:
+                continue
+            runtime_surface = variant.get("runtime_surface")
+            return dict(runtime_surface) if isinstance(runtime_surface, dict) else {}
+        if str(entry.get("fragment_strategy") or "").strip() == token:
+            runtime_surface = entry.get("runtime_surface")
+            if isinstance(runtime_surface, dict):
+                return dict(runtime_surface)
+    return {}
+
+
 def catalog_profile_defaults() -> Dict[str, Dict[str, Any]]:
     defaults: Dict[str, Dict[str, Any]] = {}
     for entry in vuln_catalog_entries():
@@ -327,6 +352,7 @@ __all__ = [
     "mapped_vuln_id_with_source",
     "normalize_vuln_label",
     "resolve_compiler_strategy",
+    "resolve_runtime_surface_spec",
     "resolve_vuln_catalog_entry",
     "vuln_catalog_entries",
     "vuln_catalog_entry",

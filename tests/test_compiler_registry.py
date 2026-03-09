@@ -201,6 +201,49 @@ def test_mysql_sqli_registry_manifest_records_external_db_metadata() -> None:
     assert "missing-db-host" in service_main["content"]
 
 
+def test_mysql_sqli_registry_manifest_uses_catalog_runtime_surface_with_custom_sidecar_values() -> None:
+    result = compile_manifest(
+        sid="sid-registry-sqli-mysql-custom",
+        requirement={
+            "vuln_id": "CWE-89",
+            "vuln_name": "SQL Injection",
+            "pattern_id": "sqli-union-mysql",
+            "runtime": {"db": "mysql", "allow_external_db": True, "db_name": "runtime_db"},
+            "executor": {
+                "allow_network": True,
+                "network_mode": "bridge",
+                "sidecars": [
+                    {
+                        "name": "mysql-main",
+                        "type": "mysql",
+                        "aliases": ["db-internal"],
+                        "env": {
+                            "MYSQL_USER": "custom_user",
+                            "MYSQL_PASSWORD": "custom_pw",
+                            "MYSQL_DATABASE": "custom_db",
+                        },
+                    }
+                ],
+            },
+        },
+        semantic_profile=_semantic_profile(
+            "sqli_string_concat_mysql",
+            requested_name="SQL Injection",
+            normalized_vuln_id="CWE-89",
+        ),
+    )
+
+    assert result is not None
+    assert result.manifest["run"]["env"] == {
+        "APP_PORT": "5000",
+        "DB_HOST": "db-internal",
+        "DB_PORT": "3306",
+        "DB_USER": "custom_user",
+        "DB_PASSWORD": "custom_pw",
+        "DB_NAME": "custom_db",
+    }
+
+
 def test_template_injection_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
     result = compile_manifest(
         sid="sid-registry-template",

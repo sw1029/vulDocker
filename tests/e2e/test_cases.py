@@ -176,6 +176,50 @@ def test_sqli_sidecar_compiler_case(tmp_path: Path) -> None:
 
 
 @pytest.mark.e2e
+def test_sqli_sidecar_compiler_custom_env_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+    case_dir = REPO_ROOT / "tests/e2e/cases/sqli-sidecar-compiler-custom-env"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "compiler_generated"
+    assert summary["dynamicness_verdict"] == "compiler-first"
+    assert summary["compiler_strategy"] == "sqli_string_concat_mysql"
+    assert summary["executor_feasibility_status"] == "configured"
+    assert summary["service_env"] == {
+        "APP_PORT": "5000",
+        "DB_HOST": "db-internal",
+        "DB_PORT": "3306",
+        "DB_USER": "custom_user",
+        "DB_PASSWORD": "custom_pw",
+        "DB_NAME": "runtime_db_custom",
+    }
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "cwe-89")
+    assert bundle["verify_pass"] is True
+    assert bundle["generation_origin"] == "compiler_generated"
+    assert bundle["compiler_strategy"] == "sqli_string_concat_mysql"
+    assert bundle["executor_feasibility_status"] == "configured"
+    assert bundle["service_env"] == summary["service_env"]
+
+
+@pytest.mark.e2e
 def test_trusted_dynamic_sqli_case(tmp_path: Path) -> None:
     reason = _skip_reason()
     if reason:
@@ -1000,6 +1044,54 @@ def test_ldap_injection_negative_case(tmp_path: Path) -> None:
         and bundle.get("compiler_supported") is False
         and bundle.get("generalization_class") == "unsupported_free_form_negative"
         and "unsupported" in str(bundle.get("compiler_reason") or "").lower()
+        for bundle in summary["bundles"]
+    )
+
+
+@pytest.mark.e2e
+def test_foobar_name_only_negative_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/foobar-name-only-negative"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "failure"
+    assert summary["promotion_eligible"] is False
+    assert summary["manifest_file"] == "failure_manifest.json"
+    assert summary["provider_health_state"] == "not_probed"
+    assert summary["failure"]["stage"] == "RESEARCH"
+    assert summary["failure"]["terminal_failure_class"] == "semantic_support_missing"
+    assert summary["name_resolution"] == {
+        "input": "Foobar",
+        "resolved_vuln_id": "NAME-FOOBAR",
+        "source": "synthetic_name",
+    }
+    assert summary["generalization_class"] == "unsupported_free_form_negative"
+    assert summary["counts_as_generalization"] is False
+    assert any(
+        bundle["slug"] == "name-foobar"
+        and bundle.get("compiler_supported") is False
+        and bundle.get("generation_origin") == "research_short_circuit"
+        and bundle.get("terminal_failure_class") == "semantic_support_missing"
+        and bundle.get("generalization_class") == "unsupported_free_form_negative"
         for bundle in summary["bundles"]
     )
 

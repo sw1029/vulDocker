@@ -1,0 +1,37 @@
+base_requirement: inputs/base_requirement.yml
+
+overrides:
+  requirement_id: E2E-SQLI-MYSQL-COMPILER-CUSTOM-ENV-0001
+  intent: "E2E 회귀: SQLi compiler-first MySQL sidecar lane custom runtime env 검증"
+  vuln_name: SQL Injection
+  vuln_ids: []
+  multi_vuln: false
+  generator_mode: synthesis
+  pattern_id: sqli-union-mysql
+  runtime:
+    db: mysql
+    allow_external_db: true
+    db_name: runtime_db_custom
+  executor:
+    allow_network: true
+    network_mode: bridge
+    sidecars:
+      - name: mysql-main
+        type: mysql
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_DATABASE: runtime_db_custom
+          MYSQL_USER: custom_user
+          MYSQL_PASSWORD: custom_pw
+        aliases:
+          - db-internal
+        ready_probe:
+          type: mysql
+          retries: 20
+          interval: 2
+  policy:
+    verifier:
+      prefer_rule: true
+      strict_flag_default: true
+      llm_assist: false

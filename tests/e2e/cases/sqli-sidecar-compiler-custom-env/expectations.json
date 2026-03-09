@@ -1,0 +1,71 @@
+{
+  "manifest": {
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first",
+    "family_non_remote_available": true,
+    "effective_non_remote_available": true,
+    "compiler_path_enabled": true,
+    "executor_feasibility_status": "configured",
+    "generalization_class": "known_family_regression",
+    "counts_as_generalization": false,
+    "compiler_family": "sql_injection",
+    "stack_scaffold_id": "python/flask",
+    "stack_scaffold_version": "1.0",
+    "fragment_id": "mysql_login_query_concat_route",
+    "compose_mode": "registry",
+    "service_env": {
+      "APP_PORT": "5000",
+      "DB_HOST": "db-internal",
+      "DB_PORT": "3306",
+      "DB_USER": "custom_user",
+      "DB_PASSWORD": "custom_pw",
+      "DB_NAME": "runtime_db_custom"
+    }
+  },
+  "evals": [
+    {
+      "slug": "cwe-89",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": true,
+      "compiler_supported": true,
+      "compiler_strategy": "sqli_string_concat_mysql",
+      "compiler_family": "sql_injection",
+      "stack_scaffold_id": "python/flask",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "mysql_login_query_concat_route",
+      "compose_mode": "registry",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
+      "family_non_remote_available": true,
+      "effective_non_remote_available": true,
+      "compiler_path_enabled": true,
+      "executor_feasibility_status": "configured",
+      "service_env": {
+        "APP_PORT": "5000",
+        "DB_HOST": "db-internal",
+        "DB_PORT": "3306",
+        "DB_USER": "custom_user",
+        "DB_PASSWORD": "custom_pw",
+        "DB_NAME": "runtime_db_custom"
+      },
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "generalization_class": "known_family_regression",
+      "counts_as_generalization": false,
+      "evidence_contains": [
+        "SQLi SUCCESS",
+        "FLAG-sqli-demo-token"
+      ]
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

@@ -1,7 +1,97 @@
-"""Helpers for deriving runtime surface requirements from requirement+strategy."""
+"""Helpers for deriving runtime surface requirements from asset-backed specs."""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+
+from common.vuln_catalog import resolve_runtime_surface_spec
+
+
+def _requirement_dict(requirement: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return requirement if isinstance(requirement, dict) else {}
+
+
+def _runtime_dict(requirement: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    req = _requirement_dict(requirement)
+    runtime = req.get("runtime")
+    return runtime if isinstance(runtime, dict) else {}
+
+
+def _executor_dict(requirement: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    req = _requirement_dict(requirement)
+    executor = req.get("executor")
+    return executor if isinstance(executor, dict) else {}
+
+
+def _sidecars(requirement: Optional[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    executor = _executor_dict(requirement)
+    raw = executor.get("sidecars")
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
+
+
+def _matching_sidecar(spec: Dict[str, Any], requirement: Optional[Dict[str, Any]]) -> Dict[str, Any] | None:
+    target_type = str(spec.get("sidecar_type") or "").strip().lower()
+    target_name = str(spec.get("sidecar_name") or "").strip().lower()
+    for entry in _sidecars(requirement):
+        sidecar_type = str(entry.get("type") or "").strip().lower()
+        name = str(entry.get("name") or "").strip().lower()
+        if target_type and sidecar_type == target_type:
+            return entry
+        if target_name and name == target_name:
+            return entry
+    if target_type or target_name:
+        return None
+    entries = _sidecars(requirement)
+    return entries[0] if entries else None
+
+
+def _resolve_source_value(
+    source: str,
+    *,
+    spec: Dict[str, Any],
+    requirement: Optional[Dict[str, Any]],
+    service_port: Optional[int],
+) -> str | None:
+    token = str(source or "").strip()
+    if not token:
+        return None
+    if token == "service_port":
+        if service_port:
+            return str(service_port)
+        return None
+    if token.startswith("runtime."):
+        key = token.split(".", 1)[1]
+        value = _runtime_dict(requirement).get(key)
+        if value in (None, ""):
+            return None
+        return str(value)
+    if token.startswith("sidecar."):
+        sidecar = _matching_sidecar(spec, requirement)
+        if not isinstance(sidecar, dict):
+            return None
+        tail = token.split(".", 1)[1]
+        if tail == "name":
+            value = sidecar.get("name")
+            return str(value) if value not in (None, "") else None
+        if tail == "alias_or_name":
+            aliases = sidecar.get("aliases")
+            if isinstance(aliases, list):
+                for item in aliases:
+                    if item not in (None, ""):
+                        return str(item)
+            value = sidecar.get("name")
+            return str(value) if value not in (None, "") else None
+        if tail.startswith("env."):
+            key = tail.split(".", 1)[1]
+            env = sidecar.get("env")
+            if not isinstance(env, dict):
+                return None
+            value = env.get(key)
+            if value in (None, ""):
+                return None
+            return str(value)
+    return None
 
 
 def derive_service_env(
@@ -10,40 +100,45 @@ def derive_service_env(
     requirement: Optional[Dict[str, Any]],
     service_port: Optional[int] = None,
 ) -> Dict[str, str]:
-    req = requirement if isinstance(requirement, dict) else {}
+    spec = resolve_runtime_surface_spec(compiler_strategy, requirement)
+    if not isinstance(spec, dict):
+        return {}
+    service_env = spec.get("service_env")
+    if not isinstance(service_env, dict):
+        return {}
     env: Dict[str, str] = {}
-    if compiler_strategy == "sqli_string_concat_mysql":
-        if service_port:
-            env["APP_PORT"] = str(service_port)
-        runtime = req.get("runtime") if isinstance(req.get("runtime"), dict) else {}
-        executor = req.get("executor") if isinstance(req.get("executor"), dict) else {}
-        runtime = runtime if isinstance(runtime, dict) else {}
-        executor = executor if isinstance(executor, dict) else {}
-        sidecars = executor.get("sidecars") if isinstance(executor.get("sidecars"), list) else []
-        mysql_sidecar = None
-        for entry in sidecars:
-            if not isinstance(entry, dict):
-                continue
-            sidecar_type = str(entry.get("type") or "").strip().lower()
-            name = str(entry.get("name") or "").strip().lower()
-            if sidecar_type == "mysql" or name == "mysql":
-                mysql_sidecar = entry
-                break
-        aliases = mysql_sidecar.get("aliases") if isinstance(mysql_sidecar, dict) and isinstance(mysql_sidecar.get("aliases"), list) else []
-        if isinstance(aliases, list) and aliases:
-            env["DB_HOST"] = str(aliases[0])
-        elif isinstance(mysql_sidecar, dict) and str(mysql_sidecar.get("name") or "").strip():
-            env["DB_HOST"] = str(mysql_sidecar.get("name"))
+    for key, raw_rule in service_env.items():
+        if not isinstance(key, str):
+            continue
+        name = key.strip()
+        if not name:
+            continue
+        rule = raw_rule if isinstance(raw_rule, dict) else {}
+        value = None
+        if "value" in rule and rule.get("value") not in (None, ""):
+            value = str(rule.get("value"))
         else:
-            env["DB_HOST"] = "sqli-db"
-        env["DB_PORT"] = "3306"
-        if isinstance(mysql_sidecar, dict):
-            sidecar_env = mysql_sidecar.get("env") if isinstance(mysql_sidecar.get("env"), dict) else {}
-        else:
-            sidecar_env = {}
-        env["DB_USER"] = str(sidecar_env.get("MYSQL_USER") or "sqli")
-        env["DB_PASSWORD"] = str(sidecar_env.get("MYSQL_PASSWORD") or "sqli_pw")
-        env["DB_NAME"] = str(sidecar_env.get("MYSQL_DATABASE") or runtime.get("db_name") or "sqliapp")
+            raw_sources = rule.get("sources")
+            if isinstance(raw_sources, list):
+                sources = [str(item).strip() for item in raw_sources if str(item).strip()]
+            else:
+                source = str(rule.get("source") or "").strip()
+                sources = [source] if source else []
+            for source in sources:
+                value = _resolve_source_value(
+                    source,
+                    spec=rule,
+                    requirement=requirement,
+                    service_port=service_port,
+                )
+                if value not in (None, ""):
+                    break
+        if value in (None, ""):
+            default = rule.get("default")
+            if default not in (None, ""):
+                value = str(default)
+        if value not in (None, ""):
+            env[name] = str(value)
     return env
 
 

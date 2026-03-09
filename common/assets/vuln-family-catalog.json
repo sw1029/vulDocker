@@ -17,7 +17,43 @@
           "sqli-union-mysql",
           "sqli-mysql-raw",
           "sqli-mysql-sidecar"
-        ]
+        ],
+        "runtime_surface": {
+          "service_env": {
+            "APP_PORT": {
+              "source": "service_port"
+            },
+            "DB_HOST": {
+              "sources": [
+                "sidecar.alias_or_name",
+                "sidecar.name"
+              ],
+              "sidecar_type": "mysql",
+              "default": "sqli-db"
+            },
+            "DB_PORT": {
+              "value": "3306"
+            },
+            "DB_USER": {
+              "source": "sidecar.env.MYSQL_USER",
+              "sidecar_type": "mysql",
+              "default": "sqli"
+            },
+            "DB_PASSWORD": {
+              "source": "sidecar.env.MYSQL_PASSWORD",
+              "sidecar_type": "mysql",
+              "default": "sqli_pw"
+            },
+            "DB_NAME": {
+              "sources": [
+                "sidecar.env.MYSQL_DATABASE",
+                "runtime.db_name"
+              ],
+              "sidecar_type": "mysql",
+              "default": "sqliapp"
+            }
+          }
+        }
       }
     ],
     "runtime": {

@@ -186,6 +186,13 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
             status = executor_feasibility.get("status")
             if isinstance(status, str) and status.strip():
                 manifest["executor_feasibility_status"] = status.strip()
+        service_env = compiler_contract.get("service_env")
+        if isinstance(service_env, dict) and service_env:
+            manifest["service_env"] = {
+                str(key): str(value)
+                for key, value in service_env.items()
+                if isinstance(key, str) and key.strip() and value not in (None, "")
+            }
     else:
         _apply_multibundle_top_level_rollups(manifest, bundles)
     manifest_path = metadata_dir / filename
@@ -1048,6 +1055,14 @@ def _bundle_compiler_contract(metadata_dir: Path) -> Dict[str, Any]:
             value = generator_meta.get(key)
             if isinstance(value, str) and value.strip():
                 payload[key] = value.strip()
+        run = generator_manifest.get("run") if isinstance(generator_manifest.get("run"), dict) else {}
+        env = run.get("env") if isinstance(run, dict) else {}
+        if isinstance(env, dict) and env:
+            payload["service_env"] = {
+                str(key): str(value)
+                for key, value in env.items()
+                if isinstance(key, str) and key.strip() and value not in (None, "")
+            }
     for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
         if key in payload:
             continue
@@ -1056,6 +1071,14 @@ def _bundle_compiler_contract(metadata_dir: Path) -> Dict[str, Any]:
             value = profile.get(key) if isinstance(profile, dict) else None
         if isinstance(value, str) and value.strip():
             payload[key] = value.strip()
+    if "service_env" not in payload:
+        service_env = contract.get("service_env") if isinstance(contract, dict) else None
+        if isinstance(service_env, dict) and service_env:
+            payload["service_env"] = {
+                str(key): str(value)
+                for key, value in service_env.items()
+                if isinstance(key, str) and key.strip() and value not in (None, "")
+            }
     if not payload:
         return {}
     return payload
