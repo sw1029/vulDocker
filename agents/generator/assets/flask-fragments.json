@@ -116,7 +116,21 @@
       "sink": ["open(", "send_file", "send_from_directory"],
       "exploit_precondition": ["../", "os.path.join", "path traversal"]
     },
-    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n",
+    "extra_files": [
+      {
+        "path": "secret.txt",
+        "role": "helper",
+        "description": "Traversal target file containing the exfiltration marker.",
+        "content": "FLAG{PATH_TRAVERSAL_OK}\n"
+      },
+      {
+        "path": "files/note.txt",
+        "role": "helper",
+        "description": "Safe in-root file used by the vulnerable route.",
+        "content": "safe-note\n"
+      }
+    ]
   },
   "sqli_string_concat": {
     "family": "sql_injection",
@@ -134,6 +148,24 @@
       "exploit_precondition": ["input concatenated/interpolated into SQL sink", "sql injection"]
     },
     "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
+  "sqli_string_concat_mysql": {
+    "family": "sql_injection",
+    "fragment_id": "mysql_login_query_concat_route",
+    "pattern_tags": ["compiler_generated", "sql_injection", "external_db", "mysql"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for SQL injection with MySQL sidecar runtime.",
+    "service_description": "python/flask registry-backed SQL injection service backed by MySQL sidecar.",
+    "poc_description": "Registry-backed SQL injection PoC for MySQL sidecar runtime.",
+    "success_signature": "SQLi SUCCESS",
+    "flag_token": "FLAG-sqli-demo-token",
+    "requires_external_db": true,
+    "service_side_tokens": ["request.args", "cursor.execute", "mysql.connector.connect"],
+    "semantic_signature": {
+      "input_vector": ["user-controlled request parameter", "request.args"],
+      "sink": ["SQL query execution", "mysql.connector.connect", "cursor.execute"],
+      "exploit_precondition": ["input concatenated/interpolated into SQL sink", "sql injection"]
+    },
+    "requirements_content": "Flask==3.0.0\nmysql-connector-python==8.1.0\nrequests==2.31.0\n"
   },
   "ssrf_loopback_fetch": {
     "family": "ssrf",
@@ -168,5 +200,30 @@
       "exploit_precondition": ["untrusted deserialization", "attacker-controlled serialized input"]
     },
     "requirements_content": "Flask==3.0.0\n"
+  },
+  "xxe_xml_entity_resolve": {
+    "family": "xxe",
+    "fragment_id": "xxe_local_file_entity_route",
+    "pattern_tags": ["compiler_generated", "xxe"],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for XXE.",
+    "service_description": "python/flask registry-backed XXE service.",
+    "poc_description": "Registry-backed XXE PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{XXE_OK}",
+    "service_side_tokens": ["etree.XMLParser(load_dtd=True, resolve_entities=True", "etree.fromstring", "request.get_data"],
+    "semantic_signature": {
+      "input_vector": ["request.data", "xml body", "attacker-controlled xml payload"],
+      "sink": ["etree.XMLParser(load_dtd=True, resolve_entities=True)", "etree.fromstring", "xml parser with entity resolution"],
+      "exploit_precondition": ["xml external entity", "xxe", "external entity resolution enabled"]
+    },
+    "requirements_content": "Flask==3.0.0\nlxml==5.2.1\nrequests==2.31.0\n",
+    "extra_files": [
+      {
+        "path": "secret.txt",
+        "role": "helper",
+        "description": "Local file exfiltration target for XXE validation.",
+        "content": "FLAG{XXE_OK}\n"
+      }
+    ]
   }
 }

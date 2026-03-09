@@ -1,0 +1,473 @@
+{
+  "CWE-89": {
+    "family": "sql_injection",
+    "support_level": "builtin_supported",
+    "display_name": "SQL Injection",
+    "pattern_id": "sqli-string-concat",
+    "fragment_strategy": "sqli_string_concat",
+    "strategy_variants": [
+      {
+        "fragment_strategy": "sqli_string_concat_mysql",
+        "runtime_db": [
+          "mysql",
+          "mariadb"
+        ],
+        "require_allow_external_db": true,
+        "pattern_aliases": [
+          "sqli-union-mysql",
+          "sqli-mysql-raw",
+          "sqli-mysql-sidecar"
+        ]
+      }
+    ],
+    "runtime": {
+      "db": "sqlite"
+    },
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "sql injection",
+      "sqli"
+    ],
+    "pattern_aliases": [
+      "sql-injection",
+      "sqli",
+      "sqli-string-concat"
+    ],
+    "identifier_aliases": [
+      "CWE_89",
+      "CWE89"
+    ],
+    "token_sets": [
+      [
+        "sql",
+        "injection"
+      ]
+    ]
+  },
+  "CWE-352": {
+    "family": "csrf",
+    "support_level": "builtin_supported",
+    "display_name": "CSRF",
+    "pattern_id": "csrf",
+    "fragment_strategy": "csrf_missing_token",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "cross site request forgery",
+      "csrf"
+    ],
+    "pattern_aliases": [
+      "cross-site-request-forgery",
+      "csrf"
+    ],
+    "identifier_aliases": [
+      "CWE_352",
+      "CWE352"
+    ],
+    "token_sets": [
+      [
+        "cross",
+        "site",
+        "request",
+        "forgery"
+      ],
+      [
+        "csrf"
+      ]
+    ]
+  },
+  "CWE-22": {
+    "family": "path_traversal",
+    "support_level": "builtin_supported",
+    "display_name": "Path Traversal",
+    "pattern_id": "path-traversal",
+    "fragment_strategy": "path_traversal_file_read",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "path traversal",
+      "directory traversal",
+      "file traversal"
+    ],
+    "pattern_aliases": [
+      "path-traversal",
+      "directory-traversal"
+    ],
+    "identifier_aliases": [
+      "CWE_22",
+      "CWE22"
+    ],
+    "token_sets": [
+      [
+        "path",
+        "traversal"
+      ],
+      [
+        "directory",
+        "traversal"
+      ],
+      [
+        "file",
+        "traversal"
+      ]
+    ]
+  },
+  "CWE-78": {
+    "family": "command_injection",
+    "support_level": "builtin_supported",
+    "display_name": "Command Injection",
+    "pattern_id": "command-injection",
+    "fragment_strategy": "command_injection_shell",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "command injection",
+      "shell injection",
+      "os command injection"
+    ],
+    "pattern_aliases": [
+      "command-injection",
+      "shell-injection"
+    ],
+    "identifier_aliases": [
+      "CWE_78",
+      "CWE78"
+    ],
+    "token_sets": [
+      [
+        "command",
+        "injection"
+      ],
+      [
+        "shell",
+        "command",
+        "injection"
+      ],
+      [
+        "shell",
+        "injection"
+      ],
+      [
+        "os",
+        "command",
+        "injection"
+      ]
+    ]
+  },
+  "CWE-94": {
+    "family": "code_injection",
+    "support_level": "builtin_supported",
+    "display_name": "Code Injection",
+    "pattern_id": "code-injection",
+    "fragment_strategy": "code_injection_eval",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "code injection",
+      "eval injection",
+      "exec injection"
+    ],
+    "pattern_aliases": [
+      "code-injection",
+      "eval-injection"
+    ],
+    "identifier_aliases": [
+      "CWE_94",
+      "CWE94"
+    ],
+    "token_sets": [
+      [
+        "code",
+        "injection"
+      ],
+      [
+        "eval",
+        "injection"
+      ],
+      [
+        "exec",
+        "injection"
+      ]
+    ]
+  },
+  "CWE-79": {
+    "family": "xss",
+    "support_level": "builtin_supported",
+    "display_name": "Cross-Site Scripting",
+    "pattern_id": "xss-reflected",
+    "fragment_strategy": "xss_reflected",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "cross site scripting",
+      "xss"
+    ],
+    "pattern_aliases": [
+      "cross-site-scripting",
+      "xss",
+      "xss-reflected"
+    ],
+    "identifier_aliases": [
+      "CWE_79",
+      "CWE79"
+    ],
+    "token_sets": [
+      [
+        "cross",
+        "site",
+        "scripting"
+      ],
+      [
+        "reflected",
+        "xss"
+      ],
+      [
+        "xss"
+      ]
+    ]
+  },
+  "CWE-918": {
+    "family": "ssrf",
+    "support_level": "builtin_supported",
+    "display_name": "Server-Side Request Forgery",
+    "pattern_id": "ssrf-url-fetch",
+    "fragment_strategy": "ssrf_loopback_fetch",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "server side request forgery",
+      "ssrf"
+    ],
+    "pattern_aliases": [
+      "server-side-request-forgery",
+      "ssrf",
+      "ssrf-url-fetch"
+    ],
+    "identifier_aliases": [
+      "CWE_918",
+      "CWE918"
+    ],
+    "token_sets": [
+      [
+        "server",
+        "side",
+        "request",
+        "forgery"
+      ],
+      [
+        "ssrf"
+      ]
+    ]
+  },
+  "CWE-502": {
+    "family": "deserialization",
+    "support_level": "builtin_supported",
+    "display_name": "Insecure Deserialization",
+    "pattern_id": "insecure-deserialization",
+    "fragment_strategy": "deserialization_pickle_body",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "insecure deserialization",
+      "unsafe deserialization",
+      "deserialization"
+    ],
+    "pattern_aliases": [
+      "insecure-deserialization",
+      "deserialization"
+    ],
+    "identifier_aliases": [
+      "CWE_502",
+      "CWE502"
+    ],
+    "token_sets": [
+      [
+        "insecure",
+        "deserialization"
+      ],
+      [
+        "unsafe",
+        "deserialization"
+      ],
+      [
+        "deserialization"
+      ]
+    ]
+  },
+  "NAME-TEMPLATE-INJECTION": {
+    "family": "template_injection",
+    "support_level": "compiler_supported",
+    "display_name": "Template Injection",
+    "pattern_id": "template-injection",
+    "fragment_strategy": "template_injection_render",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "server side template injection",
+      "template injection",
+      "ssti",
+      "template rendering vulnerability"
+    ],
+    "pattern_aliases": [
+      "template-injection",
+      "ssti"
+    ],
+    "identifier_aliases": [
+      "NAME_TEMPLATE_INJECTION",
+      "NAME-SERVER-SIDE-TEMPLATE-INJECTION",
+      "NAME_SERVER_SIDE_TEMPLATE_INJECTION",
+      "NAME-SERVER-SIDE-TEMPLATE-INJECTION-VULNERABILITY",
+      "NAME_SSTI"
+    ],
+    "token_sets": [
+      [
+        "template",
+        "injection"
+      ],
+      [
+        "server",
+        "side",
+        "template",
+        "injection"
+      ],
+      [
+        "jinja",
+        "template",
+        "injection"
+      ],
+      [
+        "jinja2",
+        "template",
+        "injection"
+      ]
+    ]
+  },
+  "NAME-OPEN-REDIRECT": {
+    "family": "open_redirect",
+    "support_level": "compiler_supported",
+    "display_name": "Open Redirect",
+    "pattern_id": "open-redirect",
+    "fragment_strategy": "open_redirect_reflect",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "open redirect",
+      "unvalidated redirect",
+      "unvalidated redirection",
+      "open redirection",
+      "external redirect vulnerability",
+      "unsafe redirect"
+    ],
+    "pattern_aliases": [
+      "open-redirect"
+    ],
+    "identifier_aliases": [
+      "NAME_OPEN_REDIRECT",
+      "NAME-OPEN-REDIRECTION",
+      "NAME_OPEN_REDIRECTION",
+      "NAME-UNVALIDATED-REDIRECT",
+      "NAME_UNVALIDATED_REDIRECT",
+      "NAME-UNVALIDATED-REDIRECTION",
+      "NAME_UNVALIDATED_REDIRECTION"
+    ],
+    "token_sets": [
+      [
+        "open",
+        "redirect"
+      ],
+      [
+        "unvalidated",
+        "redirect"
+      ],
+      [
+        "unvalidated",
+        "redirection"
+      ],
+      [
+        "external",
+        "redirect"
+      ],
+      [
+        "unsafe",
+        "redirect"
+      ]
+    ]
+  },
+  "NAME-LDAP-INJECTION": {
+    "family": "ldap_injection",
+    "support_level": "unsupported",
+    "display_name": "LDAP Injection",
+    "pattern_id": "ldap-injection",
+    "fragment_strategy": "",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "ldap injection",
+      "ldap filter injection"
+    ],
+    "pattern_aliases": [
+      "ldap-injection"
+    ],
+    "identifier_aliases": [
+      "NAME_LDAP_INJECTION"
+    ],
+    "token_sets": [
+      [
+        "ldap",
+        "injection"
+      ],
+      [
+        "ldap",
+        "filter",
+        "injection"
+      ]
+    ]
+  },
+  "NAME-XXE": {
+    "family": "xxe",
+    "support_level": "compiler_supported",
+    "display_name": "XXE",
+    "pattern_id": "xxe",
+    "fragment_strategy": "xxe_xml_entity_resolve",
+    "user_deps": [
+      "requests==2.31.0"
+    ],
+    "label_aliases": [
+      "xxe",
+      "xml external entity",
+      "xml external entity injection",
+      "xxe injection"
+    ],
+    "pattern_aliases": [
+      "xxe",
+      "xml-external-entity"
+    ],
+    "identifier_aliases": [
+      "NAME_XXE",
+      "NAME-XML-EXTERNAL-ENTITY",
+      "NAME_XML_EXTERNAL_ENTITY"
+    ],
+    "token_sets": [
+      [
+        "xxe"
+      ],
+      [
+        "xml",
+        "external",
+        "entity"
+      ]
+    ]
+  }
+}

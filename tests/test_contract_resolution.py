@@ -39,6 +39,33 @@ def test_contract_uses_rule_defined_success_markers(tmp_path: Path) -> None:
     assert payload["compiler_strategy"] == "sqli_string_concat"
 
 
+def test_contract_uses_mysql_compiler_strategy_for_external_db_runtime(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-89",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-89",
+        requirement={
+            "vuln_name": "SQL Injection",
+            "vuln_id": "CWE-89",
+            "pattern_id": "sqli-union-mysql",
+            "language": "python",
+            "framework": "flask",
+            "runtime": {"db": "mysql", "allow_external_db": True},
+        },
+    )
+
+    assert payload["success_signature"] == "SQLi SUCCESS"
+    assert payload["flag_token"] == "FLAG-sqli-demo-token"
+    assert payload["compiler_strategy"] == "sqli_string_concat_mysql"
+    assert payload["semantic_profile"]["compiler_strategy"] == "sqli_string_concat_mysql"
+    assert payload["semantic_profile"]["compiler_supported"] is True
+    assert payload["service_env"]["DB_HOST"] == "sqli-db"
+    assert payload["resolved"]["service_env"]["DB_NAME"] == "sqliapp"
+
+
 def test_contract_marks_cwe352_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
@@ -55,6 +82,55 @@ def test_contract_marks_cwe352_as_compiler_supported_when_strategy_exists(tmp_pa
     assert profile["compiler_strategy"] == "csrf_missing_token"
     assert profile["compiler_supported"] is True
     assert payload["compiler_supported"] is True
+
+
+def test_contract_surfaces_requirement_aware_lower_bound_when_compiler_disabled(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-TEMPLATE-INJECTION",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-template-injection",
+        requirement={
+            "vuln_name": "Template Injection",
+            "vuln_id": "NAME-TEMPLATE-INJECTION",
+            "compiler": {"enabled": False},
+            "language": "python",
+            "framework": "flask",
+        },
+    )
+
+    lower_bound = payload["lower_bound"]
+    assert lower_bound["family_non_remote_available"] is True
+    assert lower_bound["effective_non_remote_available"] is False
+    assert lower_bound["compiler_path_enabled"] is False
+    assert "disabled by requirement" in lower_bound["effective_reason"]
+    assert payload["effective_non_remote_available"] is False
+    assert payload["semantic_profile"]["lower_bound"]["effective_non_remote_available"] is False
+
+
+def test_contract_keeps_static_rule_lower_bound_when_compiler_disabled(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-89",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-89",
+        requirement={
+            "vuln_name": "SQL Injection",
+            "vuln_id": "CWE-89",
+            "compiler": {"enabled": False},
+            "language": "python",
+            "framework": "flask",
+        },
+    )
+
+    lower_bound = payload["lower_bound"]
+    assert lower_bound["static_rule_available"] is True
+    assert lower_bound["family_non_remote_available"] is True
+    assert lower_bound["effective_non_remote_available"] is True
 
 
 def test_contract_uses_researcher_proposal_when_rule_is_missing(tmp_path: Path) -> None:
@@ -574,6 +650,7 @@ def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_
                 "service_entry": "app.py",
                 "poc_entry": "poc.py",
                 "ports": {"app": 5000},
+                "service_env": {"DB_HOST": "sqli-db", "DB_NAME": "sqliapp"},
                 "generation_origin": "built_in_template",
                 "fallback_used": False,
                 "family_override_applied": False,
@@ -599,6 +676,7 @@ def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_
     assert payload["llm_stub_used"] is False
     assert payload["provenance"]["template_id"] == "flask_sqlite_raw"
     assert payload["provenance"]["source"] == "generator_template"
+    assert payload["service_env"] == {"DB_HOST": "sqli-db", "DB_NAME": "sqliapp"}
 
 
 def test_contract_rule_resolution_supports_name_prefixed_runtime_rules(tmp_path: Path, monkeypatch) -> None:

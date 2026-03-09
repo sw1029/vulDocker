@@ -37,3 +37,30 @@ def test_plan_records_sid_inputs_for_traceability() -> None:
     sid_inputs = plan["sid_inputs"]
     assert sid_inputs["effective_vuln_ids"] == ["CWE-89"]
     assert sid_inputs["components"]["effective_vuln_ids_digest"] == plan["effective_vuln_ids_digest"]
+
+
+def test_sid_changes_when_generator_mode_or_runtime_surface_changes() -> None:
+    base = _requirement("CWE-89")
+    template_req = dict(base)
+    template_req["generator_mode"] = "template"
+    template_req["runtime"] = {"db": "mysql", "allow_external_db": True}
+    template_req["executor"] = {
+        "allow_network": True,
+        "network_mode": "bridge",
+        "sidecars": [{"name": "mysql", "type": "mysql", "image": "mysql:8.0", "aliases": ["sqli-db"]}],
+    }
+
+    synthesis_req = dict(template_req)
+    synthesis_req["generator_mode"] = "synthesis"
+
+    plan_template = build_plan(normalize_requirement(template_req))
+    plan_synthesis = build_plan(normalize_requirement(synthesis_req))
+
+    assert plan_template["sid"] != plan_synthesis["sid"]
+    assert plan_template["sid_inputs"]["components"]["generator_mode"] == "template"
+    assert plan_synthesis["sid_inputs"]["components"]["generator_mode"] == "synthesis"
+    assert (
+        plan_template["sid_inputs"]["components"]["runtime_surface_digest"]
+        != plan_synthesis["sid_inputs"]["components"]["runtime_surface_digest"]
+        or plan_template["sid"] != plan_synthesis["sid"]
+    )

@@ -1,0 +1,29 @@
+base_requirement: inputs/base_requirement.yml
+
+options:
+  multi_vuln_opt_in: true
+
+overrides:
+  requirement_id: E2E-MULTI-NAME-ONLY-0001
+  intent: "E2E 회귀: name-only 다중 취약 번들(Template Injection + Open Redirect) 검증"
+  vuln_ids:
+    - Template Injection
+    - Open Redirect
+  multi_vuln: true
+  allow_intentional_vuln: false
+  pattern_id: multi-name-only-supported
+  seed: 4242
+  variation_key:
+    mode: deterministic
+    self_consistency_k: 1
+    pattern_pool_seed: 4242
+  executor:
+    allow_network: false
+    network_mode: none
+    sidecars: []
+  runtime:
+    allow_external_db: false
+  policy:
+    verifier:
+      prefer_rule: true
+      strict_flag_default: true

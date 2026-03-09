@@ -22,11 +22,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from common.contracts import (
     build_generator_contract,
-    can_resolve_without_remote_research,
+    can_resolve_without_remote_research_for_requirement,
+    executor_feasibility_summary,
     load_semantic_profile,
+    lower_bound_summary,
     requires_semantic_support,
     write_generator_contract,
 )
+from common.bundle_state import collect_bundle_research_blockers
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
@@ -86,7 +89,11 @@ def _research_failure_details(plan: Dict[str, Any], rc: int) -> Tuple[str, str, 
         quality = str(report.get("quality") or "").strip().lower()
         quality_reason = str(report.get("quality_reason") or "").strip()
         search_health_path = report.get("search_health_path")
-        metadata: Dict[str, Any] = {"exit_code": rc}
+        metadata: Dict[str, Any] = {
+            "exit_code": rc,
+            "bundle_slug": bundle.slug,
+            "vuln_id": bundle.vuln_id,
+        }
         if isinstance(search_health_path, str) and search_health_path.strip():
             metadata["search_health_path"] = search_health_path.strip()
             health = _load_json(Path(search_health_path.strip()))
@@ -143,6 +150,24 @@ def _should_retry_research_failure(metadata: Dict[str, Any]) -> bool:
     }:
         return False
     return True
+
+
+def _bundle_scoped_research_failure_metadata(plan: Dict[str, Any]) -> Dict[str, Any]:
+    blockers = collect_bundle_research_blockers(plan)
+    if not blockers:
+        return {}
+    bundles = load_vuln_bundles(plan)
+    failed = {
+        str(item.get("bundle_slug") or "").strip()
+        for item in blockers
+        if str(item.get("bundle_slug") or "").strip()
+    }
+    runnable_bundles = [bundle for bundle in bundles if bundle.slug not in failed]
+    return {
+        "failed_bundles": blockers,
+        "runnable_bundles": [bundle.slug for bundle in runnable_bundles],
+        "continue_pipeline": bool(runnable_bundles),
+    }
 
 
 def _latest_generator_failure(sid: str) -> Dict[str, Any] | None:
@@ -417,7 +442,103 @@ def _can_skip_researcher(plan: Dict[str, Any], *, refresh_requested: bool) -> bo
     bundles = load_vuln_bundles(plan)
     if not bundles:
         return False
-    return all(can_resolve_without_remote_research(bundle.vuln_id) for bundle in bundles)
+    requirement = plan.get("requirement") or {}
+    if not isinstance(requirement, dict):
+        requirement = {}
+    return all(
+        can_resolve_without_remote_research_for_requirement(
+            bundle.vuln_id,
+            bundle_requirement(requirement, bundle),
+        )
+        for bundle in bundles
+    )
+
+
+def _bundle_requires_external_db(plan: Dict[str, Any], bundle) -> bool:
+    paths = plan.get("paths") if isinstance(plan, dict) else {}
+    if isinstance(paths, dict) and paths.get("metadata"):
+        metadata_dir = metadata_dir_for_bundle(plan, bundle)
+        for path in (metadata_dir / "generator_manifest.json", metadata_dir / "generator_template.json"):
+            payload = _load_json(path)
+            if not isinstance(payload, dict):
+                continue
+            candidates = [payload]
+            manifest = payload.get("manifest")
+            if isinstance(manifest, dict):
+                candidates.append(manifest)
+            for candidate in candidates:
+                value = candidate.get("requires_external_db")
+                if value is not None:
+                    return _as_bool(value)
+    requirement = plan.get("requirement") or {}
+    bundle_req = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+    runtime = bundle_req.get("runtime") if isinstance(bundle_req, dict) else {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    db = str(runtime.get("db") or "").strip().lower()
+    return db in {"mysql", "postgres", "postgresql", "mariadb"}
+
+
+def _terminal_executor_precheck(plan: Dict[str, Any]) -> Dict[str, Any]:
+    policy = plan.get("policy") or {}
+    executor_policy = policy.get("executor") if isinstance(policy, dict) else {}
+    if not isinstance(executor_policy, dict):
+        executor_policy = {}
+    sidecars = executor_policy.get("sidecars") or []
+    allow_network = _as_bool(executor_policy.get("allow_network"))
+    network_mode = str(
+        executor_policy.get("network_mode") or ("bridge" if allow_network else "none")
+    ).strip().lower()
+    requirement = plan.get("requirement") or {}
+    findings: List[Dict[str, Any]] = []
+    for bundle in load_vuln_bundles(plan):
+        if not _bundle_requires_external_db(plan, bundle):
+            continue
+        bundle_req = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+        runtime = bundle_req.get("runtime") if isinstance(bundle_req, dict) else {}
+        if not isinstance(runtime, dict):
+            runtime = {}
+        issues: List[str] = []
+        db = str(runtime.get("db") or "").strip().lower()
+        if not _as_bool(runtime.get("allow_external_db", False)):
+            issues.append("runtime.allow_external_db=false")
+        if not isinstance(sidecars, list) or not sidecars:
+            issues.append("policy.executor.sidecars missing")
+        if not allow_network or network_mode == "none":
+            issues.append("policy.executor.allow_network/network_mode disables sidecars")
+        if issues:
+            findings.append(
+                {
+                    "slug": bundle.slug,
+                    "vuln_id": bundle.vuln_id,
+                    "db": db,
+                    "issues": issues,
+                }
+            )
+    if not findings:
+        return {"terminal": False}
+    lines = []
+    for finding in findings:
+        issue_text = ", ".join(str(item) for item in finding.get("issues") or [])
+        db = str(finding.get("db") or "").strip()
+        suffix = f", db={db}" if db else ""
+        lines.append(f"- {finding['slug']} ({finding['vuln_id']}{suffix}): {issue_text}")
+    reason = "Executor dependency precheck failed before Docker build:\n" + "\n".join(lines)
+    fix_hint = (
+        "If this bundle requires an external DB, set runtime.allow_external_db=true and configure "
+        "policy.executor.allow_network=true with matching policy.executor.sidecars entries. "
+        "Otherwise keep the family on embedded/no-sidecar runtime paths."
+    )
+    return {
+        "terminal": True,
+        "reason": reason,
+        "fix_hint": fix_hint,
+        "metadata": {
+            "terminal_failure_class": "executor_dependency_misconfigured",
+            "retry_recommended": False,
+            "dependency_findings": findings,
+        },
+    }
 
 
 def _terminal_research_failure_from_semantic_profile(plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -503,8 +624,11 @@ def _write_perf_summary(sid: str, events: List[Dict[str, Any]]) -> None:
     retry_count = _count_retries(events)
     provider_health_state = _provider_health_state(sid)
     llm_stub_used = _pipeline_llm_stub_used(sid)
+    llm_fixture_used = _pipeline_llm_fixture_used(sid)
     llm_failure_class = _pipeline_llm_failure_class(sid)
     compiler_contracts = _compiler_contract_snapshot(sid)
+    lower_bounds = _lower_bound_snapshot(sid)
+    executor_feasibility = _executor_feasibility_snapshot(sid)
     payload = {
         "sid": sid,
         "events": events,
@@ -512,8 +636,11 @@ def _write_perf_summary(sid: str, events: List[Dict[str, Any]]) -> None:
         "retry_count": retry_count,
         "provider_health_state": provider_health_state,
         "llm_stub_used": llm_stub_used,
+        "llm_fixture_used": llm_fixture_used,
         "llm_failure_class": llm_failure_class,
         "compiler_contracts": compiler_contracts,
+        "lower_bounds": lower_bounds,
+        "executor_feasibility": executor_feasibility,
         "total_duration_s": round(total, 3),
     }
     if len(compiler_contracts) == 1:
@@ -524,6 +651,17 @@ def _write_perf_summary(sid: str, events: List[Dict[str, Any]]) -> None:
             value = contract.get(key)
             if isinstance(value, str) and value.strip():
                 payload[key] = value.strip()
+    if len(lower_bounds) == 1:
+        lower_bound = lower_bounds[0]
+        for key in ("family_non_remote_available", "effective_non_remote_available", "compiler_path_enabled"):
+            value = lower_bound.get(key)
+            if isinstance(value, bool):
+                payload[key] = value
+    if len(executor_feasibility) == 1:
+        feasibility = executor_feasibility[0]
+        status = feasibility.get("status")
+        if isinstance(status, str) and status.strip():
+            payload["executor_feasibility_status"] = status.strip()
     _write_json(get_metadata_dir(sid) / "performance_summary.json", payload)
 
 
@@ -540,42 +678,89 @@ def _count_retries(events: List[Dict[str, Any]]) -> int:
 
 
 def _provider_health_state(sid: str) -> str:
-    search_health = _load_json(get_metadata_dir(sid) / "search_health.json") or {}
-    search_degraded = bool(search_health.get("degraded")) if isinstance(search_health, dict) else False
+    search_health_payloads = _search_health_payloads(sid)
+    search_degraded = any(
+        bool(payload.get("degraded"))
+        for payload in search_health_payloads
+        if isinstance(payload, dict)
+    )
     llm_stub_used = _pipeline_llm_stub_used(sid)
+    llm_fixture_used = _pipeline_llm_fixture_used(sid)
     compiler_contracts = _compiler_contract_snapshot(sid)
-    terminal_failure_class = ""
-    loop_state = _load_json(get_metadata_dir(sid) / "loop_state.json") or {}
-    history = loop_state.get("history") if isinstance(loop_state, dict) else []
-    if isinstance(history, list):
-        for entry in reversed(history):
-            if not isinstance(entry, dict) or entry.get("success") is not False:
-                continue
-            metadata = entry.get("metadata")
-            if not isinstance(metadata, dict):
-                continue
-            terminal_failure_class = str(metadata.get("terminal_failure_class") or "").strip().lower()
-            if terminal_failure_class:
-                break
+    terminal_failure_class = _provider_failure_state_from_loop_state(sid)
     if search_degraded and llm_stub_used:
         return "search_and_llm_degraded"
     if llm_stub_used:
         return "llm_degraded"
+    if llm_fixture_used:
+        return "llm_fixture"
+    if terminal_failure_class:
+        return terminal_failure_class
     if search_degraded:
         return "search_degraded"
-    if terminal_failure_class in {
-        "remote_provider_unavailable",
-        "remote_evidence_missing",
-        "evidence_low_relevance",
-        "provider_degraded",
-    }:
-        return terminal_failure_class
-    if isinstance(search_health, dict) and search_health:
-        if bool(search_health.get("configured")) or int(search_health.get("remote_result_count") or 0) > 0:
+    if search_health_payloads:
+        if any(
+            bool(payload.get("configured")) or int(payload.get("remote_result_count") or 0) > 0
+            for payload in search_health_payloads
+            if isinstance(payload, dict)
+        ):
             return "healthy"
+        return "remote_provider_unavailable"
     if compiler_contracts:
         return "not_probed"
     return "unknown"
+
+
+def _search_health_payloads(sid: str) -> List[Dict[str, Any]]:
+    metadata_dir = get_metadata_dir(sid)
+    paths = [metadata_dir / "search_health.json"]
+    bundles_dir = metadata_dir / "bundles"
+    if bundles_dir.exists():
+        paths.extend(sorted(bundles_dir.glob("*/search_health.json")))
+    payloads: List[Dict[str, Any]] = []
+    for path in paths:
+        payload = _load_json(path)
+        if isinstance(payload, dict) and payload:
+            payloads.append(payload)
+    return payloads
+
+
+def _provider_failure_state_from_loop_state(sid: str) -> str:
+    metadata_dir = get_metadata_dir(sid)
+    loop_state = _load_json(metadata_dir / "loop_state.json") or {}
+    history = loop_state.get("history") if isinstance(loop_state, dict) else []
+    if not isinstance(history, list):
+        return ""
+    priorities = (
+        "provider_degraded",
+        "remote_provider_unavailable",
+        "remote_evidence_missing",
+        "evidence_low_relevance",
+    )
+    for entry in reversed(history):
+        if not isinstance(entry, dict) or entry.get("success") is not False:
+            continue
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        observed: set[str] = set()
+        direct = str(metadata.get("terminal_failure_class") or "").strip().lower()
+        if direct:
+            observed.add(direct)
+        for key in ("failed_bundles", "unsupported_bundles"):
+            items = metadata.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                token = str(item.get("terminal_failure_class") or "").strip().lower()
+                if token:
+                    observed.add(token)
+        for candidate in priorities:
+            if candidate in observed:
+                return candidate
+    return ""
 
 
 def _pipeline_llm_stub_used(sid: str) -> bool:
@@ -591,6 +776,19 @@ def _pipeline_llm_stub_used(sid: str) -> bool:
     return False
 
 
+def _pipeline_llm_fixture_used(sid: str) -> bool:
+    for path in _contract_candidate_paths(sid):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        if _payload_llm_fixture_used(payload):
+            return True
+    for record in _load_generator_failure_records(sid):
+        if _failure_record_llm_fixture_used(record):
+            return True
+    return False
+
+
 def _payload_llm_stub_used(payload: Dict[str, Any]) -> bool:
     if not isinstance(payload, dict):
         return False
@@ -600,6 +798,20 @@ def _payload_llm_stub_used(payload: Dict[str, Any]) -> bool:
     provenance = payload.get("provenance")
     if isinstance(provenance, dict):
         nested = provenance.get("llm_stub_used")
+        if isinstance(nested, bool):
+            return nested
+    return False
+
+
+def _payload_llm_fixture_used(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    direct = payload.get("llm_fixture_used")
+    if isinstance(direct, bool):
+        return direct
+    provenance = payload.get("provenance")
+    if isinstance(provenance, dict):
+        nested = provenance.get("llm_fixture_used")
         if isinstance(nested, bool):
             return nested
     return False
@@ -638,6 +850,15 @@ def _failure_record_llm_stub_used(record: Dict[str, Any]) -> bool:
     if not isinstance(record, dict):
         return False
     direct = record.get("llm_stub_used")
+    if isinstance(direct, bool):
+        return direct
+    return False
+
+
+def _failure_record_llm_fixture_used(record: Dict[str, Any]) -> bool:
+    if not isinstance(record, dict):
+        return False
+    direct = record.get("llm_fixture_used")
     if isinstance(direct, bool):
         return direct
     return False
@@ -720,6 +941,54 @@ def _compiler_contract_snapshot(sid: str) -> List[Dict[str, Any]]:
                 value = profile.get(key_name)
                 if isinstance(value, str) and value.strip():
                     entry[key_name] = value.strip()
+        snapshots.append(entry)
+    return snapshots
+
+
+def _lower_bound_snapshot(sid: str) -> List[Dict[str, Any]]:
+    try:
+        plan = load_plan(sid)
+    except Exception:
+        return []
+    requirement = plan.get("requirement") or {}
+    snapshots: List[Dict[str, Any]] = []
+    for bundle in load_vuln_bundles(plan):
+        bundle_req = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+        lower_bound = lower_bound_summary(bundle.vuln_id, bundle_req)
+        if not isinstance(lower_bound, dict):
+            continue
+        entry = {
+            "slug": bundle.slug,
+            "vuln_id": bundle.vuln_id,
+            **lower_bound,
+        }
+        snapshots.append(entry)
+    return snapshots
+
+
+def _executor_feasibility_snapshot(sid: str) -> List[Dict[str, Any]]:
+    try:
+        plan = load_plan(sid)
+    except Exception:
+        return []
+    requirement = plan.get("requirement") or {}
+    policy = plan.get("policy") or {}
+    executor_policy = policy.get("executor") if isinstance(policy, dict) else {}
+    if not isinstance(executor_policy, dict):
+        executor_policy = {}
+    snapshots: List[Dict[str, Any]] = []
+    for bundle in load_vuln_bundles(plan):
+        bundle_req = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+        summary = executor_feasibility_summary(
+            bundle_req,
+            executor_policy,
+            requires_external_db=_bundle_requires_external_db(plan, bundle),
+        )
+        entry = {
+            "slug": bundle.slug,
+            "vuln_id": bundle.vuln_id,
+            **summary,
+        }
         snapshots.append(entry)
     return snapshots
 
@@ -952,12 +1221,39 @@ def _analyze_verify_failures(sid: str) -> Dict[str, Any]:
         "terminal_semantic_unsupported": terminal_semantic_unsupported,
         "terminal_low_trust_verification": terminal_low_trust_verification,
         "failure_count": len(failures),
+        "failures": failures,
         "slugs": [
             str(entry.get("slug") or entry.get("vuln_id") or "unknown")
             for entry in failures
             if isinstance(entry, dict)
         ],
     }
+
+
+def _verify_failures_match_partial_research_failure(
+    verify_analysis: Dict[str, Any],
+    partial_research_failure: Dict[str, Any],
+) -> bool:
+    failures = verify_analysis.get("failures") or []
+    failed_bundles = partial_research_failure.get("failed_bundles") or []
+    if not isinstance(failures, list) or not failures:
+        return False
+    blocked = {
+        str(item.get("bundle_slug") or item.get("vuln_id") or "").strip()
+        for item in failed_bundles
+        if isinstance(item, dict) and str(item.get("bundle_slug") or item.get("vuln_id") or "").strip()
+    }
+    if not blocked:
+        return False
+    seen_failure = False
+    for entry in failures:
+        if not isinstance(entry, dict):
+            return False
+        token = str(entry.get("slug") or entry.get("vuln_id") or "").strip()
+        if token not in blocked:
+            return False
+        seen_failure = True
+    return seen_failure
 
 
 def _review_blocking(sid: str) -> bool:
@@ -992,6 +1288,7 @@ def main() -> None:
 
     researcher_ran = False
     researcher_refresh_requested = False
+    partial_research_failure: Dict[str, Any] = {}
     while True:
         if not args.skip_researcher and (args.researcher_every_loop or researcher_refresh_requested or not researcher_ran):
             terminal_profile = _terminal_research_failure_from_semantic_profile(plan)
@@ -1052,24 +1349,38 @@ def main() -> None:
                 )
                 if rc != 0:
                     failure_reason, fix_hint, failure_meta = _research_failure_details(plan, rc)
-                    controller.record_failure(
-                        stage="RESEARCH",
-                        reason=failure_reason,
-                        fix_hint=fix_hint,
-                        blocking=True,
-                        metadata=failure_meta,
-                    )
-                    if not _should_retry_research_failure(failure_meta):
+                    bundle_scoped = _bundle_scoped_research_failure_metadata(plan)
+                    if bundle_scoped.get("continue_pipeline"):
+                        partial_research_failure = bundle_scoped
+                        researcher_ran = True
+                        researcher_refresh_requested = False
                         LOGGER.info(
-                            "Stopping retries for %s after RESEARCH: terminal research failure (%s)",
+                            "Continuing pipeline for %s after bundle-scoped RESEARCH failures: failed=%s runnable=%s",
                             sid,
-                            str(failure_meta.get("terminal_failure_class") or "research_failure"),
+                            [item.get("bundle_slug") for item in bundle_scoped.get("failed_bundles") or []],
+                            bundle_scoped.get("runnable_bundles") or [],
                         )
+                    else:
+                        controller.record_failure(
+                            stage="RESEARCH",
+                            reason=failure_reason,
+                            fix_hint=fix_hint,
+                            blocking=True,
+                            metadata=failure_meta,
+                        )
+                        if not _should_retry_research_failure(failure_meta):
+                            LOGGER.info(
+                                "Stopping retries for %s after RESEARCH: terminal research failure (%s)",
+                                sid,
+                                str(failure_meta.get("terminal_failure_class") or "research_failure"),
+                            )
+                            break
+                        if controller.should_continue():
+                            controller.start_loop()
+                            continue
                         break
-                    if controller.should_continue():
-                        controller.start_loop()
-                        continue
-                    break
+                else:
+                    partial_research_failure = {}
                 _seed_generator_contracts(plan)
                 terminal_profile = _terminal_research_failure_from_semantic_profile(plan)
                 if terminal_profile.get("terminal"):
@@ -1175,6 +1486,30 @@ def main() -> None:
                 LOGGER.info("Researcher refresh deferred: loop limit reached for %s", sid)
             break
 
+        executor_precheck = _terminal_executor_precheck(plan)
+        if executor_precheck.get("terminal"):
+            _record_perf_event(
+                sid,
+                perf_events,
+                loop=controller.current_loop,
+                stage="EXECUTOR_PRECHECK",
+                duration_s=0.0,
+                returncode=1,
+                note="executor dependency precheck failed",
+            )
+            controller.record_failure(
+                stage="EXECUTOR",
+                reason=str(executor_precheck.get("reason") or "executor dependency precheck failed"),
+                fix_hint=str(
+                    executor_precheck.get("fix_hint")
+                    or "Align runtime external dependency requirements with executor sidecar/network policy."
+                ),
+                blocking=True,
+                metadata=executor_precheck.get("metadata") or {},
+            )
+            LOGGER.info("Stopping before EXECUTOR for %s: executor dependency precheck failed", sid)
+            break
+
         rc, duration = _run_step_timed(_python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--build"))
         _record_perf_event(
             sid,
@@ -1223,7 +1558,21 @@ def main() -> None:
         if not _overall_verify_pass(sid):
             reason, hint, meta = _summarize_verify_failure(sid)
             verify_analysis = _analyze_verify_failures(sid)
-            if verify_analysis.get("terminal_semantic_unsupported"):
+            failure_stage = "VERIFY"
+            if partial_research_failure and _verify_failures_match_partial_research_failure(
+                verify_analysis,
+                partial_research_failure,
+            ):
+                failure_stage = "RESEARCH"
+                meta["terminal_failure_class"] = "bundle_scoped_research_failure"
+                meta["retry_recommended"] = False
+                meta["failed_bundles"] = partial_research_failure.get("failed_bundles") or []
+                meta["runnable_bundles"] = partial_research_failure.get("runnable_bundles") or []
+                hint = (
+                    "Some bundles were intentionally fail-closed after RESEARCH. "
+                    "Add stronger evidence/compiler support for those bundles or split the request."
+                )
+            elif verify_analysis.get("terminal_semantic_unsupported"):
                 meta["terminal_failure_class"] = "semantic_support_missing"
                 meta["retry_recommended"] = False
             elif verify_analysis.get("terminal_low_trust_verification"):
@@ -1234,7 +1583,14 @@ def main() -> None:
                     "Provide a declared/compiler-backed rule contract or relax "
                     "policy.verifier.low_trust_unknown_policy to warn for synthetic regression lanes."
                 )
-            controller.record_failure(stage="VERIFY", reason=reason, fix_hint=hint, blocking=True, metadata=meta)
+            controller.record_failure(stage=failure_stage, reason=reason, fix_hint=hint, blocking=True, metadata=meta)
+            if meta.get("terminal_failure_class") == "bundle_scoped_research_failure":
+                LOGGER.info(
+                    "Stopping retries for %s after VERIFY: bundle-scoped RESEARCH failures already explain the skipped bundles (%s)",
+                    sid,
+                    ", ".join(verify_analysis.get("slugs") or []) or "unknown bundle",
+                )
+                break
             if verify_analysis.get("terminal_semantic_unsupported"):
                 LOGGER.info(
                     "Stopping retries for %s after VERIFY: terminal semantic support failure (%s)",
@@ -1281,6 +1637,32 @@ def main() -> None:
             duration_s=duration,
             returncode=rc,
         )
+
+        if partial_research_failure:
+            failed_bundles = partial_research_failure.get("failed_bundles") or []
+            failed_labels = [
+                str(item.get("bundle_slug") or item.get("vuln_id") or "").strip()
+                for item in failed_bundles
+                if str(item.get("bundle_slug") or item.get("vuln_id") or "").strip()
+            ]
+            controller.record_failure(
+                stage="RESEARCH",
+                reason=(
+                    "Bundle-scoped RESEARCH failures prevented full multi-bundle completion: "
+                    + ", ".join(failed_labels)
+                ),
+                fix_hint=(
+                    "Add stronger evidence/compiler support for the failed bundles or split the request "
+                    "so supported bundles can be promoted independently."
+                ),
+                blocking=True,
+                metadata={
+                    "terminal_failure_class": "bundle_scoped_research_failure",
+                    "retry_recommended": False,
+                    "failed_bundles": failed_bundles,
+                    "runnable_bundles": partial_research_failure.get("runnable_bundles") or [],
+                },
+            )
 
         if not args.skip_pack:
             allow_intentional = bool((plan.get("policy") or {}).get("allow_intentional_vuln"))

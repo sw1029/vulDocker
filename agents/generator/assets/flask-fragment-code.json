@@ -179,6 +179,80 @@
       "    init_db()"
     ]
   },
+  "sqli_string_concat_mysql": {
+    "import_block": [
+      "import os",
+      "import time",
+      "from contextlib import closing",
+      "import mysql.connector",
+      "from flask import Flask, jsonify, request"
+    ],
+    "route_block": [
+      "@app.get('/accounts')",
+      "def accounts():",
+      "    rows = query_db(\"SELECT id, username FROM users ORDER BY id\")",
+      "    return jsonify(rows)",
+      "",
+      "@app.get('/login')",
+      "def login():",
+      "    # Registry-backed compiler fragment: request input is concatenated into a MySQL query string.",
+      "    query = (",
+      "        \"SELECT id, username FROM users \"",
+      "        \"WHERE username = '\" + request.args.get('username', '') + \"' \"",
+      "        \"AND password = '\" + request.args.get('password', '') + \"'\"",
+      "    )",
+      "    rows = query_db(query)",
+      "    return jsonify({'match': bool(rows), 'rows': rows, 'query': query, 'flag': 'FLAG-sqli-demo-token'})"
+    ],
+    "app_setup_block": [
+      "APP_PORT = int(os.environ.get('APP_PORT', '{{port}}'))",
+      "DB_CONFIG = {",
+      "    'host': os.environ.get('DB_HOST', 'missing-db-host'),",
+      "    'port': int(os.environ.get('DB_PORT', '3306')),",
+      "    'user': os.environ.get('DB_USER', 'missing-user'),",
+      "    'password': os.environ.get('DB_PASSWORD', 'missing-password'),",
+      "    'database': os.environ.get('DB_NAME', 'missing-db-name'),",
+      "}",
+      "SCHEMA_STATEMENTS = [",
+      "    \"CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY, username VARCHAR(64), password VARCHAR(64))\",",
+      "    \"CREATE TABLE IF NOT EXISTS audit_tokens (id INT PRIMARY KEY AUTO_INCREMENT, token VARCHAR(128) NOT NULL)\",",
+      "    \"INSERT INTO users (id, username, password) VALUES (1, 'admin', 'secret') ON DUPLICATE KEY UPDATE username=VALUES(username), password=VALUES(password)\",",
+      "    \"INSERT INTO users (id, username, password) VALUES (2, 'guest', 'guest') ON DUPLICATE KEY UPDATE username=VALUES(username), password=VALUES(password)\",",
+      "    \"INSERT INTO audit_tokens (token) VALUES ('FLAG-sqli-demo-token') ON DUPLICATE KEY UPDATE token=token\",",
+      "]",
+      "",
+      "def _connect():",
+      "    return mysql.connector.connect(**DB_CONFIG)",
+      "",
+      "def wait_for_db() -> None:",
+      "    deadline = time.time() + 60",
+      "    while time.time() < deadline:",
+      "        try:",
+      "            with closing(_connect()) as conn:",
+      "                conn.cursor().execute('SELECT 1')",
+      "                return",
+      "        except mysql.connector.Error:",
+      "            time.sleep(2)",
+      "    raise RuntimeError('Database not reachable within timeout')",
+      "",
+      "def init_db() -> None:",
+      "    wait_for_db()",
+      "    with closing(_connect()) as conn:",
+      "        cursor = conn.cursor()",
+      "        for statement in SCHEMA_STATEMENTS:",
+      "            cursor.execute(statement)",
+      "        conn.commit()",
+      "",
+      "def query_db(sql: str):",
+      "    with closing(_connect()) as conn:",
+      "        cursor = conn.cursor(dictionary=True)",
+      "        cursor.execute(sql)",
+      "        return cursor.fetchall()"
+    ],
+    "startup_block": [
+      "    init_db()"
+    ]
+  },
   "ssrf_loopback_fetch": {
     "import_block": [
       "import requests",
@@ -223,5 +297,26 @@
     "startup_block": [
       "    init_runtime_state()"
     ]
+  },
+  "xxe_xml_entity_resolve": {
+    "import_block": [
+      "from lxml import etree",
+      "from flask import Flask, Response, request"
+    ],
+    "route_block": [
+      "@app.post('/parse')",
+      "def parse_xml():",
+      "    # Registry-backed compiler fragment: attacker-controlled XML is parsed with external entity resolution enabled.",
+      "    xml_body = request.get_data()",
+      "    parser = etree.XMLParser(load_dtd=True, resolve_entities=True, no_network=False)",
+      "    try:",
+      "        root = etree.fromstring(xml_body, parser=parser)",
+      "    except Exception as exc:",
+      "        return Response(f'parse-error: {exc}', status=400, mimetype='text/plain')",
+      "    resolved_text = ''.join(root.itertext())",
+      "    return Response(resolved_text, mimetype='text/plain')"
+    ],
+    "app_setup_block": [],
+    "startup_block": []
   }
 }

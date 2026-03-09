@@ -599,6 +599,7 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
             "fallback_class": "generic_unsupported_family",
             "family_override_applied": False,
             "llm_stub_used": True,
+            "llm_fixture_used": False,
             "semantic_profile": {
                 "schema_version": "semantic_profile@1.0",
                 "sid": sid,
@@ -623,6 +624,7 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
                 "fallback_class": "generic_unsupported_family",
                 "family_override_applied": False,
                 "llm_stub_used": True,
+                "llm_fixture_used": False,
                 "source": "generator_manifest",
             },
         },
@@ -695,8 +697,18 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
     assert manifest["generation_summary"]["by_origin"] == {"deterministic_fallback": 1}
     assert manifest["generation_summary"]["by_dynamicness_verdict"] == {"deterministic fallback dependent": 1}
     assert manifest["generation_summary"]["llm_stub_bundles"] == 1
+    assert manifest["fallback_used"] is True
+    assert manifest["family_override_applied"] is False
+    assert manifest["llm_stub_used"] is True
+    assert manifest["llm_fixture_used"] is False
     assert manifest["compiler_contract_summary"]["by_strategy"] == {"sqli_string_concat": 1}
     assert manifest["compiler_contract_summary"]["by_support_level"] == {"builtin_supported": 1}
+    assert manifest["lower_bound_summary"]["family_non_remote_bundles"] == 1
+    assert manifest["lower_bound_summary"]["effective_non_remote_bundles"] == 1
+    assert manifest["lower_bound"]["family_non_remote_available"] is True
+    assert manifest["lower_bound"]["effective_non_remote_available"] is True
+    assert manifest["executor_feasibility_summary"]["by_status"] == {"not_required": 1}
+    assert manifest["executor_feasibility_status"] == "not_required"
     assert manifest["verification_summary"]["by_rule_source"] == {"generator_manifest_fallback": 1}
     assert manifest["verification_summary"]["by_trust"] == {"low": 1}
     assert manifest["verification_summary"]["low_trust_bundles"] == 1
@@ -709,6 +721,8 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
     assert manifest["verification_trust"] == "low"
     assert manifest["bundles"][0]["compiler_contract"]["compiler_supported"] is False
     assert manifest["bundles"][0]["compiler_contract"]["compiler_strategy"] == "sqli_string_concat"
+    assert manifest["bundles"][0]["lower_bound"]["effective_non_remote_available"] is True
+    assert manifest["bundles"][0]["executor_feasibility"]["status"] == "not_required"
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "deterministic fallback dependent"
     assert manifest["bundles"][0]["dynamicness"]["trusted"] is False
 
@@ -737,11 +751,13 @@ def test_write_manifest_classifies_llm_manifest_as_trusted_dynamic(tmp_path: Pat
             "fallback_used": False,
             "family_override_applied": False,
             "llm_stub_used": False,
+            "llm_fixture_used": True,
             "provenance": {
                 "generation_origin": "llm_manifest",
                 "fallback_used": False,
                 "family_override_applied": False,
                 "llm_stub_used": False,
+                "llm_fixture_used": True,
                 "source": "generator_manifest",
             },
         },
@@ -776,6 +792,11 @@ def test_write_manifest_classifies_llm_manifest_as_trusted_dynamic(tmp_path: Pat
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert manifest["generation_summary"]["by_dynamicness_verdict"] == {"trusted dynamic": 1}
+    assert manifest["generation_summary"]["llm_fixture_bundles"] == 1
+    assert manifest["fallback_used"] is False
+    assert manifest["family_override_applied"] is False
+    assert manifest["llm_stub_used"] is False
+    assert manifest["llm_fixture_used"] is True
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "trusted dynamic"
     assert manifest["bundles"][0]["dynamicness"]["trusted"] is True
 
@@ -884,6 +905,210 @@ def test_write_manifest_classifies_compiler_generated_as_compiler_first(tmp_path
     assert manifest["compiler_contract_summary"]["supported_bundles"] == 1
     assert manifest["bundles"][0]["compiler_contract"]["stack_scaffold_id"] == "python/flask"
     assert manifest["bundles"][0]["compiler_contract"]["fragment_id"] == "redirect_next_route"
+
+
+def test_write_manifest_surfaces_executor_feasibility_misconfiguration(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-executor-feasibility"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": "cwe-89",
+            "vuln_id": "CWE-89",
+            "compiler_supported": True,
+            "compiler_strategy": "sqli_string_concat",
+            "compiler_reason": "compiler strategy and scaffold are available",
+            "generation_origin": "compiler_generated",
+            "semantic_profile": {
+                "schema_version": "semantic_profile@1.0",
+                "sid": sid,
+                "slug": "cwe-89",
+                "requested_name": "SQL Injection",
+                "normalized_vuln_id": "CWE-89",
+                "family": "sql_injection",
+                "support_level": "builtin_supported",
+                "compiler_strategy": "sqli_string_concat",
+                "compiler_supported": True,
+                "compiler_reason": "compiler strategy and scaffold are available",
+                "stack_profile": {"language": "python", "framework": "flask"},
+                "scenario_shape": {"service_entry": "app.py", "poc_entry": "poc.py", "service_port": 5000},
+                "semantic_signature": {
+                    "input_vector": ["request.args"],
+                    "sink": ["execute("],
+                    "exploit_precondition": ["string concatenation"],
+                },
+                "verification_contract": {"success_signature": "SQLi SUCCESS", "output_mode": "auto"},
+                "derived_assertions": {"semantic_gate_required": False},
+                "evidence_relevance": {},
+            },
+            "provenance": {
+                "generation_origin": "compiler_generated",
+                "fallback_used": False,
+                "family_override_applied": False,
+                "llm_stub_used": False,
+                "source": "generator_manifest",
+            },
+        },
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps({"results": [{"slug": "cwe-89", "vuln_id": "CWE-89", "verify_pass": True}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_id": "CWE-89", "runtime": {"db": "mysql", "allow_external_db": True}},
+        "policy": {"executor": {"allow_network": False, "network_mode": "none", "sidecars": []}},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["promotion"]["eligible"] is False
+    assert any(reason.endswith("executor:misconfigured") for reason in manifest["promotion"]["reasons"])
+    assert manifest["executor_feasibility_status"] == "misconfigured"
+    assert manifest["executor_feasibility"]["requires_external_db"] is True
+    assert manifest["executor_feasibility_summary"]["misconfigured_bundles"] == 1
+    assert manifest["executor_feasibility_summary"]["by_status"] == {"misconfigured": 1}
+
+
+def test_bundle_promotion_allows_medium_verification_trust_for_compiler_runtime_rule(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-pack-medium-trust"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": "name-open-redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "compiler_supported": True,
+            "compiler_strategy": "open_redirect_reflect",
+            "compiler_reason": "compiler strategy and scaffold are available",
+            "generation_origin": "compiler_generated",
+            "semantic_profile": {
+                "schema_version": "semantic_profile@1.0",
+                "sid": sid,
+                "slug": "name-open-redirect",
+                "requested_name": "Open Redirect",
+                "normalized_vuln_id": "NAME-OPEN-REDIRECT",
+                "family": "open_redirect",
+                "support_level": "compiler_supported",
+                "compiler_strategy": "open_redirect_reflect",
+                "compiler_supported": True,
+                "compiler_reason": "compiler strategy and scaffold are available",
+                "stack_profile": {"language": "python", "framework": "flask"},
+                "scenario_shape": {"service_entry": "app.py", "poc_entry": "poc.py", "service_port": 5000},
+                "semantic_signature": {
+                    "input_vector": ["next parameter"],
+                    "sink": ["redirect("],
+                    "exploit_precondition": ["open redirect"],
+                },
+                "verification_contract": {"success_signature": "Exploit SUCCESS", "output_mode": "auto"},
+                "derived_assertions": {"semantic_gate_required": True},
+                "evidence_relevance": {},
+            },
+            "provenance": {
+                "generation_origin": "compiler_generated",
+                "fallback_used": False,
+                "family_override_applied": False,
+                "llm_stub_used": False,
+                "source": "generator_manifest",
+            },
+        },
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "name-open-redirect",
+                        "vuln_id": "NAME-OPEN-REDIRECT",
+                        "verify_pass": True,
+                        "semantic_supported": True,
+                        "semantic_status": "aligned",
+                        "verification_rule_source": "compiler_runtime_rule",
+                        "verification_trust": "medium",
+                        "verification_trust_reason": "compiler-derived runtime rule",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_id": "NAME-OPEN-REDIRECT"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["promotion"]["eligible"] is True
+    assert manifest["verification_rule_source"] == "compiler_runtime_rule"
+    assert manifest["verification_trust"] == "medium"
+    assert manifest["verification_summary"]["by_rule_source"] == {"compiler_runtime_rule": 1}
+    assert manifest["verification_summary"]["by_trust"] == {"medium": 1}
+    assert manifest["verification_summary"]["low_trust_bundles"] == 0
 
 
 def test_write_manifest_classifies_compiler_supported_known_family_without_static_rule_as_known_regression(
@@ -1172,6 +1397,333 @@ def test_write_failure_manifest_surfaces_research_short_circuit_provenance(tmp_p
     assert manifest["bundles"][0]["provenance"]["generation_origin"] == "research_short_circuit"
     assert manifest["bundles"][0]["provenance"]["source"] == "loop_state"
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "pre-generation fail-closed"
+
+
+def test_bundle_scoped_research_failure_does_not_poison_other_multi_vuln_bundle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sid = "sid-pack-multi-bundle-research-failure"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "last_result": "failure",
+                "history": [
+                    {
+                        "loop": 1,
+                        "stage": "RESEARCH",
+                        "success": False,
+                        "blocking": True,
+                        "reason": "Insufficient researcher evidence for NAME-CUSTOM-WEIRD-VULN",
+                        "fix_hint": "improve evidence",
+                        "timestamp": "2026-03-09T12:50:01Z",
+                        "metadata": {
+                            "terminal_failure_class": "evidence_low_relevance",
+                            "retry_recommended": False,
+                            "bundle_slug": "name-custom-weird-vuln",
+                            "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    unsupported_bundle_dir = metadata_dir / "bundles" / "name-custom-weird-vuln"
+    supported_bundle_dir = metadata_dir / "bundles" / "name-open-redirect"
+    unsupported_bundle_dir.mkdir(parents=True, exist_ok=True)
+    supported_bundle_dir.mkdir(parents=True, exist_ok=True)
+    (unsupported_bundle_dir / "semantic_profile.json").write_text(
+        json.dumps(
+            {
+                "support_level": "unsupported",
+                "compiler_supported": False,
+                "compiler_reason": "semantic family unsupported for compiler-backed generation",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (supported_bundle_dir / "semantic_profile.json").write_text(
+        json.dumps(
+            {
+                "support_level": "compiler_supported",
+                "compiler_supported": True,
+                "compiler_strategy": "open_redirect_reflect",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_ids": ["NAME-CUSTOM-WEIRD-VULN", "NAME-OPEN-REDIRECT"], "multi_vuln": True},
+        "run_matrix": {
+            "vuln_bundles": [
+                {
+                    "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                    "slug": "name-custom-weird-vuln",
+                    "workspace_subdir": "app/name-custom-weird-vuln",
+                },
+                {
+                    "vuln_id": "NAME-OPEN-REDIRECT",
+                    "slug": "name-open-redirect",
+                    "workspace_subdir": "app/name-open-redirect",
+                },
+            ]
+        },
+        "features": {"multi_vuln": True},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan, filename="failure_manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    bundles = {entry["slug"]: entry for entry in manifest["bundles"]}
+
+    assert bundles["name-custom-weird-vuln"]["failure"]["bundle_slug"] == "name-custom-weird-vuln"
+    assert bundles["name-custom-weird-vuln"]["generalization"]["class"] == "unsupported_free_form_negative"
+    assert bundles["name-open-redirect"].get("failure") == {}
+    assert bundles["name-open-redirect"]["generalization"]["class"] != "unsupported_free_form_negative"
+    assert manifest["partial_progress_summary"]["partial_success"] is False
+    assert manifest["generation_origin"] == "mixed"
+    assert manifest["dynamicness_verdict"] == "mixed"
+
+
+def test_failed_bundles_metadata_maps_partial_research_failure_to_matching_bundle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sid = "sid-pack-failed-bundles"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "last_result": "failure",
+                "history": [
+                    {
+                        "loop": 1,
+                        "stage": "RESEARCH",
+                        "success": False,
+                        "blocking": True,
+                        "reason": "Bundle-scoped RESEARCH failures prevented full multi-bundle completion: name-custom-weird-vuln",
+                        "fix_hint": "split the request",
+                        "timestamp": "2026-03-09T12:52:06Z",
+                        "metadata": {
+                            "terminal_failure_class": "bundle_scoped_research_failure",
+                            "retry_recommended": False,
+                            "failed_bundles": [
+                                {
+                                    "bundle_slug": "name-custom-weird-vuln",
+                                    "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                                    "quality_reason": "Insufficient researcher evidence for NAME-CUSTOM-WEIRD-VULN",
+                                    "terminal_failure_class": "evidence_low_relevance",
+                                }
+                            ],
+                            "runnable_bundles": ["name-open-redirect"],
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    failed_bundle_dir = metadata_dir / "bundles" / "name-custom-weird-vuln"
+    ok_bundle_dir = metadata_dir / "bundles" / "name-open-redirect"
+    failed_bundle_dir.mkdir(parents=True, exist_ok=True)
+    ok_bundle_dir.mkdir(parents=True, exist_ok=True)
+    (failed_bundle_dir / "semantic_profile.json").write_text(
+        json.dumps({"support_level": "unsupported", "compiler_supported": False}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (ok_bundle_dir / "semantic_profile.json").write_text(
+        json.dumps(
+            {
+                "support_level": "compiler_supported",
+                "compiler_supported": True,
+                "compiler_strategy": "open_redirect_reflect",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_ids": ["NAME-CUSTOM-WEIRD-VULN", "NAME-OPEN-REDIRECT"], "multi_vuln": True},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-CUSTOM-WEIRD-VULN", "slug": "name-custom-weird-vuln", "workspace_subdir": "app/name-custom-weird-vuln"},
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app/name-open-redirect"},
+            ]
+        },
+        "features": {"multi_vuln": True},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan, filename="failure_manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    bundles = {entry["slug"]: entry for entry in manifest["bundles"]}
+
+    assert bundles["name-custom-weird-vuln"]["failure"]["terminal_failure_class"] == "evidence_low_relevance"
+    assert bundles["name-custom-weird-vuln"]["provenance"]["generation_origin"] == "research_short_circuit"
+    assert bundles["name-open-redirect"]["failure"] == {}
+    assert manifest["partial_progress_summary"]["research_blocked_bundles"] == 1
+
+
+def test_write_manifest_rolls_up_multibundle_top_level_provenance_when_uniform(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-pack-multi-supported-rollup"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    for slug, vuln_id, strategy, family, fragment_id in (
+        ("name-template-injection", "NAME-TEMPLATE-INJECTION", "template_injection_render", "template_injection", "render_template_string_concat"),
+        ("name-open-redirect", "NAME-OPEN-REDIRECT", "open_redirect_reflect", "open_redirect", "redirect_next_route"),
+    ):
+        bundle_dir = metadata_dir / "bundles" / slug
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        (bundle_dir / "resolved_contract.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "resolved_contract@1.0",
+                    "slug": slug,
+                    "vuln_id": vuln_id,
+                    "compiler_supported": True,
+                    "compiler_strategy": strategy,
+                    "compiler_reason": "compiler strategy and scaffold are available",
+                    "stack_scaffold_id": "python/flask",
+                    "stack_scaffold_version": "1.0",
+                    "compose_mode": "registry",
+                    "provenance": {"generation_origin": "compiler_generated"},
+                    "semantic_profile": {
+                        "support_level": "compiler_supported",
+                        "compiler_supported": True,
+                        "compiler_strategy": strategy,
+                        "compiler_reason": "compiler strategy and scaffold are available",
+                        "family": family,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (bundle_dir / "generator_manifest.json").write_text(
+            json.dumps(
+                {
+                    "manifest": {
+                        "metadata": {
+                            "compiler_family": family,
+                            "stack_scaffold_id": "python/flask",
+                            "stack_scaffold_version": "1.0",
+                            "fragment_id": fragment_id,
+                            "compose_mode": "registry",
+                        }
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "index.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "runs": [
+                    {"slug": "name-template-injection", "vuln_id": "NAME-TEMPLATE-INJECTION", "run_passed": True, "executed": True},
+                    {"slug": "name-open-redirect", "vuln_id": "NAME-OPEN-REDIRECT", "run_passed": True, "executed": True},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "overall_pass": True,
+                "results": [
+                    {
+                        "slug": "name-template-injection",
+                        "vuln_id": "NAME-TEMPLATE-INJECTION",
+                        "verify_pass": True,
+                        "status": "evaluated",
+                        "verification_rule_source": "compiler_runtime_rule",
+                        "verification_trust": "medium",
+                    },
+                    {
+                        "slug": "name-open-redirect",
+                        "vuln_id": "NAME-OPEN-REDIRECT",
+                        "verify_pass": True,
+                        "status": "evaluated",
+                        "verification_rule_source": "compiler_runtime_rule",
+                        "verification_trust": "medium",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_ids": ["NAME-TEMPLATE-INJECTION", "NAME-OPEN-REDIRECT"], "multi_vuln": True},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-TEMPLATE-INJECTION", "slug": "name-template-injection", "workspace_subdir": "app/name-template-injection"},
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app/name-open-redirect"},
+            ]
+        },
+        "features": {"multi_vuln": True},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["generation_origin"] == "compiler_generated"
+    assert manifest["dynamicness_verdict"] == "compiler-first"
+    assert manifest["verification_rule_source"] == "compiler_runtime_rule"
+    assert manifest["verification_trust"] == "medium"
+    assert manifest["stack_scaffold_id"] == "python/flask"
+    assert manifest["stack_scaffold_version"] == "1.0"
+    assert manifest["compose_mode"] == "registry"
 
 
 def test_write_failure_manifest_surfaces_remote_evidence_missing_as_research_short_circuit(

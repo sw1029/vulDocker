@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import tests.e2e.repeat_case as repeat_case
 from tests.e2e.repeat_case import aggregate_repeat_results, summarize_repeat_attempt
 
 
@@ -122,3 +123,73 @@ def test_summarize_repeat_attempt_infers_executor_stage_from_subprocess_error(tm
 
     assert record["success"] is False
     assert record["failure_stage"] == "EXECUTOR"
+
+
+def test_execute_repeat_gate_forwards_pipeline_returncode_into_summary_expectations(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    case_dir = tmp_path / "case"
+    case_dir.mkdir(parents=True)
+    metadata_root = tmp_path / "metadata"
+    captured: list[int | None] = []
+
+    monkeypatch.setattr(
+        repeat_case,
+        "_load_case_spec",
+        lambda _case_dir, _requirement_path=None: type(
+            "CaseSpec",
+            (),
+            {
+                "name": "repeat-case",
+                "requirement": {"vuln_id": "NAME-TEMPLATE-INJECTION"},
+                "runtime_assets": {},
+                "options": {},
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        repeat_case,
+        "_write_plan",
+        lambda requirement, multi_vuln_opt_in=False: {
+            "sid": "sid-repeat-forward",
+            "requirement": requirement,
+        },
+    )
+    monkeypatch.setattr(repeat_case, "_materialize_runtime_assets", lambda sid, assets: None)
+    monkeypatch.setattr(repeat_case, "_ensure_docker_ready", lambda env: None)
+    monkeypatch.setattr(
+        repeat_case,
+        "_execute_pipeline",
+        lambda sid, mode, env: type("Proc", (), {"returncode": 0})(),
+    )
+
+    def _fake_load_manifest_summary(sid: str, *, pipeline_returncode=None):
+        captured.append(pipeline_returncode)
+        return {
+            "sid": sid,
+            "overall_pass": True,
+            "pipeline_result": "success",
+            "pipeline_returncode": pipeline_returncode,
+            "bundles": [],
+            "reviewer": {"blocking_bundles": []},
+        }
+
+    monkeypatch.setattr(repeat_case, "_load_manifest_summary", _fake_load_manifest_summary)
+    monkeypatch.setattr(repeat_case, "_write_attempt_summary", lambda attempt_dir, summary, resolved_requirement: None)
+    monkeypatch.setattr(repeat_case, "_snapshot_outputs", lambda sid, attempt_dir: None)
+    monkeypatch.setattr(repeat_case, "_load_latest_generator_failure", lambda metadata_root: {})
+    monkeypatch.setattr(repeat_case, "_load_loop_tail", lambda metadata_root: {})
+    monkeypatch.setattr(repeat_case, "REPO_ROOT", tmp_path)
+
+    report = repeat_case.execute_repeat_gate(
+        case_dir,
+        attempts=1,
+        mode="deterministic",
+        snapshot=False,
+        output_dir=tmp_path / "out",
+        expectations_path=None,
+    )
+
+    assert report["passed"] is True
+    assert captured == [0]

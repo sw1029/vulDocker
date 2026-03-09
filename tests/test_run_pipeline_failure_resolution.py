@@ -365,6 +365,23 @@ def test_can_skip_researcher_for_compiler_supported_without_required_evidence() 
     assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is True
 
 
+def test_cannot_skip_researcher_when_compiler_lower_bound_is_disabled() -> None:
+    plan = {
+        "requirement": {
+            "researcher": {},
+            "compiler": {"enabled": False},
+        },
+        "policy": {"require_researcher_evidence": False},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-TEMPLATE-INJECTION", "slug": "name-template-injection", "workspace_subdir": "app"},
+            ]
+        },
+    }
+
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is False
+
+
 def test_cannot_skip_researcher_when_required_or_refresh_requested() -> None:
     plan = {
         "requirement": {"researcher": {}},
@@ -376,6 +393,81 @@ def test_cannot_skip_researcher_when_required_or_refresh_requested() -> None:
         {"requirement": {"researcher": {}}, "policy": {"require_researcher_evidence": False}, "run_matrix": plan["run_matrix"]},
         refresh_requested=True,
     ) is False
+
+
+def test_terminal_executor_precheck_blocks_missing_sidecar_policy() -> None:
+    plan = {
+        "requirement": {
+            "runtime": {"db": "mysql", "allow_external_db": True},
+        },
+        "policy": {
+            "executor": {
+                "allow_network": True,
+                "network_mode": "bridge",
+                "sidecars": [],
+            }
+        },
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"},
+            ]
+        },
+    }
+
+    outcome = run_pipeline._terminal_executor_precheck(plan)
+
+    assert outcome["terminal"] is True
+    assert outcome["metadata"]["terminal_failure_class"] == "executor_dependency_misconfigured"
+    assert "policy.executor.sidecars missing" in outcome["reason"]
+
+
+def test_terminal_executor_precheck_blocks_network_disabled_for_external_db() -> None:
+    plan = {
+        "requirement": {
+            "runtime": {"db": "mysql", "allow_external_db": True},
+        },
+        "policy": {
+            "executor": {
+                "allow_network": False,
+                "network_mode": "none",
+                "sidecars": [{"name": "mysql", "image": "mysql:8.0"}],
+            }
+        },
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"},
+            ]
+        },
+    }
+
+    outcome = run_pipeline._terminal_executor_precheck(plan)
+
+    assert outcome["terminal"] is True
+    assert "allow_network/network_mode disables sidecars" in outcome["reason"]
+
+
+def test_terminal_executor_precheck_passes_when_external_db_is_configured() -> None:
+    plan = {
+        "requirement": {
+            "runtime": {"db": "mysql", "allow_external_db": True},
+        },
+        "policy": {
+            "executor": {
+                "allow_network": True,
+                "network_mode": "bridge",
+                "sidecars": [{"name": "mysql", "image": "mysql:8.0"}],
+            }
+        },
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"},
+            ]
+        },
+    }
+
+    outcome = run_pipeline._terminal_executor_precheck(plan)
+
+    assert outcome["terminal"] is False
 
 
 def test_research_failure_details_uses_insufficient_evidence_reason(tmp_path: Path) -> None:
@@ -422,6 +514,8 @@ def test_research_failure_details_uses_insufficient_evidence_reason(tmp_path: Pa
 
     assert "Insufficient researcher evidence" in reason
     assert "Configure the remote search provider" in fix_hint
+    assert metadata["bundle_slug"] == "cwe-9999"
+    assert metadata["vuln_id"] == "CWE-9999"
     assert metadata["search_provider"] == "custom"
     assert metadata["terminal_failure_class"] == "remote_provider_unavailable"
     assert metadata["retry_recommended"] is False
@@ -437,6 +531,81 @@ def test_should_retry_research_failure_true_for_unclassified_failure() -> None:
     metadata = {"exit_code": 1}
 
     assert run_pipeline._should_retry_research_failure(metadata) is True
+
+
+def test_bundle_scoped_research_failure_metadata_allows_partial_progress(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-bundle-scoped-research"
+    metadata_root = tmp_path / "metadata" / sid
+    failed_dir = metadata_root / "bundles" / "name-custom-weird-vuln"
+    passed_dir = metadata_root / "bundles" / "name-open-redirect"
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    passed_dir.mkdir(parents=True, exist_ok=True)
+    (failed_dir / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "quality": "insufficient",
+                "quality_reason": "Insufficient researcher evidence for NAME-CUSTOM-WEIRD-VULN: low relevance score (0.20 < 0.30).",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (passed_dir / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "quality": "sufficient",
+                "quality_reason": "sufficient evidence",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_root),
+            "artifacts": str(tmp_path / "artifacts" / sid),
+            "workspace": str(tmp_path / "workspaces" / sid / "app"),
+        },
+        "requirement": {"vuln_ids": ["NAME-CUSTOM-WEIRD-VULN", "NAME-OPEN-REDIRECT"], "multi_vuln": True},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-CUSTOM-WEIRD-VULN", "slug": "name-custom-weird-vuln", "workspace_subdir": "app/name-custom-weird-vuln"},
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app/name-open-redirect"},
+            ]
+        },
+        "features": {"multi_vuln": True},
+    }
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+
+    payload = run_pipeline._bundle_scoped_research_failure_metadata(plan)
+
+    assert payload["continue_pipeline"] is True
+    assert payload["runnable_bundles"] == ["name-open-redirect"]
+    assert payload["failed_bundles"][0]["bundle_slug"] == "name-custom-weird-vuln"
+    assert payload["failed_bundles"][0]["terminal_failure_class"] == "evidence_low_relevance"
+
+
+def test_verify_failures_match_partial_research_failure_only_for_blocked_bundles() -> None:
+    verify_analysis = {
+        "failures": [
+            {"slug": "name-custom-weird-vuln", "verify_pass": False, "status": "skipped"},
+        ]
+    }
+    partial = {
+        "failed_bundles": [
+            {"bundle_slug": "name-custom-weird-vuln", "vuln_id": "NAME-CUSTOM-WEIRD-VULN"},
+        ]
+    }
+
+    assert run_pipeline._verify_failures_match_partial_research_failure(verify_analysis, partial) is True
+    assert (
+        run_pipeline._verify_failures_match_partial_research_failure(
+            {"failures": [{"slug": "name-open-redirect", "verify_pass": False}]},
+            partial,
+        )
+        is False
+    )
 
 
 def test_write_perf_summary_records_retry_and_provider_health(tmp_path: Path, monkeypatch) -> None:
@@ -556,6 +725,16 @@ def test_write_perf_summary_marks_compiler_only_lane_as_not_probed(tmp_path: Pat
         encoding="utf-8",
     )
     monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(
+        run_pipeline,
+        "load_plan",
+        lambda incoming_sid: {
+            "sid": incoming_sid,
+            "requirement": {"vuln_id": "CWE-918"},
+            "policy": {"executor": {"allow_network": False, "network_mode": "none", "sidecars": []}},
+            "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-918", "slug": "cwe-918", "workspace_subdir": "app"}]},
+        },
+    )
     events = [
         {"loop": 1, "stage": "GENERATOR", "duration_s": 1.5, "returncode": 0, "skipped": False, "note": ""},
         {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 0, "skipped": False, "note": ""},
@@ -567,6 +746,10 @@ def test_write_perf_summary_marks_compiler_only_lane_as_not_probed(tmp_path: Pat
     assert payload["provider_health_state"] == "not_probed"
     assert payload["compiler_supported"] is True
     assert payload["compiler_strategy"] == "ssrf_loopback_fetch"
+    assert payload["family_non_remote_available"] is True
+    assert payload["effective_non_remote_available"] is True
+    assert payload["lower_bounds"][0]["slug"] == "cwe-918"
+    assert payload["executor_feasibility_status"] == "not_required"
 
 
 def test_write_perf_summary_surfaces_remote_provider_unavailable_failure_class(tmp_path: Path, monkeypatch) -> None:
@@ -616,6 +799,93 @@ def test_write_perf_summary_surfaces_remote_provider_unavailable_failure_class(t
 
     payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
     assert payload["provider_health_state"] == "remote_provider_unavailable"
+
+
+def test_write_perf_summary_uses_bundle_scoped_research_failure_classes_for_provider_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-perf-bundle-scoped-provider-state"
+    metadata_root = tmp_path / "metadata" / sid
+    failed_bundle_dir = metadata_root / "bundles" / "name-custom-weird-vuln"
+    failed_bundle_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "loop_state.json").write_text(
+        json.dumps(
+            {
+                "history": [
+                    {
+                        "stage": "RESEARCH",
+                        "reason": "bundle scoped failure",
+                        "success": False,
+                        "timestamp": "2026-03-09T13:23:38.695887+00:00",
+                        "metadata": {
+                            "terminal_failure_class": "bundle_scoped_research_failure",
+                            "failed_bundles": [
+                                {
+                                    "bundle_slug": "name-custom-weird-vuln",
+                                    "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                                    "terminal_failure_class": "remote_provider_unavailable",
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (failed_bundle_dir / "resolved_contract.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "resolved_contract@1.0",
+                "slug": "name-custom-weird-vuln",
+                "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                "compiler_supported": False,
+                "compiler_reason": "unsupported",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "RESEARCH", "duration_s": 1.0, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 1, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["provider_health_state"] == "remote_provider_unavailable"
+
+
+def test_write_perf_summary_surfaces_executor_feasibility_misconfiguration(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-perf-executor-misconfigured"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(
+        run_pipeline,
+        "load_plan",
+        lambda incoming_sid: {
+            "sid": incoming_sid,
+            "requirement": {"vuln_id": "CWE-89", "runtime": {"db": "mysql", "allow_external_db": True}},
+            "policy": {"executor": {"allow_network": False, "network_mode": "none", "sidecars": []}},
+            "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+        },
+    )
+    events = [
+        {"loop": 1, "stage": "EXECUTOR_PRECHECK", "duration_s": 0.0, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 0, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["executor_feasibility_status"] == "misconfigured"
+    assert payload["executor_feasibility"][0]["requires_external_db"] is True
+    assert payload["executor_feasibility"][0]["status"] == "misconfigured"
 
 
 def test_analyze_verify_failures_marks_terminal_semantic_unsupported(tmp_path: Path, monkeypatch) -> None:

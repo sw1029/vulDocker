@@ -15,6 +15,8 @@ _CANONICAL_NAME_ALIASES = {
     "name-server-side-template-injection": "name-template-injection",
     "name-server-side-template-injection-vulnerability": "name-template-injection",
     "name-ssti": "name-template-injection",
+    "name-xml-external-entity": "name-xxe",
+    "name-xml-external-entity-injection": "name-xxe",
 }
 
 SUPPORTED_VULN_IDS = {
@@ -28,6 +30,7 @@ SUPPORTED_VULN_IDS = {
     "cwe-918",
     "name-open-redirect",
     "name-template-injection",
+    "name-xxe",
 }
 FAMILY_CANONICAL_TAGS = {
     "cwe-89": {"request_input", "sql_sink", "sql_injection"},
@@ -44,6 +47,12 @@ FAMILY_CANONICAL_TAGS = {
         "template_sink",
         "template_source_injection",
         "template_injection",
+    },
+    "name-xxe": {
+        "xml_input",
+        "xml_parser_sink",
+        "external_entity_resolution",
+        "xxe",
     },
 }
 BASELINE_SEMANTIC_SIGNATURES = {
@@ -99,6 +108,11 @@ BASELINE_SEMANTIC_SIGNATURES = {
             "user input is embedded into template source string (concatenation/interpolation)",
             "template string is rendered server-side without escaping/sandboxing",
         ],
+    },
+    "name-xxe": {
+        "input_vector": ["request.data", "xml body", "attacker-controlled xml payload"],
+        "sink": ["etree.XMLParser(load_dtd=True, resolve_entities=True)", "etree.fromstring"],
+        "exploit_precondition": ["xml external entity", "xxe", "external entity resolution enabled"],
     },
 }
 
@@ -156,6 +170,13 @@ _TEMPLATE_SINK_RE = re.compile(
 )
 _DESERIALIZATION_SINK_RE = re.compile(
     r"\b(?:pickle\.loads|yaml\.load|jsonpickle\.decode)\b",
+    re.IGNORECASE,
+)
+_XML_PARSER_RE = re.compile(r"\b(?:lxml\.)?etree\.XMLParser\s*\(", re.IGNORECASE)
+_XML_PARSE_CALL_RE = re.compile(r"\b(?:lxml\.)?etree\.(?:fromstring|parse)\s*\(", re.IGNORECASE)
+_XML_INPUT_RE = re.compile(r"\brequest\.(?:get_data|data)\b|xml_body\s*=", re.IGNORECASE)
+_XXE_INDICATOR_RE = re.compile(
+    r"resolve_entities\s*=\s*True|load_dtd\s*=\s*True|<!ENTITY|file:///|external entity",
     re.IGNORECASE,
 )
 _COMMAND_SINK_RE = re.compile(
@@ -238,6 +259,8 @@ def semantic_term_aliases(term: str) -> set[str]:
         aliases.add("code_input")
     if any(key in token for key in {"request.data", "request.get_data", "serialized payload"}):
         aliases.add("serialized_input")
+    if any(key in token for key in {"xml body", "attacker-controlled xml payload", "request.data"}):
+        aliases.add("xml_input")
     if any(key in token for key in {"cross-site request", "cookie-authenticated session"}):
         aliases.add("csrf_flow")
     if any(key in token for key in {"state-changing endpoint", "post", "put", "delete", "patch"}):
@@ -263,6 +286,8 @@ def semantic_term_aliases(term: str) -> set[str]:
         aliases.add("code_sink")
     if any(key in token for key in {"pickle.loads", "yaml.load", "jsonpickle.decode"}):
         aliases.add("deserialization_sink")
+    if any(key in token for key in {"etree.xmlparser", "etree.fromstring", "xml parser with entity resolution"}):
+        aliases.add("xml_parser_sink")
     if any(key in token for key in {"render_template_string", "template response", "innerhtml"}):
         aliases.add("template_sink")
     if any(
@@ -300,6 +325,10 @@ def semantic_term_aliases(term: str) -> set[str]:
         aliases.add("xss")
     if any(key in token for key in {"untrusted deserialization", "attacker-controlled serialized input"}):
         aliases.add("deserialization")
+    if any(key in token for key in {"xml external entity", "xxe", "external entity resolution"}):
+        aliases.add("xxe")
+    if any(key in token for key in {"resolve_entities", "load_dtd", "external entity resolution enabled"}):
+        aliases.add("external_entity_resolution")
     return aliases
 
 
@@ -361,6 +390,8 @@ def evaluate_manifest_semantics(vuln_id: str, manifest: Dict[str, Any]) -> Dict[
         report = _evaluate_name_open_redirect(combined_text)
     elif normalized == "name-template-injection":
         report = _evaluate_name_template_injection(combined_text)
+    elif normalized == "name-xxe":
+        report = _evaluate_name_xxe(combined_text)
     else:
         report = _evaluate_cwe_918(combined_text)
     report["supported"] = True
@@ -682,6 +713,28 @@ def _evaluate_name_template_injection(combined_text: str) -> Dict[str, Any]:
             "template_sink_present": has_template_sink,
             "input_source_present": has_input_source,
             "template_source_flow_present": has_template_source_flow,
+        },
+    }
+
+
+def _evaluate_name_xxe(combined_text: str) -> Dict[str, Any]:
+    has_parser = bool(_XML_PARSER_RE.search(combined_text) and _XML_PARSE_CALL_RE.search(combined_text))
+    has_xml_input = bool(_XML_INPUT_RE.search(combined_text))
+    has_xxe_indicator = bool(_XXE_INDICATOR_RE.search(combined_text))
+    errors: List[str] = []
+    if not has_parser:
+        errors.append("missing XML parser sink for XXE scenario")
+    if has_parser and not has_xml_input:
+        errors.append("missing attacker-controlled XML input source for XXE scenario")
+    if has_parser and has_xml_input and not has_xxe_indicator:
+        errors.append("missing external entity resolution indicator for XXE scenario")
+    return {
+        "semantic_match": not errors,
+        "errors": errors,
+        "signals": {
+            "xml_parser_present": has_parser,
+            "xml_input_present": has_xml_input,
+            "xxe_indicator_present": has_xxe_indicator,
         },
     }
 

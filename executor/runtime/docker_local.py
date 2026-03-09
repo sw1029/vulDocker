@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.logging import get_logger
+from common.bundle_state import bundle_research_blocker
 from common.paths import ensure_dir, get_artifacts_dir
 from common.plan import load_plan
 from common.contracts import load_generator_contract as load_resolved_contract
@@ -134,6 +135,7 @@ def run_container_with_poc(
     network_mode = network_alias.mode
     service_port = _resolve_service_port(metadata_dir, workspace)
     base_url = _resolve_base_url(executor_policy, service_port)
+    service_env = _resolve_service_env(metadata_dir)
     start_cmd = [
         DOCKER_BIN,
         "run",
@@ -151,8 +153,10 @@ def run_container_with_poc(
         "PYTHONDONTWRITEBYTECODE=1",
         "--network",
         network_mode,
-        image_tag,
     ]
+    for key, value in service_env.items():
+        start_cmd.extend(["-e", f"{key}={value}"])
+    start_cmd.append(image_tag)
     last_exit_code = None
     try:
         run_command(start_cmd, run_log)
@@ -221,6 +225,16 @@ def main() -> None:
         summaries: List[Dict[str, str]] = []
         had_error = False
         for bundle in bundles:
+            research_blocker = bundle_research_blocker(plan, bundle)
+            if research_blocker:
+                summary = _skipped_bundle_summary(
+                    args.sid,
+                    bundle,
+                    plan,
+                    reason=str(research_blocker.get("reason") or "research blocked bundle"),
+                )
+                summaries.append(summary)
+                continue
             summary = _run_bundle(
                 args,
                 plan,
@@ -247,6 +261,43 @@ def main() -> None:
             raise SystemExit(1)
     finally:
         network_pool.close()
+
+
+def _skipped_bundle_summary(
+    sid: str,
+    bundle: VulnBundle,
+    plan: Dict[str, Any],
+    *,
+    reason: str,
+) -> Dict[str, Any]:
+    run_dir = artifacts_dir_for_bundle(plan, bundle, "run")
+    build_dir = artifacts_dir_for_bundle(plan, bundle, "build")
+    summary = {
+        "sid": sid,
+        "vuln_id": bundle.vuln_id,
+        "slug": bundle.slug,
+        "image_tag": f"{sid}-{bundle.slug}" if is_multi_vuln(plan) else sid,
+        "build_log": str(build_dir / "build.log"),
+        "run_log": str(run_dir / "run.log"),
+        "build_passed": False,
+        "run_passed": False,
+        "executed": False,
+        "error": reason,
+        "failed_stage": "research_short_circuit",
+        "stop_on_first_failure": bool((plan.get("policy") or {}).get("stop_on_first_failure")),
+        "network_mode": None,
+        "sidecars": [],
+        "invocation": "skipped",
+        "build_attempted": False,
+        "run_attempted": False,
+        "exit_code": None,
+        "service_port": None,
+        "service_base_url": None,
+        "poc_cmd": None,
+    }
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    LOGGER.info("Executor bundle skipped: %s", summary)
+    return summary
 
 
 def _run_bundle(
@@ -475,6 +526,37 @@ def _resolve_service_port(metadata_dir: Path, workspace: Path) -> int:
     if port:
         return port
     return DEFAULT_APP_PORT
+
+
+def _resolve_service_env(metadata_dir: Path) -> Dict[str, str]:
+    contract = _load_generator_contract(metadata_dir)
+    if isinstance(contract, dict):
+        raw = contract.get("service_env")
+        if isinstance(raw, dict):
+            return {
+                str(key).strip(): str(value)
+                for key, value in raw.items()
+                if isinstance(key, str) and str(key).strip()
+            }
+    manifest = _load_json(metadata_dir / "generator_manifest.json")
+    if isinstance(manifest, dict):
+        inner = manifest.get("manifest")
+        if isinstance(inner, dict):
+            run_section = inner.get("run")
+            if isinstance(run_section, dict) and isinstance(run_section.get("env"), dict):
+                return {
+                    str(key).strip(): str(value)
+                    for key, value in (run_section.get("env") or {}).items()
+                    if isinstance(key, str) and str(key).strip()
+                }
+    template = _load_json(metadata_dir / "generator_template.json")
+    if isinstance(template, dict) and isinstance(template.get("service_env"), dict):
+        return {
+            str(key).strip(): str(value)
+            for key, value in (template.get("service_env") or {}).items()
+            if isinstance(key, str) and str(key).strip()
+        }
+    return {}
 
 
 def _port_from_generator_template(metadata_dir: Path) -> int | None:
@@ -772,11 +854,16 @@ def _start_sidecars(
 ) -> List[Dict[str, str]]:
     sidecars_cfg = executor_policy.get("sidecars") or []
     if not sidecars_cfg:
-        return []
+        raise ExecutorError(
+            f"Bundle {bundle.slug} requires external DB/service, but policy.executor.sidecars is empty"
+        )
     if DOCKER_BIN is None:
         raise ExecutorError("Docker binary not available for sidecars")
     if network_alias.mode in {"none"}:
-        raise ExecutorError("Sidecars require an executor network but allow_network is false")
+        raise ExecutorError(
+            f"Bundle {bundle.slug} requires sidecars, but executor network is disabled "
+            "(set policy.executor.allow_network=true and choose a non-none network_mode)"
+        )
     run_log = run_dir / "run.log"
     records: List[Dict[str, str]] = []
     for entry in sidecars_cfg:

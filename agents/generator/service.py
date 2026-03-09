@@ -60,6 +60,14 @@ POSTGRES_DRIVERS = {
 }
 
 
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _metadata_dir(plan: Dict[str, Any]) -> Path:
     return ensure_dir(Path(plan["paths"]["metadata"]))
 
@@ -116,6 +124,21 @@ class TemplateSpec:
         if isinstance(value, str) and value.strip():
             return value.strip()
         return None
+
+    @property
+    def service_env(self) -> Dict[str, str]:
+        raw = self.metadata.get("service_env")
+        if not isinstance(raw, dict):
+            return {}
+        env: Dict[str, str] = {}
+        for key, value in raw.items():
+            if not isinstance(key, str):
+                continue
+            token = key.strip()
+            if not token:
+                continue
+            env[token] = str(value)
+        return env
 
 
 @dataclass
@@ -467,14 +490,18 @@ class GeneratorService:
     def run(self) -> None:
         context = self._build_context()
         self._ensure_loop_started()
-        compiled = self._run_compiler_if_supported()
-        if compiled:
-            self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
-            return
         if self.generator_mode == "synthesis":
+            compiled = self._run_compiler_if_supported()
+            if compiled:
+                self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
+                return
             self._run_synthesis_with_loops(context)
             return
         if self.generator_mode == "hybrid":
+            compiled = self._run_compiler_if_supported()
+            if compiled:
+                self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
+                return
             try:
                 self._run_synthesis_with_loops(context)
                 return
@@ -511,11 +538,22 @@ class GeneratorService:
                 (self.requirement.get("vuln_id") or "").upper(),
                 ((self.requirement.get("runtime") or {}).get("db") or "").lower(),
             )
+            compiled = self._run_compiler_if_supported()
+            if compiled:
+                self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
+                return
             self._run_synthesis_with_loops(context)
             return
         self._run_template(context, mode_label="template")
 
     def _run_compiler_if_supported(self) -> Optional[CompilerResult]:
+        compiler_cfg = self.requirement.get("compiler") if isinstance(self.requirement, dict) else {}
+        if isinstance(compiler_cfg, dict) and "enabled" in compiler_cfg and not _as_bool(compiler_cfg.get("enabled")):
+            LOGGER.info("Compiler path disabled by requirement for %s", self.sid)
+            return None
+        if _as_bool(self.requirement.get("disable_compiler", False)):
+            LOGGER.info("Compiler path disabled by legacy requirement flag for %s", self.sid)
+            return None
         semantic_profile = load_semantic_profile(self.metadata_dir) or {}
         if not isinstance(semantic_profile, dict) or not semantic_profile:
             semantic_profile = self._seed_semantic_profile_for_compiler()
@@ -594,6 +632,7 @@ class GeneratorService:
             "fallback_class": "",
             "family_override_applied": False,
             "llm_stub_used": False,
+            "llm_fixture_used": False,
             "llm_failure_class": "",
             "llm_failure_message": "",
         }
@@ -615,7 +654,7 @@ class GeneratorService:
             "hints_digest": "",
             "rag_snapshot_digest": "",
             "user_deps": self.user_deps,
-            "requires_external_db": False,
+            "requires_external_db": bool(result.manifest.get("requires_external_db")),
             "guard_spec_available": bool(self._load_guard_spec_dict()),
             "guard_policy": {},
             "generation_origin": "compiler_generated",
@@ -623,6 +662,7 @@ class GeneratorService:
             "fallback_class": None,
             "family_override_applied": False,
             "llm_stub_used": False,
+            "llm_fixture_used": False,
             "llm_failure_class": "",
             "llm_failure_message": "",
             "compiler_strategy": result.strategy,
@@ -632,6 +672,7 @@ class GeneratorService:
                 "fallback_class": None,
                 "family_override_applied": False,
                 "llm_stub_used": False,
+                "llm_fixture_used": False,
             },
             "written_files": written_files,
         }
@@ -1148,6 +1189,7 @@ class GeneratorService:
             "ports": selection.metadata.get("ports") if isinstance(selection.metadata, dict) else {},
             "service_entry": selection.service_entry,
             "poc_entry": selection.poc_entry,
+            "service_env": selection.service_env,
             "flag_token": (
                 selection.metadata.get("flag_token")
                 if isinstance(selection.metadata, dict) and isinstance(selection.metadata.get("flag_token"), str)
@@ -1163,6 +1205,7 @@ class GeneratorService:
             "fallback_used": False,
             "family_override_applied": False,
             "llm_stub_used": bool(getattr(self.llm, "use_stub", False)),
+            "llm_fixture_used": bool(getattr(self.llm, "fixture_used", False)),
             "template_root": str(template_root),
         }
         summary_path = self.metadata_dir / "generator_template.json"

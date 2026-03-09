@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
@@ -25,6 +26,7 @@ class ScaffoldSpec:
     health_route_path: str
     health_route_response: str
     dockerfile_template: tuple[str, ...]
+    aliases: tuple[str, ...] = ()
 
     def render_dockerfile(self, *, service_path: str, port: int) -> str:
         replacements = {
@@ -54,6 +56,7 @@ def _load_scaffold_asset(path: Path) -> ScaffoldSpec:
     payload = json.loads(path.read_text(encoding="utf-8"))
     health = payload.get("health_route") if isinstance(payload.get("health_route"), dict) else {}
     template = payload.get("dockerfile_template") if isinstance(payload.get("dockerfile_template"), list) else []
+    aliases = payload.get("aliases") if isinstance(payload.get("aliases"), list) else []
     return ScaffoldSpec(
         scaffold_id=str(payload.get("scaffold_id") or "python/flask"),
         version=str(payload.get("version") or "1.0"),
@@ -68,16 +71,24 @@ def _load_scaffold_asset(path: Path) -> ScaffoldSpec:
         health_route_path=str(health.get("path") or "/health"),
         health_route_response=str(health.get("response") or "{'ok': True}"),
         dockerfile_template=tuple(str(item) for item in template if isinstance(item, str) and item.strip()),
+        aliases=tuple(str(item).strip().lower() for item in aliases if isinstance(item, str) and str(item).strip()),
     )
 
 
+@lru_cache(maxsize=1)
 def _catalog() -> Dict[str, ScaffoldSpec]:
-    flask_asset = ASSETS_ROOT / "python-flask-scaffold.json"
-    spec = _load_scaffold_asset(flask_asset)
-    return {
-        spec.scaffold_id: spec,
-        f"{spec.language}/{spec.framework}": spec,
-    }
+    catalog: Dict[str, ScaffoldSpec] = {}
+    for path in sorted(ASSETS_ROOT.glob("*-scaffold.json")):
+        spec = _load_scaffold_asset(path)
+        keys = {
+            spec.scaffold_id.strip().lower(),
+            f"{spec.language}/{spec.framework}".strip().lower(),
+        }
+        keys.update(spec.aliases)
+        for key in keys:
+            if key:
+                catalog[key] = spec
+    return catalog
 
 
 def load_scaffold_spec(stack_name: str) -> ScaffoldSpec | None:

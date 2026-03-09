@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from agents.generator.flask_fragment_registry import FLASK_FRAGMENT_REGISTRY
 from agents.generator.scaffold_registry import load_scaffold_spec
+from common.runtime_surface import derive_service_env
 
 SUPPORTED_COMPILER_STRATEGIES = frozenset(FLASK_FRAGMENT_REGISTRY)
 ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
@@ -106,6 +107,11 @@ def _compile_registered_flask_fragment_manifest(
         + startup_block
         + f"    app.run(host={scaffold.service_host!r}, port={port})\n"
     )
+    run_env = derive_service_env(
+        compiler_strategy=strategy,
+        requirement=requirement,
+        service_port=port,
+    )
     return _compiler_manifest_from_parts(
         sid=sid,
         requested_name=requested_name,
@@ -129,7 +135,9 @@ def _compile_registered_flask_fragment_manifest(
         stack_scaffold_version=scaffold.version,
         fragment_id=fragment.fragment_id,
         compose_mode="registry",
-        extra_files=(fragment.extra_files_builder(port) if fragment.extra_files_builder else []),
+        run_env=run_env,
+        requires_external_db=fragment.requires_external_db,
+        extra_files=[dict(item) for item in fragment.extra_files],
     )
 
 
@@ -157,6 +165,8 @@ def _compiler_manifest_from_parts(
     stack_scaffold_version: str = "",
     fragment_id: str = "",
     compose_mode: str = "",
+    run_env: Optional[Dict[str, str]] = None,
+    requires_external_db: bool = False,
     extra_files: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     files = [
@@ -225,6 +235,8 @@ def _compiler_manifest_from_parts(
             "compiler_family": compiler_family,
         },
     }
+    if isinstance(run_env, dict) and run_env:
+        payload["run"]["env"] = {str(key): str(value) for key, value in run_env.items() if str(key).strip()}
     metadata = payload["metadata"]
     if stack_scaffold_id:
         metadata["stack_scaffold_id"] = stack_scaffold_id
@@ -234,9 +246,10 @@ def _compiler_manifest_from_parts(
         metadata["fragment_id"] = fragment_id
     if compose_mode:
         metadata["compose_mode"] = compose_mode
+    if requires_external_db:
+        payload["requires_external_db"] = True
+        metadata["requires_external_db"] = True
     return payload
-
-
 def _service_port(semantic_profile: Dict[str, Any]) -> int:
     scenario_shape = semantic_profile.get("scenario_shape") if isinstance(semantic_profile, dict) else {}
     if isinstance(scenario_shape, dict):

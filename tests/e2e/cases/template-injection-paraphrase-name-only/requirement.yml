@@ -1,0 +1,7 @@
+vuln_name: Template rendering vulnerability
+seed: 4545
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 4545

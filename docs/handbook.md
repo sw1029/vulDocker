@@ -37,7 +37,7 @@ LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합�
 ## 아키텍처(상태·에이전트·메타스토어)
 - 상태 전이: PLAN → PACK, 단계별 Span(`plan`, `draft.generator`, `build.executor`, `run.executor`, `verify.pipeline`, `review.reviewer`, `pack.orchestrator`).
 - 에이전트 계약: Researcher(검색/RAG 보고서) → Generator(합성/템플릿 보강) → Reviewer(증거/로그 기반 지시) → Executor(격리 실행/요약).
-- 메타스토어 & SID: `SID = H(model_ver | prompt_hash | seed | retriever_commit | corpus_snapshot | pattern_id | deps_digest | base_image_digest)` (+옵션 vuln_ids_digest).
+- 메타스토어 & SID: `SID = H(model_ver | prompt_hash | seed | retriever_commit | corpus_snapshot | pattern_id | deps_digest | base_image_digest)` + 옵션(`effective_vuln_ids_digest`, `vuln_ids_digest`, `generator_mode`, `runtime_surface_digest`).
 
 ## 동적 취약 삽입(LLM+RAG)
 - 기본 전략: `generator_mode=hybrid`에서 합성(synthesis) 우선 시도 후 실패 시 템플릿으로 폴백(또는 `generator_mode=template|synthesis`로 고정).

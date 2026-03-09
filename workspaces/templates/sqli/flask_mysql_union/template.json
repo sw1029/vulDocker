@@ -8,6 +8,14 @@
   "tags": ["cwe-89", "mysql", "union-based"],
   "requires_external_db": true,
   "ports": {"app": 5000, "db": 3306},
+  "service_env": {
+    "DB_HOST": "sqli-db",
+    "DB_PORT": "3306",
+    "DB_USER": "sqli",
+    "DB_PASSWORD": "sqli_pw",
+    "DB_NAME": "sqliapp",
+    "APP_PORT": "5000"
+  },
   "scenario_type": "web-poc",
   "service_entry": "app.py",
   "poc_entry": "poc.py",

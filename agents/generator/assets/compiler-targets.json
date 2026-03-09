@@ -15,6 +15,10 @@
     "name": "Insecure Deserialization",
     "vuln_id": "CWE-502"
   },
+  "xxe_xml_entity_resolve": {
+    "name": "XML External Entity",
+    "vuln_id": "NAME-XXE"
+  },
   "open_redirect_reflect": {
     "name": "Open Redirect",
     "vuln_id": "NAME-OPEN-REDIRECT"
@@ -24,6 +28,10 @@
     "vuln_id": "CWE-22"
   },
   "sqli_string_concat": {
+    "name": "SQL Injection",
+    "vuln_id": "CWE-89"
+  },
+  "sqli_string_concat_mysql": {
     "name": "SQL Injection",
     "vuln_id": "CWE-89"
   },

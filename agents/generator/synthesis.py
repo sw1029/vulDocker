@@ -178,6 +178,7 @@ class CandidateReport:
     fallback_class: str = ""
     family_override_applied: bool = False
     llm_stub_used: bool = False
+    llm_fixture_used: bool = False
     llm_failure_class: str = ""
     llm_failure_message: str = ""
 
@@ -204,6 +205,7 @@ class CandidateReport:
             "fallback_class": self.fallback_class,
             "family_override_applied": self.family_override_applied,
             "llm_stub_used": self.llm_stub_used,
+            "llm_fixture_used": self.llm_fixture_used,
             "llm_failure_class": self.llm_failure_class,
             "llm_failure_message": self.llm_failure_message,
         }
@@ -321,6 +323,10 @@ class SynthesisEngine:
                 guard_spec=guard_spec,
             )
             raw = self.llm.generate(messages)
+            manifest_llm_fixture_used = bool(getattr(self.llm, "fixture_used", False))
+            manifest_llm_stub_used = bool(getattr(self.llm, "use_stub", False)) and not manifest_llm_fixture_used
+            manifest_llm_failure_class = str(getattr(self.llm, "last_error_class", "") or "")
+            manifest_llm_failure_message = str(getattr(self.llm, "last_error_message", "") or "")
             manifest = self._parse_manifest(raw, idx)
             fallback_used = self._manifest_uses_deterministic_fallback(manifest)
             fallback_class = self._manifest_fallback_class(manifest)
@@ -364,9 +370,10 @@ class SynthesisEngine:
                     fallback_used=fallback_used,
                     fallback_class=fallback_class,
                     family_override_applied=family_override_applied,
-                    llm_stub_used=bool(getattr(self.llm, "use_stub", False)),
-                    llm_failure_class=str(getattr(self.llm, "last_error_class", "") or ""),
-                    llm_failure_message=str(getattr(self.llm, "last_error_message", "") or ""),
+                    llm_stub_used=manifest_llm_stub_used,
+                    llm_fixture_used=manifest_llm_fixture_used,
+                    llm_failure_class=manifest_llm_failure_class,
+                    llm_failure_message=manifest_llm_failure_message,
                 )
             )
 
@@ -2161,6 +2168,7 @@ class SynthesisEngine:
             "fallback_class": selected.fallback_class or None,
             "family_override_applied": selected.family_override_applied,
             "llm_stub_used": selected.llm_stub_used,
+            "llm_fixture_used": selected.llm_fixture_used,
             "llm_failure_class": selected.llm_failure_class,
             "llm_failure_message": selected.llm_failure_message,
             "provenance": {
@@ -2169,6 +2177,7 @@ class SynthesisEngine:
                 "fallback_class": selected.fallback_class or None,
                 "family_override_applied": selected.family_override_applied,
                 "llm_stub_used": selected.llm_stub_used,
+                "llm_fixture_used": selected.llm_fixture_used,
             },
         }
         manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2188,6 +2197,7 @@ class SynthesisEngine:
         auto_patch_entries: List[Dict[str, Any]] = []
         autofix_trace: List[Dict[str, Any]] = []
         llm_stub_used = False
+        llm_fixture_used = False
         fallback_used = False
         fallback_class = ""
         family_override_applied = False
@@ -2212,6 +2222,7 @@ class SynthesisEngine:
             if isinstance(trace_entries, list):
                 autofix_trace.extend(trace_entries)
             llm_stub_used = llm_stub_used or bool(report.llm_stub_used)
+            llm_fixture_used = llm_fixture_used or bool(report.llm_fixture_used)
             fallback_used = fallback_used or bool(report.fallback_used)
             if not fallback_class and isinstance(report.fallback_class, str) and report.fallback_class.strip():
                 fallback_class = report.fallback_class.strip()
@@ -2377,6 +2388,7 @@ class SynthesisEngine:
             "autofix_effective": autofix_effective,
             "autofix_trace": autofix_trace,
             "llm_stub_used": llm_stub_used,
+            "llm_fixture_used": llm_fixture_used,
             "fallback_used": fallback_used,
             "fallback_class": fallback_class or None,
             "family_override_applied": family_override_applied,

@@ -11,4 +11,4 @@ CREATE TABLE IF NOT EXISTS audit_tokens (
 
 INSERT INTO accounts (id, owner, balance) VALUES (1001, 'alice', 1200);
 INSERT INTO accounts (id, owner, balance) VALUES (1002, 'bob', 800);
-INSERT INTO audit_tokens (token) VALUES ('FLAG-super-secret-token');
+INSERT INTO audit_tokens (token) VALUES ('FLAG-sqli-demo-token');

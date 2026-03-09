@@ -1,0 +1,31 @@
+base_requirement: inputs/base_requirement.yml
+
+options:
+  multi_vuln_opt_in: false
+  env:
+    VUL_LLM_FIXTURE_GENERATOR_MANIFEST: tests/e2e/cases/trusted-dynamic-sqli/llm_generator_manifest.json
+
+overrides:
+  requirement_id: E2E-TRUSTED-DYNAMIC-SQLI-0001
+  intent: "E2E 회귀: fixture-backed llm_manifest trusted-dynamic SQLi 검증"
+  vuln_ids:
+    - CWE-89
+  multi_vuln: false
+  seed: 4242
+  variation_key:
+    mode: deterministic
+    self_consistency_k: 1
+    pattern_pool_seed: 4242
+  generator_mode: synthesis
+  compiler:
+    enabled: false
+  executor:
+    allow_network: false
+    network_mode: none
+    sidecars: []
+  runtime:
+    allow_external_db: false
+  policy:
+    verifier:
+      prefer_rule: true
+      strict_flag_default: true

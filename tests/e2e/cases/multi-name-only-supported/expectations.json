@@ -1,0 +1,62 @@
+{
+  "manifest": {
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first",
+    "verification_rule_source": "compiler_runtime_rule",
+    "verification_trust": "medium"
+  },
+  "evals": [
+    {
+      "slug": "name-template-injection",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": true,
+      "compiler_supported": true,
+      "compiler_strategy": "template_injection_render",
+      "compiler_family": "template_injection",
+      "stack_scaffold_id": "python/flask",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "render_template_string_concat",
+      "compose_mode": "registry",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "verification_rule_source": "compiler_runtime_rule",
+      "verification_trust": "medium",
+      "generalization_class": "real_free_form_positive",
+      "counts_as_generalization": true
+    },
+    {
+      "slug": "name-open-redirect",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": true,
+      "compiler_supported": true,
+      "compiler_strategy": "open_redirect_reflect",
+      "compiler_family": "open_redirect",
+      "stack_scaffold_id": "python/flask",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "redirect_next_route",
+      "compose_mode": "registry",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "verification_rule_source": "compiler_runtime_rule",
+      "verification_trust": "medium",
+      "generalization_class": "real_free_form_positive",
+      "counts_as_generalization": true
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

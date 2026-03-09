@@ -1,0 +1,36 @@
+base_requirement: inputs/base_requirement.yml
+
+overrides:
+  requirement_id: E2E-SQLI-MYSQL-TEMPLATE-0001
+  intent: "E2E 회귀: SQLi built-in MySQL sidecar template lane 검증"
+  vuln_ids:
+    - CWE-89
+  multi_vuln: false
+  generator_mode: template
+  pattern_id: sqli-union-mysql
+  runtime:
+    db: mysql
+    allow_external_db: true
+  executor:
+    allow_network: true
+    network_mode: bridge
+    sidecars:
+      - name: mysql
+        type: mysql
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_DATABASE: sqliapp
+          MYSQL_USER: sqli
+          MYSQL_PASSWORD: sqli_pw
+        aliases:
+          - sqli-db
+        ready_probe:
+          type: mysql
+          retries: 20
+          interval: 2
+  policy:
+    verifier:
+      prefer_rule: true
+      strict_flag_default: true
+      llm_assist: false

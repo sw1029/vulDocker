@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from common.contracts import (
     build_generator_contract,
-    can_resolve_without_remote_research,
+    can_resolve_without_remote_research_for_requirement,
     write_generator_contract,
 )
 from common.deps.stdlib import load_stdlib_spec
@@ -398,6 +398,77 @@ class ResearcherService:
         path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         return path
 
+    def write_skip_report(self, reason: str) -> Path:
+        active_bundle = self.bundle
+        report = {
+            "sid": self.sid,
+            "vuln_id": active_bundle.vuln_id if active_bundle else self.requirement.get("vuln_id"),
+            "trace_id": self.react_loop.trace_id,
+            "retrieval_snapshot_id": self._snapshot_id(),
+            "failure_context": self.react_loop.failure_context,
+            "search_policy": self._search_policy(),
+            "search_health_path": None,
+            "search_degraded": False,
+            "evidence": [],
+            "semantic_signature": {},
+            "evidence_relevance": {},
+            "quality": "skipped",
+            "quality_reason": reason,
+            "guard_fallback": False,
+            "guard_spec_path": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "skipped_reason": reason,
+        }
+        report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
+            report,
+            active_bundle,
+        )
+        report = self._canonicalize_report_identity(report, active_bundle)
+        contract_path = self._write_resolved_contract_seed(report, active_bundle)
+        report["resolved_contract_path"] = str(contract_path)
+        self._last_report = report
+        return self._write_report(report)
+
+    def write_fail_closed_report(
+        self,
+        *,
+        reason: str,
+        terminal_failure_class: str,
+        fix_hint: str = "",
+    ) -> Path:
+        active_bundle = self.bundle
+        report = {
+            "sid": self.sid,
+            "vuln_id": active_bundle.vuln_id if active_bundle else self.requirement.get("vuln_id"),
+            "trace_id": self.react_loop.trace_id,
+            "retrieval_snapshot_id": self._snapshot_id(),
+            "failure_context": self.react_loop.failure_context,
+            "search_policy": self._search_policy(),
+            "search_health_path": None,
+            "search_degraded": False,
+            "evidence": [],
+            "semantic_signature": {},
+            "evidence_relevance": {},
+            "quality": "insufficient",
+            "quality_reason": reason,
+            "guard_fallback": False,
+            "guard_spec_path": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "terminal_failure_class": str(terminal_failure_class or "").strip(),
+            "retry_recommended": False,
+            "fix_hint": fix_hint,
+            "skipped_reason": reason,
+        }
+        report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
+            report,
+            active_bundle,
+        )
+        report = self._canonicalize_report_identity(report, active_bundle)
+        contract_path = self._write_resolved_contract_seed(report, active_bundle)
+        report["resolved_contract_path"] = str(contract_path)
+        self._last_report = report
+        return self._write_report(report)
+
     def _write_resolved_contract_seed(self, report: Dict[str, Any], bundle: VulnBundle | None) -> Path:
         vuln_id = str(bundle.vuln_id if bundle else self.requirement.get("vuln_id") or "UNKNOWN")
         slug = bundle.slug if bundle else ""
@@ -481,8 +552,9 @@ class ResearcherService:
             vuln_id = str(self.requirement.get("vuln_id") or "").strip()
             if not vuln_id:
                 return False
-            return not can_resolve_without_remote_research(vuln_id)
-        return not can_resolve_without_remote_research(bundle.vuln_id)
+            return not can_resolve_without_remote_research_for_requirement(vuln_id, self.requirement)
+        requirement_view = bundle_requirement(self.plan["requirement"], bundle)
+        return not can_resolve_without_remote_research_for_requirement(bundle.vuln_id, requirement_view)
 
     def _require_researcher_evidence(self, bundle: VulnBundle | None) -> bool:
         plan_policy = self.plan.get("policy") or {}

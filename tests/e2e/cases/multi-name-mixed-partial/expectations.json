@@ -1,0 +1,63 @@
+{
+  "manifest": {
+    "overall_pass": false,
+    "pipeline_result": "failure",
+    "promotion_eligible": false,
+    "manifest_file": "failure_manifest.json",
+    "pipeline_returncode": 1,
+    "generation_origin": "mixed",
+    "dynamicness_verdict": "mixed",
+    "provider_health_state": "not_probed",
+    "partial_progress_summary": {
+      "bundle_count": 2,
+      "successful_bundles": 1,
+      "failed_bundles": 1,
+      "executed_bundles": 1,
+      "verified_bundles": 1,
+      "research_blocked_bundles": 1,
+      "partial_success": true
+    }
+  },
+  "evals": [
+    {
+      "slug": "name-custom-weird-vuln",
+      "verify_pass": false,
+      "run_passed": false,
+      "promotion_eligible": false,
+      "compiler_supported": false,
+      "generation_origin": "research_short_circuit",
+      "dynamicness_verdict": "pre-generation fail-closed",
+      "terminal_failure_class": "semantic_support_missing",
+      "generalization_class": "unsupported_free_form_negative",
+      "counts_as_generalization": false,
+      "compiler_reason_contains": [
+        "unsupported"
+      ]
+    },
+    {
+      "slug": "name-open-redirect",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": false,
+      "compiler_supported": true,
+      "compiler_strategy": "open_redirect_reflect",
+      "compiler_family": "open_redirect",
+      "stack_scaffold_id": "python/flask",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "redirect_next_route",
+      "compose_mode": "registry",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "verification_rule_source": "compiler_runtime_rule",
+      "verification_trust": "medium",
+      "generalization_class": "real_free_form_non_generalizing",
+      "counts_as_generalization": false
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

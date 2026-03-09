@@ -1,6 +1,6 @@
 # 동적 취약 Docker 생성 현재 상태 및 통합 실행 계획
 
-본 문서는 2026-03-08 KST 기준 current workspace truth, 직접 재실행 결과, 코드 구조 감사, 그리고 후속 구현 우선순위를 하나로 통합한 마스터 계획 문서다.
+본 문서는 2026-03-09 KST 기준 current workspace truth, 직접 재실행 결과, 코드 구조 감사, 그리고 후속 구현 우선순위를 하나로 통합한 마스터 계획 문서다.
 
 이 문서의 목표는 단순히 “무엇이 통과하는가”를 적는 것이 아니다.
 현 시점의 레포가
@@ -79,6 +79,7 @@
 - official harness(`tests/e2e/run_case.py`)는 now-default로 빈 seed manifest라도 기록해 `runtime_rules/`, `runtime_templates/`를 rerun 전에 완전히 purge한 뒤 seeded asset만 restore한다.
 - pipeline 자체도 generated runtime rule/template를 별도 manifest로 추적해, raw `run_pipeline.py --sid ...` rerun에서도 tracked generated asset은 시작 시 제거한다.
 - 즉 official E2E evidence에서는 runtime asset carry-over가 훨씬 더 강하게 차단되며, direct raw runner는 여전히 conservative하지만 최소한 tracked generated asset 기준 stale rule/template 누적은 줄었다.
+- 추가로 이번 후속 구현에서 SID 입력에 `generator_mode`와 `runtime_surface_digest`가 들어가면서, 같은 vuln family/pattern이라도 generation/runtime surface가 다르면 더 이상 같은 SID로 collapse되지 않는다.
 
 따라서 이 문서에서는 evidence를 다음 두 class로 분리한다.
 
@@ -92,13 +93,46 @@
 ### 2.1 기본 테스트 스위트 truth
 
 - command: `python -m pytest -q tests`
-- observed_at: 2026-03-08 KST
+- observed_at: 2026-03-09 KST
 - evidence_class: `current workspace rerun`
-- result: `239 passed, 22 skipped`
+- result: `287 passed, 30 skipped`
 
 이 수치는 unit/integration truth다.
 하지만 `tests/e2e/test_cases.py`는 `VULD_RUN_E2E=1` 없이는 skip되므로, 이 수치를 Docker E2E 완성도와 동일시하면 안 된다.
-이번 갱신 이후 공식 E2E full rerun도 별도로 다시 확인했고, `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs`는 `20 passed, 2 skipped`였다.
+이번 갱신 이후 공식 E2E full rerun도 별도로 다시 확인했고, `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs`는 `28 passed, 2 skipped`였다.
+
+### 2.1.1 테스트 완성도 재검토
+
+현재 테스트 완성도는 “semantic/provenance/pack gating” 축에서는 중상, “runtime surface 전체” 축에서는 아직 중 수준이다.
+
+이번 추가 구현으로 current source-of-truth는 아래까지 확장되었다.
+
+- unit/integration baseline은 `287 passed, 30 skipped`로 상향되었다.
+- official E2E baseline은 `28 passed, 2 skipped`로 상향되었다.
+- 새 `multi-name-only-supported` official E2E가 추가되어, `Template Injection + Open Redirect` 두 free-form `vuln_ids`를 하나의 SID에서 compiler-first positive lane으로 함께 닫는 다중 취약 경로가 source-of-truth에 편입되었다.
+- 새 `trusted-dynamic-sqli` official E2E가 추가되어, fixture-backed `llm_manifest` synthesis가 `generation_origin=llm_manifest`, `dynamicness_verdict=trusted dynamic`, `provider_health_state=llm_fixture`, `llm_fixture_used=true`로 실제 PACK artifact까지 닫히는 경로가 source-of-truth에 편입되었다.
+- 추가로 `sqli-sidecar-template` official E2E가 추가되어, `built_in_template` + MySQL sidecar + `executor_feasibility_status=configured` 조합의 runtime-surface positive lane이 source-of-truth에 편입되었다.
+- 추가로 `sqli-sidecar-compiler` official E2E가 추가되어, `compiler_generated` + MySQL sidecar + `executor_feasibility_status=configured` 조합의 compiler-first sidecar positive lane이 source-of-truth에 편입되었다.
+- 추가로 `template-injection-paraphrase-name-only`, `open-redirect-paraphrase-name-only` official E2E가 추가되어, `Template rendering vulnerability`, `External redirect vulnerability` 같은 paraphrase 입력도 `name_resolution.source=alias`와 함께 compiler-first positive lane으로 닫히는 것이 source-of-truth에 편입되었다.
+- 추가로 `vuln_ids` list 경로도 이제 catalog 미등록 free-form 이름을 synthetic `NAME-*`로 보존하고 `vuln_id_resolutions[]` trace를 남긴다. 즉 `Template Injection + Open Redirect` 같은 supported-positive multi-vuln lane뿐 아니라 `Custom Weird Vuln + Open Redirect` 같은 mixed free-form 입력도 더 이상 supported subset으로 조용히 collapse되지 않는다.
+- 추가로 token fallback은 stopword를 제거한 exact-content-token match로 좁혀져, `unsafe template deserialization` 같은 ambiguous phrase가 `CWE-502`로 과잉 canonicalize되는 false positive가 regression test로 차단되었다. current truth에서 supported alias/reordered phrase는 계속 닫히되, mixed-semantic phrase는 synthetic `NAME-*`로 남는 쪽으로 보수화되었다.
+- 추가로 `multi-name-mixed-partial` official E2E가 추가되어, unsupported/custom free-form bundle이 bundle 단위 preseeded semantic profile에 의해 `semantic_support_missing`으로 RESEARCH-stage fail-closed되더라도 supported compiler bundle은 same SID에서 partial-progress로 build/run/verify를 계속 수행하는 것이 source-of-truth에 편입되었다. latest rerun 기준 top-level `failure.stage=RESEARCH`, `generation_origin=mixed`, `dynamicness_verdict=mixed`, `verification_rule_source=mixed`, `verification_trust=mixed`, `partial_progress_summary.partial_success=true`가 함께 남는다.
+- 추가로 `multi-name-only-supported` official E2E의 top-level manifest도 이제 bundle-level 공통 provenance/trust를 mirror해 `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, `verification_rule_source=compiler_runtime_rule`, `verification_trust=medium`까지 직접 surface한다.
+- `Template Injection` repeatability gate는 이제 compiler-first lower bound와 정렬되어 remote provider/Tavily 없이도 `3/3 passed`로 검증된다.
+- repeatability harness의 `pipeline_returncode` 전파 버그도 이번 턴에서 수정되어, gate 실패 원인이 실제 비결정성인지 harness 결함인지 더 명확히 분리할 수 있게 되었다.
+- 추가로 `compiler.enabled=false` 또는 legacy `disable_compiler=true`가 있을 때 requirement normalization, researcher unknown classification, run_pipeline researcher skip이 더 이상 compiler lower bound를 계속 가정하지 않는 regression test가 source-of-truth에 편입되었다.
+- 추가로 external DB requirement와 `policy.executor.sidecars` / 네트워크 정책 불일치는 `EXECUTOR_PRECHECK`와 executor direct path에서 fail-fast되는 regression test가 source-of-truth에 편입되었다.
+- 추가로 free-form family mapping이 `common/assets/vuln-family-catalog.json` 기반 shared catalog로 이동해 requirement normalization, compiler routing, semantic support default가 같은 canonical family table을 보게 되었다.
+- 추가로 `XML External Entity`는 current truth 기준 `NAME-XXE` + `pattern_id=xxe`로 canonicalize될 뿐 아니라 `semantic_profile -> xxe_xml_entity_resolve -> compiler_generated` path로 승격되었다. latest rerun에서는 `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, `verification_rule_source=compiler_runtime_rule`, `verification_trust=medium`, `generalization_class=real_free_form_positive`, `counts_as_generalization=true`, `total_duration_s≈6.636s`로 닫혔다.
+- 추가로 SID는 이제 `generator_mode`와 runtime/executor surface digest까지 포함한다. 따라서 같은 vuln family라도 `template` vs `synthesis`, embedded vs sidecar runtime은 더 이상 같은 SID로 충돌하지 않는다.
+- 추가로 sidecar-backed template/compiler lane은 이제 `service_env`를 contract/summary에서 explicit surface하고 executor가 이를 실제 `docker run -e ...`로 주입한다. 즉 MySQL lane success가 더 이상 fragment/template 기본 DB host 값에 우연히 맞아떨어지는 경로에 의존하지 않는다.
+
+반면 아직 남은 테스트 공백도 분명하다.
+
+- official E2E에는 이제 `sqli-sidecar-template` built-in MySQL sidecar positive lane과 `sqli-sidecar-compiler` compiler-first MySQL sidecar positive lane이 함께 있다. 다만 richer bridge/sidecar family 일반화는 아직 없다.
+- official E2E에는 live remote-LLM 기반 `llm_manifest -> trusted dynamic` success lane이 없다. 현재는 fixture-backed trusted dynamic source-of-truth만 존재한다.
+- performance는 현재 wall-clock budget regression보다 provenance/summary correctness를 더 강하게 본다.
+- multi-vuln path는 이제 official positive lane과 mixed partial-progress lane이 함께 있다. 다만 mixed success/failure multi-vuln의 promotion/acceptance policy는 아직 충분히 고정되지 않았다.
 
 ### 2.2 현재 공식 E2E source-of-truth 범위
 
@@ -106,6 +140,8 @@
 
 - `cwe-89-basic`
 - `sqli-name-only`
+- `sqli-sidecar-template`
+- `sqli-sidecar-compiler`
 - `csrf-name-only`
 - `ssrf-name-only`
 - `command-injection-name-only`
@@ -113,16 +149,23 @@
 - `code-injection-alias-name-only`
 - `template-injection-name-only`
 - `template-injection-alias-name-only`
+- `template-injection-paraphrase-name-only`
 - `template-injection-reordered-name-only`
 - `path-traversal-name-only`
 - `xss-name-only`
+- `xxe-name-only`
 - `deserialization-name-only`
 - `open-redirect-name-only`
 - `open-redirect-alias-name-only`
+- `open-redirect-paraphrase-name-only`
 - `open-redirect-reordered-name-only`
+- `multi-name-only-supported`
+- `multi-name-mixed-partial`
+- `trusted-dynamic-sqli`
 - `ldap-injection-negative`
 - `unknown_cwe_synthesis_case`
 - `unknown_cwe_live_tavily_case`
+- `unknown_cwe_live_low_trust_fail_closed_case`
 
 중요한 사실:
 
@@ -133,12 +176,21 @@
 - unknown lane은 이제 negative synthesis case와 live Tavily case가 expectations 수준에서도 분리되어 존재한다.
 - live unknown case는 explicit synthetic id `CWE-9999` 기반이지 real free-form `vuln_name only` case가 아니다.
 - 이번 갱신으로 `Server Side Template Injection` 같은 known alias도 canonical `NAME-TEMPLATE-INJECTION`으로 normalize되어 official E2E positive lane에 편입되었다.
-- 추가로 `Injection in Jinja template`, `Redirect open vulnerability` 같은 reordered/free-form phrase도 shared fragment strategy fallback을 통해 canonical supported family로 normalize되어 official E2E positive lane에 편입되었다.
-- 이번 구현으로 compiler-supported positive lane(SQLi/CSRF/SSRF/Command Injection/Code Injection/Template Injection/Path Traversal/XSS/Insecure Deserialization/Open Redirect)과 unsupported free-form negative lane(LDAP Injection)은 더 이상 Tavily availability를 전제하지 않는다.
-- current workspace rerun 기준 official E2E는 `20 passed, 2 skipped`로 green이고, skip 2개는 repeatability gate다.
+- 추가로 `Template rendering vulnerability`, `External redirect vulnerability` 같은 paraphrase도 shared vuln family catalog의 exact alias layer를 통해 canonical supported family로 normalize되어 official E2E positive lane에 편입되었다.
+- 추가로 `Injection in Jinja template`, `Redirect open vulnerability` 같은 reordered/free-form phrase도 shared vuln family catalog의 token-match + fragment strategy fallback을 통해 canonical supported family로 normalize되어 official E2E positive lane에 편입되었다.
+- 이번 구현으로 compiler-supported positive lane(SQLi/CSRF/SSRF/Command Injection/Code Injection/Template Injection/Path Traversal/XSS/Insecure Deserialization/Open Redirect/XXE)과 unsupported free-form negative lane(LDAP Injection)은 더 이상 Tavily availability를 전제하지 않는다.
+- 새 `multi-name-only-supported` official E2E는 current workspace rerun 기준 `sid-fd38543fbbd2`, `bundle_count=2`, `positive_generalization_bundles=2`, `supported_bundles=2`, `total_duration_s≈8.773s`로 닫혔다. 즉 current source-of-truth에는 이제 “단일 free-form positive bundle”뿐 아니라 “단일 SID 안의 다중 free-form positive compiler-first bundle”도 포함된다.
+- 새 `multi-name-mixed-partial` official E2E는 current workspace rerun 기준 same-SID mixed lane에서 `partial_progress_summary.partial_success=true`, `successful_bundles=1`, `research_blocked_bundles=1`을 남긴다. 즉 current source-of-truth에는 이제 “unsupported/custom free-form bundle은 fail-closed되지만 supported compiler bundle은 same SID에서 계속 실행하는” mixed partial-progress lane도 포함된다.
+- fixture-backed `trusted-dynamic-sqli` official E2E는 current workspace rerun 기준 `sid-b36ff41a638a`, `generation_origin=llm_manifest`, `dynamicness_verdict=trusted dynamic`, `verification_rule_source=declared_rule`, `verification_trust=high`, `performance.provider_health_state=llm_fixture`, `performance.llm_fixture_used=true`, `total_duration_s≈8.665s`로 닫혔다. 다만 이것은 live remote provider evidence가 아니라 deterministic fixture-backed trusted-dynamic regression lane이다.
+- 새 `sqli-sidecar-template` official E2E는 current workspace rerun 기준 `sid-fb69eab9a174`, `generation_origin=built_in_template`, `dynamicness_verdict=template-assisted`, `compiler_strategy=sqli_string_concat_mysql`, `verification_rule_source=declared_rule`, `verification_trust=high`, `executor_feasibility_status=configured`, `promotion.eligible=true`로 닫혔다. 이 lane은 now-explicit `service_env` contract를 executor가 주입해 닫히며, runtime-surface positive lane이지만 compiler-first가 아니라 template-assisted evidence다.
+- 새 `sqli-sidecar-compiler` official E2E는 current workspace rerun 기준 `sid-e94b254bdff9`, `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, `compiler_strategy=sqli_string_concat_mysql`, `compiler_family=sql_injection`, `stack_scaffold_id=python/flask`, `fragment_id=mysql_login_query_concat_route`, `executor_feasibility_status=configured`, `verification_rule_source=declared_rule`, `verification_trust=high`, `promotion.eligible=true`로 닫혔다. 이 lane도 `service_env`를 requirement-aware contract에서 surface한 뒤 executor가 주입해 닫히므로, current source-of-truth에는 이제 compiler-first sidecar positive lane도 존재한다.
+- current workspace rerun 기준 official E2E는 `28 passed, 2 skipped`로 green이고, skip 2개는 repeatability gate다.
 - 이번 갱신으로 official E2E expectations도 `compiler_supported`/`compiler_strategy`만이 아니라 bundle-level `generation_origin`, `dynamicness_verdict`까지 직접 검증한다. 즉 current official acceptance는 “capability metadata상 compiler-covered”를 넘어서 “실제 run provenance가 compiler-generated/compiler-first인지”를 함께 본다.
 - 추가로 representative official case(`cwe-89-basic`, `template-injection-name-only`, `open-redirect-name-only`)는 `compiler_family`, `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode`까지 expectation에서 직접 검증한다. 즉 일부 핵심 lane은 “compiler-first”뿐 아니라 “registry-backed scaffold/fragment compose”도 source-of-truth에 포함된다.
-- 남은 공식 coverage hole은 이제 remote provider drift 자체보다 unknown/open-world compiler 부재와 synthetic unknown lane 해석 쪽에 더 가깝다.
+- 추가로 paraphrase official case(`template-injection-paraphrase-name-only`, `open-redirect-paraphrase-name-only`)는 top-level `name_resolution.source=alias`, `name_resolution.resolved_vuln_id=*`까지 expectation으로 직접 고정한다. 즉 current official acceptance는 “이름만으로 성공했다”뿐 아니라 “어떤 canonical family catalog resolution을 거쳤는가”까지 기록한다.
+- 이번 추가 갱신으로 static rule이 없는 compiler-generated family의 verifier provenance는 `compiler_runtime_rule/medium`으로 분리된다. 즉 current official acceptance는 compiler-first lane의 검증이 “declared independent static rule”인지 “compiler-derived runtime rule”인지도 artifact 수준에서 구분한다.
+- Template Injection repeatability gate는 이번 턴부터 Tavily key를 요구하지 않는다. compiler-first/provider `not_probed` lower bound를 그대로 3회 반복 검증하는 gate로 재정렬되었다.
+- 남은 공식 coverage hole은 이제 remote provider drift 자체보다 unknown/open-world compiler 부재, richer bridge/sidecar family 부재, 그리고 synthetic unknown lane 해석 쪽에 더 가깝다.
 
 ### 2.3 Provider 상태
 
@@ -148,14 +200,15 @@
 - Tavily API key 사용 가능
 - OpenAI API key 감지됨
 - 실제 OpenAI 호출은 `RateLimitError`로 quota exhausted 상태
-- 따라서 current workspace의 LLM health는 실질적으로 `llm_degraded`
+- 따라서 current workspace의 live remote LLM health는 실질적으로 `llm_degraded`
+- 다만 fixture-backed `trusted-dynamic-sqli` official lane은 remote quota와 별개로 `provider_health_state=llm_fixture`를 기록하며 trusted-dynamic contract surface를 고정 검증한다.
 - 다만 이번 구현 이후 compiler-supported / static-supported family는 기본 minimal-input path에서 RESEARCH를 skip하므로, Tavily 상태는 더 이상 해당 lane의 operational lower bound를 좌우하지 않는다.
 - latest rerun에서 remote-required로 남아 있는 대표 lane은 `CWE-9999` live unknown과 향후 compiler-unsupported/unknown family다.
 
 즉 current workspace truth의 핵심 축은
 
 - search provider 상태가 세션 중간에 바뀔 수 있으며, Tavily는 여전히 intermittent degraded일 수 있다
-- LLM은 degraded
+- live remote LLM은 degraded지만 fixture-backed trusted-dynamic lane은 `llm_fixture` provider state로 별도 검증할 수 있다
 - 하지만 compiler-supported known/free-form lane은 이제 provider `not_probed` 상태에서도 compiler-first lower bound로 닫힌다
 
 이라는 점이다.
@@ -167,6 +220,7 @@
 | lane | 결과 | provider_condition | generation_origin | dynamicness | evidence_class | observed_at | command | sid | 핵심 관찰 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | SQLi `sqli-name-only` | pass | `not_probed` | `compiler_generated` | `compiler-first` | `current workspace rerun` | 2026-03-08 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/sqli-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-stage2-reruns/sqli-name-only` | `sid-3325b4630aa4` | static-rule known family지만 generator가 seed `semantic_profile`를 만들고 `sqli_string_concat` compiler path를 선택한다. researcher/search probe를 건너뛴 compiler-only lane이면서, `metadata/sid-3325b4630aa4/generator_manifest.json` metadata에는 `stack_scaffold_id=python/flask`, `fragment_id=login_query_concat_route`, `compose_mode=registry`가 남는다. manifest는 `known_family_regression`, `promotion.eligible=true`다 |
+| trusted dynamic SQLi `trusted-dynamic-sqli` | pass | `llm_fixture` | `llm_manifest` | `trusted dynamic` | `current workspace rerun` | 2026-03-09 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/trusted-dynamic-sqli --mode deterministic --no-snapshot --output-dir /tmp/vuld-trusted-dynamic-sqli` | `sid-b36ff41a638a` | compiler를 명시적으로 끄고 fixture-backed generator manifest를 주입한 official lane이다. latest rerun 기준 `verification_rule_source=declared_rule`, `verification_trust=high`, `performance.provider_health_state=llm_fixture`, `performance.llm_fixture_used=true`, `promotion.eligible=true`, `generalization_class=known_family_regression`으로 닫혔다. trusted dynamic contract surface는 확보됐지만, 이것을 live remote LLM evidence와 동일시하면 안 된다 |
 | CSRF `csrf-name-only` | pass | `not_probed` | `compiler_generated` | `compiler-first` | `current workspace rerun` | 2026-03-08 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/csrf-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-stage2-reruns/csrf-name-only` | `sid-d914426746e5` | static-rule known family지만 generator가 seed `semantic_profile`를 만들고 `csrf_missing_token` compiler path를 선택한다. researcher/search probe를 건너뛴 compiler-only lane이면서, `metadata/sid-d914426746e5/generator_manifest.json` metadata에는 `stack_scaffold_id=python/flask`, `fragment_id=csrf_state_change_route`, `compose_mode=registry`가 남는다. manifest는 `known_family_regression`, `promotion.eligible=true`다 |
 | Command Injection `command-injection-name-only` | pass | `not_probed` | `compiler_generated` | `compiler-first` | `current workspace rerun` | 2026-03-08 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/command-injection-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-cmdi-review` | `sid-9310c416fc6d` | `semantic_profile.support_level=builtin_supported`와 `compiler_strategy=command_injection_shell`를 바탕으로 generator가 compiler path를 선택한다. latest rerun 기준 `verify_pass=true`, `promotion.eligible=true`, `semantic_supported=true`, `provider_health_state=not_probed`, `total_duration_s≈7.026s`였다 |
 | Code Injection `code-injection-name-only` | pass | `not_probed` | `compiler_generated` | `compiler-first` | `current workspace rerun` | 2026-03-08 KST | `python tests/e2e/run_case.py --case tests/e2e/cases/code-injection-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-code-injection` | `sid-31aac9a4f61c` | `semantic_profile.support_level=builtin_supported`와 `compiler_strategy=code_injection_eval`를 바탕으로 generator가 compiler path를 선택한다. latest rerun 기준 `verify_pass=true`, `promotion.eligible=true`, `semantic_supported=true`, `provider_health_state=not_probed`, `total_duration_s≈6.675s`였고, `generator_manifest.json` metadata에는 `stack_scaffold_id=python/flask`, `fragment_id=eval_code_exec_route`, `compose_mode=registry`가 남는다 |
@@ -193,6 +247,7 @@
 이번 세션 compiler-supported researcher decoupling 이후 direct rerun 기준 `performance_summary.total_duration_s`는 다음과 같았다.
 
 - SQLi official: `7.174s`
+- trusted-dynamic SQLi official: `8.665s`
 - CSRF official: `6.844s`
 - Command Injection official: `7.026s`
 - Code Injection official: `6.675s`
@@ -219,7 +274,8 @@
 해석:
 
 - SQLi, CSRF, SSRF는 여전히 compiler-only lane이며 latest rerun 기준 researcher/search probe 없이 각각 약 7초, 7초, 7초 수준으로 닫힌다.
-- Template Injection, Open Redirect, Path Traversal, XSS, Insecure Deserialization도 이번 decoupling 이후 모두 provider `not_probed` 상태에서 약 7초 안팎으로 수렴했다. 즉 previous remote-required drift가 current lower bound를 더 이상 지배하지 않는다.
+- fixture-backed trusted-dynamic SQLi lane은 compiler-first lower bound보다 약간 느리지만 같은 10초 미만 대역에서 닫힌다. 다만 이 수치는 remote LLM latency가 아니라 local fixture + Docker orchestration 비용에 가깝다.
+- Template Injection, Open Redirect, XXE, Path Traversal, XSS, Insecure Deserialization도 이번 decoupling 이후 모두 provider `not_probed` 상태에서 대체로 약 6~7초 안팎으로 수렴했다. 즉 previous remote-required drift가 current lower bound를 더 이상 지배하지 않는다.
 - synthetic unknown live lane은 여전히 `deterministic fallback dependent`다. latest rerun에서는 약 16초였고, current manifest 기준 `promotion.eligible=false`, `generalization_class=synthetic_regression`으로 집계된다.
 - unsupported free-form negative lane은 preseeded `semantic_profile` 덕분에 RESEARCH 실행 전 terminal stop으로 더 내려갔다. latest rerun 기준 LDAP Injection은 `retry_count=0`, 약 `0.052s` 수준이며 `failure_manifest.failure.terminal_failure_class=semantic_support_missing`, bundle provenance `research_short_circuit`, `generalization_class=unsupported_free_form_negative`가 함께 surface된다.
 - synthetic unknown no-remote negative lane도 이번 갱신으로 3-loop 재시도 대신 single-shot terminal failure로 내려갔다. representative rerun 기준 `CWE-9999` no-remote는 `retry_count=0`, 약 `1.650s`, `terminal_failure_class=remote_provider_unavailable`, `provider_health_state=remote_provider_unavailable`, `generation_origin=research_short_circuit`까지 surface된다.
@@ -229,26 +285,35 @@
 compiler/static supported bundle을 remote-required researcher에서 분리한 뒤, representative lane을 다시 확인했다.
 
 - command root: `/tmp/vuld-postfix/*`
-- unit/integration precheck: `python -m pytest -q tests` -> `239 passed, 22 skipped`
-- official E2E full rerun: `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs` -> `20 passed, 2 skipped`
+- unit/integration precheck: `python -m pytest -q tests` -> `287 passed, 30 skipped`
+- official E2E full rerun: `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs` -> `28 passed, 2 skipped`
 - Path Traversal / Template Injection: latest targeted rerun에서 둘 다 `compiler-first`, provider `not_probed`, RESEARCH `0.0s skipped`, 약 `7s` 수준으로 닫혔다
 - Template Injection alias(`Server Side Template Injection`)도 latest targeted rerun에서 `compiler-first`, provider `not_probed`, RESEARCH `0.0s skipped`, `real_free_form_positive`로 닫혔다
 - Open Redirect alias(`Unvalidated Redirect`)도 latest targeted rerun에서 `compiler-first`, provider `not_probed`, `real_free_form_positive`로 닫혔다
+- Template Injection paraphrase(`Template rendering vulnerability`)와 Open Redirect paraphrase(`External redirect vulnerability`)도 latest official rerun에서 각각 `name_resolution.source=alias`, `compiler-first`, `real_free_form_positive`로 닫혔다
+- multi-name-only-supported official rerun은 current workspace에서 `sid-fd38543fbbd2`, `bundle_count=2`, `generation_summary.by_origin.compiler_generated=2`, `generalization_summary.positive_generalization_bundles=2`, `compiler_contract_summary.supported_bundles=2`, `verification_summary.by_trust.medium=2`, `total_duration_s≈8.773s`로 닫혔다
+- trusted-dynamic-sqli official rerun은 current workspace에서 `sid-b36ff41a638a`, `generation_origin=llm_manifest`, `dynamicness_verdict=trusted dynamic`, `verification_rule_source=declared_rule`, `verification_trust=high`, `provider_health_state=llm_fixture`, `llm_fixture_used=true`, `total_duration_s≈8.665s`로 닫혔다
+- sqli-sidecar-template official rerun은 current workspace에서 `sid-fb69eab9a174`, `generation_origin=built_in_template`, `dynamicness_verdict=template-assisted`, `compiler_strategy=sqli_string_concat_mysql`, `verification_rule_source=declared_rule`, `verification_trust=high`, `executor_feasibility_status=configured`로 닫혔다
+- sqli-sidecar-compiler official rerun은 current workspace에서 `sid-e94b254bdff9`, `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, `compiler_strategy=sqli_string_concat_mysql`, `compiler_family=sql_injection`, `stack_scaffold_id=python/flask`, `fragment_id=mysql_login_query_concat_route`, `executor_feasibility_status=configured`, `verification_rule_source=declared_rule`, `verification_trust=high`로 닫혔다
+- latest sidecar template/compiler rerun에서는 service code의 DB host/user/password/name 기본값을 intentionally invalid placeholder로 둔 상태에서도 success가 재현되었다. 즉 current truth의 sidecar 성공은 hardcoded default가 아니라 executor가 injected `service_env`를 실제로 전달한 결과다.
 - LDAP Injection negative: latest targeted rerun에서 `failure_manifest.json`, `pre-generation fail-closed`, 약 `0.052s`
 - `CWE-9999` no-remote negative: `VUL_WEB_SEARCH_PROVIDER=none` + dedicated negative expectations로 fail-closed validation이 별도 고정되었고, representative rerun 기준 `remote_provider_unavailable`, `provider_health_state=remote_provider_unavailable`, `retry_count=0`, `~1.650s`
 - `CWE-9999` live Tavily: 여전히 `synthetic_regression` + `deterministic fallback dependent` success lane이지만, latest rerun에서는 `verification_rule_source=runtime_rule_candidate`, `verification_trust=low`, promotion reason `verify_contract:runtime_rule_candidate`가 함께 surface된다
 - `CWE-9999` live strict fail-closed: 같은 lane에 `policy.verifier.low_trust_unknown_policy=fail_closed`를 주면 latest rerun에서 `run_passed=true`, `verification_policy_blocked=true`, `terminal_failure_class=low_trust_verification`, `retry_count=0`으로 종료한다
+- `VULD_RUN_E2E=1 VULD_RUN_E2E_REPEAT=1 python -m pytest -q tests/e2e/test_cases.py -k template_injection_name_only_repeatability_gate -rs`도 current workspace에서 `1 passed`였다. 즉 repeatability source-of-truth가 provider-independent compiler-first lane과 다시 정렬되었다
+- direct sanity script latest rerun에서는 `vuln_name: Template Injection + compiler.enabled=false`가 `researcher.search_policy=remote_required`, `policy.require_researcher_evidence=true`, `_can_skip_researcher=false`로 정렬되었다. 즉 compiler-disabled request가 더 이상 non-remote lower bound처럼 과대표현되지 않는다
+- same sanity script latest rerun에서는 external DB requirement(`runtime.db=mysql`) + empty sidecars / disabled network 조합이 `terminal_failure_class=executor_dependency_misconfigured` precheck로 표면화되었다. 즉 Docker build/run까지 내려가 늦게 실패하던 mismatch가 더 이른 단계에서 차단된다
 
 ### 2.5 Current truth 요약
 
 현재 workspace truth를 한 문장으로 요약하면 다음과 같다.
 
-현재 레포는 known lane(SQLi/CSRF/Command Injection/Code Injection/SSRF/Path Traversal/XSS/Insecure Deserialization)과 synthetic unknown live를 닫을 수 있고,
-real free-form `vuln_name: Template Injection`, `vuln_name: Open Redirect`뿐 아니라 supported alias `Server Side Template Injection`, `Unvalidated Redirect`도 name-only 입력만으로 remote search 없이 positive lane을 닫을 수 있다.
-반면 compiler-first 경로는 SQLi, CSRF, Command Injection, Code Injection, Template Injection, Path Traversal, XSS, SSRF, Insecure Deserialization, Open Redirect 열 family에 한정되어 있고,
+현재 레포는 known lane(SQLi/CSRF/Command Injection/Code Injection/SSRF/Path Traversal/XSS/Insecure Deserialization), fixture-backed trusted dynamic SQLi, template-assisted/ compiler-first MySQL sidecar SQLi, 그리고 synthetic unknown live를 닫을 수 있고,
+real free-form `vuln_name: Template Injection`, `vuln_name: Open Redirect`, `vuln_name: XML External Entity`뿐 아니라 supported alias `Server Side Template Injection`, `Unvalidated Redirect`도 name-only 입력만으로 remote search 없이 positive lane을 닫을 수 있다.
+반면 compiler-first 경로는 SQLi, CSRF, Command Injection, Code Injection, Template Injection, Path Traversal, XSS, SSRF, Insecure Deserialization, Open Redirect, XXE 열한 family에 한정되어 있고,
 unsupported free-form `NAME-*` lane은 LDAP Injection 기준 preseeded semantic profile로 거의 즉시 fail-closed된다.
-추가로 current manifest와 E2E summary는 `generalization_summary` / `generalization_class` / `counts_as_generalization`뿐 아니라 `verification_rule_source` / `verification_trust`도 surface해 known-family regression, real free-form positive, synthetic regression, unsupported free-form negative를 더 명확히 구분한다. manifest top-level에도 `verification_summary`가 추가되어 `by_rule_source`, `by_trust`, `low_trust_bundles`를 집계한다. 이번 갱신으로 compiler-supported known/free-form family는 더 이상 default minimal-input path에서 Tavily availability에 묶이지 않고, supported free-form alias도 canonical `NAME-*` family로 정규화할 수 있게 되었다. 또한 compiler-supported free-form family의 `semantic_profile`과 `resolved_contract.semantic_contract`는 researcher를 skip하더라도 shared fragment registry 또는 baseline에서 canonical `semantic_signature`를 backfill해, contract/profile artifact가 더 이상 empty placeholder로만 남지 않는다. 추가로 insufficient researcher evidence가 있는 unknown lane은 contract 단계에서 `semantic_contract.status=empty`로 정규화되며, synthetic unknown live lane은 verifier success가 나오더라도 `runtime_rule_candidate/low` trust와 reviewer low-trust issue가 함께 남아 promotion에서 차단된다. 이제 같은 lane에 `policy.verifier.low_trust_unknown_policy=fail_closed`를 주면 verifier가 `verification_policy_blocked=true`를 남기고 VERIFY stage terminal failure(`low_trust_verification`)로 종료한다. PACK 이후 manifest를 한 번 더 갱신해 `manifest.performance`와 `performance_summary.json` 사이 stale drift도 제거되었다.
-따라서 현 시점 최상위 남은 과제는 “unknown/open-world compiler 부재”, “synthetic unknown lane에서 `warn`을 default로 둘지 `fail_closed`를 official acceptance로 끌어올릴지의 policy 고정”, “compiler-derived runtime rule 이후에도 남는 verifier 독립성 상한”, 그리고 “shared fragment registry의 외부 자산화와 template debt의 구조적 전환”까지 포함한다.
+추가로 current manifest와 E2E summary는 `generalization_summary` / `generalization_class` / `counts_as_generalization`뿐 아니라 `verification_rule_source` / `verification_trust`도 surface해 known-family regression, real free-form positive, synthetic regression, unsupported free-form negative를 더 명확히 구분한다. manifest top-level에도 `verification_summary`가 추가되어 `by_rule_source`, `by_trust`, `low_trust_bundles`를 집계한다. 이번 갱신으로 compiler-supported known/free-form family는 더 이상 default minimal-input path에서 Tavily availability에 묶이지 않고, supported free-form alias도 canonical `NAME-*` family로 정규화할 수 있게 되었다. 또한 static rule이 없는 compiler-generated family의 verifier provenance는 이제 `compiler_runtime_rule/medium`으로 분리되어, compiler-coupled verification이 `declared_rule/high`처럼 과대표현되지 않는다. fixture-backed trusted-dynamic official lane은 `llm_manifest` provenance와 `llm_fixture_used=true`를 실제 success artifact에서 증명하지만, 이것이 live remote LLM health를 증명하는 것은 아니다. compiler-supported free-form family의 `semantic_profile`과 `resolved_contract.semantic_contract`는 researcher를 skip하더라도 shared fragment registry 또는 baseline에서 canonical `semantic_signature`를 backfill해, contract/profile artifact가 더 이상 empty placeholder로만 남지 않는다. 추가로 compiler lower bound를 requirement가 명시적으로 끄면 planner/researcher/runner가 그 lane을 다시 remote-required/skip-disabled로 재분류하므로, “family lower bound”와 “effective requirement lower bound”의 drift도 줄었다. external DB requirement와 empty sidecar/network-none 조합은 이제 EXECUTOR 이전 precheck에서 차단되며, direct executor 호출도 같은 mismatch를 즉시 에러로 표면화한다. insufficient researcher evidence가 있는 unknown lane은 contract 단계에서 `semantic_contract.status=empty`로 정규화되며, synthetic unknown live lane은 verifier success가 나오더라도 `runtime_rule_candidate/low` trust와 reviewer low-trust issue가 함께 남아 promotion에서 차단된다. 이제 같은 lane에 `policy.verifier.low_trust_unknown_policy=fail_closed`를 주면 verifier가 `verification_policy_blocked=true`를 남기고 VERIFY stage terminal failure(`low_trust_verification`)로 종료한다. PACK 이후 manifest를 한 번 더 갱신해 `manifest.performance`와 `performance_summary.json` 사이 stale drift도 제거되었고, single-bundle manifest는 `llm_fixture_used` 같은 provenance boolean도 직접 mirror한다. 추가로 transient remote LLM error는 이제 해당 call만 stub으로 낮추고 프로세스 전체를 영구 stub mode로 고정하지 않는다.
+따라서 현 시점 최상위 남은 과제는 “unknown/open-world compiler 부재”, “synthetic unknown lane에서 `warn`을 default로 둘지 `fail_closed`를 official acceptance로 끌어올릴지의 policy 고정”, “compiler-derived runtime rule 이후에도 남는 verifier 독립성 상한”, “fixture-backed trusted dynamic을 live remote evidence와 분리해 읽는 acceptance 정착”, “SQLi 외 richer bridge/sidecar family의 compiler-first source-of-truth 부재”, 그리고 “shared fragment registry의 외부 자산화와 template debt의 구조적 전환”까지 포함한다.
 
 ## 3. 현재 구현의 실제 생성 방식과 의존 구조
 
@@ -329,13 +394,16 @@ current code 기준 family-aware deterministic fallback이 명시적으로 구�
 | Template Injection | free-form name -> `NAME-*` | `semantic_profile -> template_injection_render -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
 | XSS | known-name -> `CWE-79` | `semantic_profile -> xss_reflected -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
 | Insecure Deserialization | known-name -> `CWE-502` | `semantic_profile -> deserialization_pickle_body -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
+| SQLi sidecar template | known-name -> `CWE-89` + explicit template/runtime-db request | `built_in_template(flask_mysql_union)` + MySQL sidecar | 높음 | 낮음 | current workspace rerun에서 `template-assisted`, `executor_feasibility_status=configured`, `verification_trust=high`, `promotion.eligible=true`까지 닫힌다. 현재는 `service_env` contract를 executor가 주입해 닫히므로 runtime surface completeness evidence로는 유효하지만 compiler-first/generalization evidence는 아니다 |
+| SQLi sidecar compiler | known-name -> `CWE-89` + explicit sidecar/runtime-db request | `semantic_profile -> sqli_string_concat_mysql -> compiler_generated` + MySQL sidecar | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `executor_feasibility_status=configured`, `verification_trust=high`, `promotion.eligible=true`까지 닫힌다. `service_env`가 contract/manifest에 explicit surface되고 executor가 이를 주입하므로, current source-of-truth에 편입된 compiler-first sidecar positive lane이다 |
 | synthetic unknown live | explicit `CWE-9999` | researcher/runtime rule candidate + inherited SQLi-like semantics + deterministic fallback | 없음 | 높음 | regression lane이지 generalization lane이 아니며, latest rerun에서는 `verification_trust=low`가 명시된다 |
 | Open Redirect | free-form name -> `NAME-OPEN-REDIRECT` | `semantic_profile -> open_redirect_reflect -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
+| XXE | free-form name -> `NAME-XXE` | `semantic_profile -> xxe_xml_entity_resolve -> compiler_generated` | 없음 | 중간 | current workspace rerun에서 `compiler-first`, `compiler_supported=true`, `promotion.eligible=true`까지 닫힌다 |
 | real free-form unsupported | `vuln_name -> NAME-*` | generic unsupported fallback | 없음 | 낮음 | LDAP Injection 같은 lane은 현재 fail-closed negative regression으로 정렬됨 |
 
 ### 3.6 free-form `vuln_name only` lane의 실제 resolution chain
 
-현재 free-form lane은 대부분 여전히 “이름 -> 의미 -> 코드” compiler path로 닫히지 않지만, overall compiler-covered family는 SQLi, CSRF, Command Injection, Code Injection, Template Injection, Path Traversal, XSS, SSRF, Insecure Deserialization, Open Redirect까지 넓어졌다. real free-form positive lane에서 이 경로가 실제로 닫힌 family도 Template Injection과 Open Redirect 둘로 늘었고, 이번 갱신으로 이 두 lane은 default minimal-input path에서 researcher/remote provider 없이도 닫힌다.
+현재 free-form lane은 대부분 여전히 “이름 -> 의미 -> 코드” compiler path로 닫히지 않지만, overall compiler-covered family는 SQLi, CSRF, Command Injection, Code Injection, Template Injection, Path Traversal, XSS, SSRF, Insecure Deserialization, Open Redirect, XXE까지 넓어졌다. real free-form positive lane에서 이 경로가 실제로 닫힌 family도 Template Injection, Open Redirect, XXE 셋으로 늘었고, 이번 갱신으로 이 세 lane은 default minimal-input path에서 researcher/remote provider 없이도 닫힌다.
 실제 current code 기준 resolution chain은 아래와 같다.
 
 1. requirement normalization
@@ -347,7 +415,8 @@ current code 기준 family-aware deterministic fallback이 명시적으로 구�
    - 다만 현재는 compiler/static supported bundle이면 default path에서 RESEARCH를 skip할 수 있고, remote-required evidence는 compiler-unsupported/unknown family에 집중된다.
 3. generator materialization
    - compiler-covered family는 `semantic_profile.compiler_strategy`를 보고 scaffold/fragment compiler를 우선 시도한다.
-   - 현재 이 path가 실제로 연결된 family는 SQLi, CSRF, Command Injection, Code Injection, Template Injection, Path Traversal, XSS, SSRF, Insecure Deserialization, Open Redirect 열 family다.
+   - 현재 이 path가 실제로 연결된 family는 SQLi, CSRF, Command Injection, Code Injection, Template Injection, Path Traversal, XSS, SSRF, Insecure Deserialization, Open Redirect, XXE 열한 family다.
+   - explicit `generator_mode=template`이고 viable template가 있으면 이제 compiler가 선점하지 않고 template path를 우선 사용한다. 따라서 MySQL sidecar SQLi 같은 runtime-surface lane은 `built_in_template` provenance로 분리해 읽을 수 있다.
    - 다만 unknown 계열은 여전히 LLM output 또는 deterministic fallback에 의존한다.
 4. late gating
    - verifier / reviewer / pack이 semantic mismatch, unsupported semantic, generic fallback provenance를 뒤늦게 차단한다.
@@ -358,18 +427,18 @@ current code 기준 family-aware deterministic fallback이 명시적으로 구�
 - semantic-to-code compiler가 아직 unknown 계열에는 부재하고
 - unsupported/weakly-supported family는 generic fallback 또는 late fail path로 흐른다.
 
-즉 “이름만으로 동적 Docker 생성”은 semantic extraction 단계는 중상, 전체 compiler-first artifact generation은 열 family까지 도달했고 real free-form positive generalization evidence도 Template Injection과 Open Redirect 두 family까지 늘어났다. 다만 unknown 계열은 여전히 fallback 의존이 강하다.
+즉 “이름만으로 동적 Docker 생성”은 semantic extraction 단계는 중상, 전체 compiler-first artifact generation은 열한 family까지 도달했고 real free-form positive generalization evidence도 Template Injection, Open Redirect, XXE 세 family까지 늘어났다. 다만 unknown 계열은 여전히 fallback 의존이 강하다.
 
 ### 3.7 구성 요소별 완성도 판정
 
 | 계층 | current 상태 | 완성도 판정 | 근거 |
 | --- | --- | --- | --- |
-| name normalization | `vuln_name -> CWE-*` 또는 canonical `NAME-*` 정규화, `pattern_id`/stack profile 기본값 주입, supported alias(`Server Side Template Injection`, `Unvalidated Redirect`) canonicalization, compiler fragment strategy 기반 token-order-insensitive fallback | 중상 | free-form 입력을 canonical identifier와 기본 stack으로 내리는 경로는 안정적이고, 이번 갱신으로 일부 supported free-form alias도 exact phrase뿐 아니라 reordered token phrase(`Injection in Jinja template`, `Redirect open vulnerability`, `Injection in shell command`) 수준까지 canonical family로 정렬된다. 다만 이것도 open-world semantic understanding이 아니라 supported family catalog robustness 강화로 보는 편이 정확하다 |
+| name normalization | `vuln_name -> CWE-*` 또는 canonical `NAME-*` 정규화, `pattern_id`/stack profile 기본값 주입, supported alias(`Server Side Template Injection`, `Unvalidated Redirect`) canonicalization, `vuln_ids` list의 synthetic `NAME-*` preservation, stopword-trimmed exact-content-token fallback | 중상 | free-form 입력을 canonical identifier와 기본 stack으로 내리는 경로는 안정적이고, 이번 갱신으로 일부 supported free-form alias도 exact phrase뿐 아니라 reordered token phrase(`Injection in Jinja template`, `Redirect open vulnerability`, `Injection in shell command`) 수준까지 canonical family로 정렬된다. 동시에 mixed-semantic phrase(`unsafe template deserialization`)는 더 이상 supported family로 과잉 canonicalize되지 않고 synthetic `NAME-*`로 남는다. 다만 이것도 open-world semantic understanding이 아니라 supported family catalog robustness 강화 + fail-closed 보수화로 보는 편이 정확하다 |
 | semantic inference | researcher가 `semantic_signature`, `evidence_relevance`, `verification_spec`, `guard_spec` 생성 | 중 | semantic basis는 만들 수 있으나 evidence quality와 compiler feasibility가 완전히 분리된 것은 아니다. 다만 compiler/static supported bundle은 default path에서 RESEARCH를 skip할 수 있게 되었다 |
 | semantic_profile / compiler contract | `resolved_contract.json`와 별도 `semantic_profile.json`에 family/support_level/compiler_strategy/compiler_supported/compiler_reason가 surface됨. compiler-supported free-form family는 researcher를 skip해도 shared fragment registry/baseline에서 canonical `semantic_signature`를 backfill한다 | 중상 | semantic basis와 compiler feasibility를 artifact로 명시할 수 있게 되었고, 이제 unsupported early stop뿐 아니라 default search policy / RESEARCH skip도 이 verdict를 직접 소비한다. 현재는 `resolved_contract.semantic_contract`도 `aligned` + `semantic_signature_source=fragment_registry`까지 surface되지만, verifier의 최종 positive truth source는 여전히 `generator_manifest` service-side semantics가 우선이다 |
 | runtime rule/guard derivation | runtime rule writer/loader, compiler-derived runtime rule, guard spec fallback, verifier semantic gate 존재 | 중상 | service-side semantic scope까지 반영되며 verifier trust는 개선되었다. built-in semantic evaluator support가 XSS/Insecure Deserialization/Open Redirect/Template Injection까지 확장되었고, compiler-generated `NAME-*` lane은 runtime rule을 generator가 직접 파생해 manifest fallback 의존을 일부 줄였다. 추가로 current workspace에서는 `verification_rule_source` / `verification_trust`를 surface해 unknown live lane의 self-derived runtime rule candidate를 low-trust로 구분한다 |
-| semantic-to-code generation | SQLi/CSRF/Command Injection/Code Injection/Template Injection/Path Traversal/XSS/SSRF/Insecure Deserialization/Open Redirect에 `semantic_profile -> compiler_generated` path가 연결됨. 현재 compiler-covered 열 family 모두 `python/flask` scaffold + family fragment metadata를 남긴다. unknown 계열은 여전히 fallback 중심 | 중상 | compiler-first coverage는 열 family까지 넓어졌고, free-form generalization evidence도 Template Injection과 Open Redirect로 유지된다. 이번 hardening으로 Code Injection까지 `known_family_regression`으로 정렬되었지만, 남은 주요 hole은 unknown/open-world lane이다 |
-| template dependence reduction | built-in template 의존은 줄었고, compiler-covered 열 family 모두 `stack_scaffold_id` + `fragment_id`를 남기는 shared registry-backed compose path로 이동했다. 이번 갱신으로 `python/flask` scaffold metadata와 Dockerfile template, compiler target 기본 매핑, fragment metadata 일부, Flask fragment code 일부, Flask PoC templates 일부가 각각 asset으로 분리되었다 | 중상 | filesystem template dependence는 줄었고 compiler path 전반이 registry-backed provenance를 남기기 시작했다. 다만 extra file builders와 일부 compose logic는 여전히 Python 모듈에 집중되어 있어 scaffold 외부화는 partial이고, 완전한 자산 분리까지는 도달하지 못했다 |
+| semantic-to-code generation | SQLi/CSRF/Command Injection/Code Injection/Template Injection/Path Traversal/XSS/SSRF/Insecure Deserialization/Open Redirect/XXE에 `semantic_profile -> compiler_generated` path가 연결됨. 현재 compiler-covered 열한 family 모두 `python/flask` scaffold + family fragment metadata를 남긴다. unknown 계열은 여전히 fallback 중심 | 중상 | compiler-first coverage는 열한 family까지 넓어졌고, free-form generalization evidence도 Template Injection/Open Redirect/XXE의 exact/alias/reordered/paraphrase layer로 유지된다. XXE는 local-file entity model에 고정되지만 실제 positive compiler lane이 생겼다. 남은 주요 hole은 unknown/open-world lane이다 |
+| template dependence reduction | built-in template 의존은 줄었고, compiler-covered 열한 family 모두 `stack_scaffold_id` + `fragment_id`를 남기는 shared registry-backed compose path로 이동했다. 이번 갱신으로 `python/flask` scaffold metadata와 Dockerfile template, compiler target 기본 매핑, fragment metadata 일부, Flask fragment code 일부, Flask PoC templates 일부, 그리고 shared vuln family catalog가 각각 asset으로 분리되었다 | 중상 | filesystem template dependence와 code-embedded alias drift는 모두 줄었고 compiler path 전반이 registry-backed provenance를 남기기 시작했다. 추가로 Path Traversal/XXE의 helper files도 이제 fragment asset DSL에서 직접 정의되어 compiler registry의 callback hardcoding이 한 단계 줄었다. 다만 sidecar/runtime env resolution과 일부 compose logic는 여전히 Python 모듈에 집중되어 있어 scaffold 외부화는 partial이고, 완전한 자산 분리까지는 도달하지 못했다 |
 | unsupported lane early exit | real free-form `NAME-*` + `support_level=unsupported`는 preseeded semantic profile 기준으로 RESEARCH 실행 전 terminal failure로 종료됨 | 중상 | LDAP Injection이 약 `0.052s` / `retry_count=0`까지 내려갔다. 다만 `deferred` family와 broader unsupported taxonomy는 아직 더 세분화해야 한다 |
 
 정리하면, 현재 레포의 강점은 “semantic을 구조화하고 나쁜 산출물을 막는 층”과 “여러 family를 non-template deterministic bundle로 닫는 운영 하한선”이다.
@@ -380,35 +449,43 @@ current code 기준 family-aware deterministic fallback이 명시적으로 구�
 이번 구현 이후 current workspace 기준 positive non-template evidence는 아래와 같이 넓어졌다.
 
 - official/known lane: SQLi, CSRF, Command Injection, Code Injection, Path Traversal, SSRF, XSS, Insecure Deserialization (`compiler-first`)
-- real free-form positive lane: Template Injection, Open Redirect (`compiler-first`)
+- real free-form positive lane: Template Injection, Open Redirect, XXE (`compiler-first`)
+- real free-form positive multi-vuln lane: 단일 SID 안의 `Template Injection + Open Redirect` 2-bundle compiler-first success
+- mixed free-form partial-progress lane: `Custom Weird Vuln + Open Redirect`처럼 unsupported/custom bundle이 fail-closed되어도 supported bundle은 same SID에서 compiler-first 실행을 계속 수행할 수 있음
 - canonical alias-positive lane: `Server Side Template Injection -> NAME-TEMPLATE-INJECTION`, `Unvalidated Redirect -> NAME-OPEN-REDIRECT`
 - unsupported negative lane: LDAP Injection 등 `NAME-*`
 
 이 변화는 분명한 개선이다.
 특히 Template Injection, Path Traversal, Open Redirect, XSS, SSRF, Insecure Deserialization은 built-in filesystem template 없이 compiler-generated bundle로 승격되었다.
 추가로 이번 갱신으로 Template Injection / Open Redirect 계열은 supported alias를 canonical family로 collapse할 수 있게 되어, previous exact-phrase brittleness도 1차 완화되었다.
+이번 추가 갱신으로는 single-bundle free-form positive evidence를 넘어서, 하나의 run에서 둘 이상의 free-form family를 compiler-first bundle로 함께 닫는 multi-vuln source-of-truth도 확보했다.
+추가로 이번 보완으로 `vuln_ids` list 자체도 catalog 미등록 free-form 이름을 synthetic `NAME-*` bundle로 보존하므로, multi-vuln minimal-input path가 supported family subset으로 조용히 축소되는 결함은 해소되었다.
+또한 reordered phrase fallback은 이제 token subset이 아니라 stopword를 제거한 exact content token 기준으로만 허용되므로, 지원 family robustness와 ambiguous phrase fail-closed가 동시에 조금 더 정렬되었다.
 
 다만 이것을 곧바로 “template dependence solved”로 해석하면 안 된다.
 현재는 dependency shape가 아래처럼 바뀐 상태에 가깝다.
 
 1. `workspaces/templates/**` 같은 filesystem template dependence는 일부 줄었다.
-2. 현재 compiler-covered 열 family(SQLi/CSRF/Command Injection/Code Injection/Path Traversal/SSRF/XSS/Insecure Deserialization/Open Redirect/Template Injection)는 모두 `python/flask` scaffold + registry fragment compose로 materialize되며 `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode=registry`가 실제 manifest metadata에 남는다.
+2. 현재 compiler-covered 열한 family(SQLi/CSRF/Command Injection/Code Injection/Path Traversal/SSRF/XSS/Insecure Deserialization/Open Redirect/Template Injection/XXE)는 모두 `python/flask` scaffold + registry fragment compose로 materialize되며 `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode=registry`가 실제 manifest metadata에 남는다.
 3. 이번 갱신으로 `python/flask` scaffold metadata와 Dockerfile template는 `agents/generator/assets/python-flask-scaffold.json`으로 분리되었고 compiler는 이를 registry 경유로 읽는다.
+4. 이번 추가 갱신으로 scaffold registry는 단일 hardcoded path를 직접 고정하지 않고 `*-scaffold.json` asset catalog 전체를 스캔하며, asset에 선언된 alias(`python-flask`, `flask`)까지 함께 해석한다.
+5. 이번 추가 갱신으로 free-form vuln family alias/identifier/pattern match도 `common/assets/vuln-family-catalog.json` 하나로 수렴했다. 즉 requirement normalization과 compiler fragment routing이 서로 다른 hardcoded synonym table을 들고 있지 않다.
 4. 추가로 compiler target 기본 매핑도 `agents/generator/assets/compiler-targets.json`으로 분리되어, strategy -> default target 하드코딩 일부가 code path 밖 asset으로 이동했다.
 5. 이번 턴 구현으로 fragment metadata(`family`, `fragment_id`, `pattern_tags`, `service_side_tokens`, `semantic_signature`, `requirements_content`)도 `agents/generator/assets/flask-fragments.json`으로 이동해, runtime rule/guard/evaluator가 소비하는 의미 계층 일부가 코드 밖 자산으로 분리되었다.
 6. 추가로 Flask fragment의 `import_block`, `route_block`, `app_setup_block`, `startup_block`도 `agents/generator/assets/flask-fragment-code.json`으로 이동해 route/service 초기화 코드 하드코딩 일부까지 asset catalog로 밀어냈다.
 7. 추가로 각 family의 PoC script template도 `agents/generator/assets/flask-pocs/*.py.tmpl`로 이동해, compiler registry 내부의 PoC 문자열 하드코딩도 크게 줄었다.
-8. synthetic unknown 계열과 unsupported family는 여전히 `agents/generator/synthesis.py` fallback orchestration에 머물러 있고, extra file builders와 일부 compose logic는 아직 `agents/generator/flask_fragment_registry.py`라는 Python 모듈 안에 정의되어 있다.
+8. synthetic unknown 계열과 unsupported family는 여전히 `agents/generator/synthesis.py` fallback orchestration에 머물러 있고, sidecar/runtime env resolution과 일부 compose logic는 아직 `agents/generator/flask_fragment_registry.py` 및 companion Python 모듈 안에 정의되어 있다.
 9. 이번 추가 구현으로 active synthetic unknown lane에 실제로 사용되는 SQLi family-aware fallback service/PoC도 `agents/generator/assets/fallbacks/sqli_family_aware_*.py.tmpl` asset으로 분리되어, 적어도 current hot path의 fallback hardcoding 일부는 Python 문자열에서 asset template로 이동했다.
 10. 추가로 generic unsupported reflect fallback, CSRF, Open Redirect, Template Injection, XSS, SSRF, Insecure Deserialization, Path Traversal family-aware fallback service/PoC가 모두 `agents/generator/assets/fallbacks/*.py.tmpl` asset으로 분리되었다. Template Injection fallback에는 이번 라운드에서 PoC template도 추가되어 family-aware fallback bundle completeness가 조금 더 올라갔다.
 11. 추가로 이번 라운드에서 fallback bundle의 공통 `Dockerfile`/`README`도 `agents/generator/assets/fallbacks/fallback_bundle_dockerfile.tmpl`, `agents/generator/assets/fallbacks/fallback_bundle_readme.md.tmpl`로 이동해, `synthesis.py` 안의 공통 compose string hardcoding도 한 단계 더 줄었다.
-12. 즉 current debt는 더 이상 “개별 family fallback 문자열”보다 “Python module형 registry/compose logic + single-scaffold orchestration debt”에 더 가깝다. template debt가 사라진 것은 아니지만, 적어도 current family-aware fallback body와 fallback bundle 공통 compose artifact는 거의 전부 asset template로 이동했다.
+12. 즉 current debt는 더 이상 “개별 family fallback 문자열”보다 “Python module형 registry/compose logic + single-scaffold orchestration debt”에 더 가깝다. template debt가 사라진 것은 아니지만, 적어도 current family-aware fallback body와 fallback bundle 공통 compose artifact, 그리고 일부 representative extra file helper는 asset template/DSL로 이동했다.
 
 이 구조의 장점:
 
 - Docker/E2E operational coverage를 빠르게 넓힐 수 있다.
 - LLM degraded 환경에서도 reproducible lower bound를 제공한다.
 - free-form `vuln_name` lane 일부를 실제 positive evidence로 끌어올릴 수 있다.
+- single-SID multi-vuln run에서도 provider `not_probed` / compiler-first lower bound를 유지할 수 있다.
 
 이 구조의 한계:
 
@@ -418,6 +495,18 @@ current code 기준 family-aware deterministic fallback이 명시적으로 구�
 - alias robustness가 아직 open-world semantic inference가 아니라 curated alias/heuristic layer에 묶여 있다.
 - non-compiler-covered lane의 provenance는 여전히 `deterministic fallback dependent`라서 generalization quality claim의 상한이 낮다.
 - 새로운 family를 추가할 때 “semantic profile -> code compile”이 아니라 “새 hardcoded bundle 추가”로 흐르기 쉽다.
+
+추가로 이번 턴에서 실제로 드러난 구조적 교훈은 “capability”를 단일 bool로 다루면 안 된다는 점이다.
+최소한 아래 세 층을 분리해야 한다.
+
+1. `family lower bound`
+   - 현재 release가 해당 family에 compiler/static lower bound를 갖는가
+2. `effective requirement lower bound`
+   - 사용자가 `compiler.enabled=false` 등으로 그 lower bound를 실제 실행에서 끄지 않았는가
+3. `executor feasibility`
+   - 해당 bundle이 요구하는 external DB/network/sidecar/runtime contract가 current executor policy에서 실제로 충족되는가
+
+이번 구현으로 1과 2의 drift, 2와 3의 drift는 일부 줄었지만, 장기적으로는 이 세 층을 plan artifact와 acceptance summary에 별도 field로 표준화하는 편이 더 맞다.
 
 따라서 template dependence reduction의 현재 정확한 평가는 다음과 같다.
 
@@ -498,7 +587,7 @@ compiler-first 전환의 현실적 우선순위는 family별 난이도와 남은
   - 이미 green인 SQLi/CSRF/Command Injection/Code Injection/Template Injection/Path Traversal/XSS/SSRF/Insecure Deserialization/Open Redirect를 유지하되, 현재 `flask_fragment_registry.py`에 들어간 registry를 runtime rule/guard/evaluator와 더 강하게 공통화하고 이후 외부 data asset으로 승격해야 한다.
 - Tier B: second scaffold / richer runtime model
   - 현재 `python/flask` 단일 scaffold 편중이 가장 큰 구조적 한계이므로, 다음 확장은 family 수 증가보다 stack 다양화와 sidecar/helper model 일반화가 우선이다.
-- Tier C: LDAP Injection, XXE
+- Tier C: LDAP Injection
   - embedded target/sidecar 또는 더 많은 protocol scaffolding이 필요해 P0 대상으론 비효율적이다.
 
 현재 구현 업데이트로 SQLi, CSRF, Command Injection, Code Injection, Template Injection, Path Traversal, Open Redirect, XSS, SSRF, Insecure Deserialization은 compiler-first evidence까지 확보되었다.
@@ -556,15 +645,17 @@ semantic support가 없는 상태에서는 성공 manifest 또는 promotion succ
 
 - 이전 구현에서는 static rule이 없는 compiler-supported family가 default minimal-input path에서 `remote_required` researcher에 묶였다.
 - 현재는 requirement normalization / guard unknown 판정 / run_pipeline skip이 모두 compiler/static supported verdict를 직접 소비한다.
-- 결과적으로 Path Traversal, XSS, Insecure Deserialization, Template Injection, Open Redirect 같은 lane이 Tavily availability 없이도 official E2E green이다.
+- 결과적으로 Path Traversal, XSS, Insecure Deserialization, Template Injection, Open Redirect, XXE 같은 lane이 Tavily availability 없이도 official E2E green이다.
 - 다만 이것은 `trusted dynamic`이 아니라 `compiler-first lower bound` 개선이다.
 
 ### 4.1.2 P1 partially resolved in this turn: exact-phrase brittleness와 hybrid random template fallback
 
-이 항목은 이번 턴 구현으로 1차 완화되었지만, open-world semantic inference가 완성된 것은 아니다.
+이 항목은 이번 턴 구현으로 한 단계 더 보수적으로 정렬되었지만, open-world semantic inference가 완성된 것은 아니다.
 
 - previous issue 1: `Template Injection`은 닫히지만 semantically equivalent alias `Server Side Template Injection`은 unsupported `NAME-SERVER-SIDE-TEMPLATE-INJECTION`로 fail-closed되었다.
-- current fix: requirement normalization이 supported free-form alias를 canonical `NAME-*` family로 collapse한다. current workspace rerun에서 `template-injection-alias-name-only`는 `real_free_form_positive`, `compiler-first`, `promotion.eligible=true`로 닫히고, ad-hoc `Unvalidated Redirect` rerun도 same Open Redirect compiler lane으로 닫힌다.
+- current fix: requirement normalization이 supported free-form alias를 canonical `NAME-*` family로 collapse한다. current workspace rerun에서 `template-injection-alias-name-only`, `template-injection-paraphrase-name-only`는 `real_free_form_positive`, `compiler-first`, `promotion.eligible=true`로 닫히고, `Unvalidated Redirect`, `External redirect vulnerability`도 same Open Redirect compiler lane으로 닫힌다.
+- previous issue 1-1: token subset fallback이 `unsafe template deserialization` 같은 mixed phrase를 supported family로 과잉 canonicalize할 수 있었다.
+- current fix 1-1: token fallback을 stopword-trimmed exact-content-token match로 좁혀 ambiguous phrase는 synthetic `NAME-*`로 남기고, curated alias/reordered phrase만 compiler lane으로 승격되도록 보수화했다.
 - previous issue 2: `hybrid` mode는 synthesis failure 후 compatible template가 없어도 random template sampler로 내려갈 수 있었다.
 - current fix: generator는 이제 compatible template가 있을 때만 hybrid template fallback을 허용하고, 그렇지 않으면 synthesis failure를 그대로 유지한다.
 
@@ -572,6 +663,90 @@ semantic support가 없는 상태에서는 성공 manifest 또는 promotion succ
 
 - alias robustness는 여전히 curated alias / heuristic layer에 한정된다.
 - open-world free-form semantic paraphrase 전반을 compiler strategy로 일반화하는 구조는 아직 아니다.
+
+### 4.1.3 P1 resolved in this turn: compiler-disabled lower-bound policy drift
+
+이 항목은 이번 턴 구현으로 1차 해소되었다.
+
+- previous issue: `compiler.enabled=false` 또는 legacy `disable_compiler=true`가 있어도 planner는 family-level compiler capability만 보고 `remote_prefer` / `require_researcher_evidence=false` / researcher skip 가능 lane으로 남겼다.
+- root cause: `can_resolve_without_remote_research(vuln_id)`가 “family lower bound”인데도 requirement normalization, researcher unknown 판정, run_pipeline researcher skip이 이를 그대로 “effective requirement lower bound”처럼 사용했다.
+- current fix: requirement-aware lower-bound helper를 추가해 normalization, researcher unknown classification, run_pipeline `_can_skip_researcher`가 compiler-disabled request를 다시 remote-required lane으로 분류한다.
+- latest sanity rerun에서는 `Template Injection + compiler.enabled=false`가 `researcher.search_policy=remote_required`, `policy.require_researcher_evidence=true`, `_can_skip_researcher=false`로 정렬되었다.
+
+남은 한계:
+
+- `can_resolve_without_remote_research(vuln_id)`는 여전히 family catalog lower bound로 남아 있다.
+- 따라서 문서/metric/ops에서 “family lower bound”와 “effective requirement lower bound”를 계속 구분해 읽어야 한다.
+
+### 4.1.4 P1 resolved in this turn: external DB / sidecar mismatch fail-fast
+
+이 항목은 이번 턴 구현으로 1차 해소되었다.
+
+- previous issue: external DB requirement(`runtime.db=mysql|postgres...` 또는 generated `requires_external_db=true`)가 있어도 `policy.executor.sidecars`가 비어 있거나 네트워크가 꺼져 있으면 Docker build/run까지 내려가 늦게 실패했다.
+- current fix: run_pipeline에 `EXECUTOR_PRECHECK`를 추가해 generated bundle/runtime requirement와 executor policy를 대조한 뒤 `terminal_failure_class=executor_dependency_misconfigured`로 fail-fast한다.
+- direct executor path도 `_start_sidecars()`에서 empty sidecar policy / disabled network를 즉시 에러로 표면화한다.
+- latest sanity rerun에서는 external DB requirement + disabled network 조합이 `executor_dependency_misconfigured`로 바로 차단되었다.
+
+남은 한계:
+
+- 이것은 기본적으로 negative/fail-fast hardening이지만, 이번 후속 갱신으로 별도의 built-in MySQL sidecar positive lane(`sqli-sidecar-template`)도 official source-of-truth에 편입되었다.
+- 추가로 compiler-first MySQL sidecar positive lane(`sqli-sidecar-compiler`)도 official source-of-truth에 편입되었다.
+- 다만 이는 SQLi + MySQL 조합 한정이며, richer bridge/sidecar family 일반화까지 확보된 것은 아니다.
+
+### 4.1.5 P1 resolved in this turn: multi-vuln free-form `vuln_ids` silent drop
+
+이 항목은 이번 턴 구현으로 1차 해소되었다.
+
+- previous issue: `vuln_ids` list는 `vuln_name`과 달리 catalog에 없는 free-form 이름을 synthetic `NAME-*`로 보존하지 못해, `Custom Weird Vuln + Open Redirect` 같은 입력이 warning 없이 `NAME-OPEN-REDIRECT` 단일 bundle로 축소될 수 있었다.
+- root cause: `_extract_vuln_ids()`가 list entry마다 `_coerce_identifier()`만 호출했고, 공백/자연어가 포함된 value는 빈 값으로 떨어져 조용히 버려졌다.
+- current fix: normalization이 `vuln_ids`/`vuln_id` free-form 값을 synthetic `NAME-*`로 보존하고 `vuln_id_resolutions[]` trace를 남긴다.
+- current fix 1-1: RESEARCH-stage terminal failure metadata도 `bundle_slug`/`vuln_id`를 함께 남기도록 보강해, mixed multi-vuln failure run에서 unsupported bundle의 failure/provenance가 supported bundle로 복제되지 않게 했다.
+- latest sanity rerun에서는 `{'vuln_ids': ['Custom Weird Vuln', 'Open Redirect'], 'multi_vuln': true}`가 `['NAME-CUSTOM-WEIRD-VULN', 'NAME-OPEN-REDIRECT']` 두 bundle로 유지되고, top-level `name_resolution`도 `synthetic_name` source를 보존한다.
+- 같은 latest rerun에서 whole run은 여전히 `evidence_low_relevance`로 fail-closed되지만, `NAME-OPEN-REDIRECT` bundle은 더 이상 `unsupported_free_form_negative`로 오염되지 않고 `real_free_form_non_generalizing` + empty failure로 남는다.
+
+남은 한계:
+
+- mixed success/failure multi-vuln lane은 이제 input preservation을 넘어서 partial-progress 실행까지 가능하지만, official source-of-truth와 promotion policy는 아직 충분히 고정되지 않았다.
+
+### 4.1.6 P1 resolved in this turn: mixed multi-vuln unsupported free-form bundle의 unnecessary remote RESEARCH
+
+이 항목은 이번 턴 구현으로 1차 해소되었다.
+
+- previous issue: single unsupported `NAME-*` lane은 preseeded semantic profile 기준 `semantic_support_missing`으로 거의 즉시 fail-closed되는데, mixed multi-vuln request에서는 unsupported bundle도 researcher를 타면서 `remote_provider_unavailable` 또는 `evidence_low_relevance`로 분류될 수 있었다.
+- root cause: `run_pipeline.py`의 pre-generation semantic stop은 “모든 relevant free-form bundle이 unsupported일 때”만 terminal이었고, `agents/researcher/main.py`는 bundle 단위 semantic profile을 보고 fail-closed하지 않았다.
+- current fix: researcher entrypoint가 bundle별 `semantic_profile`을 먼저 읽고, `support_level=unsupported && compiler_supported=false`인 free-form bundle은 실제 search 호출 전에 `quality=insufficient`, `terminal_failure_class=semantic_support_missing` report를 직접 기록한다.
+- latest `multi-name-mixed-partial` rerun에서는 `NAME-CUSTOM-WEIRD-VULN` bundle이 더 이상 remote provider failure로 분류되지 않고 `semantic_support_missing` + `generation_origin=research_short_circuit`로 닫혔다.
+- same rerun에서 top-level failure stage도 `VERIFY`가 아니라 root cause에 맞춰 `RESEARCH`로 정렬되었다.
+
+남은 한계:
+
+- mixed request에서 unsupported bundle을 inspection-only artifact로 남길지, 더 강하게 input validation 단계에서 reject할지는 아직 정책 선택의 여지가 있다.
+
+### 4.1.7 P1 resolved in this turn: bundle-aware provider health rollup 부재
+
+이 항목은 이번 턴 구현으로 1차 해소되었다.
+
+- previous issue: `performance_summary.provider_health_state`는 root `metadata/<sid>/search_health.json`만 읽고, bundle-level `search_health.json`이나 `failed_bundles[].terminal_failure_class`를 보지 않았다.
+- 결과적으로 bundle-scoped RESEARCH failure가 있어도 top-level provider 상태가 `not_probed` 또는 generic `bundle_scoped_research_failure`처럼 부정확하게 surface될 수 있었다.
+- current fix: provider health 계산이 bundle-level search health payload와 loop-state의 nested `failed_bundles[].terminal_failure_class`까지 집계한다. 단, `semantic_support_missing`처럼 provider 자체와 무관한 pre-generation fail-closed는 provider state로 승격하지 않는다.
+- regression test는 `bundle_scoped_research_failure` 아래의 nested `remote_provider_unavailable`가 top-level `provider_health_state=remote_provider_unavailable`로 정렬되는 경로를 고정한다.
+
+남은 한계:
+
+- current provider health는 still single label이므로, mixed request 안에서 일부 bundle만 degraded/provider-missing인 상태를 lossless하게 표현하지는 못한다.
+
+### 4.1.8 P1 partially resolved in this turn: multi-bundle top-level provenance/trust 요약 공백
+
+이 항목은 이번 턴 구현으로 한 단계 개선되었다.
+
+- previous issue: multi-bundle manifest는 bundle-level provenance/dynamicness/verification 정보를 충분히 갖고 있어도 top-level `generation_origin`, `dynamicness_verdict`, `verification_rule_source`, `verification_trust`가 비어 있었다.
+- current fix: multi-bundle manifest도 bundle 값이 uniform하면 그 값을 top-level로 mirror하고, 다르면 `mixed` sentinel을 surface한다.
+- latest `multi-name-only-supported` rerun에서는 top-level `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, `verification_rule_source=compiler_runtime_rule`, `verification_trust=medium`가 직접 남는다.
+- latest `multi-name-mixed-partial` rerun에서는 위 네 필드가 모두 `mixed`로 남아 downstream consumer가 “bundle-level 상세를 더 봐야 한다”는 사실을 즉시 알 수 있다.
+
+남은 한계:
+
+- `mixed`는 pragmatic sentinel일 뿐 lossless schema는 아니다. 장기적으로는 top-level enum 하나보다 bundle-set summary object를 별도 표준화하는 편이 맞다.
 
 ### 4.2 P1: 문서와 workspace truth의 정합성 드리프트
 
@@ -611,9 +786,11 @@ raw SID를 historical evidence locator로 쓰는 문서 방식은 여전히 부�
 
 대표 mismatch는 아래와 같다.
 
-- current green lane은 `compiler-first`와 `deterministic fallback dependent`가 공존하며, 어느 쪽도 아직 `trusted dynamic`과 동의어가 아니다.
+- current green lane은 `compiler-first`, `deterministic fallback dependent`, fixture-backed `trusted dynamic`이 공존한다. 다만 마지막 항목도 아직 live remote LLM evidence와 동의어는 아니다.
 - 남은 핵심 mismatch는 synthetic unknown lane을 negative no-remote regression과 live Tavily regression으로 분리해 읽어야 한다는 점이다.
 - 이번 갱신으로 official E2E acceptance는 bundle-level `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, 또는 negative/fallback lane의 corresponding provenance까지 기대치로 고정하기 시작했다.
+- 추가로 fixture-backed `trusted-dynamic-sqli` official lane이 들어오면서 `generation_origin=llm_manifest`, `dynamicness_verdict=trusted dynamic`, `llm_fixture_used=true` surface 자체는 current truth에 편입되었다.
+- 추가로 이번 턴 구현으로 static rule이 없는 compiler-generated lane의 verifier provenance는 `compiler_runtime_rule/medium`으로 분리되어, compiler-coupled verification이 `declared_rule/high`처럼 보이던 mismatch도 1차 완화되었다.
 
 즉 current acceptance에서 “mandatory official lane = 모두 operationally green”은 현재는 대체로 맞지만,
 이를 곧바로 “동적 생성이 provenance 상으로 충분히 일반화되었다”와 동의어로 쓰면 안 된다.
@@ -662,30 +839,47 @@ current known lane degraded success는 분명한 개선이다.
 - `provider_degraded`
 - `semantic_support_missing`
 
-### 4.7.1 P1 partially resolved in this turn: verifier self-certification on unknown lane is now surfaced but not eliminated
+### 4.7.1 P1 partially resolved in this turn: verifier self-certification은 더 잘 surface되지만 아직 독립 verifier가 아니다
 
 이 항목은 이번 턴 구현으로 “숨겨진 문제”에서 “보이는 문제”로 이동했다.
 
 - 이전에는 unknown/open-world lane이 `generator_manifest fallback` 또는 researcher/runtime rule candidate를 통해 self-derived verification을 해도 summary에서 구분이 약했다.
 - 현재는 verifier result, manifest bundle summary, E2E summary에 `verification_rule_source`와 `verification_trust`가 surface된다.
+- 추가로 static rule이 없는 compiler-generated lane도 `compiler_runtime_rule/medium`으로 분리되어, compiler-coupled verification과 declared independent rule을 artifact 수준에서 구분할 수 있게 되었다.
 - 추가로 manifest top-level `verification_summary`와 reviewer issue sample에도 low-trust 상태가 남는다.
 - latest `CWE-9999` live rerun에서는 `verification_rule_source=runtime_rule_candidate`, `verification_trust=low`, promotion reason `verify_contract:runtime_rule_candidate`, reviewer issue `Verifier contract trust is low (runtime_rule_candidate)`가 함께 남는다.
+- latest Template Injection / Open Redirect rerun에서는 `verification_rule_source=compiler_runtime_rule`, `verification_trust=medium`이 직접 surface된다.
 
 다만 이것이 verifier 독립성 문제를 해결한 것은 아니다.
 
 - current synthetic unknown live는 여전히 low-trust verification success다.
+- current compiler-first positive lane도 static rule이 없는 family에서는 medium-trust compiler-coupled verification이다.
 - 즉 `verify_pass=true`가 곧 independent verification을 의미하지 않는다.
 - 남은 과제는 unknown/open-world lane에서 researcher/runtime-rule candidate를 diagnostics 또는 inspection artifact로만 제한할지, 아니면 stronger external evidence/second verifier를 붙일지 policy를 고정하는 것이다.
+
+### 4.7.2 P1 partially resolved in this turn: transient LLM failure의 process-wide stub latch는 완화됐지만 live remote evidence는 아직 약하다
+
+이 항목은 이번 턴 구현으로 “retry 불가능한 숨은 저하”에서 “call-level degraded fallback”으로 한 단계 개선되었다.
+
+- previous issue: remote LLM call이 한 번이라도 `429`/transient network/provider error로 실패하면 같은 process의 이후 호출도 전부 stub mode로 고정되었다.
+- current fix: `LLMClient`는 이제 missing-key / missing-litellm 같은 configuration absence일 때만 persistent stub mode를 유지하고, runtime provider error는 해당 call만 stub fallback으로 처리한다.
+- regression test는 첫 call `429` 후 둘째 call real provider success를 다시 허용하는 동작을 고정했다.
+
+남은 한계:
+
+- current official trusted-dynamic evidence는 여전히 fixture-backed lane뿐이다.
+- 즉 “transient failure 후 재시도 가능”은 개선됐지만, live remote provider 기반 trusted-dynamic acceptance가 닫힌 것은 아니다.
 
 ### 4.8 P1: semantic-to-code compiler coverage가 일부 family에 한정된다
 
 현재 시스템은 free-form 이름을 semantic basis로 정규화할 수 있고, 일부 family는 그 semantic basis를 deterministic code artifact로 compile할 수 있다.
-하지만 coverage는 아직 일부 family에 한정되어 있고, real free-form positive generalization은 현재 Template Injection과 Open Redirect 두 family가 대표 증거다.
+하지만 coverage는 아직 일부 family에 한정되어 있고, real free-form positive generalization은 현재 Template Injection, Open Redirect, XXE 세 family가 대표 증거다.
 
 대표 증상:
 
 - `Open Redirect`는 이제 non-empty semantic signature + `open_redirect_reflect` compiler path로 positive lane이 닫히며, current truth에서는 `compiler-first`다.
 - `Template Injection`도 이제 non-empty semantic signature + `template_injection_render` compiler path로 positive lane이 닫히며, current truth에서는 `compiler-first`다.
+- `XML External Entity`도 이제 non-empty semantic signature + `xxe_xml_entity_resolve` compiler path로 positive lane이 닫히며, current truth에서는 `compiler-first`다.
 - `SQLi`도 이제 `sqli_string_concat` compiler path로 승격되어 current truth에서는 `compiler-first`다.
 - `CSRF`도 이제 `csrf_missing_token` compiler path로 승격되어 current truth에서는 `compiler-first`다.
 - `Code Injection`도 이제 `code_injection_eval` compiler path로 승격되어 current truth에서는 `compiler-first`다.
@@ -734,8 +928,8 @@ verifier의 공식 top-level verdict는 다음 필드를 가진다.
 | `semantic_supported` | `bool` | semantic verdict를 내릴 수 있는 유효 semantic basis가 있었는지 |
 | `semantic_source` | `str \| null` | semantic basis source. 예: `resolved_contract.semantic_contract`, `builtin_semantics`, `runtime_rule.semantic_signature`, `null` |
 | `semantic_status` | `aligned \| contradicted \| unsupported \| empty` | semantic contract의 상태 |
-| `verification_rule_source` | `str` | `declared_rule`, `runtime_rule_candidate`, `generator_manifest_fallback`, `verifier_runtime_rule_fallback` 등 verifier contract provenance |
-| `verification_trust` | `str` | `high`, `low` 등 verifier contract 신뢰도 |
+| `verification_rule_source` | `str` | `declared_rule`, `compiler_runtime_rule`, `runtime_rule_candidate`, `generator_manifest_fallback`, `verifier_runtime_rule_fallback` 등 verifier contract provenance |
+| `verification_trust` | `str` | `high`, `medium`, `low` 등 verifier contract 신뢰도 |
 | `verification_trust_reason` | `str` | trust 판정 이유 |
 | `verification_policy_blocked` | `bool` | strict verifier policy가 low-trust unknown verdict를 fail-closed로 차단했는지 |
 
@@ -771,6 +965,8 @@ manifest/report 집계 필드:
 추가 규칙:
 
 - default policy(`policy.verifier.low_trust_unknown_policy=warn`)에서는 `verification_trust`를 `verify_pass` 계산식에 직접 곱하지 않는다.
+- `verification_trust=high`는 declared static/runtime rule에 기반한 상대적으로 독립적인 verifier path를 뜻한다.
+- `verification_trust=medium`는 compiler-generated bundle이 생성한 runtime rule을 verifier가 사용한 경우를 뜻한다. 이는 current lower-bound acceptance에는 쓸 수 있지만 independent verification과 동의어로 쓰면 안 된다.
 - 이 기본 모드에서는 `verification_trust=low`가 reviewer/pack/promotion에서 non-promotable signal로 취급된다.
 - optional strict policy(`policy.verifier.low_trust_unknown_policy=fail_closed`)에서는 unknown/open-world lane의 `verification_trust=low` verdict를 VERIFY 단계에서 즉시 fail-closed하고, `verification_policy_blocked=true`, `terminal_failure_class=low_trust_verification`를 남긴다.
 - strict policy로 차단된 verdict는 registry가 다시 LLM fallback으로 덮어쓰지 않고 base verifier result를 그대로 유지한다.
@@ -1034,7 +1230,7 @@ semantic gate가 참조하는 positive evidence scope는 기본적으로 service
 1. 이 문서 구조를 current truth 기준으로 유지한다.
 2. future update부터 각 row에 `evidence_class`, `observed_at`, `command`, `provider_condition`, `generation_origin`, `dynamicness`를 강제한다.
 3. historical snapshot은 별도 class로만 기록한다.
-4. same requirement -> same SID -> rerun overwrite 구조를 문서 운영 규칙으로 고정한다.
+4. same effective scenario surface -> same SID -> rerun overwrite 구조를 문서 운영 규칙으로 고정한다.
 
 완료 기준:
 
@@ -1210,7 +1406,7 @@ current status:
 6. broader family roadmap를 phase-out 기준으로 문서화한다.
    - Tier A: fragment registry / scaffold compose 구조화
    - Tier B: second scaffold / richer runtime model
-   - Tier C: LDAP Injection, XXE
+  - Tier C: LDAP Injection
 
 완료 기준:
 
@@ -1222,20 +1418,25 @@ current status:
 
 | 구분 | corrected acceptance |
 | --- | --- |
-| Unit tests | `python -m pytest -q tests` 기준 최소 `239 passed, 22 skipped` 유지 또는 상향 |
+| Unit tests | `python -m pytest -q tests` 기준 최소 `287 passed, 30 skipped` 유지 또는 상향 |
 | E2E truth | 기본 pytest pass와 분리된 공식 live E2E set 유지 |
+| Test completeness | official source-of-truth에는 최소 1개의 multi-vuln positive case, 최소 1개의 fixture-backed trusted dynamic case, 최소 1개의 sidecar-backed positive runtime case가 포함되어야 하며, compiler-first repeatability gate는 remote provider 없이도 재현 가능해야 한다 |
 | Evidence integrity | lane 표는 `provider_condition`, `generation_origin`, `dynamicness`, `evidence_class`, `observed_at`, `command`, `sid`를 함께 기록한다. official harness는 runtime asset seed manifest를 통해 rerun마다 `runtime_rules/`, `runtime_templates/`를 purge/restore하고, expectation에서도 `generation_origin`, `dynamicness_verdict`를 함께 검증한다 |
 | SID handling | raw SID를 immutable evidence처럼 서술하지 않음 |
 | Verdict truth | `verify_pass = exploit_pass && guard_pass && semantic_gate_pass` |
 | Semantic gating | static rule 부재 또는 free-form `NAME-*`에서 `semantic_supported=false`면 fail-closed |
 | Semantic schema | `semantic_supported`, `semantic_source`, `semantic_status`가 surface됨 |
 | Failure-path provenance | failure artifact에도 `llm_stub_used`, `fallback_used`, `fallback_class`, `family_override_applied`, `provider_health_state`, 그리고 필요한 경우 `generation_origin=research_short_circuit`가 남음 |
+| Provider health rollup | `provider_health_state`는 bundle-level `search_health.json`과 nested `failed_bundles[].terminal_failure_class`까지 반영해야 하며, `semantic_support_missing` 같은 semantic fail-closed는 provider degradation으로 오인되면 안 됨 |
 | Failure artifact availability | review/pack block이어도 inspection 가능한 `failure_manifest.json`이 남음 |
 | Runtime asset freshness | official harness rerun은 seeded runtime asset만 restore하고 previous generated runtime rule/template carry-over를 허용하지 않아야 한다. raw runner는 최소 tracked generated runtime asset cleanup을 수행해야 한다 |
 | Manifest semantics | success run은 `manifest.json`, failure run은 `failure_manifest.json`만 남도록 정렬되어야 한다. filename alone으로 끝내지 않고 `pipeline_result`와 `promotion.eligible`를 함께 본다 |
 | Researcher normalization | stub researcher report에도 canonical `vuln_id` 기록 |
 | Semantic profile | `NAME-*` 또는 static rule 부재 bundle에는 canonical `semantic_profile` artifact가 존재해야 함. compiler-supported free-form family는 researcher skip path에서도 non-empty `semantic_signature`를 가져야 함 |
-| Compiler contract | `compiler_supported`, `compiler_strategy`, `compiler_reason`가 `resolved_contract`와 top-level manifest/failure artifact에 surface됨 |
+| Compiler contract | `compiler_supported`, `compiler_strategy`, `compiler_reason`가 `resolved_contract`와 top-level manifest/failure artifact에 surface됨. requirement가 compiler를 명시적으로 끄면 planner/researcher/runner lower bound도 같이 remote-required 방향으로 내려가야 함 |
+| Lower-bound surface | `family_non_remote_available`, `effective_non_remote_available`, `compiler_path_enabled` 또는 동등한 `lower_bound` summary가 contract/manifest/performance에서 읽혀야 함 |
+| Executor feasibility | `executor_feasibility_status` 또는 동등한 summary가 manifest/performance에서 읽혀야 하고, external DB requirement mismatch는 success provenance보다 먼저 fail-fast되어야 함 |
+| Runtime env surface | sidecar/external DB bundle은 `service_env` 또는 동등한 runtime env contract를 surface해야 하고, executor는 이를 실제 service container env로 주입해야 함 |
 | Semantic evidence scope | verifier semantic pass는 service-side artifact 기준으로 계산하고 `poc.py`/README/run log 문자열은 positive semantic 근거로 쓰지 않음 |
 | Free-form rule loading | `NAME-*` runtime rule writer/loader round-trip 성공 |
 | Role normalization | generated manifest canonical role 100% |
@@ -1244,25 +1445,40 @@ current status:
 | Compiler provenance detail | registry-backed compiler bundle은 가능한 경우 `stack_scaffold_id`, `fragment_id`, `compose_mode` 같은 scaffold/fragment provenance를 metadata에 남겨야 함 |
 | Scaffold asset provenance | compiler scaffold는 가능하면 별도 asset catalog version(`stack_scaffold_version`)까지 metadata에 남겨야 함 |
 | Representative registry acceptance | 최소 representative compiler-first lane에서는 official expectation이 `compiler_family`, `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode`까지 직접 검증해야 함 |
+| Multi-bundle top-level rollup | multi-bundle manifest도 top-level `generation_origin`, `dynamicness_verdict`, `verification_rule_source`, `verification_trust`를 비우지 않아야 하며, uniform하면 같은 값, diverged면 `mixed` sentinel 또는 동등한 rollup을 surface해야 함 |
 | Template dependence reduction | compiler-covered family의 success claim은 full template copy 또는 runtime template clone에 의존하지 않아야 함 |
 | Reviewer / Pack gating | `promotion.eligible`는 bundle 종류와 무관하게 evaluator가 explicit `semantic_supported=false` 또는 `semantic_status in {unsupported, empty, contradicted}`를 surface하면 차단되어야 함 |
-| Official lanes | 코드상 official live set은 SQLi/CSRF/Command Injection/Code Injection/Code Injection alias/SSRF/Template Injection/Template Injection alias/Template Injection reordered/Open Redirect/Open Redirect alias/Open Redirect reordered/Path Traversal/XSS/Deserialization/LDAP negative + unknown synthesis/live + unknown live strict fail-closed다. current rerun 기준 official E2E는 `20 passed, 2 skipped`이며, skip 2개는 repeatability gate다 |
+| Official lanes | 코드상 official live set은 SQLi/SQLi sidecar template/SQLi sidecar compiler/CSRF/Command Injection/Code Injection/Code Injection alias/SSRF/Template Injection/Template Injection alias/Template Injection paraphrase/Template Injection reordered/Open Redirect/Open Redirect alias/Open Redirect paraphrase/Open Redirect reordered/Path Traversal/XSS/Deserialization/XXE/multi-name-only-supported/multi-name-mixed-partial/trusted-dynamic-sqli/LDAP negative + unknown synthesis/live + unknown live strict fail-closed다. current rerun 기준 official E2E는 `28 passed, 2 skipped`이며, skip 2개는 repeatability gate다. sidecar positive lane은 template-assisted와 compiler-first 두 provenance로 모두 존재하고, mixed multi-vuln partial-progress lane도 source-of-truth에 편입되었다. 다만 SQLi 외 richer bridge/sidecar family compiler lane은 아직 없다 |
 | Synthetic unknown handling | `CWE-9999`는 regression lane이지 generalization lane이 아니며, manifest/E2E summary에 `generalization_class=synthetic_regression`, `counts_as_generalization=false`가 surface된다 |
 | Free-form negative regression | `LDAP Injection`과 다른 unsupported `NAME-*` lane은 degraded/stub path에서 false-positive pass가 재현되지 않아야 함 |
 | Free-form positive evidence | compiler-first 또는 equivalent non-template path로 만든 real free-form positive case 최소 1개. 최소 조건은 `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, `fallback_class!=generic_unsupported_family`, `promotion.eligible=true`다. `compiler_supported=true`만으로는 충분하지 않다. representative lane에서는 registry-backed scaffold/fragment provenance까지 같이 보는 편이 더 안전하다 |
+| Verifier trust semantics | static rule이 없는 compiler-generated lane은 current truth에서 `compiler_runtime_rule/medium`으로 표기되어야 하며, `declared_rule/high`와 혼동되면 안 된다 |
 | Performance | known degraded lane, compiler-first lane, unsupported negative lane 수치를 provenance-aware 분류와 함께 보고, quality defect를 덮는 성공 지표로 사용하지 않음 |
 
 ## 8. 이번 문서 갱신의 실측 근거
 
 ### 8.1 실행한 command
 
+- `python -m pytest -q tests`
+- `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs`
+- `python -m pytest -q tests/test_researcher_multibundle_continue.py tests/test_run_pipeline_failure_resolution.py tests/test_pack_promotion.py`
+- `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -k 'multi_name_only_supported_case or multi_name_mixed_partial_case or ldap_injection_negative_case'`
+- `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -k 'open_redirect_name_only_case or ldap_injection_negative_case or multi_name_only_supported_case' -rs`
+- `python - <<'PY' ... normalize_requirement({'vuln_ids':['Custom Weird Vuln','Open Redirect'],'multi_vuln':True}, multi_vuln_opt_in=True) ... normalize_requirement({'vuln_name':'unsafe template deserialization'}) ... PY`
+- `python orchestrator/run_pipeline.py --sid sid-14513fdcdee9 --mode deterministic`
 - `python -m pytest -q tests/test_requirement_policy_defaults.py tests/test_flask_fragment_registry.py tests/test_compiler_registry.py tests/test_generator_template_planner.py`
+- `python -m pytest -q tests/test_requirement_policy_defaults.py`
+- `python -m pytest -q tests/test_repeatability_gate.py`
+- `python -m pytest -q tests/test_llm_provider_fixture.py`
 - `python -m pytest -q tests/test_requirement_policy_defaults.py tests/test_run_pipeline_failure_resolution.py tests/test_flask_fragment_registry.py tests/test_compiler_registry.py tests/test_generator_template_planner.py`
 - `python -m pytest -q tests/test_scaffold_registry.py tests/test_compiler_registry.py tests/test_requirement_policy_defaults.py tests/test_run_pipeline_failure_resolution.py`
 - `python -m pytest -q tests`
+- `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -k 'multi_name_only_supported_case or template_injection_name_only_repeatability_gate' -rs`
+- `VULD_RUN_E2E=1 VULD_RUN_E2E_REPEAT=1 python -m pytest -q tests/e2e/test_cases.py -k template_injection_name_only_repeatability_gate -rs`
 - `python -m pytest -q tests/test_contract_resolution.py tests/test_pack_promotion.py tests/test_rule_based_semantic_contract.py`
 - `python -m pytest -q tests/test_flask_fragment_registry.py tests/test_compiler_registry.py tests/test_vuln_semantics.py`
 - `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -rs`
+- `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -k trusted_dynamic_sqli_case -rs`
 - `VULD_RUN_E2E=1 python -m pytest -q tests/e2e/test_cases.py -k command_injection_name_only_case -rs`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/command-injection-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-cmdi-review`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/template-injection-alias-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-review/template-alias`
@@ -1287,6 +1503,7 @@ current status:
 - `python tests/e2e/run_case.py --case tests/e2e/cases/deserialization-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-deser-e2e-compiler-4`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/open-redirect-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-open-redirect-e2e-compiler-keep`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/open-redirect-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-review-open-redirect-20260308-4`
+- `python tests/e2e/run_case.py --case tests/e2e/cases/trusted-dynamic-sqli --mode deterministic --no-snapshot --output-dir /tmp/vuld-trusted-dynamic-sqli`
 - `python -m pytest -q tests/test_run_pipeline_failure_resolution.py`
 - `python -m pytest -q tests/test_pack_promotion.py tests/test_contract_resolution.py tests/test_runtime_rules.py`
 - `python -m pytest -q tests/test_requirement_policy_defaults.py tests/test_pack_promotion.py tests/test_flask_fragment_registry.py`
@@ -1317,14 +1534,37 @@ current status:
 - `python tests/e2e/run_case.py --case tests/e2e/cases/template-injection-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-e2e-template-registry2`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/xss-name-only --mode deterministic --no-snapshot --output-dir /tmp/vuld-e2e-xss-registry2`
 - `python tests/e2e/run_case.py --case tests/e2e/cases/ldap-injection-negative --mode deterministic --no-snapshot --output-dir /tmp/vuld-e2e-ldap-registry2`
+- `python -m pytest -q tests/test_llm_provider_fixture.py tests/test_requirement_policy_defaults.py tests/test_run_pipeline_failure_resolution.py tests/test_executor_poc_exec.py`
+- `python tests/e2e/run_case.py --case /tmp/vuld-sidecar-case2 --mode deterministic --no-snapshot --output-dir /tmp/vuld-sidecar-out5`
+- `python - <<'PY' ... normalize_requirement({'vuln_name':'Template Injection','compiler':{'enabled':False}}) ... _can_skip_researcher(...) ... _terminal_executor_precheck(...) ... PY`
 
 ### 8.2 이번 문서에서 current truth로 채택한 핵심 관찰
 
-- 공식 E2E full rerun은 `20 passed, 2 skipped`였고, 새 `command-injection-name-only`, `code-injection-name-only`, `code-injection-alias-name-only`, `template-injection-alias-name-only`, `template-injection-reordered-name-only`, `open-redirect-alias-name-only`, `open-redirect-reordered-name-only` case도 green이었다.
-- 기본 테스트 스위트는 latest rerun 기준 `239 passed, 22 skipped`까지 상향되었다.
+- 공식 E2E full rerun은 이번 추가 갱신 이후 `28 passed, 2 skipped`였고, 기존 `command-injection-name-only`, `code-injection-name-only`, `code-injection-alias-name-only`, `template-injection-alias-name-only`, `template-injection-reordered-name-only`, `open-redirect-alias-name-only`, `open-redirect-reordered-name-only`에 더해 새 `template-injection-paraphrase-name-only`, `open-redirect-paraphrase-name-only`, `xxe-name-only`, `multi-name-only-supported`, `multi-name-mixed-partial`, `trusted-dynamic-sqli`, `sqli-sidecar-template`, `sqli-sidecar-compiler` case도 green이었다.
+- 추가로 latest targeted E2E rerun에서는 `open_redirect_name_only_case`, `ldap_injection_negative_case`, `multi_name_only_supported_case`가 `3 passed, 25 deselected`로 재확인되었다.
+- 기본 테스트 스위트는 latest rerun 기준 `287 passed, 30 skipped`까지 상향되었다.
+- 새 official multi-vuln case는 `Template Injection + Open Redirect` 두 free-form `vuln_ids`를 한 SID에서 `compiler_generated`, `compiler-first`, `real_free_form_positive` 2-bundle success로 닫았다. current manifest는 `bundle_count=2`, `positive_generalization_bundles=2`, `supported_bundles=2`, `total_duration_s≈8.773s`였다.
+- 새 fixture-backed trusted-dynamic case는 SQLi를 `generation_origin=llm_manifest`, `dynamicness_verdict=trusted dynamic`, `verification_rule_source=declared_rule`, `verification_trust=high`, `provider_health_state=llm_fixture`, `llm_fixture_used=true`로 닫았다. current manifest는 `sid-b36ff41a638a`, `promotion.eligible=true`, `total_duration_s≈8.665s`였다.
+- 같은 latest rerun에서 static rule이 없는 compiler-generated family는 `verification_rule_source=compiler_runtime_rule`, `verification_trust=medium`으로 surface되었다. 즉 current official evidence는 compiler-coupled verification과 declared independent rule을 구분한다.
+- Template Injection repeatability gate는 이번 수정으로 더 이상 Tavily key를 요구하지 않으며, latest rerun 기준 `3/3 passed`였다.
+- repeatability harness는 이번 턴에서 `pipeline_returncode`를 summary/expectation validation에 전달하도록 수정되어, gate가 harness 누락 필드 때문에 false fail하지 않는다.
 - `Server Side Template Injection`은 이제 canonical `NAME-TEMPLATE-INJECTION`으로 normalize되어 same compiler-first positive lane으로 닫힌다. 같은 canonical requirement로 collapse되므로 original Template Injection case와 SID(`sid-60ae4e071b9f`)도 공유한다.
 - ad-hoc `Unvalidated Redirect` rerun과 official `open-redirect-alias-name-only` case도 canonical `NAME-OPEN-REDIRECT`로 collapse되어 same Open Redirect compiler-first lane으로 닫혔다.
-- same change set에서 `Injection in Jinja template`, `Redirect open vulnerability`도 fragment-strategy fallback을 통해 각각 canonical `NAME-TEMPLATE-INJECTION`, `NAME-OPEN-REDIRECT`로 normalize되어 official E2E positive lane으로 닫혔다. 이는 exact alias layer를 넘는 token-order-insensitive supported-family robustness의 근거다.
+- `Template rendering vulnerability`, `External redirect vulnerability`도 shared vuln family catalog의 exact alias layer를 통해 각각 canonical `NAME-TEMPLATE-INJECTION`, `NAME-OPEN-REDIRECT`로 normalize되어 official E2E positive lane으로 닫혔다. 즉 current source-of-truth에는 exact canonical phrase와 alias, reordered phrase뿐 아니라 catalog-backed paraphrase alias도 포함된다.
+- `XML External Entity`는 이번 추가 구현으로 `NAME-XXE` + `compiler_strategy=xxe_xml_entity_resolve`로 승격되었고, official `xxe-name-only` case는 latest rerun 기준 `generation_origin=compiler_generated`, `dynamicness_verdict=compiler-first`, `verification_rule_source=compiler_runtime_rule`, `verification_trust=medium`, `generalization_class=real_free_form_positive`, `counts_as_generalization=true`, `total_duration_s≈6.636s`로 닫혔다.
+- latest targeted rerun 기준 `xxe_name_only_case`, `path_traversal_name_only_case`, `multi_name_only_supported_case`도 `3 passed, 27 deselected`로 재확인되었다.
+- same change set에서 `Injection in Jinja template`, `Redirect open vulnerability`, `Injection in shell command`도 stopword-trimmed exact-content-token fallback을 통해 canonical supported family로 normalize된다. 즉 current robustness는 token subset first-fit가 아니라 curated exact-content-token layer까지로 보는 편이 맞다.
+- latest normalization sanity rerun에서는 `Custom Weird Vuln + Open Redirect`가 더 이상 supported subset으로 collapse되지 않고 `NAME-CUSTOM-WEIRD-VULN`, `NAME-OPEN-REDIRECT` 두 bundle로 유지되며 `vuln_id_resolutions[]` trace까지 남는다.
+- same sanity rerun에서 `unsafe template deserialization`은 더 이상 `CWE-502`로 과잉 canonicalize되지 않고 synthetic `NAME-UNSAFE-TEMPLATE-DESERIALIZATION` + `pattern_id=generic-web-vuln`로 남는다.
+- same mixed multi-vuln rerun(`sid-14513fdcdee9`)은 현재 whole-run 기준 `failure_manifest.json`으로 종료되지만, 이번 보강 이후 `NAME-OPEN-REDIRECT` bundle은 실제로 compiler-generated build/run/verify까지 닫히고 `run_passed=true`, `verify_pass=true`를 남긴다. 반면 `NAME-CUSTOM-WEIRD-VULN`만 `unsupported_free_form_negative` + `evidence_low_relevance` fail-closed로 남는다. 즉 mixed success/failure multi-vuln은 이제 input preservation을 넘어 partial execution까지 가능하지만, promotion/acceptance semantics는 아직 미완성이다.
+- 추가로 `multi-name-mixed-partial` official case는 `VUL_WEB_SEARCH_PROVIDER=none`에서도 같은 동작을 deterministic하게 재현한다. 즉 supported bundle per-bundle RESEARCH skip과 unsupported/custom bundle fail-closed가 함께 작동해, mixed lane도 remote provider availability에 덜 흔들리는 lower bound를 갖게 되었다.
+- latest sanity rerun에서는 `Template Injection + compiler.enabled=false`가 `remote_required`, `require_researcher_evidence=true`, `_can_skip_researcher=false`로 재분류되었다. 즉 compiler-disabled request가 더 이상 compiler-first lower bound처럼 과대표현되지 않는다.
+- latest sanity rerun에서는 external DB requirement와 empty sidecar / network-none policy mismatch가 `EXECUTOR_PRECHECK`에서 `terminal_failure_class=executor_dependency_misconfigured`로 차단되었다.
+- latest unit regression은 transient LLM provider failure가 이후 call 전체를 permanent stub mode로 고정하지 않는다는 사실도 고정했다.
+- latest manifest/performance surface는 `lower_bound`(`family_non_remote_available`, `effective_non_remote_available`, `compiler_path_enabled`)와 `executor_feasibility_status`까지 직접 노출한다. 즉 family capability, effective requirement capability, executor satisfiability를 artifact 수준에서 분리해 읽을 수 있다.
+- latest sidecar-template rerun에서는 `generator_mode=template` + viable MySQL template가 실제로 `built_in_template`, `template-assisted`, `executor_feasibility_status=configured`, `verification_rule_source=declared_rule`, `verification_trust=high`로 닫혔다. 이는 current source-of-truth에 포함된 첫 sidecar-backed positive runtime lane이다.
+- latest sidecar-compiler rerun에서는 `generator_mode=synthesis` + MySQL sidecar runtime가 실제로 `compiler_generated`, `compiler-first`, `compiler_strategy=sqli_string_concat_mysql`, `compiler_family=sql_injection`, `stack_scaffold_id=python/flask`, `fragment_id=mysql_login_query_concat_route`, `executor_feasibility_status=configured`, `verification_rule_source=declared_rule`, `verification_trust=high`로 닫혔다. 즉 current source-of-truth에는 compiler-first sidecar positive lane도 편입되었다.
+- same change set에서 sidecar template/compiler service 코드는 invalid placeholder DB defaults를 갖도록 바뀌었고, current rerun은 explicit `service_env` contract가 executor를 통해 실제 전달되었기 때문에 계속 green이다. 즉 “default host가 우연히 맞아 성공”하는 숨은 template dependence는 줄었다.
 - SQLi, CSRF, Command Injection, Code Injection, SSRF, Template Injection, XSS, Insecure Deserialization official lane은 current workspace에서 pass했다.
 - SQLi는 `sqli_string_concat`, CSRF는 `csrf_missing_token` compiler path로 승격되었고, 둘 다 current rerun 기준 `compiler-first`, `promotion.eligible=true`까지 닫혔다.
 - Path Traversal official lane은 이번 갱신에서 추가되었고, current workspace에서 `compiler_strategy=path_traversal_file_read`, `compiler-first`, `promotion.eligible=true`까지 닫혔다.
@@ -1334,12 +1574,16 @@ current status:
 - Open Redirect/Template Injection/Path Traversal runtime rule에는 최소 service-side `file_contains` evidence가 추가되었다.
 - 이번 추가 구현으로 compiler와 researcher가 `agents/generator/flask_fragment_registry.py`를 공통 참조하며, service-side `file_contains` token derivation도 shared fragment registry metadata를 소비하기 시작했다.
 - 이번 추가 구현으로 fallback guard `generator_assertions`와 exact compiler-covered family의 default semantic signature도 shared fragment registry에서 직접 파생되기 시작했다.
+- 이번 추가 구현으로 requirement normalization과 fragment routing은 `common/assets/vuln-family-catalog.json`을 함께 참조한다. 즉 `Template rendering vulnerability`, `External redirect vulnerability`, `XML External Entity`, `CWE89` 같은 alias/identifier/paraphrase는 더 이상 서로 다른 하드코딩 table에서 따로 해석되지 않는다.
+- 이번 추가 구현으로 SID는 `generator_mode`와 runtime/executor surface digest까지 포함한다. 그래서 `sqli-sidecar-template`과 `sqli-sidecar-compiler`처럼 같은 vuln family/pattern이더라도 generation path나 sidecar surface가 다르면 서로 다른 SID(`sid-fb69eab9a174`, `sid-e94b254bdff9`)로 분리된다. raw parallel case run에서 sidecar container name이 충돌하던 문제도 이 변경으로 줄었다.
+- 이번 추가 구현으로 resolved contract / generator template / compiler manifest는 sidecar bundle의 `service_env`를 함께 surface한다. executor는 이를 실제 `docker run -e ...` 인자로 사용하고, 따라서 compiler-first sidecar lane과 template-assisted sidecar lane 모두 explicit runtime contract를 통해 닫힌다.
 - current manifest/E2E summary는 known-family lane을 `known_family_regression`, real free-form positive lane을 `real_free_form_positive`, synthetic unknown lane을 `synthetic_regression`, unsupported negative lane을 `unsupported_free_form_negative`로 구분한다.
 - 이번 hardening으로 `normalize_vuln_id`가 `NAME-*`를 canonical하게 보존하고, `NAME-OPEN-REDIRECT` / `NAME-TEMPLATE-INJECTION`도 foreign-family semantic contradiction 검출을 수행한다. 즉 free-form positive lane에서 SQLi/SSTI/XSS term contamination을 자동 용인하지 않는다.
 - 추가로 name normalization은 shared fragment strategy fallback을 사용해 일부 reordered token phrase도 canonical family로 정렬한다. latest unit rerun 기준 `Injection in shell command -> CWE-78`, `Injection in Jinja template -> NAME-TEMPLATE-INJECTION`, `Redirect open vulnerability -> NAME-OPEN-REDIRECT`가 기본 pattern/profile까지 함께 정렬된다.
-- 이번 추가 구현으로 compiler-covered 열 family(SQLi/CSRF/Command Injection/Code Injection/Path Traversal/SSRF/XSS/Insecure Deserialization/Open Redirect/Template Injection)는 모두 `python/flask` scaffold + registry fragment compose metadata를 남기기 시작했다. current rerun의 `metadata/<sid>/generator_manifest.json`에는 `stack_scaffold_id`, `fragment_id`, `compose_mode=registry`가 실제로 남는다.
+- 이번 추가 구현으로 compiler-covered 열한 family(SQLi/CSRF/Command Injection/Code Injection/Path Traversal/SSRF/XSS/Insecure Deserialization/Open Redirect/Template Injection/XXE)는 모두 `python/flask` scaffold + registry fragment compose metadata를 남기기 시작했다. current rerun의 `metadata/<sid>/generator_manifest.json`에는 `stack_scaffold_id`, `fragment_id`, `compose_mode=registry`가 실제로 남는다.
 - same change set에서 single-bundle `manifest.json`/E2E summary도 `compiler_family`, `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode`를 mirror할 수 있게 되었고, representative official case는 이를 expectation으로 직접 검증한다.
 - 추가로 plan requirement/manifest는 `name_resolution.input`, `name_resolution.resolved_vuln_id`, `name_resolution.source`를 surface한다. current free-form positive evidence는 이제 alias-based인지, heuristic인지, fragment-strategy fallback인지를 artifact 수준에서 구분할 수 있다.
+- 추가로 multi-vuln minimal-input path는 `vuln_id_resolutions[]`를 함께 surface해, `vuln_ids` list에서 어떤 raw 입력이 어떤 canonical/synthetic bundle로 정규화되었는지를 bundle 수와 분리해서 추적할 수 있다.
 - 이번 추가 구현으로 compiler target 기본 매핑도 `agents/generator/assets/compiler-targets.json`으로 분리되어, strategy -> default target 하드코딩 일부가 코드 밖 asset으로 이동했다.
 - `cwe-unknown-basic` live lane도 current workspace에서는 pass했지만, 이는 explicit `CWE-9999` + inherited SQLi-like pattern 기반 synthetic regression이며 `promotion.eligible=false`, `counts_as_generalization=false`로 surface된다.
 - `Open Redirect`는 real free-form `vuln_name only` case이며, 이번 구현 후 `semantic_profile.support_level=compiler_supported`와 `open_redirect_reflect` compiler path로 `verify_pass=true`, `promotion.eligible=true`, `compiler-first`까지 닫힌다.
@@ -1367,6 +1611,7 @@ current status:
 - generic unsupported fallback + empty `semantic_contract` 조합은 이제 built-in evaluator가 service code를 읽고도 semantic support를 되살리지 못하도록 fail-closed된다. 즉 unsupported free-form generic fallback이 supported family 코드처럼 보여 success로 복구되는 경로는 차단된다.
 - latest rerun 기준 SQLi / CSRF / Command Injection / Code Injection / Path Traversal / SSRF / Insecure Deserialization / Open Redirect / Template Injection / XSS는 각각 약 `7.174s`, `6.844s`, `7.026s`, `6.675s`, `6.907s`, `6.772s`, `6.721s`, `7.403s`, `7.118s`, `6.987s`였다. synthetic unknown live는 `19.443s`, LDAP Injection negative는 `0.054s`였다. latest bottleneck은 compiler-supported lane 자체보다 unknown/live remote-required lane과 Docker orchestration 쪽에 더 가깝다.
 - 이번 추가 구현으로 `manifest.performance`와 `performance_summary.json`은 PACK 이후에도 같은 `provider_health_state` / `total_duration_s`를 보존한다. latest `code-injection-name-only`/`code-injection-alias-name-only` shared SID rerun에서는 둘 다 `not_probed`, `6.675s`였고, latest `CWE-9999` no-remote rerun에서는 둘 다 `remote_provider_unavailable`, `1.650s`였다.
+- single-bundle manifest는 이번 추가 구현으로 `llm_fixture_used` 같은 provenance boolean도 top-level에 mirror할 수 있게 되었고, trusted-dynamic fixture lane에서는 same field가 PACK artifact에 직접 남는다.
 - 이번 추가 구현으로 fragment metadata도 `agents/generator/assets/flask-fragments.json`으로 이동해, scaffold/target뿐 아니라 semantic signature / service token / description 계층 일부도 코드 밖 asset으로 분리되었다.
 - 추가로 Flask fragment의 route/import/setup/startup code도 `agents/generator/assets/flask-fragment-code.json`으로 이동해, compiler registry의 code-side 하드코딩 일부가 asset catalog로 이동했다.
 - 추가로 각 family의 PoC script template도 `agents/generator/assets/flask-pocs/*.py.tmpl`로 이동해, compiler registry 내부의 PoC 문자열 하드코딩도 크게 줄었다.
@@ -1387,6 +1632,9 @@ current status:
    - 추가 완료: E2E summary/expectation validation이 bundle-level `generation_origin`, `dynamicness_verdict`까지 읽고 official acceptance에서 provenance를 직접 고정
    - 추가 완료: official harness가 runtime asset seed manifest를 작성하고 rerun마다 `runtime_rules/`, `runtime_templates/`를 purge 후 seeded asset만 restore
    - 추가 완료: representative compiler-first case는 `compiler_family`, `stack_scaffold_id`, `stack_scaffold_version`, `fragment_id`, `compose_mode`까지 expectation으로 직접 고정
+   - 추가 완료: `multi-name-only-supported` official E2E를 추가해 single-SID multi-vuln compiler-first positive lane을 source-of-truth에 편입
+   - 추가 완료: repeatability harness가 `pipeline_returncode`를 summary/expectation validation에 전달하도록 수정
+   - 추가 완료: `template_injection_name_only_repeatability_gate`는 current compiler-first lower bound와 정렬되도록 Tavily 의존을 제거
 2. manifest / failure_manifest semantics 정리
    - 완료: `allow_intentional_vuln=true`여도 failure run이 `failure_manifest.json`만 남기도록 정렬
 3. unsupported negative lane retry 절감
@@ -1397,11 +1645,14 @@ current status:
    - 부분 완료: top-level/bundle failure summary와 `research_short_circuit` provenance가 same semantic verdict를 surface
    - 추가 완료: `NAME-*` canonical normalization 보정, free-form foreign-family semantic contradiction detection, compiler-supported known family의 generalization class 정렬
    - 추가 완료: default search policy / `require_researcher_evidence` / RESEARCH skip이 compiler/static supported verdict를 직접 소비
+   - 추가 완료: requirement-aware lower-bound helper가 `compiler.enabled=false` / `disable_compiler=true`를 반영해 normalization, researcher unknown classification, run_pipeline researcher skip까지 함께 정렬
+   - 추가 완료: `lower_bound` summary(`family_non_remote_available`, `effective_non_remote_available`, `compiler_path_enabled`)가 contract/profile/manifest/performance surface에 올라오기 시작했다
    - 추가 완료: single-bundle manifest/summary도 compiler scaffold/fragment provenance(`compiler_family`, `stack_scaffold_id`, `fragment_id`, `compose_mode`)를 mirror할 수 있게 정렬
+   - 추가 완료: `vuln_ids`/`vuln_id` free-form 입력도 synthetic `NAME-*`와 `vuln_id_resolutions[]` trace로 보존되어 multi-vuln minimal-input path의 silent drop을 제거
    - 남은 일: broader compiler-first generator path / acceptance gating 확장
 5. compiler skeleton 도입
-   - 부분 완료: `agents/generator/compiler.py`와 shared registry module(`agents/generator/flask_fragment_registry.py`) 기반 `sqli_string_concat`, `csrf_missing_token`, `command_injection_shell`, `code_injection_eval`, `open_redirect_reflect`, `template_injection_render`, `path_traversal_file_read`, `xss_reflected`, `ssrf_loopback_fetch`, `deserialization_pickle_body` 구현
-   - 추가 완료: compiler-covered 열 family 전체를 `python/flask` scaffold + registry fragment compose metadata로 전환하고, `generator_manifest.json` metadata에 `stack_scaffold_id`, `fragment_id`, `compose_mode=registry`를 surface
+   - 부분 완료: `agents/generator/compiler.py`와 shared registry module(`agents/generator/flask_fragment_registry.py`) 기반 `sqli_string_concat`, `csrf_missing_token`, `command_injection_shell`, `code_injection_eval`, `open_redirect_reflect`, `template_injection_render`, `path_traversal_file_read`, `xss_reflected`, `ssrf_loopback_fetch`, `deserialization_pickle_body`, `xxe_xml_entity_resolve` 구현
+   - 추가 완료: compiler-covered 열한 family 전체를 `python/flask` scaffold + registry fragment compose metadata로 전환하고, `generator_manifest.json` metadata에 `stack_scaffold_id`, `fragment_id`, `compose_mode=registry`를 surface
    - 추가 완료: compiler target 기본 매핑을 `agents/generator/assets/compiler-targets.json` asset으로 분리
    - 추가 완료: fragment metadata(`family`, `fragment_id`, `pattern_tags`, `service_side_tokens`, `semantic_signature`, `requirements_content`)를 `agents/generator/assets/flask-fragments.json` asset으로 분리
    - 추가 완료: Flask fragment의 `import_block`, `route_block`, `app_setup_block`, `startup_block`를 `agents/generator/assets/flask-fragment-code.json` asset으로 분리
@@ -1416,10 +1667,11 @@ current status:
    - 남은 일: same-container helper model 일반화와 second scaffold 도입
 8. Tier C family fragment 구현 또는 explicit defer 정렬
    - 완료: Insecure Deserialization은 `deserialization_pickle_body` compiler path로 승격 완료
-   - 남은 일: Python/pickle 편중 완화
+   - 추가 완료: XXE는 `xxe_xml_entity_resolve` compiler path와 official E2E까지 승격 완료
+   - 남은 일: Python/pickle 편중 완화와 XXE의 local-file model beyond-local-target generalization
 9. runtime rule / guard / evaluator convergence
    - 부분 완료: Open Redirect/Template Injection/Path Traversal runtime rule에 최소 service-side evidence 추가
-   - 추가 완료: built-in semantic evaluator support를 Open Redirect/Template Injection/XSS/Insecure Deserialization까지 확장하고, representative rerun에서 `semantic_source=generator_manifest`를 재검증
+   - 추가 완료: built-in semantic evaluator support를 Open Redirect/Template Injection/XSS/Insecure Deserialization/XXE까지 확장하고, representative rerun에서 `semantic_source=generator_manifest`를 재검증
    - 추가 완료: researcher service-side `file_contains` token derivation이 shared fragment registry metadata를 직접 소비
    - 추가 완료: fallback guard `generator_assertions`와 exact compiler-covered family의 default semantic signature가 shared fragment registry metadata를 직접 소비
    - 추가 완료: verifier result와 manifest/E2E summary에 `verification_rule_source` / `verification_trust` / `verification_trust_reason`를 surface하고, unknown live lane의 runtime rule candidate를 low-trust로 분류
@@ -1433,13 +1685,17 @@ current status:
    - 완료: Template Injection positive free-form evidence
    - 완료: Open Redirect positive free-form evidence
    - 완료: compiler-first positive free-form 최소 2개 (`Template Injection`, `Open Redirect`)
+- 추가 완료: multi-vuln free-form positive official case(`Template Injection + Open Redirect`)를 단일 SID evidence로 편입
+- 추가 완료: mixed success/failure multi-vuln은 partial-progress 실행이 가능해져, unsupported/custom bundle이 fail-closed되어도 supported compiler bundle은 same SID에서 generate/build/run/verify를 계속 수행할 수 있다
+- 추가 완료: compiler/static supported bundle은 mixed request 안에서도 per-bundle RESEARCH skip이 가능해져, `multi-name-mixed-partial` lane이 `VUL_WEB_SEARCH_PROVIDER=none`에서도 deterministic하게 재현된다
 11. synthetic unknown lane 재분류 및 official lane 표 갱신
    - 완료: `CWE-9999`를 `synthetic_regression` + `counts_as_generalization=false`로 surface하고, official lane 표와 E2E expectation에 반영
    - 추가 완료: no-remote negative regression과 live Tavily regression을 expectations 수준에서도 분리
 12. template debt accounting 전환
    - 부분 완료: runtime template clone과 built-in template를 legacy/compatibility asset으로 재분류하고, compiler-covered family success claim에서 제외
-   - 추가 완료: compiler-covered 열 family 모두 registry-backed scaffold/fragment provenance를 남기기 시작했다
+   - 추가 완료: compiler-covered 열한 family 모두 registry-backed scaffold/fragment provenance를 남기기 시작했다
    - 추가 완료: registry asset 자체를 `compiler.py` 내부 문자열 중복에서 분리해 shared module(`agents/generator/flask_fragment_registry.py`)로 승격
+   - 추가 완료: Path Traversal/XXE의 helper extra files도 이제 fragment asset DSL(`agents/generator/assets/flask-fragments.json`)에서 직접 정의되어 compiler registry callback hardcoding을 한 단계 줄였다
    - 추가 완료: active synthetic unknown lane에 실제 사용되는 SQLi family-aware fallback service/PoC를 `agents/generator/assets/fallbacks/sqli_family_aware_*.py.tmpl` asset으로 분리
    - 추가 완료: generic unsupported reflect fallback과 CSRF family-aware fallback service/PoC도 각각 fallback asset template로 분리
    - 추가 완료: Open Redirect family-aware fallback service/PoC도 `agents/generator/assets/fallbacks/open_redirect_family_aware_*.py.tmpl` asset으로 분리
@@ -1450,13 +1706,33 @@ current status:
    - 우선순위: shared registry의 외부 data asset화 + evaluator/guard auto-derive, 이후 second scaffold / richer sidecar-backed family 검토
 14. name-only robustness hardening
    - 추가 완료: requirement normalization이 shared fragment strategy fallback을 통해 일부 reordered token phrase를 canonical supported family로 정렬
+   - 추가 완료: token fallback을 stopword-trimmed exact-content-token match로 좁혀 ambiguous mixed phrase의 supported-family overcanonicalization을 차단
    - 남은 일: 이 robustness를 broader open-world semantic family discovery와 혼동하지 않도록 unsupported unknown lane과의 경계를 유지
 15. PACK/performance surface consistency
    - 완료: PACK subprocess 이후 manifest를 재기록해 `manifest.performance`와 `performance_summary.json`의 `provider_health_state` / `total_duration_s` 드리프트를 제거
    - 추가 완료: single-bundle manifest/summary에도 `generation_origin`, `dynamicness_verdict`, `dynamicness_reason`를 mirror해 acceptance와 문서 표를 더 직접 정렬
+   - 추가 완료: single-bundle manifest top-level에도 `fallback_used`, `family_override_applied`, `llm_stub_used`, `llm_fixture_used` provenance boolean을 mirror
+   - 추가 완료: single-bundle manifest/summary와 `performance_summary`에 `executor_feasibility_status` 및 lower-bound summary가 surface되기 시작했다
+   - 추가 완료: multi-bundle manifest도 이제 common provenance/trust를 top-level로 mirror하고, diverged bundle-set은 `generation_origin=dynamicness_verdict=verification_rule_source=verification_trust=\"mixed\"` sentinel로 surface한다
+   - 추가 완료: transient remote LLM failure가 process-wide permanent stub mode로 굳지 않도록 provider fallback을 call-level로 완화
+   - 추가 완료: `provider_health_state`가 root `search_health.json`만 보는 대신 bundle-level search health와 nested failed-bundle failure class까지 집계하게 되어, bundle-scoped remote failure와 semantic fail-closed를 더 정확히 분리한다
+   - 남은 일: current 성능 검증은 summary/provenance correctness가 중심이므로, wall-clock budget regression gate는 별도 계층으로 추가해야 한다
+16. test completeness hardening
+   - 추가 완료: official multi-vuln positive lane(`multi-name-only-supported`)을 source-of-truth에 편입
+   - 추가 완료: fixture-backed trusted-dynamic official lane(`trusted-dynamic-sqli`)을 source-of-truth에 편입
+   - 추가 완료: template-assisted MySQL sidecar positive lane(`sqli-sidecar-template`)을 source-of-truth에 편입
+   - 추가 완료: compiler-first MySQL sidecar positive lane(`sqli-sidecar-compiler`)을 source-of-truth에 편입
+   - 추가 완료: sidecar/external DB bundle의 `service_env` contract를 resolved contract / template summary / compiler manifest / executor path에 연결
+   - 추가 완료: catalog-backed paraphrase official lane(`template-injection-paraphrase-name-only`, `open-redirect-paraphrase-name-only`)을 source-of-truth에 편입
+   - 추가 완료: repeatability harness의 false-fail 원인이던 `pipeline_returncode` 누락을 수정
+   - 추가 완료: Template Injection repeatability gate를 provider-independent compiler-first lane으로 정렬
+   - 추가 완료: external DB requirement와 executor sidecar/network mismatch를 `EXECUTOR_PRECHECK` 및 direct executor path에서 fail-fast하는 regression을 추가
+   - 남은 일: SQLi 외 richer bridge/sidecar positive lane, live remote-LLM-backed `llm_manifest -> trusted dynamic` lane, mixed success/failure multi-vuln lane의 official acceptance/promotion semantics를 더 정교하게 source-of-truth로 추가
 16. research failure taxonomy hardening
    - 추가 완료: `remote_provider_unavailable`, `remote_evidence_missing`, `evidence_low_relevance`, `provider_degraded`를 RESEARCH terminal failure class 후보로 분리
    - 추가 완료: no-remote synthetic unknown regression은 same-run 3-loop 재시도 대신 single-shot fail-closed
+   - 추가 완료: mixed multi-vuln request에서도 unsupported free-form `NAME-*` bundle은 bundle 단위 preseeded semantic profile에 의해 search 호출 전에 `semantic_support_missing`으로 fail-closed된다
+   - 추가 완료: bundle-scoped RESEARCH failure가 VERIFY 단계에서 다시 top-level root cause로 오인되지 않도록 partial-progress rerun의 top-level `failure.stage`를 `RESEARCH`로 정렬
    - 남은 일: provider degraded와 low-relevance를 performance/provider surface까지 더 정교하게 반영
 17. runtime generated asset tracking
    - 추가 완료: researcher/generator/verifier가 생성한 runtime rule/template를 `generated_runtime_assets.json`으로 추적
@@ -1465,5 +1741,5 @@ current status:
 
 ## 10. 한 문장 요약
 
-현재 레포는 known lane(SQLi/CSRF/Command Injection/Code Injection/SSRF/Path Traversal/XSS/Insecure Deserialization)과 real free-form `Template Injection`, `Open Redirect`, 그리고 canonical alias `Server Side Template Injection`까지 compiler-first path로 지원하고 이 compiler-supported family들은 default minimal-input path에서 remote search 없이도 닫히며 unsupported free-form `NAME-*` lane은 LDAP Injection 기준 preseeded semantic profile로 거의 즉시 fail-closed되고 synthetic unknown lane도 no-remote negative/live Tavily regression과 strict fail-closed policy lane으로 분리되었으며 current family-aware fallback body와 fallback bundle 공통 Dockerfile/README까지 거의 전부 asset template로 이동했지만,
-free-form 이름 기반 동적 Docker 생성의 generalization 상한은 여전히 unknown/open-world compiler 부재와 `python/flask` 단일 scaffold 편중, low-trust runtime-rule candidate에 기대는 unknown verifier path, compiler-derived runtime rule 이후에도 남는 verifier 독립성 상한, 그리고 `synthesis.py` 안에 남아 있는 build/run metadata와 compose/orchestration hardcoding에 의해 제한되므로 이후 우선순위는 `shared registry module의 외부 data asset화`, `fallback compose layer의 DSL화`, `unknown/open-world lane의 verifier policy 재설계`, 그리고 second scaffold / sidecar-backed richer family 쪽으로 이동한다.
+현재 레포는 known lane(SQLi/CSRF/Command Injection/Code Injection/SSRF/Path Traversal/XSS/Insecure Deserialization)과 real free-form `Template Injection`, `Open Redirect`, `XML External Entity`, canonical alias `Server Side Template Injection`, 그리고 catalog-backed paraphrase `Template rendering vulnerability`, `External redirect vulnerability`까지 compiler-first path로 지원하고 이 compiler-supported family들은 default minimal-input path에서 remote search 없이도 닫히며, 추가로 MySQL sidecar SQLi lane도 이제 `template-assisted`와 `compiler-first` 두 provenance로 모두 source-of-truth에 편입되었고 shared vuln family catalog 및 runtime-aware compiler strategy 덕분에 requirement normalization과 fragment routing의 alias/runtime drift가 줄었으며 `vuln_ids` free-form 입력도 silent drop 없이 synthetic `NAME-*` bundle로 보존되고 token fallback도 stopword-trimmed exact-content-token layer로 보수화되어 ambiguous mixed phrase의 supported-family overcanonicalization이 줄었으며 mixed success/failure multi-vuln도 supported bundle partial execution과 per-bundle semantic fail-closed까지 가능해졌고 multi-bundle top-level manifest 역시 uniform provenance/trust는 직접 mirror하고 diverged bundle-set은 `mixed` sentinel로 surface하며 SID도 generation/runtime surface를 반영해 case isolation이 더 좋아졌으며 unsupported free-form `NAME-*` lane은 LDAP Injection 기준 preseeded semantic profile로 거의 즉시 fail-closed되지만,
+free-form 이름 기반 동적 Docker 생성의 generalization 상한은 여전히 unknown/open-world compiler 부재와 `python/flask` 단일 scaffold 편중, low-trust runtime-rule candidate에 기대는 unknown verifier path, compiler-derived runtime rule 이후에도 남는 verifier 독립성 상한, live remote-LLM-backed trusted-dynamic acceptance 부재, 그리고 `synthesis.py` 안에 남아 있는 build/run metadata와 compose/orchestration hardcoding에 의해 제한되므로 이후 우선순위는 `shared registry module의 외부 data asset화`, `fallback compose layer의 DSL화`, `unknown/open-world lane의 verifier policy 재설계`, `SQLi 외 richer bridge/sidecar family compiler화`, 그리고 second scaffold / sidecar-backed richer family 쪽으로 이동한다. 다만 이번 턴으로 sidecar lane 자체도 explicit runtime env contract를 통해 닫히기 시작했기 때문에, 이후 확장은 template cloning보다 runtime contract DSL 일반화 쪽에 더 초점을 두는 편이 맞다.

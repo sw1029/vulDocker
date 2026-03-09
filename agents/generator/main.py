@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from agents.generator.service import GeneratorService
+from common.bundle_state import bundle_research_blocker
 from common.logging import get_logger
 from common.paths import ensure_dir, get_metadata_dir
 from common.plan import load_plan
@@ -53,6 +54,26 @@ def main() -> None:
     runs = []
     had_failure = False
     for bundle in bundles:
+        research_blocker = bundle_research_blocker(plan, bundle)
+        if research_blocker:
+            runs.append(
+                {
+                    "vuln_id": bundle.vuln_id,
+                    "slug": bundle.slug,
+                    "workspace": None,
+                    "status": "skipped",
+                    "error": str(research_blocker.get("reason") or "research blocked bundle"),
+                    "failure_path": research_blocker.get("report_path"),
+                    "skipped_stage": "RESEARCH",
+                }
+            )
+            LOGGER.info(
+                "Skipping GENERATOR for %s (%s): %s",
+                args.sid,
+                bundle.vuln_id,
+                str(research_blocker.get("reason") or "research blocked bundle"),
+            )
+            continue
         service = GeneratorService(
             args.sid,
             mode=args.mode,

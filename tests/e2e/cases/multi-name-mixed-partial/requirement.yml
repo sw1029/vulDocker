@@ -1,0 +1,31 @@
+base_requirement: inputs/base_requirement.yml
+
+options:
+  multi_vuln_opt_in: true
+  env:
+    VUL_WEB_SEARCH_PROVIDER: none
+
+overrides:
+  requirement_id: E2E-MULTI-NAME-MIXED-PARTIAL-0001
+  intent: "E2E 회귀: mixed multi-vuln에서 unsupported bundle fail-closed + supported bundle partial-progress 검증"
+  vuln_ids:
+    - Custom Weird Vuln
+    - Open Redirect
+  multi_vuln: true
+  allow_intentional_vuln: false
+  pattern_id: multi-name-mixed-partial
+  seed: 4343
+  variation_key:
+    mode: deterministic
+    self_consistency_k: 1
+    pattern_pool_seed: 4343
+  executor:
+    allow_network: false
+    network_mode: none
+    sidecars: []
+  runtime:
+    allow_external_db: false
+  policy:
+    verifier:
+      prefer_rule: true
+      strict_flag_default: true

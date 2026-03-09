@@ -8,7 +8,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.schema import normalize_requirement
-from common.contracts import can_resolve_without_remote_research
+from common.contracts import (
+    can_resolve_without_remote_research,
+    can_resolve_without_remote_research_for_requirement,
+)
 
 
 def _base_requirement(vuln_id: str) -> dict:
@@ -154,6 +157,17 @@ def test_template_injection_alias_is_canonicalized_to_supported_name_family() ->
     assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
 
 
+def test_template_injection_with_compiler_disabled_requires_research_evidence() -> None:
+    normalized = normalize_requirement({"vuln_name": "Template Injection", "compiler": {"enabled": False}})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+    assert can_resolve_without_remote_research(requirement["vuln_id"]) is True
+    assert can_resolve_without_remote_research_for_requirement(requirement["vuln_id"], requirement) is False
+
+
 def test_open_redirect_alias_is_canonicalized_to_supported_name_family() -> None:
     normalized = normalize_requirement({"vuln_name": "Unvalidated Redirect"})
     requirement = normalized.requirement
@@ -163,6 +177,16 @@ def test_open_redirect_alias_is_canonicalized_to_supported_name_family() -> None
     assert (requirement.get("name_resolution") or {}).get("source") == "alias"
     assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
     assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
+
+
+def test_open_redirect_with_legacy_disable_compiler_requires_research_evidence() -> None:
+    normalized = normalize_requirement({"vuln_name": "Open Redirect", "disable_compiler": True})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-OPEN-REDIRECT"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+    assert can_resolve_without_remote_research_for_requirement(requirement["vuln_id"], requirement) is False
 
 
 def test_explicit_name_alias_vuln_id_is_treated_as_supported_family() -> None:
@@ -192,6 +216,24 @@ def test_vuln_name_heuristics_match_non_exact_family_phrase() -> None:
     assert requirement["pattern_id"] == "xss-reflected"
 
 
+def test_template_rendering_paraphrase_is_canonicalized_to_supported_name_family() -> None:
+    normalized = normalize_requirement({"vuln_name": "Template rendering vulnerability"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert requirement["pattern_id"] == "template-injection"
+    assert (requirement.get("name_resolution") or {}).get("source") == "alias"
+
+
+def test_external_redirect_paraphrase_is_canonicalized_to_supported_name_family() -> None:
+    normalized = normalize_requirement({"vuln_name": "External redirect vulnerability"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-OPEN-REDIRECT"
+    assert requirement["pattern_id"] == "open-redirect"
+    assert (requirement.get("name_resolution") or {}).get("source") == "alias"
+
+
 def test_vuln_name_fragment_strategy_fallback_handles_reordered_shell_phrase() -> None:
     normalized = normalize_requirement({"vuln_name": "Injection in shell command"})
     requirement = normalized.requirement
@@ -217,6 +259,98 @@ def test_vuln_name_fragment_strategy_fallback_handles_reordered_redirect_phrase(
     assert requirement["vuln_id"] == "NAME-OPEN-REDIRECT"
     assert requirement["pattern_id"] == "open-redirect"
     assert (requirement.get("name_resolution") or {}).get("source") == "fragment_strategy_fallback"
+
+
+def test_multi_vuln_name_only_supported_families_are_normalized_when_opted_in() -> None:
+    normalized = normalize_requirement(
+        {
+            "vuln_ids": ["Template Injection", "Open Redirect"],
+            "multi_vuln": True,
+        },
+        multi_vuln_opt_in=True,
+    )
+    requirement = normalized.requirement
+
+    assert normalized.multi_vuln is True
+    assert normalized.requested_vuln_ids == ["NAME-TEMPLATE-INJECTION", "NAME-OPEN-REDIRECT"]
+    assert normalized.effective_vuln_ids == ["NAME-TEMPLATE-INJECTION", "NAME-OPEN-REDIRECT"]
+    assert requirement["vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert requirement["vuln_ids"] == ["NAME-TEMPLATE-INJECTION", "NAME-OPEN-REDIRECT"]
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
+    assert [bundle["slug"] for bundle in normalized.bundles] == [
+        "name-template-injection",
+        "name-open-redirect",
+    ]
+    assert all(can_resolve_without_remote_research(vuln_id) for vuln_id in normalized.effective_vuln_ids)
+
+
+def test_multi_vuln_mixed_freeform_entries_preserve_unknown_synthetic_bundle() -> None:
+    normalized = normalize_requirement(
+        {
+            "vuln_ids": ["Custom Weird Vuln", "Open Redirect"],
+            "multi_vuln": True,
+        },
+        multi_vuln_opt_in=True,
+    )
+    requirement = normalized.requirement
+
+    assert normalized.multi_vuln is True
+    assert normalized.requested_vuln_ids == ["NAME-CUSTOM-WEIRD-VULN", "NAME-OPEN-REDIRECT"]
+    assert normalized.effective_vuln_ids == ["NAME-CUSTOM-WEIRD-VULN", "NAME-OPEN-REDIRECT"]
+    assert requirement["vuln_id"] == "NAME-CUSTOM-WEIRD-VULN"
+    assert requirement["vuln_ids"] == ["NAME-CUSTOM-WEIRD-VULN", "NAME-OPEN-REDIRECT"]
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+    assert [bundle["slug"] for bundle in normalized.bundles] == [
+        "name-custom-weird-vuln",
+        "name-open-redirect",
+    ]
+    resolutions = requirement.get("vuln_id_resolutions") or []
+    assert resolutions[0]["resolved_vuln_id"] == "NAME-CUSTOM-WEIRD-VULN"
+    assert resolutions[0]["source"] == "synthetic_name"
+    assert resolutions[1]["resolved_vuln_id"] == "NAME-OPEN-REDIRECT"
+
+
+def test_explicit_plaintext_vuln_id_is_promoted_to_synthetic_name() -> None:
+    normalized = normalize_requirement({"vuln_id": "Custom Weird Vuln"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-CUSTOM-WEIRD-VULN"
+    assert (requirement.get("name_resolution") or {}).get("source") == "synthetic_name"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+
+
+def test_explicit_cwe_identifier_alias_is_canonicalized() -> None:
+    normalized = normalize_requirement({"vuln_id": "CWE89"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "CWE-89"
+    assert requirement["pattern_id"] == "sqli-string-concat"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
+
+
+def test_xxe_name_only_is_canonicalized_to_compiler_supported_family_defaults() -> None:
+    normalized = normalize_requirement({"vuln_name": "XML External Entity"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-XXE"
+    assert requirement["pattern_id"] == "xxe"
+    assert requirement["vuln_label"] == "XXE"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
+
+
+def test_ambiguous_token_match_phrase_does_not_canonicalize_to_supported_family() -> None:
+    normalized = normalize_requirement({"vuln_name": "unsafe template deserialization"})
+    requirement = normalized.requirement
+
+    assert requirement["vuln_id"] == "NAME-UNSAFE-TEMPLATE-DESERIALIZATION"
+    assert (requirement.get("name_resolution") or {}).get("source") == "synthetic_name"
+    assert requirement["pattern_id"] == "generic-web-vuln"
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
 
 
 def test_invalid_low_trust_unknown_policy_falls_back_to_warn() -> None:

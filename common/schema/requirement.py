@@ -8,7 +8,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from common.contracts import can_resolve_without_remote_research
+from common.contracts import can_resolve_without_remote_research_for_requirement
+from common.vuln_catalog import (
+    catalog_profile_defaults,
+    mapped_vuln_id_with_source,
+    normalize_vuln_label,
+    resolve_vuln_catalog_entry,
+)
 
 RULES_ROOT = Path(__file__).resolve().parents[2] / "docs" / "evals" / "rules"
 VALID_SEARCH_POLICIES = {"remote_required", "remote_prefer", "local_only"}
@@ -23,41 +29,6 @@ VALID_VERIFIER_LOW_TRUST_POLICIES = {"warn", "fail_closed"}
 DEFAULT_GUARD_SEMANTIC_REFRESH_THRESHOLD = 2
 DEFAULT_GUARD_FAILURE_FINGERPRINT_WINDOW = 3
 VALID_SEARCH_FILTER_KEYS = {"include_domains", "exclude_domains", "time_range", "country", "search_lang"}
-VULN_NAME_ALIASES = {
-    "sql injection": "CWE-89",
-    "sqli": "CWE-89",
-    "cross site request forgery": "CWE-352",
-    "csrf": "CWE-352",
-    "path traversal": "CWE-22",
-    "directory traversal": "CWE-22",
-    "code injection": "CWE-94",
-    "command injection": "CWE-78",
-    "cross site scripting": "CWE-79",
-    "xss": "CWE-79",
-    "server side request forgery": "CWE-918",
-    "ssrf": "CWE-918",
-    "insecure deserialization": "CWE-502",
-    "deserialization": "CWE-502",
-    "server side template injection": "NAME-TEMPLATE-INJECTION",
-    "template injection": "NAME-TEMPLATE-INJECTION",
-    "ssti": "NAME-TEMPLATE-INJECTION",
-    "open redirect": "NAME-OPEN-REDIRECT",
-    "unvalidated redirect": "NAME-OPEN-REDIRECT",
-    "unvalidated redirection": "NAME-OPEN-REDIRECT",
-    "open redirection": "NAME-OPEN-REDIRECT",
-}
-VULN_NAME_HEURISTICS = (
-    (re.compile(r"\b(sql injection|sqli)\b"), "CWE-89"),
-    (re.compile(r"\b(cross[ -]?site request forgery|csrf)\b"), "CWE-352"),
-    (re.compile(r"\b(path traversal|directory traversal|file traversal)\b"), "CWE-22"),
-    (re.compile(r"\b(command injection|shell injection|os command injection)\b"), "CWE-78"),
-    (re.compile(r"\b(code injection|eval injection|exec injection)\b"), "CWE-94"),
-    (re.compile(r"\b(cross[ -]?site scripting|xss)\b"), "CWE-79"),
-    (re.compile(r"\b(server[ -]?side request forgery|ssrf)\b"), "CWE-918"),
-    (re.compile(r"\b(insecure deserialization|unsafe deserialization|deserialization)\b"), "CWE-502"),
-    (re.compile(r"\b(server[ -]?side template injection|template injection|ssti)\b"), "NAME-TEMPLATE-INJECTION"),
-    (re.compile(r"\b(open redirect|open redirection|unvalidated redirect|unvalidated redirection)\b"), "NAME-OPEN-REDIRECT"),
-)
 DEFAULT_STACK_PROFILE = {
     "language": "python",
     "framework": "flask",
@@ -77,84 +48,11 @@ DEFAULT_STACK_PROFILE = {
         "auto_patch": True,
     },
 }
-VULN_PROFILE_DEFAULTS = {
-    "CWE-89": {
-        "display_name": "SQL Injection",
-        "pattern_id": "sqli-string-concat",
-        "runtime": {"db": "sqlite"},
-        "user_deps": ["requests==2.31.0"],
-    },
-    "CWE-352": {
-        "display_name": "CSRF",
-        "pattern_id": "csrf",
-        "user_deps": ["requests==2.31.0"],
-    },
-    "CWE-22": {
-        "display_name": "Path Traversal",
-        "pattern_id": "path-traversal",
-        "user_deps": ["requests==2.31.0"],
-    },
-    "CWE-78": {
-        "display_name": "Command Injection",
-        "pattern_id": "command-injection",
-        "user_deps": ["requests==2.31.0"],
-    },
-    "CWE-94": {
-        "display_name": "Code Injection",
-        "pattern_id": "code-injection",
-        "user_deps": ["requests==2.31.0"],
-    },
-    "CWE-79": {
-        "display_name": "Cross-Site Scripting",
-        "pattern_id": "xss-reflected",
-        "user_deps": ["requests==2.31.0"],
-    },
-    "CWE-918": {
-        "display_name": "Server-Side Request Forgery",
-        "pattern_id": "ssrf-url-fetch",
-        "user_deps": ["requests==2.31.0"],
-    },
-    "CWE-502": {
-        "display_name": "Insecure Deserialization",
-        "pattern_id": "insecure-deserialization",
-        "user_deps": ["requests==2.31.0"],
-    },
-}
-FRAGMENT_STRATEGY_VULN_IDS = {
-    "sqli_string_concat": "CWE-89",
-    "csrf_missing_token": "CWE-352",
-    "path_traversal_file_read": "CWE-22",
-    "command_injection_shell": "CWE-78",
-    "code_injection_eval": "CWE-94",
-    "xss_reflected": "CWE-79",
-    "ssrf_loopback_fetch": "CWE-918",
-    "deserialization_pickle_body": "CWE-502",
-    "template_injection_render": "NAME-TEMPLATE-INJECTION",
-    "open_redirect_reflect": "NAME-OPEN-REDIRECT",
-}
+VULN_PROFILE_DEFAULTS = catalog_profile_defaults()
 
 
 def _mapped_vuln_id_with_source(value: Any) -> tuple[str, str]:
-    label = _normalize_vuln_label(value)
-    if not label:
-        return "", ""
-    mapped = VULN_NAME_ALIASES.get(label, "")
-    if mapped:
-        return mapped, "alias"
-    for pattern, inferred in VULN_NAME_HEURISTICS:
-        if pattern.search(label):
-            return inferred, "heuristic"
-    try:
-        from agents.generator.flask_fragment_registry import resolve_fragment_strategy
-
-        strategy = resolve_fragment_strategy("", raw_label=str(value or ""))
-    except Exception:
-        strategy = None
-    if isinstance(strategy, str) and strategy.strip():
-        mapped = FRAGMENT_STRATEGY_VULN_IDS.get(strategy.strip())
-        if mapped:
-            return mapped, "fragment_strategy_fallback"
-    return "", ""
+    return mapped_vuln_id_with_source(value)
 
 
 def _as_bool(value: Any) -> bool:
@@ -166,29 +64,43 @@ def _as_bool(value: Any) -> bool:
 
 
 def _coerce_identifier(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    cleaned = value.strip()
+    identifier, _source = _coerce_vuln_reference(value)
+    return identifier
+
+
+def _synthetic_name_vuln_id(value: str) -> str:
+    cleaned = str(value or "").strip()
     if not cleaned:
         return ""
+    return f"NAME-{slugify_vuln_id(cleaned).upper()}"
+
+
+def _coerce_vuln_reference(
+    value: Any,
+    *,
+    allow_synthetic_name: bool = False,
+) -> tuple[str, str]:
+    if not isinstance(value, str):
+        return "", ""
+    cleaned = value.strip()
+    if not cleaned:
+        return "", ""
     mapped = _mapped_vuln_id(cleaned)
     if mapped:
-        return mapped
+        mapped_value, source = _mapped_vuln_id_with_source(cleaned)
+        return mapped_value, source or "alias"
     lowered = cleaned.lower()
     if lowered.startswith(("cwe", "cve")):
-        return cleaned.replace(" ", "").replace("_", "-").upper()
+        return cleaned.replace(" ", "").replace("_", "-").upper(), "explicit_identifier"
     if cleaned.isdigit():
-        return cleaned
+        return cleaned, "explicit_identifier"
     if re.fullmatch(r"[A-Za-z0-9.-]+", cleaned):
-        return cleaned.replace(" ", "").upper()
-    return ""
-
-
-def _normalize_vuln_label(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    cleaned = re.sub(r"[^a-z0-9]+", " ", value.strip().lower())
-    return re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned.replace(" ", "").upper(), "explicit_identifier"
+    if allow_synthetic_name:
+        synthetic = _synthetic_name_vuln_id(cleaned)
+        if synthetic:
+            return synthetic, "synthetic_name"
+    return "", ""
 
 
 def _mapped_vuln_id(value: Any) -> str:
@@ -209,12 +121,15 @@ def _named_vuln_label(requirement: Dict[str, Any]) -> str:
 
 def _named_vuln_id(requirement: Dict[str, Any]) -> str:
     for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name"):
-        mapped = _mapped_vuln_id(requirement.get(key))
-        if mapped:
-            return mapped
+        identifier, _source = _coerce_vuln_reference(
+            requirement.get(key),
+            allow_synthetic_name=True,
+        )
+        if identifier:
+            return identifier
     raw_name = _named_vuln_label(requirement)
     if raw_name:
-        return f"NAME-{slugify_vuln_id(raw_name).upper()}"
+        return _synthetic_name_vuln_id(raw_name)
     return ""
 
 
@@ -248,11 +163,14 @@ def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str
         raw = requirement.get(key)
         if not isinstance(raw, str) or not raw.strip():
             continue
-        mapped, source = _mapped_vuln_id_with_source(raw)
-        resolved = mapped or _coerce_identifier(raw) or str(primary_vuln or "").strip()
-        resolution_source = "explicit_identifier"
-        if mapped and resolved != raw.strip():
-            resolution_source = f"explicit_{source or 'alias'}"
+        resolved, source = _coerce_vuln_reference(
+            raw,
+            allow_synthetic_name=(key == "vuln_id"),
+        )
+        resolved = resolved or str(primary_vuln or "").strip()
+        resolution_source = source or "explicit_identifier"
+        if source == "alias" and resolved != raw.strip():
+            resolution_source = "explicit_alias"
         return {
             "input": raw.strip(),
             "resolved_vuln_id": resolved,
@@ -266,6 +184,24 @@ def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str
             "source": "resolved_only",
         }
     return {}
+
+
+def _name_resolution_from_target(target: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(target, dict):
+        return {}
+    raw_input = str(target.get("input") or "").strip()
+    resolved = str(target.get("vuln_id") or "").strip()
+    source = str(target.get("source") or "").strip() or "unknown"
+    field = str(target.get("field") or "").strip()
+    if not raw_input or not resolved:
+        return {}
+    if field in {"vuln_id", "cwe_id", "cve_id"} and source == "alias":
+        source = "explicit_alias"
+    return {
+        "input": raw_input,
+        "resolved_vuln_id": resolved,
+        "source": source,
+    }
 
 
 class RequirementValidationError(ValueError):
@@ -285,6 +221,7 @@ class RequirementNormalization:
     warnings: List[str]
     ignored_vuln_ids: List[str]
     bundles: List[Dict[str, str]]
+    vuln_id_resolutions: List[Dict[str, str]]
     executor_policy: Dict[str, Any]
 
 
@@ -296,7 +233,8 @@ def normalize_requirement(
     """Normalize vuln_id/vuln_ids fields and derive helper metadata."""
 
     normalized_req = deepcopy(requirement)
-    requested = _extract_vuln_ids(normalized_req)
+    targets = _extract_vuln_targets(normalized_req)
+    requested = [entry["vuln_id"] for entry in targets]
     if not requested:
         raise RequirementValidationError("At least one vuln_id or vuln_ids entry is required.")
 
@@ -313,7 +251,19 @@ def normalize_requirement(
     normalized_req["vuln_id"] = effective[0]
     normalized_req["vuln_ids"] = effective
     normalized_req["multi_vuln"] = multi_vuln
-    name_resolution = _name_resolution(normalized_req, effective[0])
+    if targets:
+        normalized_req["vuln_id_resolutions"] = [
+            {
+                "field": str(entry.get("field") or ""),
+                "input": str(entry.get("input") or ""),
+                "resolved_vuln_id": str(entry.get("vuln_id") or ""),
+                "source": str(entry.get("source") or ""),
+            }
+            for entry in targets
+        ]
+    name_resolution = _name_resolution_from_target(targets[0]) if targets else {}
+    if not name_resolution:
+        name_resolution = _name_resolution(normalized_req, effective[0])
     if name_resolution:
         normalized_req["name_resolution"] = name_resolution
     _apply_minimal_input_defaults(normalized_req, effective, warnings)
@@ -347,28 +297,71 @@ def normalize_requirement(
         warnings=warnings,
         ignored_vuln_ids=ignored,
         bundles=bundles,
+        vuln_id_resolutions=normalized_req.get("vuln_id_resolutions") or [],
         executor_policy=_normalize_executor_policy(normalized_req),
     )
 
 
-def _extract_vuln_ids(requirement: Dict[str, Any]) -> List[str]:
-    declared: List[str] = []
+def _extract_vuln_targets(requirement: Dict[str, Any]) -> List[Dict[str, str]]:
+    declared: List[Dict[str, str]] = []
+
+    def _append_target(raw_value: Any, *, field: str, allow_synthetic_name: bool) -> None:
+        identifier, source = _coerce_vuln_reference(
+            raw_value,
+            allow_synthetic_name=allow_synthetic_name,
+        )
+        if not identifier:
+            return
+        for existing in declared:
+            if existing.get("vuln_id") == identifier:
+                return
+        declared.append(
+            {
+                "field": field,
+                "input": str(raw_value).strip(),
+                "vuln_id": identifier,
+                "source": source or "unknown",
+            }
+        )
+
     seq = requirement.get("vuln_ids")
     if isinstance(seq, list):
-        for entry in seq:
-            identifier = _coerce_identifier(entry)
-            if identifier and identifier not in declared:
-                declared.append(identifier)
-    primary = _coerce_identifier(
-        requirement.get("vuln_id")
-        or requirement.get("cwe_id")
-        or requirement.get("cve_id")
-    )
+        for index, entry in enumerate(seq):
+            _append_target(
+                entry,
+                field=f"vuln_ids[{index}]",
+                allow_synthetic_name=True,
+            )
+
+    primary: Dict[str, str] = {}
+    for key in ("vuln_id", "cwe_id", "cve_id"):
+        raw = requirement.get(key)
+        identifier, source = _coerce_vuln_reference(
+            raw,
+            allow_synthetic_name=(key == "vuln_id"),
+        )
+        if not identifier:
+            continue
+        primary = {
+            "field": key,
+            "input": str(raw).strip(),
+            "vuln_id": identifier,
+            "source": source or "unknown",
+        }
+        break
     if not primary:
-        primary = _named_vuln_id(requirement)
+        raw_name = _named_vuln_label(requirement)
+        primary_id = _named_vuln_id(requirement)
+        if primary_id:
+            mapped, source = _mapped_vuln_id_with_source(raw_name)
+            primary = {
+                "field": "vuln_name",
+                "input": raw_name,
+                "vuln_id": primary_id,
+                "source": source or ("synthetic_name" if not mapped else "alias"),
+            }
     if primary:
-        if primary in declared:
-            declared.remove(primary)
+        declared = [entry for entry in declared if entry.get("vuln_id") != primary.get("vuln_id")]
         declared.insert(0, primary)
     if not declared:
         return []
@@ -376,55 +369,11 @@ def _extract_vuln_ids(requirement: Dict[str, Any]) -> List[str]:
 
 
 def _pattern_default_for_name(raw_name: str) -> str:
-    label = _normalize_vuln_label(raw_name)
-    if not label:
-        return "generic-web-vuln"
-    canonical = _mapped_vuln_id(raw_name)
-    canonical_pattern_aliases = {
-        "CWE-89": "sqli-string-concat",
-        "CWE-352": "csrf",
-        "CWE-22": "path-traversal",
-        "CWE-78": "command-injection",
-        "CWE-94": "code-injection",
-        "CWE-79": "xss-reflected",
-        "CWE-918": "ssrf-url-fetch",
-        "CWE-502": "insecure-deserialization",
-        "NAME-TEMPLATE-INJECTION": "template-injection",
-        "NAME-OPEN-REDIRECT": "open-redirect",
-    }
-    mapped = canonical_pattern_aliases.get(canonical)
-    if mapped:
-        return mapped
-    pattern_aliases = {
-        "sql injection": "sqli-string-concat",
-        "sqli": "sqli-string-concat",
-        "cross site request forgery": "csrf",
-        "csrf": "csrf",
-        "path traversal": "path-traversal",
-        "directory traversal": "path-traversal",
-        "command injection": "command-injection",
-        "code injection": "code-injection",
-        "cross site scripting": "xss-reflected",
-        "xss": "xss-reflected",
-        "server side request forgery": "ssrf-url-fetch",
-        "ssrf": "ssrf-url-fetch",
-        "insecure deserialization": "insecure-deserialization",
-        "deserialization": "insecure-deserialization",
-        "server side template injection": "template-injection",
-        "ssti": "template-injection",
-        "template injection": "template-injection",
-        "open redirect": "open-redirect",
-        "xxe": "xxe",
-    }
-    mapped = pattern_aliases.get(label)
-    if mapped:
-        return mapped
-    if "template injection" in label or "ssti" in label:
-        return "template-injection"
-    if "open redirect" in label or "unvalidated redirect" in label or "unvalidated redirection" in label:
-        return "open-redirect"
-    if label == "xxe" or "xml external entity" in label:
-        return "xxe"
+    entry = resolve_vuln_catalog_entry(raw_label=raw_name, pattern_id=raw_name)
+    if isinstance(entry, dict):
+        mapped = str(entry.get("pattern_id") or "").strip()
+        if mapped:
+            return mapped
     return "generic-web-vuln"
 
 
@@ -571,7 +520,10 @@ def _normalize_research_policy(
     researcher = requirement.get("researcher") or {}
     if not isinstance(researcher, dict):
         researcher = {}
-    remote_required = any(not can_resolve_without_remote_research(vuln_id) for vuln_id in effective_vuln_ids)
+    remote_required = any(
+        not can_resolve_without_remote_research_for_requirement(vuln_id, requirement)
+        for vuln_id in effective_vuln_ids
+    )
     default_policy = "remote_required" if remote_required else "remote_prefer"
     raw_policy = str(researcher.get("search_policy") or default_policy).strip().lower()
     if raw_policy not in VALID_SEARCH_POLICIES:
@@ -638,7 +590,10 @@ def _normalize_pipeline_policy(
     if not isinstance(policy, dict):
         policy = {}
     has_unknown = any(not _has_static_rule(vuln_id) for vuln_id in effective_vuln_ids)
-    remote_required = any(not can_resolve_without_remote_research(vuln_id) for vuln_id in effective_vuln_ids)
+    remote_required = any(
+        not can_resolve_without_remote_research_for_requirement(vuln_id, requirement)
+        for vuln_id in effective_vuln_ids
+    )
     policy["allow_runtime_rule_override_static"] = _as_bool(
         policy.get("allow_runtime_rule_override_static", False)
     )

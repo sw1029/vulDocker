@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from common.config import DecodingProfile, get_openai_api_key
@@ -39,6 +40,8 @@ class LLMClient:
         self.model_name = model_name
         self.decoding = decoding
         self.use_stub = False
+        self.fixture_used = False
+        self.last_fixture_path: Optional[str] = None
         self._fallback_on_error = use_stub_when_unavailable
         self._last_usage: Optional[Dict[str, Any]] = None
         self.last_error_class: Optional[str] = None
@@ -73,6 +76,16 @@ class LLMClient:
 
     def generate(self, messages: List[Dict[str, str]], *, tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """Generate a response from the underlying model or stub."""
+
+        self.fixture_used = False
+        self.last_fixture_path = None
+        fixture_response = self._fixture_response(messages)
+        if fixture_response is not None:
+            self.last_error_class = None
+            self.last_error_message = None
+            self.last_error_retryable = None
+            self._last_usage = None
+            return fixture_response
 
         if self.use_stub:
             return self._stub_response(messages)
@@ -111,7 +124,6 @@ class LLMClient:
                     raise
                 LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
                 self._record_error(exc)
-                self.use_stub = True
                 return self._stub_response(messages)
         try:
             self._last_usage = getattr(response, "usage", None)
@@ -121,7 +133,6 @@ class LLMClient:
                 raise
             LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
             self._record_error(exc)
-            self.use_stub = True
             return self._stub_response(messages)
 
     @staticmethod
@@ -158,6 +169,31 @@ class LLMClient:
         self.last_error_class = error_class
         self.last_error_message = token[:500] if token else None
         self.last_error_retryable = retryable
+
+    def _fixture_response(self, messages: List[Dict[str, str]]) -> Optional[str]:
+        prompt_echo = "\n---\n".join(m.get("content", "") for m in messages if m.get("content"))
+        lowered = prompt_echo.lower()
+        fixture_specs = [
+            (
+                "VUL_LLM_FIXTURE_GENERATOR_MANIFEST",
+                ("generator_manifest", "produce only compact json"),
+            ),
+        ]
+        for env_key, markers in fixture_specs:
+            raw_path = str(os.environ.get(env_key) or "").strip()
+            if not raw_path:
+                continue
+            if not all(marker in lowered for marker in markers):
+                continue
+            fixture_path = Path(raw_path)
+            if not fixture_path.is_absolute():
+                fixture_path = Path.cwd() / fixture_path
+            if not fixture_path.exists():
+                raise LLMConfigError(f"LLM fixture file does not exist: {fixture_path}")
+            self.fixture_used = True
+            self.last_fixture_path = str(fixture_path)
+            return fixture_path.read_text(encoding="utf-8")
+        return None
 
     def _stub_response(self, messages: List[Dict[str, str]]) -> str:
         """Return a deterministic stub when the real model is unavailable."""

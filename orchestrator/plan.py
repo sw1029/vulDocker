@@ -63,6 +63,24 @@ def _default_components(requirement: Dict[str, Any]) -> Dict[str, str]:
     return components
 
 
+def _runtime_surface_digest(normalization: RequirementNormalization) -> str:
+    requirement = normalization.requirement
+    runtime = requirement.get("runtime") if isinstance(requirement.get("runtime"), dict) else {}
+    runtime = runtime if isinstance(runtime, dict) else {}
+    payload = {
+        "generator_mode": str(requirement.get("generator_mode") or "synthesis"),
+        "runtime": {
+            "db": str(runtime.get("db") or "").strip().lower(),
+            "allow_external_db": bool(runtime.get("allow_external_db", False)),
+            "base_image": str(runtime.get("base_image") or "").strip(),
+            "package_manager": str(runtime.get("package_manager") or "").strip(),
+        },
+        "executor": normalization.executor_policy,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def _normalize_variation_key(requirement: Dict[str, Any]) -> Dict[str, Any]:
     seed = requirement.get("seed", 0)
     return VariationManager.normalize(requirement.get("variation_key"), seed=seed)
@@ -106,6 +124,8 @@ def _policy_config(normalization: RequirementNormalization) -> Dict[str, Any]:
 def build_plan(normalization: RequirementNormalization) -> Dict[str, Any]:
     components = _default_components(normalization.requirement)
     components["effective_vuln_ids_digest"] = normalization.effective_vuln_ids_digest
+    components["generator_mode"] = str(normalization.requirement.get("generator_mode") or "synthesis")
+    components["runtime_surface_digest"] = _runtime_surface_digest(normalization)
     if normalization.vuln_ids_digest:
         components["vuln_ids_digest"] = normalization.vuln_ids_digest
     sid = compute_sid(components)

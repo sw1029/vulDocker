@@ -168,6 +168,39 @@ def test_sqli_registry_manifest_records_scaffold_and_fragment_metadata() -> None
     assert result.manifest["poc"]["flag_token"] == "FLAG-sqli-demo-token"
 
 
+def test_mysql_sqli_registry_manifest_records_external_db_metadata() -> None:
+    result = compile_manifest(
+        sid="sid-registry-sqli-mysql",
+        requirement={
+            "vuln_id": "CWE-89",
+            "vuln_name": "SQL Injection",
+            "pattern_id": "sqli-union-mysql",
+            "runtime": {"db": "mysql", "allow_external_db": True},
+        },
+        semantic_profile=_semantic_profile(
+            "sqli_string_concat_mysql",
+            requested_name="SQL Injection",
+            normalized_vuln_id="CWE-89",
+        ),
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/flask"
+    assert metadata["stack_scaffold_version"] == "1.0"
+    assert metadata["fragment_id"] == "mysql_login_query_concat_route"
+    assert metadata["compose_mode"] == "registry"
+    assert metadata["requires_external_db"] is True
+    assert result.manifest["requires_external_db"] is True
+    assert result.manifest["run"]["env"]["DB_HOST"] == "sqli-db"
+    assert result.manifest["run"]["env"]["DB_USER"] == "sqli"
+    requirements_txt = next(item for item in result.manifest["files"] if item["path"] == "requirements.txt")
+    assert "mysql-connector-python==8.1.0" in requirements_txt["content"]
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    assert "mysql.connector.connect" in service_main["content"]
+    assert "missing-db-host" in service_main["content"]
+
+
 def test_template_injection_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
     result = compile_manifest(
         sid="sid-registry-template",
@@ -188,6 +221,33 @@ def test_template_injection_registry_manifest_records_scaffold_and_fragment_meta
     assert result.manifest["poc"]["flag_token"] == "FLAG{SSTI_OK}"
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
     assert "render_template_string(template)" in service_main["content"]
+
+
+def test_xxe_registry_manifest_records_scaffold_fragment_and_extra_files() -> None:
+    result = compile_manifest(
+        sid="sid-registry-xxe",
+        requirement={"vuln_id": "NAME-XXE", "vuln_name": "XML External Entity"},
+        semantic_profile=_semantic_profile(
+            "xxe_xml_entity_resolve",
+            requested_name="XML External Entity",
+            normalized_vuln_id="NAME-XXE",
+        ),
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/flask"
+    assert metadata["stack_scaffold_version"] == "1.0"
+    assert metadata["fragment_id"] == "xxe_local_file_entity_route"
+    assert metadata["compose_mode"] == "registry"
+    assert result.manifest["poc"]["flag_token"] == "FLAG{XXE_OK}"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    assert "etree.XMLParser(load_dtd=True, resolve_entities=True, no_network=False)" in service_main["content"]
+    assert "root = etree.fromstring(xml_body, parser=parser)" in service_main["content"]
+    requirements_txt = next(item for item in result.manifest["files"] if item["path"] == "requirements.txt")
+    assert "lxml==5.2.1" in requirements_txt["content"]
+    paths = {item["path"] for item in result.manifest["files"]}
+    assert "secret.txt" in paths
 
 
 def test_path_traversal_registry_manifest_records_scaffold_fragment_and_extra_files() -> None:

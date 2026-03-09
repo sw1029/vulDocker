@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from common.vuln_catalog import resolve_compiler_strategy, resolve_vuln_catalog_entry
+
 
 ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
 FRAGMENT_CATALOG_PATH = ASSETS_ROOT / "flask-fragments.json"
@@ -31,7 +33,8 @@ class FlaskFragmentSpec:
     requirements_content: str = "Flask==3.0.0\nrequests==2.31.0\n"
     app_setup_block: str = ""
     startup_block: str = ""
-    extra_files_builder: Optional[Callable[[int], List[Dict[str, Any]]]] = None
+    extra_files: Tuple[Dict[str, Any], ...] = ()
+    requires_external_db: bool = False
 
 
 def _fragment_catalog() -> Dict[str, Dict[str, Any]]:
@@ -53,6 +56,22 @@ def _fragment_kwargs(strategy: str) -> Dict[str, Any]:
         bucket: tuple(str(item) for item in (semantic_signature_raw.get(bucket) or []) if isinstance(item, str) and item.strip())
         for bucket in ("input_vector", "sink", "exploit_precondition")
     }
+    extra_files_raw = payload.get("extra_files") if isinstance(payload.get("extra_files"), list) else []
+    extra_files: List[Dict[str, Any]] = []
+    for item in extra_files_raw:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        extra_files.append(
+            {
+                "path": path,
+                "role": str(item.get("role") or "helper").strip() or "helper",
+                "description": str(item.get("description") or "").strip(),
+                "content": str(item.get("content") or ""),
+            }
+        )
     return {
         "family": str(payload.get("family") or strategy),
         "fragment_id": str(payload.get("fragment_id") or strategy),
@@ -65,6 +84,8 @@ def _fragment_kwargs(strategy: str) -> Dict[str, Any]:
         ),
         "semantic_signature": semantic_signature,
         "requirements_content": str(payload.get("requirements_content") or "Flask==3.0.0\nrequests==2.31.0\n"),
+        "extra_files": tuple(extra_files),
+        "requires_external_db": bool(payload.get("requires_external_db", False)),
     }
 
 
@@ -133,6 +154,10 @@ def _sqli_poc_content(port: int) -> Dict[str, str]:
     return _poc_asset_payload("sqli_string_concat", port)
 
 
+def _sqli_mysql_poc_content(port: int) -> Dict[str, str]:
+    return _poc_asset_payload("sqli_string_concat_mysql", port)
+
+
 def _path_traversal_poc_content(port: int) -> Dict[str, str]:
     return _poc_asset_payload("path_traversal_file_read", port)
 
@@ -165,21 +190,8 @@ def _xss_poc_content(port: int) -> Dict[str, str]:
     return _poc_asset_payload("xss_reflected", port)
 
 
-def _path_traversal_extra_files(_: int) -> List[Dict[str, Any]]:
-    return [
-        {
-            "path": "secret.txt",
-            "role": "helper",
-            "description": "Traversal target file containing the exfiltration marker.",
-            "content": "FLAG{PATH_TRAVERSAL_OK}\n",
-        },
-        {
-            "path": "files/note.txt",
-            "role": "helper",
-            "description": "Safe in-root file used by the vulnerable route.",
-            "content": "safe-note\n",
-        },
-    ]
+def _xxe_poc_content(port: int) -> Dict[str, str]:
+    return _poc_asset_payload("xxe_xml_entity_resolve", port)
 
 
 FLASK_FRAGMENT_REGISTRY: Dict[str, FlaskFragmentSpec] = {
@@ -236,7 +248,6 @@ FLASK_FRAGMENT_REGISTRY: Dict[str, FlaskFragmentSpec] = {
         poc_builder=_path_traversal_poc_content,
         app_setup_block=_fragment_code_text("path_traversal_file_read", "app_setup_block"),
         startup_block=_fragment_code_text("path_traversal_file_read", "startup_block"),
-        extra_files_builder=_path_traversal_extra_files,
         **_fragment_kwargs("path_traversal_file_read"),
     ),
     "sqli_string_concat": FlaskFragmentSpec(
@@ -247,6 +258,15 @@ FLASK_FRAGMENT_REGISTRY: Dict[str, FlaskFragmentSpec] = {
         app_setup_block=_fragment_code_text("sqli_string_concat", "app_setup_block"),
         startup_block=_fragment_code_text("sqli_string_concat", "startup_block"),
         **_fragment_kwargs("sqli_string_concat"),
+    ),
+    "sqli_string_concat_mysql": FlaskFragmentSpec(
+        strategy="sqli_string_concat_mysql",
+        import_block=_fragment_code_text("sqli_string_concat_mysql", "import_block"),
+        route_block=_fragment_code_text("sqli_string_concat_mysql", "route_block"),
+        poc_builder=_sqli_mysql_poc_content,
+        app_setup_block=_fragment_code_text("sqli_string_concat_mysql", "app_setup_block"),
+        startup_block=_fragment_code_text("sqli_string_concat_mysql", "startup_block"),
+        **_fragment_kwargs("sqli_string_concat_mysql"),
     ),
     "ssrf_loopback_fetch": FlaskFragmentSpec(
         strategy="ssrf_loopback_fetch",
@@ -264,138 +284,36 @@ FLASK_FRAGMENT_REGISTRY: Dict[str, FlaskFragmentSpec] = {
         startup_block=_fragment_code_text("deserialization_pickle_body", "startup_block"),
         **_fragment_kwargs("deserialization_pickle_body"),
     ),
-}
-
-
-_EXACT_VULN_STRATEGIES = {
-    "CWE-89": "sqli_string_concat",
-    "CWE_89": "sqli_string_concat",
-    "CWE-352": "csrf_missing_token",
-    "CWE_352": "csrf_missing_token",
-    "CWE-78": "command_injection_shell",
-    "CWE_78": "command_injection_shell",
-    "CWE-94": "code_injection_eval",
-    "CWE_94": "code_injection_eval",
-    "CWE-22": "path_traversal_file_read",
-    "CWE_22": "path_traversal_file_read",
-    "CWE-79": "xss_reflected",
-    "CWE_79": "xss_reflected",
-    "CWE-918": "ssrf_loopback_fetch",
-    "CWE_918": "ssrf_loopback_fetch",
-    "CWE-502": "deserialization_pickle_body",
-    "CWE_502": "deserialization_pickle_body",
-    "NAME-OPEN-REDIRECT": "open_redirect_reflect",
-    "NAME-TEMPLATE-INJECTION": "template_injection_render",
+    "xxe_xml_entity_resolve": FlaskFragmentSpec(
+        strategy="xxe_xml_entity_resolve",
+        import_block=_fragment_code_text("xxe_xml_entity_resolve", "import_block"),
+        route_block=_fragment_code_text("xxe_xml_entity_resolve", "route_block"),
+        poc_builder=_xxe_poc_content,
+        **_fragment_kwargs("xxe_xml_entity_resolve"),
+    ),
 }
 
 
 def _resolve_exact_fragment_strategy(vuln_id: str) -> str | None:
-    token = str(vuln_id or "").strip().upper()
-    return _EXACT_VULN_STRATEGIES.get(token)
-
-
-def _label_tokens(raw_label: str) -> set[str]:
-    return {
-        token
-        for token in re.split(r"[^a-z0-9]+", str(raw_label or "").strip().lower())
-        if token
-    }
-
-
-def _label_has_tokens(tokens: set[str], *required: str) -> bool:
-    required_tokens = {str(item).strip().lower() for item in required if str(item).strip()}
-    return bool(required_tokens) and required_tokens.issubset(tokens)
+    entry = resolve_vuln_catalog_entry(vuln_id=vuln_id)
+    if not isinstance(entry, dict):
+        return None
+    strategy = str(entry.get("fragment_strategy") or "").strip()
+    return strategy or None
 
 
 def resolve_fragment_strategy(vuln_id: str, pattern_id: str = "", raw_label: str = "") -> str | None:
     exact = _resolve_exact_fragment_strategy(vuln_id)
     if exact:
         return exact
-    normalized_pattern = str(pattern_id or "").strip().lower()
-    normalized_label = str(raw_label or "").strip().lower()
-    label_tokens = _label_tokens(raw_label)
-    if (
-        "open-redirect" in normalized_pattern
-        or "open redirect" in normalized_label
-        or "unvalidated redirect" in normalized_label
-        or "unvalidated redirection" in normalized_label
-        or _label_has_tokens(label_tokens, "open", "redirect")
-        or _label_has_tokens(label_tokens, "unvalidated", "redirect")
-        or _label_has_tokens(label_tokens, "unvalidated", "redirection")
-    ):
-        return "open_redirect_reflect"
-    if (
-        "template-injection" in normalized_pattern
-        or "ssti" in normalized_pattern
-        or "template injection" in normalized_label
-        or "ssti" in normalized_label
-        or _label_has_tokens(label_tokens, "template", "injection")
-        or _label_has_tokens(label_tokens, "server", "side", "template", "injection")
-        or _label_has_tokens(label_tokens, "jinja", "template", "injection")
-        or _label_has_tokens(label_tokens, "jinja2", "template", "injection")
-    ):
-        return "template_injection_render"
-    if (
-        "path-traversal" in normalized_pattern
-        or "path traversal" in normalized_label
-        or _label_has_tokens(label_tokens, "path", "traversal")
-        or _label_has_tokens(label_tokens, "directory", "traversal")
-        or _label_has_tokens(label_tokens, "file", "traversal")
-    ):
-        return "path_traversal_file_read"
-    if (
-        "xss" in normalized_pattern
-        or "cross-site scripting" in normalized_label
-        or "xss" in normalized_label
-        or _label_has_tokens(label_tokens, "cross", "site", "scripting")
-    ):
-        return "xss_reflected"
-    if (
-        "ssrf" in normalized_pattern
-        or "server-side request forgery" in normalized_label
-        or "ssrf" in normalized_label
-        or _label_has_tokens(label_tokens, "server", "side", "request", "forgery")
-    ):
-        return "ssrf_loopback_fetch"
-    if (
-        "deserialization" in normalized_pattern
-        or "insecure deserialization" in normalized_label
-        or "deserialization" in normalized_label
-        or _label_has_tokens(label_tokens, "insecure", "deserialization")
-        or _label_has_tokens(label_tokens, "unsafe", "deserialization")
-    ):
-        return "deserialization_pickle_body"
-    if (
-        "command-injection" in normalized_pattern
-        or "command injection" in normalized_label
-        or _label_has_tokens(label_tokens, "command", "injection")
-        or _label_has_tokens(label_tokens, "shell", "injection")
-        or _label_has_tokens(label_tokens, "os", "command", "injection")
-    ):
-        return "command_injection_shell"
-    if (
-        "code-injection" in normalized_pattern
-        or "code injection" in normalized_label
-        or _label_has_tokens(label_tokens, "code", "injection")
-        or _label_has_tokens(label_tokens, "eval", "injection")
-        or _label_has_tokens(label_tokens, "exec", "injection")
-    ):
-        return "code_injection_eval"
-    if (
-        "sqli" in normalized_pattern
-        or "sql injection" in normalized_label
-        or "sqli" in normalized_label
-        or _label_has_tokens(label_tokens, "sql", "injection")
-    ):
-        return "sqli_string_concat"
-    if (
-        "csrf" in normalized_pattern
-        or "cross site request forgery" in normalized_label
-        or "csrf" in normalized_label
-        or _label_has_tokens(label_tokens, "cross", "site", "request", "forgery")
-    ):
-        return "csrf_missing_token"
-    return None
+    entry = resolve_vuln_catalog_entry(pattern_id=pattern_id, raw_label=raw_label)
+    if not isinstance(entry, dict):
+        return None
+    strategy = resolve_compiler_strategy(
+        str(entry.get("vuln_id") or ""),
+        {"pattern_id": pattern_id} if str(pattern_id or "").strip() else None,
+    ) or str(entry.get("fragment_strategy") or "").strip()
+    return strategy or None
 
 
 def resolve_fragment_spec(vuln_id: str, pattern_id: str = "", raw_label: str = "") -> FlaskFragmentSpec | None:
@@ -406,8 +324,12 @@ def resolve_fragment_spec(vuln_id: str, pattern_id: str = "", raw_label: str = "
 
 
 def fragment_semantic_signature(vuln_id: str, pattern_id: str = "", raw_label: str = "") -> Dict[str, List[str]]:
+    spec = None
     exact = _resolve_exact_fragment_strategy(vuln_id)
-    spec = FLASK_FRAGMENT_REGISTRY.get(exact) if exact else None
+    if exact:
+        spec = FLASK_FRAGMENT_REGISTRY.get(exact)
+    elif not str(vuln_id or "").strip():
+        spec = resolve_fragment_spec(vuln_id, pattern_id=pattern_id, raw_label=raw_label)
     if spec is None:
         return {
             "input_vector": [],
@@ -421,8 +343,12 @@ def fragment_semantic_signature(vuln_id: str, pattern_id: str = "", raw_label: s
 
 
 def fragment_guard_generator_assertions(vuln_id: str, pattern_id: str = "", raw_label: str = "") -> List[Dict[str, Any]]:
+    spec = None
     exact = _resolve_exact_fragment_strategy(vuln_id)
-    spec = FLASK_FRAGMENT_REGISTRY.get(exact) if exact else None
+    if exact:
+        spec = FLASK_FRAGMENT_REGISTRY.get(exact)
+    elif not str(vuln_id or "").strip():
+        spec = resolve_fragment_spec(vuln_id, pattern_id=pattern_id, raw_label=raw_label)
     if spec is None:
         return []
     assertions: List[Dict[str, Any]] = [

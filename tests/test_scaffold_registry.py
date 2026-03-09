@@ -29,3 +29,8 @@ def test_python_flask_scaffold_renders_dockerfile_from_asset_template() -> None:
     assert "WORKDIR /app" in dockerfile
     assert "EXPOSE 5000" in dockerfile
     assert 'CMD ["python", "app.py"]' in dockerfile
+
+
+def test_python_flask_scaffold_aliases_resolve_from_asset_catalog() -> None:
+    assert load_scaffold_spec("python-flask") is not None
+    assert load_scaffold_spec("flask") is not None

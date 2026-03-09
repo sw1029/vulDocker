@@ -1,0 +1,43 @@
+{
+  "manifest": {
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generation_origin": "built_in_template",
+    "dynamicness_verdict": "template-assisted",
+    "family_non_remote_available": true,
+    "effective_non_remote_available": true,
+    "compiler_path_enabled": true,
+    "executor_feasibility_status": "configured",
+    "generalization_class": "known_family_regression",
+    "counts_as_generalization": false
+  },
+  "evals": [
+    {
+      "slug": "cwe-89",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": true,
+      "compiler_supported": true,
+      "compiler_strategy": "sqli_string_concat_mysql",
+      "generation_origin": "built_in_template",
+      "dynamicness_verdict": "template-assisted",
+      "family_non_remote_available": true,
+      "effective_non_remote_available": true,
+      "compiler_path_enabled": true,
+      "executor_feasibility_status": "configured",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "generalization_class": "known_family_regression",
+      "counts_as_generalization": false
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

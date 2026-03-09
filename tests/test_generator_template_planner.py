@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -71,3 +72,45 @@ def test_hybrid_template_fallback_requires_compatible_template() -> None:
 
     service._get_registry = lambda: _CompatibleRegistry()  # type: ignore[attr-defined]
     assert service._has_compatible_template() is True  # type: ignore[attr-defined]
+
+
+def test_template_mode_prefers_viable_template_over_compiler() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.generator_mode = "template"  # type: ignore[attr-defined]
+    service.sid = "sid-template-prefer-template"  # type: ignore[attr-defined]
+    service.requirement = {"vuln_id": "CWE-89", "runtime": {"db": "mysql", "allow_external_db": True}}  # type: ignore[attr-defined]
+    calls: list[tuple[str, str]] = []
+
+    service._build_context = lambda: _context()  # type: ignore[attr-defined]
+    service._ensure_loop_started = lambda: None  # type: ignore[attr-defined]
+    service._has_viable_template = lambda: True  # type: ignore[attr-defined]
+    service._run_compiler_if_supported = lambda: (_ for _ in ()).throw(AssertionError("compiler should not run"))  # type: ignore[attr-defined]
+    service._run_synthesis_with_loops = lambda context: calls.append(("synthesis", "fallback"))  # type: ignore[attr-defined]
+    service._run_template = lambda context, *, mode_label: calls.append(("template", mode_label))  # type: ignore[attr-defined]
+    service.loop_controller = SimpleNamespace(record_success=lambda **kwargs: None)  # type: ignore[attr-defined]
+
+    service.run()  # type: ignore[attr-defined]
+
+    assert calls == [("template", "template")]
+
+
+def test_template_mode_without_viable_template_can_fallback_to_compiler() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.generator_mode = "template"  # type: ignore[attr-defined]
+    service.sid = "sid-template-fallback-compiler"  # type: ignore[attr-defined]
+    service.requirement = {"vuln_id": "CWE-89", "runtime": {"db": "mysql", "allow_external_db": True}}  # type: ignore[attr-defined]
+    calls: list[tuple[str, str]] = []
+
+    service._build_context = lambda: _context()  # type: ignore[attr-defined]
+    service._ensure_loop_started = lambda: None  # type: ignore[attr-defined]
+    service._has_viable_template = lambda: False  # type: ignore[attr-defined]
+    service._run_compiler_if_supported = lambda: SimpleNamespace(strategy="sqli_string_concat")  # type: ignore[attr-defined]
+    service._run_synthesis_with_loops = lambda context: calls.append(("synthesis", "fallback"))  # type: ignore[attr-defined]
+    service._run_template = lambda context, *, mode_label: calls.append(("template", mode_label))  # type: ignore[attr-defined]
+    service.loop_controller = SimpleNamespace(
+        record_success=lambda **kwargs: calls.append(("compiler", str(kwargs.get("note") or "")))
+    )  # type: ignore[attr-defined]
+
+    service.run()  # type: ignore[attr-defined]
+
+    assert calls == [("compiler", "compiler path: sqli_string_concat")]

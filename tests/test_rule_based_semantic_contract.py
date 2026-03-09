@@ -817,3 +817,137 @@ def test_freeform_open_redirect_can_pass_when_semantics_and_service_match(
     assert result["semantic_supported"] is True
     assert result["semantic_status"] == "aligned"
     assert result["semantic_consistency"]["source"] == "generator_manifest"
+
+
+def test_compiler_generated_runtime_rule_is_classified_as_medium_trust(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-compiler-runtime-rule"
+    slug = "name-open-redirect"
+    metadata_dir = repo_root / "metadata" / sid
+    runtime_rules = metadata_dir / "runtime_rules"
+    workspace_dir = repo_root / "workspaces" / sid / "app"
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    runtime_rules.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, redirect, request\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/go')\n"
+        "def go():\n"
+        "    next_url = request.args.get('next', 'https://example.com')\n"
+        "    return redirect(next_url, code=302)\n"
+    )
+    poc_text = "print('Exploit SUCCESS')\nprint('FLAG{OPEN_REDIRECT_OK}')\n"
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_origin": "compiler_generated",
+                "manifest": {
+                    "metadata": {"cwe": "NAME-OPEN-REDIRECT"},
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": poc_text},
+                    ],
+                    "poc": {
+                        "success_signature": "Exploit SUCCESS",
+                        "flag_token": "FLAG{OPEN_REDIRECT_OK}",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "success_signature": "Exploit SUCCESS",
+            "flag_token": "FLAG{OPEN_REDIRECT_OK}",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "compiler_supported": True,
+            "compiler_strategy": "open_redirect_reflect",
+            "generation_origin": "compiler_generated",
+            "provenance": {"generation_origin": "compiler_generated"},
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["request.args", "next parameter", "redirect target"],
+                    "sink": ["redirect(", "location header", "http redirect sink"],
+                    "exploit_precondition": ["open redirect", "unvalidated redirect target", "external redirect"],
+                },
+                "semantic_signature_source": ["fragment_registry"],
+                "status": "aligned",
+            },
+        },
+    )
+    (runtime_rules / "name-open-redirect.yaml").write_text(
+        "\n".join(
+            [
+                "cwe: NAME-OPEN-REDIRECT",
+                "version: 2",
+                "scenario_type: web-poc",
+                "origin: runtime",
+                "override_scope: none",
+                "verification:",
+                "  source: runtime",
+                "  require_flag: true",
+                "  flag_mode: strict",
+                "  exit_code: zero",
+                "output:",
+                "  mode: auto",
+                "  format: auto",
+                "llm:",
+                "  assist_default: false",
+                "  assertion_budget: 8",
+                "runtime:",
+                "  success_mode: text",
+                "  success_text_markers:",
+                "    - Exploit SUCCESS",
+                "  flag_token: FLAG{OPEN_REDIRECT_OK}",
+                "success_signature: Exploit SUCCESS",
+                "flag_token: FLAG{OPEN_REDIRECT_OK}",
+                "strict_flag: true",
+                "patterns:",
+                "  - type: file_contains",
+                "    path: app.py",
+                "    contains: redirect(",
+                "  - type: poc_contains",
+                "    path: poc.py",
+                "    contains: Exploit SUCCESS",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("VULD_RUNTIME_RULE_DIRS", str(runtime_rules))
+    load_rule.cache_clear()
+    list_rules.cache_clear()
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "NAME-OPEN-REDIRECT",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is True
+    assert result["verification_rule_source"] == "compiler_runtime_rule"
+    assert result["verification_trust"] == "medium"
+    assert "compiler-derived runtime rule" in result["verification_trust_reason"]

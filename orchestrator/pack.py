@@ -16,10 +16,16 @@ if str(REPO_ROOT) not in sys.path:
 from common.logging import get_logger
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
-from common.contracts import load_generator_contract, load_semantic_profile
+from common.contracts import (
+    executor_feasibility_summary,
+    load_generator_contract,
+    load_semantic_profile,
+    lower_bound_summary,
+)
 from common.rules import load_static_rule
 from common.run_matrix import (
     artifacts_dir_for_bundle,
+    bundle_requirement,
     load_vuln_bundles,
     metadata_dir_for_bundle,
     workspace_dir_for_bundle,
@@ -82,6 +88,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
     generalization_summary = _generalization_summary(bundles)
     compiler_contract_summary = _compiler_contract_summary(bundles)
     verification_summary = _verification_summary(bundles)
+    lower_bound_rollup = _lower_bound_rollup(bundles)
+    executor_feasibility_rollup = _executor_feasibility_rollup(bundles)
+    partial_progress_summary = _partial_progress_summary(bundles)
     pipeline_result = _pipeline_result(sid)
     manifest = {
         "sid": sid,
@@ -102,6 +111,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         "generalization_summary": generalization_summary,
         "compiler_contract_summary": compiler_contract_summary,
         "verification_summary": verification_summary,
+        "lower_bound_summary": lower_bound_rollup,
+        "executor_feasibility_summary": executor_feasibility_rollup,
+        "partial_progress_summary": partial_progress_summary,
         "performance": performance,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {
@@ -121,6 +133,10 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         provenance = bundles[0].get("provenance") or {}
         if isinstance(provenance.get("generation_origin"), str) and provenance.get("generation_origin", "").strip():
             manifest["generation_origin"] = provenance["generation_origin"].strip()
+        for key in ("fallback_used", "family_override_applied", "llm_stub_used", "llm_fixture_used"):
+            value = provenance.get(key)
+            if isinstance(value, bool):
+                manifest[key] = value
         dynamicness = bundles[0].get("dynamicness") or {}
         if isinstance(dynamicness.get("verdict"), str) and dynamicness.get("verdict", "").strip():
             manifest["dynamicness_verdict"] = dynamicness["verdict"].strip()
@@ -157,6 +173,21 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         reason = generalization.get("reason")
         if isinstance(reason, str) and reason.strip():
             manifest["generalization_reason"] = reason.strip()
+        lower_bound = bundles[0].get("lower_bound") or {}
+        if isinstance(lower_bound, dict) and lower_bound:
+            manifest["lower_bound"] = lower_bound
+            for key in ("family_non_remote_available", "effective_non_remote_available", "compiler_path_enabled"):
+                value = lower_bound.get(key)
+                if isinstance(value, bool):
+                    manifest[key] = value
+        executor_feasibility = bundles[0].get("executor_feasibility") or {}
+        if isinstance(executor_feasibility, dict) and executor_feasibility:
+            manifest["executor_feasibility"] = executor_feasibility
+            status = executor_feasibility.get("status")
+            if isinstance(status, str) and status.strip():
+                manifest["executor_feasibility_status"] = status.strip()
+    else:
+        _apply_multibundle_top_level_rollups(manifest, bundles)
     manifest_path = metadata_dir / filename
     stale_name = "failure_manifest.json" if filename == "manifest.json" else "manifest.json"
     stale_path = metadata_dir / stale_name
@@ -196,11 +227,12 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
         workspace_dir = workspace_dir_for_bundle(plan, bundle)
         build_dir = artifacts_dir_for_bundle(plan, bundle, "build")
         run_dir = artifacts_dir_for_bundle(plan, bundle, "run")
+        requirement_view = bundle_requirement(requirement, bundle)
         researcher_report = metadata_dir / "researcher_report.json"
         generator_template = metadata_dir / "generator_template.json"
         reviewer_report = metadata_dir / "reviewer_report.json"
         generator_payload = _load_json(generator_template)
-        pattern_id = (generator_payload or {}).get("pattern_id") or requirement.get("pattern_id")
+        pattern_id = (generator_payload or {}).get("pattern_id") or requirement_view.get("pattern_id")
         run_record = run_map.get(bundle.slug, {})
         eval_record = eval_map.get(bundle.slug) or eval_map.get(bundle.vuln_id)
         promotion = _bundle_promotion_status(plan, bundle)
@@ -214,6 +246,8 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
         )
         dynamicness = _bundle_dynamicness_verdict(provenance)
         compiler_contract = _bundle_compiler_contract(metadata_dir)
+        lower_bound = _bundle_lower_bound(metadata_dir, bundle.vuln_id, requirement_view)
+        executor_feasibility = _bundle_executor_feasibility(plan, bundle, requirement_view, metadata_dir)
         generalization = _bundle_generalization_verdict(
             bundle,
             pattern_id=pattern_id,
@@ -233,6 +267,8 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "dynamicness": dynamicness,
             "generalization": generalization,
             "compiler_contract": compiler_contract,
+            "lower_bound": lower_bound,
+            "executor_feasibility": executor_feasibility,
             "deps_digest": dep_digest,
             "paths": {
                 "workspace": str(workspace_dir),
@@ -270,6 +306,7 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
     run_summary = _bundle_run_summary(plan, bundle)
     eval_result = _bundle_eval_result(plan, bundle)
     contract = load_generator_contract(metadata_dir)
+    requirement = plan.get("requirement") or {}
     reasons: List[str] = []
     if not isinstance(run_summary, dict):
         reasons.append("pipeline:run_missing")
@@ -343,6 +380,10 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
             reasons.append("compiler:unsupported")
             if compiler_reason:
                 reasons.append(f"compiler_reason:{compiler_reason}")
+    requirement_view = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+    feasibility = _bundle_executor_feasibility(plan, bundle, requirement_view, metadata_dir)
+    if feasibility.get("status") == "misconfigured":
+        reasons.append("executor:misconfigured")
     return {
         "eligible": not reasons,
         "reasons": reasons,
@@ -479,7 +520,7 @@ def _bundle_generation_provenance(
         value = _read_str(key)
         if value:
             payload[key] = value
-    for key in ("fallback_used", "family_override_applied", "llm_stub_used"):
+    for key in ("fallback_used", "family_override_applied", "llm_stub_used", "llm_fixture_used"):
         value = _read_bool(key)
         if value is not None:
             payload[key] = value
@@ -522,6 +563,8 @@ def _latest_failure_provenance(metadata_dir: Path) -> Dict[str, Any]:
         provenance.setdefault("generation_origin", "family_override")
     if latest.get("llm_stub_used") is True:
         provenance["llm_stub_used"] = True
+    if latest.get("llm_fixture_used") is True:
+        provenance["llm_fixture_used"] = True
     return provenance
 
 
@@ -566,6 +609,24 @@ def _bundle_failure_summary(sid: str, bundle) -> Dict[str, Any]:
     metadata = entry.get("metadata")
     if not isinstance(metadata, dict):
         metadata = {}
+    failure_bundle_slug = str(metadata.get("bundle_slug") or "").strip()
+    failure_vuln_id = str(metadata.get("vuln_id") or "").strip()
+    if failure_bundle_slug or failure_vuln_id:
+        if failure_bundle_slug and failure_bundle_slug != bundle.slug:
+            return {}
+        if failure_vuln_id and failure_vuln_id != bundle.vuln_id:
+            return {}
+    failed_bundles = metadata.get("failed_bundles")
+    failed_bundle_detail: Dict[str, Any] | None = None
+    if isinstance(failed_bundles, list) and failed_bundles:
+        for item in failed_bundles:
+            if not isinstance(item, dict):
+                continue
+            if item.get("bundle_slug") == bundle.slug or item.get("vuln_id") == bundle.vuln_id:
+                failed_bundle_detail = item
+                break
+        if failed_bundle_detail is None:
+            return {}
     unsupported = metadata.get("unsupported_bundles")
     if isinstance(unsupported, list) and unsupported:
         matched = False
@@ -580,6 +641,32 @@ def _bundle_failure_summary(sid: str, bundle) -> Dict[str, Any]:
     summary = _failure_summary(sid)
     if not summary:
         return {}
+    if failed_bundle_detail:
+        for key in ("stage", "reason", "quality_reason", "terminal_failure_class", "retry_recommended"):
+            value = failed_bundle_detail.get(key)
+            if isinstance(value, str) and value.strip():
+                if key == "quality_reason":
+                    summary["reason"] = value.strip()
+                else:
+                    summary[key] = value.strip()
+            elif isinstance(value, bool):
+                summary[key] = value
+        detail_metadata = dict(summary.get("metadata") or {})
+        detail_metadata.update(
+            {
+                key: value
+                for key, value in failed_bundle_detail.items()
+                if key
+                not in {
+                    "reason",
+                    "quality_reason",
+                    "terminal_failure_class",
+                    "retry_recommended",
+                }
+            }
+        )
+        if detail_metadata:
+            summary["metadata"] = detail_metadata
     summary["bundle_slug"] = bundle.slug
     summary["vuln_id"] = bundle.vuln_id
     return summary
@@ -617,6 +704,7 @@ def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_origin: Dict[str, int] = {}
     by_dynamicness_verdict: Dict[str, int] = {}
     llm_stub_bundles = 0
+    llm_fixture_bundles = 0
     fallback_bundles = 0
     family_override_bundles = 0
     for entry in bundles:
@@ -633,6 +721,8 @@ def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
                 by_dynamicness_verdict[verdict] = by_dynamicness_verdict.get(verdict, 0) + 1
         if provenance.get("llm_stub_used") is True:
             llm_stub_bundles += 1
+        if provenance.get("llm_fixture_used") is True:
+            llm_fixture_bundles += 1
         if provenance.get("fallback_used") is True:
             fallback_bundles += 1
         if provenance.get("family_override_applied") is True:
@@ -642,9 +732,56 @@ def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "by_origin": by_origin,
         "by_dynamicness_verdict": by_dynamicness_verdict,
         "llm_stub_bundles": llm_stub_bundles,
+        "llm_fixture_bundles": llm_fixture_bundles,
         "fallback_bundles": fallback_bundles,
         "family_override_bundles": family_override_bundles,
     }
+
+
+def _apply_multibundle_top_level_rollups(manifest: Dict[str, Any], bundles: List[Dict[str, Any]]) -> None:
+    if not isinstance(manifest, dict) or not isinstance(bundles, list) or not bundles:
+        return
+    generation_origin = _rollup_multibundle_string_field(bundles, section="provenance", key="generation_origin")
+    if generation_origin:
+        manifest["generation_origin"] = generation_origin
+    dynamicness_verdict = _rollup_multibundle_string_field(bundles, section="dynamicness", key="verdict")
+    if dynamicness_verdict:
+        manifest["dynamicness_verdict"] = dynamicness_verdict
+    verification_rule_source = _rollup_multibundle_string_field(bundles, section="verification", key="rule_source")
+    if verification_rule_source:
+        manifest["verification_rule_source"] = verification_rule_source
+    verification_trust = _rollup_multibundle_string_field(bundles, section="verification", key="trust")
+    if verification_trust:
+        manifest["verification_trust"] = verification_trust
+    for key in ("stack_scaffold_id", "stack_scaffold_version", "compose_mode"):
+        value = _rollup_multibundle_string_field(bundles, section="compiler_contract", key=key)
+        if value:
+            manifest[key] = value
+
+
+def _rollup_multibundle_string_field(
+    bundles: List[Dict[str, Any]],
+    *,
+    section: str,
+    key: str,
+) -> str:
+    values: List[str] = []
+    saw_missing = False
+    for entry in bundles:
+        scoped = entry.get(section) or {}
+        if not isinstance(scoped, dict):
+            scoped = {}
+        raw = scoped.get(key)
+        if isinstance(raw, str) and raw.strip():
+            values.append(raw.strip())
+        else:
+            saw_missing = True
+    if not values:
+        return ""
+    unique = sorted(set(values))
+    if len(unique) == 1 and not saw_missing:
+        return unique[0]
+    return "mixed"
 
 
 def _bundle_generalization_verdict(
@@ -718,6 +855,112 @@ def _bundle_generalization_verdict(
     }
 
 
+def _bundle_lower_bound(
+    metadata_dir: Path,
+    vuln_id: str,
+    requirement: Dict[str, Any],
+) -> Dict[str, Any]:
+    contract = load_generator_contract(metadata_dir) or {}
+    direct = contract.get("lower_bound")
+    if isinstance(direct, dict) and direct:
+        return direct
+    profile = load_semantic_profile(metadata_dir) or {}
+    nested = profile.get("lower_bound") if isinstance(profile, dict) else None
+    if isinstance(nested, dict) and nested:
+        return nested
+    return lower_bound_summary(vuln_id, requirement)
+
+
+def _bundle_executor_feasibility(
+    plan: Dict[str, Any],
+    bundle,
+    requirement: Dict[str, Any],
+    metadata_dir: Path,
+) -> Dict[str, Any]:
+    requires_external_db = False
+    for path in (metadata_dir / "generator_manifest.json", metadata_dir / "generator_template.json"):
+        payload = _load_json(path) or {}
+        if not isinstance(payload, dict):
+            continue
+        candidates = [payload]
+        manifest = payload.get("manifest")
+        if isinstance(manifest, dict):
+            candidates.append(manifest)
+        found = False
+        for candidate in candidates:
+            value = candidate.get("requires_external_db")
+            if value is not None:
+                requires_external_db = bool(value)
+                found = True
+                break
+        if found:
+            break
+    else:
+        runtime = requirement.get("runtime") if isinstance(requirement.get("runtime"), dict) else {}
+        db = str(runtime.get("db") or "").strip().lower()
+        requires_external_db = db in {"mysql", "postgres", "postgresql", "mariadb"}
+    policy = plan.get("policy") or {}
+    executor_policy = policy.get("executor") if isinstance(policy, dict) else {}
+    return executor_feasibility_summary(
+        requirement,
+        executor_policy if isinstance(executor_policy, dict) else {},
+        requires_external_db=requires_external_db,
+    )
+
+
+def _lower_bound_rollup(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    family_non_remote_bundles = 0
+    effective_non_remote_bundles = 0
+    compiler_disabled_bundles = 0
+    by_effective_status: Dict[str, int] = {}
+    for entry in bundles:
+        lower_bound = entry.get("lower_bound") or {}
+        if not isinstance(lower_bound, dict):
+            continue
+        if lower_bound.get("family_non_remote_available") is True:
+            family_non_remote_bundles += 1
+        if lower_bound.get("effective_non_remote_available") is True:
+            effective_non_remote_bundles += 1
+        if lower_bound.get("compiler_path_enabled") is False:
+            compiler_disabled_bundles += 1
+        if lower_bound.get("effective_non_remote_available") is True:
+            token = "effective_non_remote"
+        elif lower_bound.get("family_non_remote_available") is True:
+            token = "family_only"
+        else:
+            token = "none"
+        by_effective_status[token] = by_effective_status.get(token, 0) + 1
+    return {
+        "bundle_count": len(bundles),
+        "family_non_remote_bundles": family_non_remote_bundles,
+        "effective_non_remote_bundles": effective_non_remote_bundles,
+        "compiler_disabled_bundles": compiler_disabled_bundles,
+        "by_effective_status": by_effective_status,
+    }
+
+
+def _executor_feasibility_rollup(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    requires_external_db_bundles = 0
+    misconfigured_bundles = 0
+    by_status: Dict[str, int] = {}
+    for entry in bundles:
+        feasibility = entry.get("executor_feasibility") or {}
+        if not isinstance(feasibility, dict):
+            continue
+        if feasibility.get("requires_external_db") is True:
+            requires_external_db_bundles += 1
+        status = str(feasibility.get("status") or "").strip() or "unknown"
+        by_status[status] = by_status.get(status, 0) + 1
+        if status == "misconfigured":
+            misconfigured_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "requires_external_db_bundles": requires_external_db_bundles,
+        "misconfigured_bundles": misconfigured_bundles,
+        "by_status": by_status,
+    }
+
+
 def _generalization_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_class: Dict[str, int] = {}
     positive_generalization_bundles = 0
@@ -734,6 +977,41 @@ def _generalization_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "bundle_count": len(bundles),
         "positive_generalization_bundles": positive_generalization_bundles,
         "by_class": by_class,
+    }
+
+
+def _partial_progress_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    successful_bundles = 0
+    executed_bundles = 0
+    verified_bundles = 0
+    research_blocked_bundles = 0
+    failed_bundles = 0
+    for entry in bundles:
+        artifacts = entry.get("artifacts") or {}
+        run_summary = artifacts.get("run_summary") if isinstance(artifacts, dict) else {}
+        eval_result = artifacts.get("eval_result") if isinstance(artifacts, dict) else {}
+        provenance = entry.get("provenance") or {}
+        run_passed = bool((run_summary or {}).get("run_passed")) if isinstance(run_summary, dict) else False
+        executed = bool((run_summary or {}).get("executed")) if isinstance(run_summary, dict) else False
+        verify_pass = bool((eval_result or {}).get("verify_pass")) if isinstance(eval_result, dict) else False
+        if executed:
+            executed_bundles += 1
+        if verify_pass:
+            verified_bundles += 1
+        if run_passed and verify_pass:
+            successful_bundles += 1
+        if str((provenance or {}).get("generation_origin") or "").strip().lower() == "research_short_circuit":
+            research_blocked_bundles += 1
+        if not (run_passed and verify_pass):
+            failed_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "successful_bundles": successful_bundles,
+        "failed_bundles": failed_bundles,
+        "executed_bundles": executed_bundles,
+        "verified_bundles": verified_bundles,
+        "research_blocked_bundles": research_blocked_bundles,
+        "partial_success": successful_bundles > 0 and failed_bundles > 0,
     }
 
 

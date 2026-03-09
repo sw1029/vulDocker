@@ -11,12 +11,38 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from agents.researcher import ResearcherService
+from common.contracts import (
+    can_resolve_without_remote_research_for_requirement,
+    load_semantic_profile,
+    requires_semantic_support,
+)
 from common.logging import get_logger
 from common.paths import ensure_dir, get_metadata_dir
 from common.plan import load_plan
-from common.run_matrix import load_vuln_bundles
+from common.run_matrix import bundle_requirement, load_vuln_bundles
 
 LOGGER = get_logger(__name__)
+
+
+def _preseeded_semantic_fail_closed_reason(bundle, profile: dict[str, object]) -> tuple[str, str] | None:
+    vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip()
+    if not vuln_id or not vuln_id.upper().startswith("NAME-"):
+        return None
+    if not requires_semantic_support(vuln_id):
+        return None
+    support_level = str(profile.get("support_level") or "").strip().lower()
+    compiler_supported = profile.get("compiler_supported")
+    if support_level != "unsupported" or compiler_supported is not False:
+        return None
+    compiler_reason = str(profile.get("compiler_reason") or "").strip()
+    reason = (
+        f"Semantic profile marks unsupported free-form family before generation: "
+        f"{bundle.slug} ({vuln_id}) support_level={support_level}"
+    )
+    if compiler_reason:
+        reason += f", compiler_reason={compiler_reason}"
+    fix_hint = "Add compiler-backed support for this family or keep the request in inspection-only / negative regression mode."
+    return reason, fix_hint
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +58,10 @@ def main() -> None:
     plan = load_plan(args.sid)
     bundles = load_vuln_bundles(plan)
     reports = []
+    had_failure = False
+    requirement = plan.get("requirement") if isinstance(plan, dict) else {}
+    researcher_cfg = requirement.get("researcher") if isinstance(requirement, dict) else {}
+    force_run = bool((researcher_cfg or {}).get("force_run")) if isinstance(researcher_cfg, dict) else False
     for bundle in bundles:
         service = ResearcherService(
             args.sid,
@@ -40,14 +70,78 @@ def main() -> None:
             plan=plan,
             bundle=bundle,
         )
+        requirement_view = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+        semantic_profile = load_semantic_profile(service.metadata_dir) or {}
+        fail_closed = (
+            _preseeded_semantic_fail_closed_reason(bundle, semantic_profile)
+            if isinstance(semantic_profile, dict)
+            else None
+        )
+        if fail_closed is not None:
+            had_failure = True
+            reason, fix_hint = fail_closed
+            path = service.write_fail_closed_report(
+                reason=reason,
+                terminal_failure_class="semantic_support_missing",
+                fix_hint=fix_hint,
+            )
+            reports.append(
+                {
+                    "vuln_id": bundle.vuln_id,
+                    "slug": bundle.slug,
+                    "report_path": str(path),
+                    "status": "failed",
+                    "error": reason,
+                }
+            )
+            LOGGER.info("Researcher fail-closed for %s (%s): %s", args.sid, bundle.vuln_id, reason)
+            continue
+        if not force_run and can_resolve_without_remote_research_for_requirement(
+            bundle.vuln_id,
+            requirement_view,
+        ):
+            reason = "researcher skipped: compiler/static supported bundle"
+            path = service.write_skip_report(reason)
+            reports.append(
+                {
+                    "vuln_id": bundle.vuln_id,
+                    "slug": bundle.slug,
+                    "report_path": str(path),
+                    "status": "skipped",
+                    "error": None,
+                }
+            )
+            LOGGER.info("Researcher skipped for %s (%s)", args.sid, bundle.vuln_id)
+            continue
         try:
             path = service.run()
         except Exception as exc:
+            had_failure = True
+            path = service.metadata_dir / "researcher_report.json"
             LOGGER.error("Researcher failed for %s (%s): %s", args.sid, bundle.vuln_id, exc)
-            raise SystemExit(1) from exc
-        reports.append({"vuln_id": bundle.vuln_id, "slug": bundle.slug, "report_path": str(path)})
+            reports.append(
+                {
+                    "vuln_id": bundle.vuln_id,
+                    "slug": bundle.slug,
+                    "report_path": str(path) if path.exists() else None,
+                    "status": "failed",
+                    "error": str(exc),
+                }
+            )
+            continue
+        reports.append(
+            {
+                "vuln_id": bundle.vuln_id,
+                "slug": bundle.slug,
+                "report_path": str(path),
+                "status": "success",
+                "error": None,
+            }
+        )
         LOGGER.info("Researcher finished for %s (%s)", args.sid, bundle.vuln_id)
     _write_index(args.sid, reports)
+    if had_failure:
+        raise SystemExit(1)
 
 
 def _write_index(sid: str, reports: list[dict]) -> None:

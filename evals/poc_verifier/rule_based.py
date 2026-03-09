@@ -68,6 +68,7 @@ def verify_with_rule(
     verification_trust_reason = "verification used a declared static/runtime rule contract"
     compiler_supported = _contract_compiler_supported(contract_meta)
     rule_origin = str(rule.get("origin") or "").strip().lower() if isinstance(rule, dict) else ""
+    contract_generation_origin = _contract_generation_origin(contract_meta)
     evidence: List[str] = []
     success = False
     if used_fallback_rule:
@@ -77,12 +78,19 @@ def verify_with_rule(
             "verification contract was synthesized from generator_manifest.json because no static/runtime rule existed"
         )
         evidence.append("Using generator_manifest.json PoC contract as fallback rule")
-    elif rule_origin == "runtime" and not load_static_rule(vuln_id) and compiler_supported is not True:
-        verification_rule_source = "runtime_rule_candidate"
-        verification_trust = "low"
-        verification_trust_reason = (
-            "verification used a runtime rule synthesized during the run for a non-compiler-supported family"
-        )
+    elif rule_origin == "runtime" and not load_static_rule(vuln_id):
+        if compiler_supported is True and contract_generation_origin == "compiler_generated":
+            verification_rule_source = "compiler_runtime_rule"
+            verification_trust = "medium"
+            verification_trust_reason = (
+                "verification used a compiler-derived runtime rule coupled to the generated bundle"
+            )
+        else:
+            verification_rule_source = "runtime_rule_candidate"
+            verification_trust = "low"
+            verification_trust_reason = (
+                "verification used a runtime rule synthesized during the run for a non-compiler-supported family"
+            )
 
     # Structured sources first (run_summary/summary.json), then inline JSON snippets.
     struct_sources: List[Dict[str, Any]] = []
@@ -717,6 +725,20 @@ def _contract_compiler_supported(meta: Optional[Dict[str, Any]]) -> Optional[boo
         if isinstance(nested, bool):
             return nested
     return None
+
+
+def _contract_generation_origin(meta: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(meta, dict):
+        return ""
+    direct = meta.get("generation_origin")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip().lower()
+    provenance = meta.get("provenance")
+    if isinstance(provenance, dict):
+        nested = provenance.get("generation_origin")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip().lower()
+    return ""
 
 
 def _workspace_contains(

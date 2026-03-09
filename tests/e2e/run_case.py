@@ -217,8 +217,13 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "fragment_id": compiler_contract.get("fragment_id"),
                 "compose_mode": compiler_contract.get("compose_mode"),
                 "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
+                "llm_fixture_used": (bundle.get("provenance") or {}).get("llm_fixture_used"),
                 "dynamicness_verdict": (bundle.get("dynamicness") or {}).get("verdict"),
                 "dynamicness_reason": (bundle.get("dynamicness") or {}).get("reason"),
+                "family_non_remote_available": (bundle.get("lower_bound") or {}).get("family_non_remote_available"),
+                "effective_non_remote_available": (bundle.get("lower_bound") or {}).get("effective_non_remote_available"),
+                "compiler_path_enabled": (bundle.get("lower_bound") or {}).get("compiler_path_enabled"),
+                "executor_feasibility_status": (bundle.get("executor_feasibility") or {}).get("status"),
                 "generalization_class": (bundle.get("generalization") or {}).get("class"),
                 "counts_as_generalization": (bundle.get("generalization") or {}).get("counts_as_generalization"),
                 "generalization_reason": (bundle.get("generalization") or {}).get("reason"),
@@ -234,6 +239,7 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "promotion_reasons": (manifest.get("promotion") or {}).get("reasons") or [],
         "compiler_contract_summary": manifest.get("compiler_contract_summary") or {},
         "generalization_summary": manifest.get("generalization_summary") or {},
+        "partial_progress_summary": manifest.get("partial_progress_summary") or {},
         "compiler_supported": manifest.get("compiler_supported"),
         "compiler_strategy": manifest.get("compiler_strategy"),
         "compiler_reason": manifest.get("compiler_reason"),
@@ -244,8 +250,21 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "compose_mode": manifest.get("compose_mode"),
         "name_resolution": manifest.get("name_resolution") or {},
         "generation_origin": manifest.get("generation_origin"),
+        "verification_rule_source": manifest.get("verification_rule_source"),
+        "verification_trust": manifest.get("verification_trust"),
+        "llm_fixture_used": (
+            manifest.get("llm_fixture_used")
+            if isinstance(manifest.get("llm_fixture_used"), bool)
+            else (manifest.get("performance") or {}).get("llm_fixture_used")
+        ),
+        "provider_health_state": (manifest.get("performance") or {}).get("provider_health_state"),
+        "total_duration_s": (manifest.get("performance") or {}).get("total_duration_s"),
         "dynamicness_verdict": manifest.get("dynamicness_verdict"),
         "dynamicness_reason": manifest.get("dynamicness_reason"),
+        "family_non_remote_available": manifest.get("family_non_remote_available"),
+        "effective_non_remote_available": manifest.get("effective_non_remote_available"),
+        "compiler_path_enabled": manifest.get("compiler_path_enabled"),
+        "executor_feasibility_status": manifest.get("executor_feasibility_status"),
         "generalization_class": manifest.get("generalization_class"),
         "counts_as_generalization": manifest.get("counts_as_generalization"),
         "generalization_reason": manifest.get("generalization_reason"),
@@ -313,11 +332,44 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"generation_origin expected {manifest_expect['generation_origin']!r} but observed {summary.get('generation_origin')!r}"
             )
+    if "llm_fixture_used" in manifest_expect:
+        actual = bool(summary.get("llm_fixture_used"))
+        if actual != bool(manifest_expect["llm_fixture_used"]):
+            errors.append(
+                f"llm_fixture_used expected {manifest_expect['llm_fixture_used']!r} but observed {summary.get('llm_fixture_used')!r}"
+            )
     if "dynamicness_verdict" in manifest_expect:
         actual = str(summary.get("dynamicness_verdict") or "")
         if actual != str(manifest_expect["dynamicness_verdict"]):
             errors.append(
                 f"dynamicness_verdict expected {manifest_expect['dynamicness_verdict']!r} but observed {summary.get('dynamicness_verdict')!r}"
+            )
+    if "verification_rule_source" in manifest_expect:
+        actual = str(summary.get("verification_rule_source") or "")
+        if actual != str(manifest_expect["verification_rule_source"]):
+            errors.append(
+                f"verification_rule_source expected {manifest_expect['verification_rule_source']!r} but observed {summary.get('verification_rule_source')!r}"
+            )
+    if "verification_trust" in manifest_expect:
+        actual = str(summary.get("verification_trust") or "")
+        if actual != str(manifest_expect["verification_trust"]):
+            errors.append(
+                f"verification_trust expected {manifest_expect['verification_trust']!r} but observed {summary.get('verification_trust')!r}"
+            )
+    if "provider_health_state" in manifest_expect:
+        actual = str(summary.get("provider_health_state") or "")
+        if actual != str(manifest_expect["provider_health_state"]):
+            errors.append(
+                f"provider_health_state expected {manifest_expect['provider_health_state']!r} but observed {summary.get('provider_health_state')!r}"
+            )
+    for key in ("family_non_remote_available", "effective_non_remote_available", "compiler_path_enabled"):
+        if key in manifest_expect and bool(summary.get(key)) != bool(manifest_expect[key]):
+            errors.append(f"{key} expected {manifest_expect[key]!r} but observed {summary.get(key)!r}")
+    if "executor_feasibility_status" in manifest_expect:
+        actual = str(summary.get("executor_feasibility_status") or "")
+        if actual != str(manifest_expect["executor_feasibility_status"]):
+            errors.append(
+                f"executor_feasibility_status expected {manifest_expect['executor_feasibility_status']!r} but observed {summary.get('executor_feasibility_status')!r}"
             )
     name_resolution_expect = manifest_expect.get("name_resolution")
     if isinstance(name_resolution_expect, dict):
@@ -346,6 +398,14 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
                 "counts_as_generalization expected "
                 f"{manifest_expect['counts_as_generalization']!r} but observed {summary.get('counts_as_generalization')!r}"
             )
+    partial_progress_expect = manifest_expect.get("partial_progress_summary")
+    if isinstance(partial_progress_expect, dict):
+        actual = summary.get("partial_progress_summary") or {}
+        for key, expected in partial_progress_expect.items():
+            if actual.get(key) != expected:
+                errors.append(
+                    f"partial_progress_summary.{key} expected {expected!r} but observed {actual.get(key)!r}"
+                )
     bundle_index = _bundle_index(summary)
     for entry in expectations.get("evals", []):
         key = (entry.get("slug") or entry.get("vuln_id") or "").lower()
@@ -381,9 +441,22 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: generation_origin expected {entry['generation_origin']!r} but was {bundle.get('generation_origin')!r}"
             )
+        if "llm_fixture_used" in entry and bool(bundle.get("llm_fixture_used")) != bool(entry["llm_fixture_used"]):
+            errors.append(
+                f"bundle {bundle['slug']}: llm_fixture_used expected {entry['llm_fixture_used']!r} but was {bundle.get('llm_fixture_used')!r}"
+            )
         if "dynamicness_verdict" in entry and str(bundle.get("dynamicness_verdict") or "") != str(entry["dynamicness_verdict"]):
             errors.append(
                 f"bundle {bundle['slug']}: dynamicness_verdict expected {entry['dynamicness_verdict']!r} but was {bundle.get('dynamicness_verdict')!r}"
+            )
+        for key in ("family_non_remote_available", "effective_non_remote_available", "compiler_path_enabled"):
+            if key in entry and bool(bundle.get(key)) != bool(entry[key]):
+                errors.append(
+                    f"bundle {bundle['slug']}: {key} expected {entry[key]!r} but was {bundle.get(key)!r}"
+                )
+        if "executor_feasibility_status" in entry and str(bundle.get("executor_feasibility_status") or "") != str(entry["executor_feasibility_status"]):
+            errors.append(
+                f"bundle {bundle['slug']}: executor_feasibility_status expected {entry['executor_feasibility_status']!r} but was {bundle.get('executor_feasibility_status')!r}"
             )
         for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
             if key not in entry:

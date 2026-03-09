@@ -23,7 +23,9 @@ from common.researcher_report import (
     extract_verification_spec,
     normalize_researcher_report_payload,
 )
+from common.runtime_surface import derive_service_env
 from common.rules import load_rule, load_rulespec, load_static_rule
+from common.vuln_catalog import catalog_semantic_support_defaults, resolve_compiler_strategy
 from common.vuln_semantics import (
     FAMILY_CANONICAL_TAGS,
     baseline_semantic_signature,
@@ -40,63 +42,7 @@ SEMANTIC_PROFILE_SCHEMA_VERSION = "semantic_profile@1.0"
 SEMANTIC_PROFILE_FILENAME = "semantic_profile.json"
 SEMANTIC_STATUS_VALUES = {"aligned", "contradicted", "unsupported", "empty"}
 
-_SEMANTIC_PROFILE_DEFAULTS: Dict[str, Dict[str, str]] = {
-    "CWE-89": {
-        "family": "sql_injection",
-        "support_level": "builtin_supported",
-        "compiler_strategy": "sqli_string_concat",
-    },
-    "CWE-352": {
-        "family": "csrf",
-        "support_level": "builtin_supported",
-        "compiler_strategy": "csrf_missing_token",
-    },
-    "CWE-22": {
-        "family": "path_traversal",
-        "support_level": "builtin_supported",
-        "compiler_strategy": "path_traversal_file_read",
-    },
-    "CWE-918": {
-        "family": "ssrf",
-        "support_level": "builtin_supported",
-        "compiler_strategy": "ssrf_loopback_fetch",
-    },
-    "CWE-78": {
-        "family": "command_injection",
-        "support_level": "builtin_supported",
-        "compiler_strategy": "command_injection_shell",
-    },
-    "CWE-94": {
-        "family": "code_injection",
-        "support_level": "builtin_supported",
-        "compiler_strategy": "code_injection_eval",
-    },
-    "CWE-79": {
-        "family": "xss",
-        "support_level": "builtin_supported",
-        "compiler_strategy": "xss_reflected",
-    },
-    "CWE-502": {
-        "family": "deserialization",
-        "support_level": "builtin_supported",
-        "compiler_strategy": "deserialization_pickle_body",
-    },
-    "NAME-OPEN-REDIRECT": {
-        "family": "open_redirect",
-        "support_level": "compiler_supported",
-        "compiler_strategy": "open_redirect_reflect",
-    },
-    "NAME-TEMPLATE-INJECTION": {
-        "family": "template_injection",
-        "support_level": "compiler_supported",
-        "compiler_strategy": "template_injection_render",
-    },
-    "NAME-LDAP-INJECTION": {
-        "family": "ldap_injection",
-        "support_level": "unsupported",
-        "compiler_strategy": "",
-    },
-}
+_SEMANTIC_PROFILE_DEFAULTS: Dict[str, Dict[str, str]] = catalog_semantic_support_defaults()
 
 
 def _resolved_contract_path(metadata_dir: Path) -> Path:
@@ -148,7 +94,7 @@ def requires_semantic_support(vuln_id: str) -> bool:
     return not bool(load_static_rule(vuln_id))
 
 
-def compiler_support_summary(vuln_id: str) -> Dict[str, Any]:
+def compiler_support_summary(vuln_id: str, requirement: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return the default compiler support verdict for a vuln family.
 
     This is the pre-research/pre-generation lower-bound view derived from the
@@ -157,7 +103,7 @@ def compiler_support_summary(vuln_id: str) -> Dict[str, Any]:
 
     defaults = _semantic_profile_defaults(vuln_id)
     support_level = str(defaults.get("support_level") or "unsupported").strip().lower()
-    compiler_strategy = _string_or_none(defaults.get("compiler_strategy")) or ""
+    compiler_strategy = resolve_compiler_strategy(vuln_id, requirement) or _string_or_none(defaults.get("compiler_strategy")) or ""
     compiler_available = _compiler_strategy_supported(compiler_strategy)
     if support_level == "unsupported":
         compiler_supported = False
@@ -189,6 +135,133 @@ def can_resolve_without_remote_research(vuln_id: str) -> bool:
 
     summary = compiler_support_summary(vuln_id)
     return bool(summary.get("static_rule") or summary.get("compiler_supported"))
+
+
+def compiler_path_enabled(requirement: Optional[Dict[str, Any]]) -> bool:
+    """Whether compiler-backed lower bounds are enabled for this requirement."""
+
+    if not isinstance(requirement, dict):
+        return True
+    compiler_cfg = requirement.get("compiler")
+    if isinstance(compiler_cfg, dict) and "enabled" in compiler_cfg:
+        enabled = _bool_or_none(compiler_cfg.get("enabled"))
+        if enabled is not None:
+            return enabled
+    legacy_disabled = _bool_or_none(requirement.get("disable_compiler"))
+    if legacy_disabled is True:
+        return False
+    return True
+
+
+def can_resolve_without_remote_research_for_requirement(
+    vuln_id: str,
+    requirement: Optional[Dict[str, Any]],
+) -> bool:
+    """Requirement-aware lower-bound view used by planning/skip policies.
+
+    Static rules remain available regardless of compiler flags. Compiler-only
+    lower bounds are disabled when the requirement explicitly disables the
+    compiler path.
+    """
+
+    summary = compiler_support_summary(vuln_id, requirement)
+    if summary.get("static_rule"):
+        return True
+    if not compiler_path_enabled(requirement):
+        return False
+    return bool(summary.get("compiler_supported"))
+
+
+def lower_bound_summary(
+    vuln_id: str,
+    requirement: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Describe both family-level and effective lower bounds for a request."""
+
+    compiler_summary = compiler_support_summary(vuln_id, requirement)
+    static_rule_available = bool(compiler_summary.get("static_rule"))
+    compiler_supported = bool(compiler_summary.get("compiler_supported"))
+    compiler_enabled = compiler_path_enabled(requirement)
+    family_non_remote_available = bool(static_rule_available or compiler_supported)
+    effective_non_remote_available = can_resolve_without_remote_research_for_requirement(vuln_id, requirement)
+
+    effective_reason = ""
+    if static_rule_available:
+        effective_reason = "static rule available"
+    elif compiler_supported and compiler_enabled:
+        effective_reason = "compiler lower bound available and enabled"
+    elif compiler_supported and not compiler_enabled:
+        effective_reason = "compiler lower bound exists but is disabled by requirement"
+    else:
+        effective_reason = str(compiler_summary.get("compiler_reason") or "no non-remote lower bound")
+
+    return {
+        "family": compiler_summary.get("family"),
+        "support_level": compiler_summary.get("support_level"),
+        "compiler_strategy": compiler_summary.get("compiler_strategy"),
+        "compiler_reason": compiler_summary.get("compiler_reason"),
+        "static_rule_available": static_rule_available,
+        "compiler_supported": compiler_supported,
+        "compiler_path_enabled": compiler_enabled,
+        "family_non_remote_available": family_non_remote_available,
+        "effective_non_remote_available": effective_non_remote_available,
+        "effective_reason": effective_reason,
+    }
+
+
+def executor_feasibility_summary(
+    requirement: Optional[Dict[str, Any]],
+    executor_policy: Optional[Dict[str, Any]],
+    *,
+    requires_external_db: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Summarize whether current executor policy can satisfy bundle runtime deps."""
+
+    req = requirement if isinstance(requirement, dict) else {}
+    runtime = req.get("runtime") if isinstance(req.get("runtime"), dict) else {}
+    db = str(runtime.get("db") or "").strip().lower()
+    if requires_external_db is None:
+        requires_external_db = db in {"mysql", "postgres", "postgresql", "mariadb"}
+    runtime_allow_external_db = _bool_or_none(runtime.get("allow_external_db"))
+    if runtime_allow_external_db is None:
+        runtime_allow_external_db = False
+
+    policy = executor_policy if isinstance(executor_policy, dict) else {}
+    sidecars = policy.get("sidecars") or []
+    sidecars_declared = isinstance(sidecars, list) and bool(sidecars)
+    allow_network = _bool_or_none(policy.get("allow_network"))
+    if allow_network is None:
+        allow_network = False
+    network_mode = str(policy.get("network_mode") or ("bridge" if allow_network else "none")).strip() or "none"
+    network_enabled = bool(allow_network and network_mode.lower() != "none")
+
+    issues: List[str] = []
+    status = "not_required"
+    reason = "bundle does not require external DB/service sidecars"
+    if requires_external_db:
+        status = "configured"
+        reason = "executor policy satisfies external DB/service requirements"
+        if not runtime_allow_external_db:
+            issues.append("runtime.allow_external_db=false")
+        if not sidecars_declared:
+            issues.append("policy.executor.sidecars missing")
+        if not network_enabled:
+            issues.append("policy.executor.allow_network/network_mode disables sidecars")
+        if issues:
+            status = "misconfigured"
+            reason = ", ".join(issues)
+
+    return {
+        "requires_external_db": bool(requires_external_db),
+        "runtime_allow_external_db": runtime_allow_external_db,
+        "db": db or None,
+        "sidecars_declared": sidecars_declared,
+        "network_enabled": network_enabled,
+        "network_mode": network_mode,
+        "status": status,
+        "reason": reason,
+        "issues": issues,
+    }
 
 
 def write_generator_contract(metadata_dir: Path, payload: Dict[str, Any]) -> Path:
@@ -295,6 +368,23 @@ def build_generator_contract(
     base_url = f"http://127.0.0.1:{service_port}"
     sources["base_url"] = "service_port"
 
+    service_env = _service_env_from_generator_manifest(manifest)
+    if service_env:
+        sources["service_env"] = "generator_manifest.manifest.run.env"
+    else:
+        service_env = _service_env_from_generator_template(template)
+        if service_env:
+            sources["service_env"] = "generator_template.service_env"
+        else:
+            compiler_strategy_hint = resolve_compiler_strategy(vuln_id, requirement or {})
+            service_env = derive_service_env(
+                compiler_strategy=compiler_strategy_hint,
+                requirement=requirement or {},
+                service_port=service_port,
+            )
+            if service_env:
+                sources["service_env"] = "requirement+compiler_strategy"
+
     poc_cmd = _string_or_none(_dig(manifest, "poc", "cmd"))
     if poc_cmd:
         sources["poc_cmd"] = "generator_manifest.manifest.poc.cmd"
@@ -356,6 +446,7 @@ def build_generator_contract(
             "poc_entry": poc_entry,
             "service_port": service_port,
             "base_url": base_url,
+            "service_env": deepcopy(service_env),
             "poc_cmd": poc_cmd,
             "output_mode": output_mode,
         },
@@ -401,6 +492,8 @@ def build_generator_contract(
     payload["poc_entry"] = poc_entry
     payload["service_port"] = service_port
     payload["base_url"] = base_url
+    if service_env:
+        payload["service_env"] = deepcopy(service_env)
     generation_origin = _string_or_none(provenance.get("generation_origin")) if provenance else None
     if generation_origin:
         payload["generation_origin"] = generation_origin
@@ -416,6 +509,9 @@ def build_generator_contract(
     llm_stub_used = _bool_or_none(provenance.get("llm_stub_used")) if provenance else None
     if llm_stub_used is not None:
         payload["llm_stub_used"] = llm_stub_used
+    llm_fixture_used = _bool_or_none(provenance.get("llm_fixture_used")) if provenance else None
+    if llm_fixture_used is not None:
+        payload["llm_fixture_used"] = llm_fixture_used
     if poc_cmd:
         payload["poc_cmd"] = poc_cmd
     if semantic_contract.get("semantic_signature"):
@@ -433,9 +529,15 @@ def build_generator_contract(
         rule_resolution=payload["rule_resolution"],
     )
     payload["semantic_profile"] = semantic_profile
+    payload["lower_bound"] = deepcopy(semantic_profile.get("lower_bound") or {})
     payload["compiler_supported"] = bool(semantic_profile.get("compiler_supported"))
     payload["compiler_strategy"] = _string_or_none(semantic_profile.get("compiler_strategy"))
     payload["compiler_reason"] = _string_or_none(semantic_profile.get("compiler_reason"))
+    lower_bound = payload.get("lower_bound") if isinstance(payload.get("lower_bound"), dict) else {}
+    for key in ("family_non_remote_available", "effective_non_remote_available", "compiler_path_enabled"):
+        value = lower_bound.get(key)
+        if isinstance(value, bool):
+            payload[key] = value
     manifest_metadata = manifest.get("metadata") if isinstance(manifest, dict) else {}
     if isinstance(manifest_metadata, dict):
         for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
@@ -457,7 +559,8 @@ def _build_semantic_profile(
     rule_resolution: Dict[str, Any],
 ) -> Dict[str, Any]:
     defaults = _semantic_profile_defaults(vuln_id)
-    compiler_summary = compiler_support_summary(vuln_id)
+    compiler_summary = compiler_support_summary(vuln_id, requirement)
+    lower_bound = lower_bound_summary(vuln_id, requirement)
     support_level = str(compiler_summary.get("support_level") or "unsupported").strip().lower()
     compiler_strategy = _string_or_none(compiler_summary.get("compiler_strategy")) or ""
     compiler_supported = bool(compiler_summary.get("compiler_supported"))
@@ -519,6 +622,7 @@ def _build_semantic_profile(
         "evidence_relevance": deepcopy(semantic_contract.get("evidence_relevance"))
         if isinstance(semantic_contract.get("evidence_relevance"), dict)
         else {},
+        "lower_bound": lower_bound,
     }
     if signature_source:
         profile["semantic_signature_source"] = list(signature_source)
@@ -694,6 +798,12 @@ def _resolve_generation_provenance(
         llm_stub_used = _bool_or_none(template_summary.get("llm_stub_used"))
     if llm_stub_used is not None:
         provenance["llm_stub_used"] = llm_stub_used
+
+    llm_fixture_used = _bool_or_none(manifest_payload.get("llm_fixture_used")) if isinstance(manifest_payload, dict) else None
+    if llm_fixture_used is None and isinstance(template_summary, dict):
+        llm_fixture_used = _bool_or_none(template_summary.get("llm_fixture_used"))
+    if llm_fixture_used is not None:
+        provenance["llm_fixture_used"] = llm_fixture_used
 
     fallback_class = _fallback_class_from_payload(manifest_payload)
     if fallback_class is None and isinstance(template_summary, dict):
@@ -1000,6 +1110,21 @@ def _port_from_generator_template(template: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def _service_env_from_generator_template(template: Dict[str, Any]) -> Dict[str, str]:
+    raw = template.get("service_env")
+    if not isinstance(raw, dict):
+        return {}
+    env: Dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        token = key.strip()
+        if not token:
+            continue
+        env[token] = str(value)
+    return env
+
+
 def _port_from_generator_manifest(manifest: Dict[str, Any]) -> Optional[int]:
     run_section = manifest.get("run")
     if isinstance(run_section, dict):
@@ -1012,6 +1137,24 @@ def _port_from_generator_manifest(manifest: Dict[str, Any]) -> Optional[int]:
     if isinstance(run_section, str):
         return _parse_port_from_run_command(run_section)
     return None
+
+
+def _service_env_from_generator_manifest(manifest: Dict[str, Any]) -> Dict[str, str]:
+    run_section = manifest.get("run")
+    if not isinstance(run_section, dict):
+        return {}
+    raw = run_section.get("env")
+    if not isinstance(raw, dict):
+        return {}
+    env: Dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        token = key.strip()
+        if not token:
+            continue
+        env[token] = str(value)
+    return env
 
 
 def _parse_port_from_run_command(command: str) -> Optional[int]:
@@ -1107,10 +1250,14 @@ def _runtime_rule_dirs() -> list[Path]:
 
 
 __all__ = [
+    "can_resolve_without_remote_research_for_requirement",
     "can_resolve_without_remote_research",
+    "compiler_path_enabled",
     "compiler_support_summary",
     "DEFAULT_APP_PORT",
+    "executor_feasibility_summary",
     "build_generator_contract",
+    "lower_bound_summary",
     "load_generator_contract",
     "load_semantic_profile",
     "requires_semantic_support",

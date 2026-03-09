@@ -19,8 +19,10 @@ def test_registry_contains_all_compiler_covered_families() -> None:
         "open_redirect_reflect",
         "path_traversal_file_read",
         "sqli_string_concat",
+        "sqli_string_concat_mysql",
         "ssrf_loopback_fetch",
         "template_injection_render",
+        "xxe_xml_entity_resolve",
         "xss_reflected",
     }
 
@@ -35,7 +37,9 @@ def test_resolve_fragment_strategy_from_vuln_id_and_pattern() -> None:
     assert resolve_fragment_strategy("", raw_label="Server Side Template Injection") == "template_injection_render"
     assert resolve_fragment_strategy("", raw_label="Unvalidated Redirect") == "open_redirect_reflect"
     assert resolve_fragment_strategy("", raw_label="Code Injection") == "code_injection_eval"
+    assert resolve_fragment_strategy("", raw_label="XML External Entity") == "xxe_xml_entity_resolve"
     assert resolve_fragment_spec("CWE-502").fragment_id == "unsafe_pickle_body_route"  # type: ignore[union-attr]
+    assert resolve_fragment_spec("NAME-XXE").fragment_id == "xxe_local_file_entity_route"  # type: ignore[union-attr]
 
 
 def test_service_side_tokens_are_derived_from_registry() -> None:
@@ -44,12 +48,20 @@ def test_service_side_tokens_are_derived_from_registry() -> None:
     assert service_side_file_contains_tokens("", pattern_id="ssrf-url-fetch") == ["requests.get", "/metadata"]
     assert service_side_file_contains_tokens("CWE-78") == ["subprocess.check_output", "shell=True", "request.args.get('cmd'"]
     assert service_side_file_contains_tokens("CWE-94") == ["eval(code)", "request.args.get('code'"]
+    assert service_side_file_contains_tokens("NAME-XXE") == [
+        "etree.XMLParser(load_dtd=True, resolve_entities=True",
+        "etree.fromstring",
+        "request.get_data",
+    ]
 
 
 def test_fragment_semantic_signature_is_derived_from_registry() -> None:
     signature = fragment_semantic_signature("NAME-TEMPLATE-INJECTION")
     assert "render_template_string" in signature["sink"]
     assert "template injection" in signature["exploit_precondition"]
+    xxe_signature = fragment_semantic_signature("NAME-XXE")
+    assert "etree.fromstring" in xxe_signature["sink"]
+    assert "xml external entity" in xxe_signature["exploit_precondition"]
     assert fragment_semantic_signature("CWE-9999", pattern_id="sqli-string-concat") == {
         "input_vector": [],
         "sink": [],
@@ -74,3 +86,19 @@ def test_fragment_guard_generator_assertions_include_registry_provenance_and_tok
         for item in assertions
     )
     assert fragment_guard_generator_assertions("CWE-9999", pattern_id="sqli-string-concat") == []
+
+
+def test_mysql_sqli_fragment_spec_marks_external_db_runtime() -> None:
+    spec = resolve_fragment_spec("", pattern_id="sqli-union-mysql")
+    assert spec is not None
+    assert spec.strategy == "sqli_string_concat_mysql"
+    assert spec.requires_external_db is True
+
+
+def test_fragment_extra_files_are_asset_defined() -> None:
+    path_spec = resolve_fragment_spec("CWE-22")
+    xxe_spec = resolve_fragment_spec("NAME-XXE")
+    assert path_spec is not None
+    assert xxe_spec is not None
+    assert [entry["path"] for entry in path_spec.extra_files] == ["secret.txt", "files/note.txt"]
+    assert [entry["path"] for entry in xxe_spec.extra_files] == ["secret.txt"]

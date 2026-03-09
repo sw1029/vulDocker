@@ -3,6 +3,10 @@
   "version": "1.0",
   "language": "python",
   "framework": "flask",
+  "aliases": [
+    "python-flask",
+    "flask"
+  ],
   "base_image": "python:3.11-slim",
   "workdir": "/app",
   "requirements_path": "requirements.txt",
