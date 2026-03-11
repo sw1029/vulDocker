@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -18,6 +19,20 @@ from evals.assertions import run_assertions
 DEFAULT_FLAG_MARKER = "FLAG"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACES_ROOT = REPO_ROOT / "workspaces"
+
+
+def _verification_independence(rule_source: str, trust: str) -> str:
+    source = str(rule_source or "").strip().lower()
+    trust_level = str(trust or "").strip().lower()
+    if source == "declared_rule":
+        return "independent"
+    if source == "compiler_runtime_rule":
+        return "compiler_coupled"
+    if source in {"runtime_rule_candidate", "generator_manifest_fallback", "verifier_runtime_rule_fallback"}:
+        return "self_derived"
+    if trust_level == "low":
+        return "self_derived"
+    return "unknown"
 
 
 def verify_with_rule(
@@ -209,6 +224,10 @@ def verify_with_rule(
         "verification_rule_source": verification_rule_source,
         "verification_trust": verification_trust,
         "verification_trust_reason": verification_trust_reason,
+        "verification_independence": _verification_independence(
+            verification_rule_source,
+            verification_trust,
+        ),
         "verification_policy_blocked": verification_policy_blocked,
         "terminal_failure_class": "low_trust_verification" if verification_policy_blocked else "",
         "evidence": ", ".join(evidence),
@@ -511,12 +530,11 @@ def _evaluate_patterns(
         if not isinstance(entry, dict):
             continue
         ptype = str(entry.get("type") or "").strip().lower()
-        needle = entry.get("contains")
-        if not needle:
-            continue
-        needle_str = str(needle)
-
         if ptype == "file_contains":
+            needle = entry.get("contains")
+            if not needle:
+                continue
+            needle_str = str(needle)
             rel_path = entry.get("path")
             if not rel_path:
                 continue
@@ -529,7 +547,27 @@ def _evaluate_patterns(
                 hit = _workspace_contains(workspace_dirs, str(rel_path), needle_str)
             if hit:
                 evidence.append(f"{rel_path} contains '{needle_str}'")
+        elif ptype == "file_regex_contains":
+            pattern = entry.get("pattern")
+            if not pattern:
+                continue
+            pattern_str = str(pattern)
+            rel_path = entry.get("path")
+            if not rel_path:
+                continue
+            if isinstance(rel_path, str) and rel_path.strip().startswith("{{") and "service_entry" in rel_path:
+                rel_path = service_entry_fallback
+            if use_manifest_only:
+                hit = _manifest_file_regex_contains(generator_manifest, str(rel_path), pattern_str)
+            else:
+                hit = _workspace_regex_contains(workspace_dirs, str(rel_path), pattern_str)
+            if hit:
+                evidence.append(f"{rel_path} matches /{pattern_str}/")
         elif ptype == "poc_contains":
+            needle = entry.get("contains")
+            if not needle:
+                continue
+            needle_str = str(needle)
             rel_path = entry.get("path") or "poc.py"
             if isinstance(rel_path, str) and rel_path.strip().startswith("{{") and "poc_entry" in rel_path:
                 # Placeholder → manifest/template 기반 poc_entry 경로 또는 poc.py 폴백.
@@ -757,6 +795,22 @@ def _workspace_contains(
     return None
 
 
+def _workspace_regex_contains(
+    workspace_dirs: Iterable[Path],
+    relative_path: str,
+    pattern: str,
+) -> Optional[str]:
+    rel = Path(relative_path)
+    for workspace in workspace_dirs:
+        candidate = workspace / rel
+        if not candidate.is_file():
+            continue
+        text = _read_file(candidate)
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            return str(candidate)
+    return None
+
+
 def _manifest_file_contains(
     manifest: Optional[Dict[str, Any]],
     relative_path: str,
@@ -780,6 +834,30 @@ def _manifest_file_contains(
             continue
         content = entry.get("content")
         if isinstance(content, str) and needle in content:
+            return True
+    return False
+
+
+def _manifest_file_regex_contains(
+    manifest: Optional[Dict[str, Any]],
+    relative_path: str,
+    pattern: str,
+) -> bool:
+    if not isinstance(manifest, dict) or not relative_path or not pattern:
+        return False
+    manifest_body = manifest.get("manifest") or manifest
+    files = manifest_body.get("files") if isinstance(manifest_body, dict) else None
+    if not isinstance(files, list):
+        return False
+    target = str(relative_path)
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or path != target:
+            continue
+        content = entry.get("content")
+        if isinstance(content, str) and re.search(pattern, content, flags=re.IGNORECASE):
             return True
     return False
 
@@ -915,7 +993,8 @@ def _evaluate_semantic_consistency(
     for workspace in workspace_roots:
         report = evaluate_workspace_semantics(vuln_id, workspace)
         if report.get("supported"):
-            report["source"] = str(workspace)
+            report["source"] = "workspace_scan"
+            report["source_detail"] = str(workspace)
             report["status"] = "aligned" if report.get("semantic_match") else "contradicted"
             return report
     if isinstance(signature, dict) and any(signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):

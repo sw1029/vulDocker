@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 from common.rules import list_rules, load_rule
 from common.run_matrix import VulnBundle
 from evals.poc_verifier import main as verifier_main
+from evals.poc_verifier import rule_based
 
 
 def test_load_rule_from_runtime_dir(tmp_path: Path) -> None:
@@ -176,3 +177,34 @@ def test_retry_with_runtime_rule_marks_self_derived_verification_as_low_trust(
     assert result["verification_rule_source"] == "verifier_runtime_rule_fallback"
     assert result["verification_trust"] == "low"
     assert result["verifier_retry"]["verification_rule_source"] == "verifier_runtime_rule_fallback"
+
+
+def test_workspace_semantic_fallback_uses_canonical_source(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "app.py").write_text(
+        "\n".join(
+            [
+                "import sqlite3",
+                "from flask import Flask, request",
+                "app = Flask(__name__)",
+                "@app.get('/login')",
+                "def login():",
+                "    query = \"SELECT * FROM users WHERE username = '\" + request.args.get('username', '') + \"'\"",
+                "    return query",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = rule_based._evaluate_semantic_consistency(  # type: ignore[attr-defined]
+        "CWE-89",
+        [workspace],
+        generator_manifest=None,
+        contract_meta=None,
+    )
+
+    assert result["supported"] is True
+    assert result["source"] == "workspace_scan"
+    assert result["source_detail"] == str(workspace)

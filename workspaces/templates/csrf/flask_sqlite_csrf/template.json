@@ -1,6 +1,9 @@
 {
   "id": "flask_sqlite_csrf",
   "name": "Flask + SQLite CSRF demo",
+  "stack_id": "python/flask",
+  "language": "python",
+  "framework": "flask",
   "pattern_id": "csrf-missing-token",
   "db": "sqlite",
   "description": "Flask endpoint performing state changes without CSRF token enforcement.",

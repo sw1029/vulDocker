@@ -104,7 +104,7 @@ def compiler_support_summary(vuln_id: str, requirement: Optional[Dict[str, Any]]
     defaults = _semantic_profile_defaults(vuln_id)
     support_level = str(defaults.get("support_level") or "unsupported").strip().lower()
     compiler_strategy = resolve_compiler_strategy(vuln_id, requirement) or _string_or_none(defaults.get("compiler_strategy")) or ""
-    compiler_available = _compiler_strategy_supported(compiler_strategy)
+    compiler_available = _compiler_strategy_supported(compiler_strategy, requirement)
     if support_level == "unsupported":
         compiler_supported = False
         compiler_reason = "semantic family unsupported for compiler-backed generation"
@@ -477,6 +477,26 @@ def build_generator_contract(
         if pattern_id:
             payload["pattern_id"] = pattern_id
             sources.setdefault("pattern_id", "generator_template.pattern_id")
+        for key in (
+            "template_stack_id",
+            "template_language",
+            "template_framework",
+            "requested_stack_id",
+            "template_runtime_surface_status",
+            "template_runtime_surface_reason",
+        ):
+            value = _string_or_none(template.get(key))
+            if value:
+                payload[key] = value
+                sources.setdefault(key, f"generator_template.{key}")
+        stack_match = _bool_or_none(template.get("template_stack_match"))
+        if stack_match is not None:
+            payload["template_stack_match"] = stack_match
+            sources.setdefault("template_stack_match", "generator_template.template_stack_match")
+        runtime_diagnostics = template.get("template_runtime_diagnostics")
+        if isinstance(runtime_diagnostics, dict) and runtime_diagnostics:
+            payload["template_runtime_diagnostics"] = deepcopy(runtime_diagnostics)
+            sources.setdefault("template_runtime_diagnostics", "generator_template.template_runtime_diagnostics")
 
     payload["rule_resolution"] = _resolve_rule_sources(vuln_id)
 
@@ -727,14 +747,18 @@ def _fallback_family_label(vuln_id: str) -> str:
     return "unsupported_family"
 
 
-def _compiler_strategy_supported(strategy: str) -> bool:
+def _compiler_strategy_supported(strategy: str, requirement: Optional[Dict[str, Any]] = None) -> bool:
     token = str(strategy or "").strip()
     if not token:
         return False
     try:
         from agents.generator.compiler import supported_compiler_strategies
-
-        return token in supported_compiler_strategies()
+        stack_name = None
+        if isinstance(requirement, dict):
+            language = str(requirement.get("language") or "python").strip().lower()
+            framework = str(requirement.get("framework") or "flask").strip().lower()
+            stack_name = f"{language}/{framework}"
+        return token in supported_compiler_strategies(stack_name)
     except Exception:
         return False
 

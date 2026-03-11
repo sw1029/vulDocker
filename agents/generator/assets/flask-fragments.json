@@ -50,6 +50,42 @@
     },
     "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
   },
+  "ldap_injection_filter": {
+    "family": "ldap_injection",
+    "fragment_id": "ldap_filter_concat_route",
+    "pattern_tags": [
+      "compiler_generated",
+      "ldap_injection"
+    ],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for LDAP injection.",
+    "service_description": "python/flask registry-backed LDAP injection service.",
+    "poc_description": "Registry-backed LDAP injection PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{LDAPI_OK}",
+    "service_side_tokens": [
+      "ldap_filter = '(&(uid=' + user + ')(status=active))'",
+      "search_directory(ldap_filter)",
+      "request.args.get('user'"
+    ],
+    "semantic_signature": {
+      "input_vector": [
+        "request.args",
+        "ldap user parameter",
+        "user-controlled directory lookup input"
+      ],
+      "sink": [
+        "LDAP filter construction",
+        "directory search",
+        "search_directory("
+      ],
+      "exploit_precondition": [
+        "user input concatenated into LDAP filter",
+        "ldap injection",
+        "filter bypass via wildcard or OR clause"
+      ]
+    },
+    "requirements_content": "Flask==3.0.0\nrequests==2.31.0\n"
+  },
   "open_redirect_reflect": {
     "family": "open_redirect",
     "fragment_id": "redirect_next_route",

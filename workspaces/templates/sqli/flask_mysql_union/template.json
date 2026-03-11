@@ -1,6 +1,9 @@
 {
   "id": "flask_mysql_union",
   "name": "Flask + MySQL UNION-based SQLi",
+  "stack_id": "python/flask",
+  "language": "python",
+  "framework": "flask",
   "pattern_id": "sqli-union-mysql",
   "db": "mysql",
   "description": "Flask API backed by MySQL with an intentionally unsafe /statement endpoint that supports UNION-based injection.",

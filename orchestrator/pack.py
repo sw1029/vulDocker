@@ -34,6 +34,74 @@ from common.run_matrix import (
 LOGGER = get_logger(__name__)
 
 
+def _verification_independence(rule_source: Any, trust: Any, explicit: Any = None) -> str:
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    source = str(rule_source or "").strip().lower()
+    trust_level = str(trust or "").strip().lower()
+    if source == "declared_rule":
+        return "independent"
+    if source == "compiler_runtime_rule":
+        return "compiler_coupled"
+    if source in {"runtime_rule_candidate", "generator_manifest_fallback", "verifier_runtime_rule_fallback"}:
+        return "self_derived"
+    if trust_level == "low":
+        return "self_derived"
+    return ""
+
+
+def _minimum_promotion_independence(requirement: Any) -> str:
+    if not isinstance(requirement, dict):
+        return "compiler_coupled"
+    policy = requirement.get("policy")
+    if not isinstance(policy, dict):
+        return "compiler_coupled"
+    verifier = policy.get("verifier")
+    if not isinstance(verifier, dict):
+        return "compiler_coupled"
+    token = str(verifier.get("min_promotion_independence") or "compiler_coupled").strip().lower()
+    if token not in {"compiler_coupled", "independent"}:
+        return "compiler_coupled"
+    return token
+
+
+def _minimum_name_resolution_confidence(requirement: Any) -> str:
+    if not isinstance(requirement, dict):
+        return "low"
+    policy = requirement.get("policy")
+    if not isinstance(policy, dict):
+        return "low"
+    verifier = policy.get("verifier")
+    if not isinstance(verifier, dict):
+        return "low"
+    token = str(verifier.get("min_name_resolution_confidence") or "low").strip().lower()
+    if token not in {"low", "medium", "high"}:
+        return "low"
+    return token
+
+
+def _independence_rank(value: Any) -> int:
+    token = str(value or "").strip().lower()
+    if token == "independent":
+        return 2
+    if token == "compiler_coupled":
+        return 1
+    if token == "self_derived":
+        return 0
+    return -1
+
+
+def _confidence_rank(value: Any) -> int:
+    token = str(value or "").strip().lower()
+    if token == "high":
+        return 2
+    if token == "medium":
+        return 1
+    if token == "low":
+        return 0
+    return -1
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pack artifacts for a SID")
     parser.add_argument("--sid", required=True, help="Scenario ID")
@@ -88,6 +156,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
     generalization_summary = _generalization_summary(bundles)
     compiler_contract_summary = _compiler_contract_summary(bundles)
     verification_summary = _verification_summary(bundles)
+    name_resolution_summary = _name_resolution_summary(bundles)
     lower_bound_rollup = _lower_bound_rollup(bundles)
     executor_feasibility_rollup = _executor_feasibility_rollup(bundles)
     partial_progress_summary = _partial_progress_summary(bundles)
@@ -111,6 +180,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         "generalization_summary": generalization_summary,
         "compiler_contract_summary": compiler_contract_summary,
         "verification_summary": verification_summary,
+        "name_resolution_summary": name_resolution_summary,
         "lower_bound_summary": lower_bound_rollup,
         "executor_feasibility_summary": executor_feasibility_rollup,
         "partial_progress_summary": partial_progress_summary,
@@ -162,8 +232,18 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
             manifest["verification_rule_source"] = verification["rule_source"].strip()
         if isinstance(verification.get("trust"), str) and verification.get("trust", "").strip():
             manifest["verification_trust"] = verification["trust"].strip()
+        if isinstance(verification.get("independence"), str) and verification.get("independence", "").strip():
+            manifest["verification_independence"] = verification["independence"].strip()
         if isinstance(verification.get("trust_reason"), str) and verification.get("trust_reason", "").strip():
             manifest["verification_trust_reason"] = verification["trust_reason"].strip()
+        semantic = bundles[0].get("semantic") or {}
+        if isinstance(semantic, dict):
+            if isinstance(semantic.get("supported"), bool):
+                manifest["semantic_supported"] = semantic["supported"]
+            if isinstance(semantic.get("status"), str) and semantic.get("status", "").strip():
+                manifest["semantic_status"] = semantic["status"].strip()
+            if isinstance(semantic.get("source"), str) and semantic.get("source", "").strip():
+                manifest["semantic_source"] = semantic["source"].strip()
         generalization = bundles[0].get("generalization") or {}
         class_name = generalization.get("class")
         if isinstance(class_name, str) and class_name.strip():
@@ -173,6 +253,12 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         reason = generalization.get("reason")
         if isinstance(reason, str) and reason.strip():
             manifest["generalization_reason"] = reason.strip()
+        confidence = generalization.get("confidence")
+        if isinstance(confidence, str) and confidence.strip():
+            manifest["generalization_confidence"] = confidence.strip()
+        basis = generalization.get("basis")
+        if isinstance(basis, str) and basis.strip():
+            manifest["generalization_basis"] = basis.strip()
         lower_bound = bundles[0].get("lower_bound") or {}
         if isinstance(lower_bound, dict) and lower_bound:
             manifest["lower_bound"] = lower_bound
@@ -253,6 +339,11 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
         )
         dynamicness = _bundle_dynamicness_verdict(provenance)
         compiler_contract = _bundle_compiler_contract(metadata_dir)
+        semantic_surface = _bundle_semantic_surface(
+            metadata_dir,
+            bundle.vuln_id,
+            eval_record,
+        )
         lower_bound = _bundle_lower_bound(metadata_dir, bundle.vuln_id, requirement_view)
         executor_feasibility = _bundle_executor_feasibility(plan, bundle, requirement_view, metadata_dir)
         generalization = _bundle_generalization_verdict(
@@ -262,18 +353,29 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             dynamicness=dynamicness,
             compiler_contract=compiler_contract,
             provenance=provenance,
+            name_resolution=(
+                requirement_view.get("name_resolution")
+                if isinstance(requirement_view.get("name_resolution"), dict)
+                else {}
+            ),
         )
 
         bundle_entry = {
             "vuln_id": bundle.vuln_id,
             "slug": bundle.slug,
             "pattern_id": pattern_id,
+            "name_resolution": (
+                dict(requirement_view.get("name_resolution"))
+                if isinstance(requirement_view.get("name_resolution"), dict)
+                else {}
+            ),
             "promotion": promotion,
             "failure": failure,
             "provenance": provenance,
             "dynamicness": dynamicness,
             "generalization": generalization,
             "compiler_contract": compiler_contract,
+            "semantic": semantic_surface,
             "lower_bound": lower_bound,
             "executor_feasibility": executor_feasibility,
             "deps_digest": dep_digest,
@@ -295,10 +397,18 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
                 if isinstance(eval_record, dict)
                 else None,
                 "trust": (eval_record or {}).get("verification_trust") if isinstance(eval_record, dict) else None,
+                "independence": _verification_independence(
+                    (eval_record or {}).get("verification_rule_source") if isinstance(eval_record, dict) else None,
+                    (eval_record or {}).get("verification_trust") if isinstance(eval_record, dict) else None,
+                    (eval_record or {}).get("verification_independence") if isinstance(eval_record, dict) else None,
+                ),
                 "trust_reason": (eval_record or {}).get("verification_trust_reason")
                 if isinstance(eval_record, dict)
                 else None,
             },
+            "semantic_supported": semantic_surface.get("supported"),
+            "semantic_status": semantic_surface.get("status"),
+            "semantic_source": semantic_surface.get("source"),
             "researcher_report": _existing(researcher_report),
             "generator_template": _existing(generator_template),
             "reviewer_report": _existing(reviewer_report),
@@ -314,6 +424,7 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
     eval_result = _bundle_eval_result(plan, bundle)
     contract = load_generator_contract(metadata_dir)
     requirement = plan.get("requirement") or {}
+    requirement_view = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
     reasons: List[str] = []
     if not isinstance(run_summary, dict):
         reasons.append("pipeline:run_missing")
@@ -333,11 +444,20 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
         reasons.extend(_eval_result_failure_reasons(eval_result))
         verification_trust = str(eval_result.get("verification_trust") or "").strip().lower()
         verification_rule_source = str(eval_result.get("verification_rule_source") or "").strip().lower()
+        verification_independence = _verification_independence(
+            verification_rule_source,
+            verification_trust,
+            eval_result.get("verification_independence"),
+        )
         if verification_trust == "low":
             if verification_rule_source:
                 reasons.append(f"verify_contract:{verification_rule_source}")
             else:
                 reasons.append("verify_contract:low_trust")
+        min_independence = _minimum_promotion_independence(requirement_view)
+        if _independence_rank(verification_independence) < _independence_rank(min_independence):
+            reasons.append(f"verify_independence:{verification_independence or 'unknown'}")
+            reasons.append(f"verify_independence_policy:min_{min_independence}")
         semantic_supported = eval_result.get("semantic_supported")
         if semantic_supported is None:
             semantic = eval_result.get("semantic_consistency") or {}
@@ -352,6 +472,15 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
                 semantic_status = str(semantic.get("status") or "").strip().lower()
         if semantic_status in {"empty", "unsupported", "contradicted"}:
             reasons.append(f"verify_semantic_status:{semantic_status}")
+    if str(getattr(bundle, "vuln_id", "") or "").strip().upper().startswith("NAME-"):
+        resolution = requirement_view.get("name_resolution") if isinstance(requirement_view, dict) else {}
+        resolution_confidence = str((resolution or {}).get("confidence") or "").strip().lower()
+        min_confidence = _minimum_name_resolution_confidence(requirement_view)
+        if (resolution_confidence or min_confidence != "low") and _confidence_rank(
+            resolution_confidence
+        ) < _confidence_rank(min_confidence):
+            reasons.append(f"name_resolution_confidence:{resolution_confidence or 'unknown'}")
+            reasons.append(f"name_resolution_policy:min_{min_confidence}")
     if isinstance(contract, dict):
         semantic_contract = contract.get("semantic_contract")
         if isinstance(semantic_contract, dict):
@@ -710,10 +839,16 @@ def _loop_failure_provenance(
 def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_origin: Dict[str, int] = {}
     by_dynamicness_verdict: Dict[str, int] = {}
+    by_compose_mode: Dict[str, int] = {}
+    by_stack_scaffold_id: Dict[str, int] = {}
     llm_stub_bundles = 0
     llm_fixture_bundles = 0
     fallback_bundles = 0
     family_override_bundles = 0
+    template_origin_bundles = 0
+    template_assisted_bundles = 0
+    registry_compose_bundles = 0
+    scaffolded_bundles = 0
     for entry in bundles:
         provenance = entry.get("provenance") or {}
         if not isinstance(provenance, dict):
@@ -734,14 +869,36 @@ def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
             fallback_bundles += 1
         if provenance.get("family_override_applied") is True:
             family_override_bundles += 1
+        if origin in {"built_in_template", "runtime_template_clone"}:
+            template_origin_bundles += 1
+            template_assisted_bundles += 1
+        elif provenance.get("family_override_applied") is True or origin == "family_override":
+            template_assisted_bundles += 1
+        compiler_contract = entry.get("compiler_contract") or {}
+        if isinstance(compiler_contract, dict):
+            compose_mode = str(compiler_contract.get("compose_mode") or "").strip()
+            if compose_mode:
+                by_compose_mode[compose_mode] = by_compose_mode.get(compose_mode, 0) + 1
+                if compose_mode == "registry":
+                    registry_compose_bundles += 1
+            scaffold_id = str(compiler_contract.get("stack_scaffold_id") or "").strip()
+            if scaffold_id:
+                by_stack_scaffold_id[scaffold_id] = by_stack_scaffold_id.get(scaffold_id, 0) + 1
+                scaffolded_bundles += 1
     return {
         "bundle_count": len(bundles),
         "by_origin": by_origin,
         "by_dynamicness_verdict": by_dynamicness_verdict,
+        "by_compose_mode": by_compose_mode,
+        "by_stack_scaffold_id": by_stack_scaffold_id,
         "llm_stub_bundles": llm_stub_bundles,
         "llm_fixture_bundles": llm_fixture_bundles,
         "fallback_bundles": fallback_bundles,
         "family_override_bundles": family_override_bundles,
+        "template_origin_bundles": template_origin_bundles,
+        "template_assisted_bundles": template_assisted_bundles,
+        "registry_compose_bundles": registry_compose_bundles,
+        "scaffolded_bundles": scaffolded_bundles,
     }
 
 
@@ -760,6 +917,35 @@ def _apply_multibundle_top_level_rollups(manifest: Dict[str, Any], bundles: List
     verification_trust = _rollup_multibundle_string_field(bundles, section="verification", key="trust")
     if verification_trust:
         manifest["verification_trust"] = verification_trust
+    verification_independence = _rollup_multibundle_string_field(bundles, section="verification", key="independence")
+    if verification_independence:
+        manifest["verification_independence"] = verification_independence
+    semantic_status = _rollup_multibundle_string_field(bundles, section="semantic", key="status")
+    if semantic_status:
+        manifest["semantic_status"] = semantic_status
+    semantic_source = _rollup_multibundle_string_field(bundles, section="semantic", key="source")
+    if semantic_source:
+        manifest["semantic_source"] = semantic_source
+    semantic_supported = _rollup_multibundle_bool_field(bundles, section="semantic", key="supported")
+    if semantic_supported is not None:
+        manifest["semantic_supported"] = semantic_supported
+    generalization_class = _rollup_multibundle_string_field(bundles, section="generalization", key="class")
+    if generalization_class:
+        manifest["generalization_class"] = generalization_class
+    for key, manifest_key in (
+        ("confidence", "generalization_confidence"),
+        ("basis", "generalization_basis"),
+    ):
+        value = _rollup_multibundle_string_field(bundles, section="generalization", key=key)
+        if value:
+            manifest[manifest_key] = value
+    counts_as_generalization = _rollup_multibundle_bool_field(
+        bundles,
+        section="generalization",
+        key="counts_as_generalization",
+    )
+    if counts_as_generalization is not None:
+        manifest["counts_as_generalization"] = counts_as_generalization
     for key in ("stack_scaffold_id", "stack_scaffold_version", "compose_mode"):
         value = _rollup_multibundle_string_field(bundles, section="compiler_contract", key=key)
         if value:
@@ -791,6 +977,31 @@ def _rollup_multibundle_string_field(
     return "mixed"
 
 
+def _rollup_multibundle_bool_field(
+    bundles: List[Dict[str, Any]],
+    *,
+    section: str,
+    key: str,
+) -> bool | None:
+    values: List[bool] = []
+    saw_missing = False
+    for entry in bundles:
+        scoped = entry.get(section) or {}
+        if not isinstance(scoped, dict):
+            scoped = {}
+        raw = scoped.get(key)
+        if isinstance(raw, bool):
+            values.append(raw)
+        else:
+            saw_missing = True
+    if not values:
+        return None
+    unique = set(values)
+    if len(unique) == 1 and not saw_missing:
+        return values[0]
+    return None
+
+
 def _bundle_generalization_verdict(
     bundle,
     *,
@@ -799,6 +1010,7 @@ def _bundle_generalization_verdict(
     dynamicness: Dict[str, Any],
     compiler_contract: Dict[str, Any],
     provenance: Dict[str, Any],
+    name_resolution: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
     pattern = str(pattern_id or "").strip()
@@ -807,6 +1019,9 @@ def _bundle_generalization_verdict(
     fallback_class = str((provenance or {}).get("fallback_class") or "").strip().lower()
     promotion_eligible = bool((promotion or {}).get("eligible"))
     generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
+    resolution = name_resolution if isinstance(name_resolution, dict) else {}
+    resolution_confidence = str(resolution.get("confidence") or "").strip().lower()
+    resolution_basis = str(resolution.get("match_class") or "").strip().lower()
 
     if vuln_id == "CWE-9999":
         reason = "explicit synthetic unknown identifier remains a regression lane"
@@ -824,21 +1039,33 @@ def _bundle_generalization_verdict(
                 "class": "unsupported_free_form_negative",
                 "counts_as_generalization": False,
                 "reason": "free-form NAME-* family is unsupported and intentionally fail-closed",
+                "confidence": resolution_confidence or "low",
+                "basis": resolution_basis or "synthetic_name",
             }
         if (
             promotion_eligible
             and dynamicness_verdict in {"compiler-first", "trusted dynamic"}
             and fallback_class != "generic_unsupported_family"
+            and resolution_confidence == "high"
+            and resolution_basis in {"catalog_alias", "exact_identifier"}
         ):
             return {
                 "class": "real_free_form_positive",
                 "counts_as_generalization": True,
                 "reason": f"free-form vuln_name lane closed via {dynamicness_verdict} without generic fallback",
+                "confidence": resolution_confidence or "unknown",
+                "basis": resolution_basis or "unknown",
             }
         return {
             "class": "real_free_form_non_generalizing",
             "counts_as_generalization": False,
-            "reason": "free-form NAME-* lane exists but is not yet strong enough to count as generalization evidence",
+            "reason": (
+                "free-form NAME-* lane exists but is not yet strong enough to count as generalization evidence"
+                if not resolution_confidence
+                else f"free-form NAME-* lane closed but name resolution confidence/basis is {resolution_confidence}/{resolution_basis or 'unknown'}"
+            ),
+            "confidence": resolution_confidence or "unknown",
+            "basis": resolution_basis or "unknown",
         }
 
     if support_level in {"builtin_supported", "compiler_supported"} or compiler_contract.get("compiler_supported") is True:
@@ -970,6 +1197,8 @@ def _executor_feasibility_rollup(bundles: List[Dict[str, Any]]) -> Dict[str, Any
 
 def _generalization_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_class: Dict[str, int] = {}
+    by_confidence: Dict[str, int] = {}
+    by_basis: Dict[str, int] = {}
     positive_generalization_bundles = 0
     for entry in bundles:
         generalization = entry.get("generalization") or {}
@@ -978,12 +1207,20 @@ def _generalization_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         class_name = str(generalization.get("class") or "").strip()
         if class_name:
             by_class[class_name] = by_class.get(class_name, 0) + 1
+        confidence = str(generalization.get("confidence") or "").strip()
+        if confidence:
+            by_confidence[confidence] = by_confidence.get(confidence, 0) + 1
+        basis = str(generalization.get("basis") or "").strip()
+        if basis:
+            by_basis[basis] = by_basis.get(basis, 0) + 1
         if generalization.get("counts_as_generalization") is True:
             positive_generalization_bundles += 1
     return {
         "bundle_count": len(bundles),
         "positive_generalization_bundles": positive_generalization_bundles,
         "by_class": by_class,
+        "by_confidence": by_confidence,
+        "by_basis": by_basis,
     }
 
 
@@ -1084,6 +1321,75 @@ def _bundle_compiler_contract(metadata_dir: Path) -> Dict[str, Any]:
     return payload
 
 
+def _bundle_semantic_surface(
+    metadata_dir: Path,
+    vuln_id: str,
+    eval_record: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    contract = load_generator_contract(metadata_dir) or {}
+    profile = load_semantic_profile(metadata_dir) or {}
+    semantic_contract = contract.get("semantic_contract") if isinstance(contract, dict) else {}
+    semantic_consistency = (
+        eval_record.get("semantic_consistency")
+        if isinstance(eval_record, dict) and isinstance(eval_record.get("semantic_consistency"), dict)
+        else {}
+    )
+
+    supported: Optional[bool] = None
+    status = ""
+    source = ""
+
+    if isinstance(eval_record, dict):
+        if isinstance(eval_record.get("semantic_supported"), bool):
+            supported = bool(eval_record.get("semantic_supported"))
+        status = str(eval_record.get("semantic_status") or "").strip().lower()
+        source = str(eval_record.get("semantic_source") or "").strip()
+
+    if isinstance(semantic_consistency, dict):
+        if supported is None and isinstance(semantic_consistency.get("supported"), bool):
+            supported = bool(semantic_consistency.get("supported"))
+        if not status:
+            status = str(semantic_consistency.get("status") or "").strip().lower()
+        if not source:
+            source = str(semantic_consistency.get("source") or "").strip()
+
+    if isinstance(semantic_contract, dict):
+        contract_status = str(semantic_contract.get("status") or "").strip().lower()
+        if not status and contract_status:
+            status = contract_status
+        if not source:
+            source = "resolved_contract.semantic_contract"
+        if supported is None:
+            if contract_status == "aligned":
+                supported = True
+            elif contract_status in {"unsupported", "empty"}:
+                supported = False
+
+    support_level = str(profile.get("support_level") or "").strip().lower()
+    compiler_supported = profile.get("compiler_supported")
+    if supported is None and support_level == "unsupported" and compiler_supported is False:
+        supported = False
+        if not status:
+            status = "unsupported"
+        if not source:
+            source = "semantic_profile"
+
+    if supported is None:
+        if status == "aligned":
+            supported = True
+        elif status in {"unsupported", "empty"}:
+            supported = False
+
+    payload: Dict[str, Any] = {}
+    if supported is not None:
+        payload["supported"] = supported
+    if status:
+        payload["status"] = status
+    if source:
+        payload["source"] = source
+    return payload
+
+
 def _compiler_contract_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     strategies: Dict[str, int] = {}
     support_levels: Dict[str, int] = {}
@@ -1112,6 +1418,7 @@ def _compiler_contract_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _verification_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_rule_source: Dict[str, int] = {}
     by_trust: Dict[str, int] = {}
+    by_independence: Dict[str, int] = {}
     low_trust_bundles = 0
     for entry in bundles:
         verification = entry.get("verification") or {}
@@ -1119,17 +1426,49 @@ def _verification_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
             continue
         rule_source = str(verification.get("rule_source") or "").strip()
         trust = str(verification.get("trust") or "").strip()
+        independence = str(verification.get("independence") or "").strip()
         if rule_source:
             by_rule_source[rule_source] = by_rule_source.get(rule_source, 0) + 1
         if trust:
             by_trust[trust] = by_trust.get(trust, 0) + 1
             if trust.lower() == "low":
                 low_trust_bundles += 1
+        if independence:
+            by_independence[independence] = by_independence.get(independence, 0) + 1
     return {
         "bundle_count": len(bundles),
         "by_rule_source": by_rule_source,
         "by_trust": by_trust,
+        "by_independence": by_independence,
         "low_trust_bundles": low_trust_bundles,
+    }
+
+
+def _name_resolution_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_source: Dict[str, int] = {}
+    by_confidence: Dict[str, int] = {}
+    by_match_class: Dict[str, int] = {}
+    resolved_bundles = 0
+    for entry in bundles:
+        resolution = entry.get("name_resolution")
+        if not isinstance(resolution, dict) or not resolution:
+            continue
+        resolved_bundles += 1
+        source = str(resolution.get("source") or "").strip()
+        confidence = str(resolution.get("confidence") or "").strip()
+        match_class = str(resolution.get("match_class") or "").strip()
+        if source:
+            by_source[source] = by_source.get(source, 0) + 1
+        if confidence:
+            by_confidence[confidence] = by_confidence.get(confidence, 0) + 1
+        if match_class:
+            by_match_class[match_class] = by_match_class.get(match_class, 0) + 1
+    return {
+        "bundle_count": len(bundles),
+        "resolved_bundles": resolved_bundles,
+        "by_source": by_source,
+        "by_confidence": by_confidence,
+        "by_match_class": by_match_class,
     }
 
 

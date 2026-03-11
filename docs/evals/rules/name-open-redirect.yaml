@@ -1,0 +1,54 @@
+cwe: NAME-OPEN-REDIRECT
+version: 2
+scenario_type: web-poc
+
+verification:
+  source: runtime
+  require_flag: true
+  flag_mode: strict
+  exit_code: zero
+
+output:
+  mode: auto
+  format: auto
+  json_success_key: success
+  json_success_value: true
+  json_flag_key: flag
+  json:
+    success_key: success
+    success_value: true
+    flag_key: flag
+
+llm:
+  assist_default: false
+  assertion_budget: 8
+
+runtime:
+  success_mode: text
+  success_text_markers:
+    - Exploit SUCCESS
+  flag_token: FLAG{OPEN_REDIRECT_OK}
+  assertion_program:
+    - op: contains
+      string: Exploit SUCCESS
+    - op: contains
+      string: FLAG{OPEN_REDIRECT_OK}
+
+success_signature: Exploit SUCCESS
+flag_token: FLAG{OPEN_REDIRECT_OK}
+requires_external_db: false
+strict_flag: true
+
+patterns:
+  - type: file_regex_contains
+    path: "{{service_entry}}"
+    pattern: "redirect\\(|RedirectResponse\\("
+  - type: file_regex_contains
+    path: "{{service_entry}}"
+    pattern: "request\\.args\\.get\\('next'|next\\s*:\\s*str\\s*=\\s*Query\\("
+  - type: poc_contains
+    path: "{{poc_entry}}"
+    contains: "Exploit SUCCESS"
+  - type: poc_contains
+    path: "{{poc_entry}}"
+    contains: "FLAG{OPEN_REDIRECT_OK}"

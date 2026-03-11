@@ -268,9 +268,9 @@ def test_terminal_research_failure_from_semantic_profile_marks_unsupported_name_
             {
                 "schema_version": "semantic_profile@1.0",
                 "sid": sid,
-                "slug": "name-ldap-injection",
-                "normalized_vuln_id": "NAME-LDAP-INJECTION",
-                "family": "ldap_injection",
+                "slug": "name-custom-weird-vuln",
+                "normalized_vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                "family": "custom_weird_vuln",
                 "support_level": "unsupported",
                 "compiler_supported": False,
                 "compiler_reason": "semantic family unsupported for compiler-backed generation",
@@ -286,8 +286,8 @@ def test_terminal_research_failure_from_semantic_profile_marks_unsupported_name_
             "artifacts": str(tmp_path / "artifacts" / sid),
             "workspace": str(tmp_path / "workspaces" / sid / "app"),
         },
-        "requirement": {"vuln_id": "NAME-LDAP-INJECTION"},
-        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-LDAP-INJECTION", "slug": "name-ldap-injection", "workspace_subdir": "app"}]},
+        "requirement": {"vuln_id": "NAME-CUSTOM-WEIRD-VULN"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-CUSTOM-WEIRD-VULN", "slug": "name-custom-weird-vuln", "workspace_subdir": "app"}]},
         "features": {"multi_vuln": False},
     }
 
@@ -295,7 +295,7 @@ def test_terminal_research_failure_from_semantic_profile_marks_unsupported_name_
 
     assert outcome["terminal"] is True
     assert outcome["terminal_failure_class"] == "semantic_support_missing"
-    assert "name-ldap-injection" in outcome["reason"]
+    assert "name-custom-weird-vuln" in outcome["reason"]
 
 
 def test_terminal_research_failure_from_semantic_profile_allows_compiler_supported_name_bundle(tmp_path: Path) -> None:
@@ -365,7 +365,7 @@ def test_can_skip_researcher_for_compiler_supported_without_required_evidence() 
     assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is True
 
 
-def test_cannot_skip_researcher_when_compiler_lower_bound_is_disabled() -> None:
+def test_can_skip_researcher_when_compiler_is_disabled_but_static_rule_exists() -> None:
     plan = {
         "requirement": {
             "researcher": {},
@@ -374,12 +374,12 @@ def test_cannot_skip_researcher_when_compiler_lower_bound_is_disabled() -> None:
         "policy": {"require_researcher_evidence": False},
         "run_matrix": {
             "vuln_bundles": [
-                {"vuln_id": "NAME-TEMPLATE-INJECTION", "slug": "name-template-injection", "workspace_subdir": "app"},
+                {"vuln_id": "CWE-22", "slug": "cwe-22", "workspace_subdir": "app"},
             ]
         },
     }
 
-    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is False
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is True
 
 
 def test_cannot_skip_researcher_when_required_or_refresh_requested() -> None:
@@ -606,6 +606,28 @@ def test_verify_failures_match_partial_research_failure_only_for_blocked_bundles
         )
         is False
     )
+
+
+def test_has_successful_verified_bundles_detects_partial_progress_success(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-partial-progress-success"
+    reports_dir = tmp_path / "artifacts" / sid / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {"slug": "name-custom-weird-vuln", "verify_pass": False, "status": "skipped"},
+                    {"slug": "name-open-redirect", "verify_pass": True, "status": "evaluated"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    assert run_pipeline._has_successful_verified_bundles(sid) is True
+    assert run_pipeline._has_successful_verified_bundles("sid-missing") is False
 
 
 def test_write_perf_summary_records_retry_and_provider_health(tmp_path: Path, monkeypatch) -> None:
@@ -898,8 +920,8 @@ def test_analyze_verify_failures_marks_terminal_semantic_unsupported(tmp_path: P
                 "overall_pass": False,
                 "results": [
                     {
-                        "slug": "name-ldap-injection",
-                        "vuln_id": "NAME-LDAP-INJECTION",
+                        "slug": "name-custom-weird-vuln",
+                        "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
                         "verify_pass": False,
                         "semantic_supported": False,
                         "semantic_status": "unsupported",
@@ -916,7 +938,7 @@ def test_analyze_verify_failures_marks_terminal_semantic_unsupported(tmp_path: P
 
     assert analysis["terminal_semantic_unsupported"] is True
     assert analysis["failure_count"] == 1
-    assert analysis["slugs"] == ["name-ldap-injection"]
+    assert analysis["slugs"] == ["name-custom-weird-vuln"]
 
 
 def test_analyze_verify_failures_keeps_retryable_verify_mismatch_non_terminal(tmp_path: Path, monkeypatch) -> None:

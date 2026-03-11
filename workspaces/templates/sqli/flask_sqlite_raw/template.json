@@ -1,6 +1,9 @@
 {
   "id": "flask_sqlite_raw",
   "name": "Flask + SQLite raw query",
+  "stack_id": "python/flask",
+  "language": "python",
+  "framework": "flask",
   "pattern_id": "sqli-sqlite-raw",
   "db": "sqlite",
   "description": "Classic CWE-89 example backed by a local SQLite file with an unsanitized /profile endpoint.",

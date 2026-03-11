@@ -7,8 +7,9 @@
     "pipeline_returncode": 0,
     "generation_origin": "compiler_generated",
     "dynamicness_verdict": "compiler-first",
-    "verification_rule_source": "compiler_runtime_rule",
-    "verification_trust": "medium"
+    "verification_rule_source": "declared_rule",
+    "verification_trust": "high",
+    "verification_independence": "independent"
   },
   "evals": [
     {
@@ -28,8 +29,9 @@
       "dynamicness_verdict": "compiler-first",
       "semantic_supported": true,
       "semantic_status": "aligned",
-      "verification_rule_source": "compiler_runtime_rule",
-      "verification_trust": "medium",
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "verification_independence": "independent",
       "generalization_class": "real_free_form_positive",
       "counts_as_generalization": true
     },
@@ -50,8 +52,9 @@
       "dynamicness_verdict": "compiler-first",
       "semantic_supported": true,
       "semantic_status": "aligned",
-      "verification_rule_source": "compiler_runtime_rule",
-      "verification_trust": "medium",
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "verification_independence": "independent",
       "generalization_class": "real_free_form_positive",
       "counts_as_generalization": true
     }

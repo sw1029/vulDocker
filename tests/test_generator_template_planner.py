@@ -45,7 +45,7 @@ def test_template_planner_can_be_force_enabled_from_requirement() -> None:
 
 def test_hybrid_template_fallback_requires_compatible_template() -> None:
     service = GeneratorService.__new__(GeneratorService)
-    service.requirement = {"vuln_id": "NAME-LDAP-INJECTION", "pattern_id": "generic-web-vuln"}  # type: ignore[attr-defined]
+    service.requirement = {"vuln_id": "NAME-CUSTOM-WEIRD-VULN", "pattern_id": "generic-web-vuln"}  # type: ignore[attr-defined]
     service._allow_external_db = lambda: False  # type: ignore[attr-defined]
 
     class _Template:
@@ -53,6 +53,8 @@ def test_hybrid_template_fallback_requires_compatible_template() -> None:
             self.tags = tags
             self.pattern_id = pattern_id
             self.requires_external_db = requires_external_db
+            self.metadata = {}
+            self.service_env = {}
 
     class _Registry:
         templates = [
@@ -72,6 +74,125 @@ def test_hybrid_template_fallback_requires_compatible_template() -> None:
 
     service._get_registry = lambda: _CompatibleRegistry()  # type: ignore[attr-defined]
     assert service._has_compatible_template() is True  # type: ignore[attr-defined]
+
+
+def test_hybrid_template_fallback_respects_runtime_db_surface() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {
+        "vuln_id": "CWE-89",
+        "pattern_id": "sqli-union-mysql",
+        "runtime": {"db": "mysql", "allow_external_db": True},
+    }  # type: ignore[attr-defined]
+    service._allow_external_db = lambda: True  # type: ignore[attr-defined]
+    service._runtime_db = lambda: "mysql"  # type: ignore[attr-defined]
+
+    class _Template:
+        def __init__(self, tags: list[str], pattern_id: str, db: str, requires_external_db: bool = False) -> None:
+            self.tags = tags
+            self.pattern_id = pattern_id
+            self.db = db
+            self.requires_external_db = requires_external_db
+            self.metadata = {}
+            self.service_env = {}
+
+    class _Registry:
+        templates = [
+            _Template(["cwe-89", "flask"], "sqli-union-mysql", "sqlite", True),
+            _Template(["cwe-89", "flask"], "sqli-union-mysql", "mysql", True),
+        ]
+
+    service._get_registry = lambda: _Registry()  # type: ignore[attr-defined]
+    service.requirement["executor"] = {  # type: ignore[index]
+        "allow_network": True,
+        "network_mode": "bridge",
+        "sidecars": [{"name": "mysql", "type": "mysql", "aliases": ["sqli-db"]}],
+    }
+
+    assert service._template_runtime_surface_matches(_Registry.templates[0]) is False  # type: ignore[attr-defined]
+    assert service._template_runtime_surface_matches(_Registry.templates[1]) is True  # type: ignore[attr-defined]
+    assert service._has_compatible_template() is True  # type: ignore[attr-defined]
+
+
+def test_hybrid_template_fallback_rejects_external_db_template_without_executor_surface() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {
+        "vuln_id": "CWE-89",
+        "pattern_id": "sqli-union-mysql",
+        "runtime": {"db": "mysql", "allow_external_db": True},
+        "executor": {
+            "allow_network": False,
+            "network_mode": "none",
+            "sidecars": [],
+        },
+    }  # type: ignore[attr-defined]
+    service._allow_external_db = lambda: True  # type: ignore[attr-defined]
+    service._runtime_db = lambda: "mysql"  # type: ignore[attr-defined]
+
+    class _Template:
+        def __init__(self) -> None:
+            self.tags = ["cwe-89", "flask"]
+            self.pattern_id = "sqli-union-mysql"
+            self.db = "mysql"
+            self.requires_external_db = True
+            self.service_env = {
+                "DB_HOST": "sqli-db",
+                "DB_PORT": "3306",
+                "DB_USER": "sqli",
+                "DB_PASSWORD": "sqli_pw",
+                "DB_NAME": "sqliapp",
+                "APP_PORT": "5000",
+            }
+            self.metadata = {"ports": {"app": 5000}}
+
+    class _Registry:
+        templates = [_Template()]
+
+    service._get_registry = lambda: _Registry()  # type: ignore[attr-defined]
+
+    assert service._template_runtime_surface_matches(_Registry.templates[0]) is False  # type: ignore[attr-defined]
+    assert service._has_compatible_template() is False  # type: ignore[attr-defined]
+
+
+def test_hybrid_template_fallback_rejects_stack_mismatched_template() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {
+        "vuln_id": "CWE-89",
+        "pattern_id": "sqli-sqlite-raw",
+        "language": "python",
+        "framework": "fastapi",
+        "runtime": {"db": "sqlite", "allow_external_db": False},
+    }  # type: ignore[attr-defined]
+    service._allow_external_db = lambda: False  # type: ignore[attr-defined]
+    service._runtime_db = lambda: "sqlite"  # type: ignore[attr-defined]
+
+    class _Template:
+        def __init__(self) -> None:
+            self.tags = ["cwe-89", "sqlite", "flask"]
+            self.pattern_id = "sqli-sqlite-raw"
+            self.db = "sqlite"
+            self.requires_external_db = False
+            self.metadata = {"stack_id": "python/flask", "language": "python", "framework": "flask"}
+            self.service_env = {}
+
+        @property
+        def stack_id(self) -> str:
+            return "python/flask"
+
+        @property
+        def language(self) -> str:
+            return "python"
+
+        @property
+        def framework(self) -> str:
+            return "flask"
+
+    class _Registry:
+        templates = [_Template()]
+
+    service._get_registry = lambda: _Registry()  # type: ignore[attr-defined]
+
+    assert service._template_runtime_surface_matches(_Registry.templates[0]) is False  # type: ignore[attr-defined]
+    assert service._has_compatible_template() is False  # type: ignore[attr-defined]
 
 
 def test_template_mode_prefers_viable_template_over_compiler() -> None:

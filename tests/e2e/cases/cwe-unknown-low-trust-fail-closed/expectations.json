@@ -22,6 +22,7 @@
       "counts_as_generalization": false,
       "verification_rule_source": "runtime_rule_candidate",
       "verification_trust": "low",
+      "verification_independence": "self_derived",
       "terminal_failure_class": "low_trust_verification",
       "evidence_contains": [
         "low-trust verifier contract blocked by policy"

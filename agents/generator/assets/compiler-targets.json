@@ -11,6 +11,10 @@
     "name": "Code Injection",
     "vuln_id": "CWE-94"
   },
+  "ldap_injection_filter": {
+    "name": "LDAP Injection",
+    "vuln_id": "NAME-LDAP-INJECTION"
+  },
   "deserialization_pickle_body": {
     "name": "Insecure Deserialization",
     "vuln_id": "CWE-502"

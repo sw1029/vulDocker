@@ -277,7 +277,7 @@ def test_family_aware_fallback_manifest_for_template_injection_uses_asset_templa
 
 
 def test_generic_unsupported_fallback_manifest_uses_asset_templates(tmp_path: Path) -> None:
-    engine = _engine(tmp_path, "NAME-LDAP-INJECTION")
+    engine = _engine(tmp_path, "NAME-CUSTOM-WEIRD-VULN")
     manifest = engine._fallback_manifest()
 
     assert manifest["metadata"]["fallback_class"] == "generic_unsupported_family"

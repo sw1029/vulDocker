@@ -39,8 +39,8 @@ def test_unknown_rule_based_verifier_uses_resolved_contract_semantic_contract(
         "    return 'ok'\n"
     )
     (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
-    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
-    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\nprint('FLAG{OPEN_REDIRECT_OK}')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
 
     manifest = {
         "manifest": {
@@ -92,6 +92,7 @@ def test_unknown_rule_based_verifier_uses_resolved_contract_semantic_contract(
     assert result["semantic_consistency"]["source"] == "resolved_contract.semantic_contract"
     assert result["verification_rule_source"] == "generator_manifest_fallback"
     assert result["verification_trust"] == "low"
+    assert result["verification_independence"] == "self_derived"
 
 
 def test_rule_based_verifier_fails_closed_when_unknown_contract_status_is_empty(
@@ -122,7 +123,7 @@ def test_rule_based_verifier_fails_closed_when_unknown_contract_status_is_empty(
     )
     (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
     (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
-    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
 
     (metadata_dir / "generator_manifest.json").write_text(
         json.dumps(
@@ -205,7 +206,7 @@ def test_rule_based_verifier_can_fail_closed_on_low_trust_unknown_policy(
     )
     (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
     (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
-    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
     (metadata_dir / "generator_manifest.json").write_text(
         json.dumps(
             {
@@ -291,7 +292,7 @@ def test_evaluate_with_vuln_does_not_invoke_llm_after_low_trust_policy_block(
     )
     (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
     (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
-    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
     (metadata_dir / "generator_manifest.json").write_text(
         json.dumps(
             {
@@ -427,8 +428,8 @@ def test_rule_based_verifier_fails_when_guard_consistency_blocks(
 
     app_text = "from flask import Flask\napp = Flask(__name__)\n"
     (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
-    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
-    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\nprint('FLAG{OPEN_REDIRECT_OK}')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
 
     manifest = {
         "manifest": {
@@ -493,7 +494,7 @@ def test_freeform_name_rule_based_verifier_fails_closed_when_semantic_support_is
     )
     (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
     (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
-    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
     (metadata_dir / "generator_manifest.json").write_text(
         json.dumps(
             {
@@ -503,9 +504,13 @@ def test_freeform_name_rule_based_verifier_fails_closed_when_semantic_support_is
                 "manifest": {
                     "files": [
                         {"path": "app.py", "role": "service_main", "content": app_text},
-                        {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+                        {
+                            "path": "poc.py",
+                            "role": "poc_entry",
+                            "content": "print('Exploit SUCCESS')\nprint('FLAG{OPEN_REDIRECT_OK}')\n",
+                        },
                     ],
-                    "poc": {"success_signature": "Exploit SUCCESS"},
+                    "poc": {"success_signature": "Exploit SUCCESS", "flag_token": "FLAG{OPEN_REDIRECT_OK}"},
                 },
             },
             ensure_ascii=False,
@@ -520,6 +525,7 @@ def test_freeform_name_rule_based_verifier_fails_closed_when_semantic_support_is
             "slug": slug,
             "vuln_id": "NAME-OPEN-REDIRECT",
             "success_signature": "Exploit SUCCESS",
+            "flag_token": "FLAG{OPEN_REDIRECT_OK}",
             "service_entry": "app.py",
             "poc_entry": "poc.py",
             "service_port": 5000,
@@ -677,7 +683,7 @@ def test_rule_based_verifier_ignores_poc_only_semantic_hits_for_unknown_contract
     )
     (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
     (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
-    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
     (metadata_dir / "generator_manifest.json").write_text(
         json.dumps(
             {
@@ -755,10 +761,10 @@ def test_freeform_open_redirect_can_pass_when_semantics_and_service_match(
         "    next_url = request.args.get('next', 'https://example.com')\n"
         "    return redirect(next_url, code=302)\n"
     )
-    poc_text = "print('Exploit SUCCESS')\n"
+    poc_text = "print('Exploit SUCCESS')\nprint('FLAG{OPEN_REDIRECT_OK}')\n"
     (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
     (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
-    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{OPEN_REDIRECT_OK}\n", encoding="utf-8")
     (metadata_dir / "generator_manifest.json").write_text(
         json.dumps(
             {
@@ -770,7 +776,7 @@ def test_freeform_open_redirect_can_pass_when_semantics_and_service_match(
                         {"path": "app.py", "role": "service_main", "content": app_text},
                         {"path": "poc.py", "role": "poc_entry", "content": poc_text},
                     ],
-                    "poc": {"success_signature": "Exploit SUCCESS"},
+                    "poc": {"success_signature": "Exploit SUCCESS", "flag_token": "FLAG{OPEN_REDIRECT_OK}"},
                 },
             }
         ),
@@ -784,6 +790,7 @@ def test_freeform_open_redirect_can_pass_when_semantics_and_service_match(
             "slug": slug,
             "vuln_id": "NAME-OPEN-REDIRECT",
             "success_signature": "Exploit SUCCESS",
+            "flag_token": "FLAG{OPEN_REDIRECT_OK}",
             "service_entry": "app.py",
             "poc_entry": "poc.py",
             "service_port": 5000,
@@ -819,7 +826,7 @@ def test_freeform_open_redirect_can_pass_when_semantics_and_service_match(
     assert result["semantic_consistency"]["source"] == "generator_manifest"
 
 
-def test_compiler_generated_runtime_rule_is_classified_as_medium_trust(
+def test_declared_rule_preempts_runtime_rule_for_supported_name_family(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -948,6 +955,7 @@ def test_compiler_generated_runtime_rule_is_classified_as_medium_trust(
     )
 
     assert result["verify_pass"] is True
-    assert result["verification_rule_source"] == "compiler_runtime_rule"
-    assert result["verification_trust"] == "medium"
-    assert "compiler-derived runtime rule" in result["verification_trust_reason"]
+    assert result["verification_rule_source"] == "declared_rule"
+    assert result["verification_trust"] == "high"
+    assert result["verification_independence"] == "independent"
+    assert "declared static/runtime rule contract" in result["verification_trust_reason"]

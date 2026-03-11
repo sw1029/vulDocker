@@ -64,3 +64,21 @@ def test_sid_changes_when_generator_mode_or_runtime_surface_changes() -> None:
         != plan_synthesis["sid_inputs"]["components"]["runtime_surface_digest"]
         or plan_template["sid"] != plan_synthesis["sid"]
     )
+
+
+def test_sid_changes_when_framework_changes() -> None:
+    flask_req = _requirement("NAME-OPEN-REDIRECT")
+    flask_req["language"] = "python"
+    flask_req["framework"] = "flask"
+
+    fastapi_req = dict(flask_req)
+    fastapi_req["framework"] = "fastapi"
+
+    plan_flask = build_plan(normalize_requirement(flask_req))
+    plan_fastapi = build_plan(normalize_requirement(fastapi_req))
+
+    assert plan_flask["sid"] != plan_fastapi["sid"]
+    assert (
+        plan_flask["sid_inputs"]["components"]["runtime_surface_digest"]
+        != plan_fastapi["sid_inputs"]["components"]["runtime_surface_digest"]
+    )

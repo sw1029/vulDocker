@@ -1,0 +1,12 @@
+vuln_name: Open Redirect
+policy:
+  verifier:
+    prefer_rule: true
+    strict_flag_default: true
+    min_promotion_independence: independent
+seed: 4242
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 4242

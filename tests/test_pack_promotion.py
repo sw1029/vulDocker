@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
 from orchestrator.pack import (
     _bundle_dynamicness_verdict,
     _bundle_generalization_verdict,
+    _generation_summary,
     _generalization_summary,
     _bundle_promotion_status,
     _promotion_summary,
@@ -152,6 +153,84 @@ def test_bundle_promotion_is_blocked_by_low_verification_trust(tmp_path: Path) -
     assert "verify_contract:generator_manifest_fallback" in promotion["reasons"]
 
 
+def test_bundle_promotion_is_blocked_by_name_resolution_confidence_policy(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+
+    plan = {
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+        },
+        "features": {"multi_vuln": False},
+        "requirement": {
+            "vuln_id": "NAME-TEMPLATE-INJECTION",
+            "name_resolution": {
+                "input": "Injection in Jinja template",
+                "resolved_vuln_id": "NAME-TEMPLATE-INJECTION",
+                "source": "fragment_strategy_fallback",
+                "match_class": "token_match",
+                "confidence": "medium",
+            },
+            "policy": {"verifier": {"min_name_resolution_confidence": "high"}},
+        },
+    }
+    bundle = VulnBundle(vuln_id="NAME-TEMPLATE-INJECTION", slug="name-template-injection", workspace_subdir="app")
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "name-template-injection",
+                        "vuln_id": "NAME-TEMPLATE-INJECTION",
+                        "verify_pass": True,
+                        "semantic_supported": True,
+                        "semantic_status": "aligned",
+                        "verification_rule_source": "compiler_runtime_rule",
+                        "verification_trust": "medium",
+                        "verification_independence": "compiler_coupled",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-pack",
+            "slug": "name-template-injection",
+            "vuln_id": "NAME-TEMPLATE-INJECTION",
+            "semantic_profile": {
+                "normalized_vuln_id": "NAME-TEMPLATE-INJECTION",
+                "support_level": "compiler_supported",
+                "compiler_supported": True,
+                "compiler_strategy": "template_injection_render",
+                "compiler_reason": "compiler strategy and scaffold are available",
+            },
+        },
+    )
+
+    promotion = _bundle_promotion_status(plan, bundle)
+
+    assert promotion["eligible"] is False
+    assert "name_resolution_confidence:medium" in promotion["reasons"]
+    assert "name_resolution_policy:min_high" in promotion["reasons"]
+
+
 def test_bundle_promotion_is_blocked_when_known_family_verifier_reports_semantic_failure(tmp_path: Path) -> None:
     metadata_dir = tmp_path / "metadata"
     artifacts_dir = tmp_path / "artifacts"
@@ -263,6 +342,35 @@ def test_bundle_generalization_marks_synthetic_unknown_as_non_generalizing() -> 
     assert summary["by_class"]["synthetic_regression"] == 1
 
 
+def test_generation_summary_surfaces_template_and_registry_dependency_mix() -> None:
+    summary = _generation_summary(
+        [
+            {
+                "provenance": {"generation_origin": "built_in_template"},
+                "dynamicness": {"verdict": "template-assisted"},
+                "compiler_contract": {},
+            },
+            {
+                "provenance": {"generation_origin": "compiler_generated"},
+                "dynamicness": {"verdict": "compiler-first"},
+                "compiler_contract": {
+                    "compose_mode": "registry",
+                    "stack_scaffold_id": "python/flask",
+                },
+            },
+        ]
+    )
+
+    assert summary["by_origin"] == {"built_in_template": 1, "compiler_generated": 1}
+    assert summary["by_dynamicness_verdict"] == {"template-assisted": 1, "compiler-first": 1}
+    assert summary["by_compose_mode"] == {"registry": 1}
+    assert summary["by_stack_scaffold_id"] == {"python/flask": 1}
+    assert summary["template_origin_bundles"] == 1
+    assert summary["template_assisted_bundles"] == 1
+    assert summary["registry_compose_bundles"] == 1
+    assert summary["scaffolded_bundles"] == 1
+
+
 def test_bundle_generalization_marks_real_free_form_compiler_first_bundle_as_positive() -> None:
     bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
 
@@ -273,14 +381,39 @@ def test_bundle_generalization_marks_real_free_form_compiler_first_bundle_as_pos
         dynamicness={"verdict": "compiler-first"},
         compiler_contract={"support_level": "compiler_supported", "compiler_supported": True},
         provenance={"generation_origin": "compiler_generated"},
+        name_resolution={"confidence": "high", "match_class": "catalog_alias"},
     )
     summary = _generalization_summary([{"generalization": verdict}])
 
     assert verdict["class"] == "real_free_form_positive"
     assert verdict["counts_as_generalization"] is True
+    assert verdict["confidence"] == "high"
+    assert verdict["basis"] == "catalog_alias"
     assert "compiler-first" in verdict["reason"]
     assert summary["positive_generalization_bundles"] == 1
     assert summary["by_class"]["real_free_form_positive"] == 1
+    assert summary["by_confidence"]["high"] == 1
+    assert summary["by_basis"]["catalog_alias"] == 1
+
+
+def test_bundle_generalization_surfaces_medium_confidence_token_match_for_free_form_lane() -> None:
+    bundle = VulnBundle(vuln_id="NAME-TEMPLATE-INJECTION", slug="name-template-injection", workspace_subdir="app")
+
+    verdict = _bundle_generalization_verdict(
+        bundle,
+        pattern_id="template-injection",
+        promotion={"eligible": True},
+        dynamicness={"verdict": "compiler-first"},
+        compiler_contract={"support_level": "compiler_supported", "compiler_supported": True},
+        provenance={"generation_origin": "compiler_generated"},
+        name_resolution={"confidence": "medium", "match_class": "token_match"},
+    )
+
+    assert verdict["class"] == "real_free_form_non_generalizing"
+    assert verdict["counts_as_generalization"] is False
+    assert verdict["confidence"] == "medium"
+    assert verdict["basis"] == "token_match"
+    assert "medium/token_match" in verdict["reason"]
 
 
 def test_bundle_promotion_is_blocked_when_pipeline_artifacts_are_missing(tmp_path: Path) -> None:
@@ -712,14 +845,17 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
     assert manifest["executor_feasibility_status"] == "not_required"
     assert manifest["verification_summary"]["by_rule_source"] == {"generator_manifest_fallback": 1}
     assert manifest["verification_summary"]["by_trust"] == {"low": 1}
+    assert manifest["verification_summary"]["by_independence"] == {"self_derived": 1}
     assert manifest["verification_summary"]["low_trust_bundles"] == 1
     assert manifest["bundles"][0]["provenance"]["generation_origin"] == "deterministic_fallback"
     assert manifest["bundles"][0]["provenance"]["fallback_used"] is True
     assert manifest["bundles"][0]["provenance"]["fallback_class"] == "generic_unsupported_family"
     assert manifest["bundles"][0]["verification"]["rule_source"] == "generator_manifest_fallback"
     assert manifest["bundles"][0]["verification"]["trust"] == "low"
+    assert manifest["bundles"][0]["verification"]["independence"] == "self_derived"
     assert manifest["verification_rule_source"] == "generator_manifest_fallback"
     assert manifest["verification_trust"] == "low"
+    assert manifest["verification_independence"] == "self_derived"
     assert manifest["bundles"][0]["compiler_contract"]["compiler_supported"] is False
     assert manifest["bundles"][0]["compiler_contract"]["compiler_strategy"] == "sqli_string_concat"
     assert manifest["bundles"][0]["compiler_contract"]["service_env"] == {
@@ -798,7 +934,13 @@ def test_write_manifest_classifies_llm_manifest_as_trusted_dynamic(tmp_path: Pat
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert manifest["generation_summary"]["by_dynamicness_verdict"] == {"trusted dynamic": 1}
+    assert manifest["generation_summary"]["by_compose_mode"] == {}
+    assert manifest["generation_summary"]["by_stack_scaffold_id"] == {}
     assert manifest["generation_summary"]["llm_fixture_bundles"] == 1
+    assert manifest["generation_summary"]["template_origin_bundles"] == 0
+    assert manifest["generation_summary"]["template_assisted_bundles"] == 0
+    assert manifest["generation_summary"]["registry_compose_bundles"] == 0
+    assert manifest["generation_summary"]["scaffolded_bundles"] == 0
     assert manifest["fallback_used"] is False
     assert manifest["family_override_applied"] is False
     assert manifest["llm_stub_used"] is False
@@ -905,6 +1047,12 @@ def test_write_manifest_classifies_compiler_generated_as_compiler_first(tmp_path
     assert manifest["stack_scaffold_version"] == "1.0"
     assert manifest["fragment_id"] == "redirect_next_route"
     assert manifest["compose_mode"] == "registry"
+    assert manifest["generation_summary"]["by_compose_mode"] == {"registry": 1}
+    assert manifest["generation_summary"]["by_stack_scaffold_id"] == {"python/flask": 1}
+    assert manifest["generation_summary"]["template_origin_bundles"] == 0
+    assert manifest["generation_summary"]["template_assisted_bundles"] == 0
+    assert manifest["generation_summary"]["registry_compose_bundles"] == 1
+    assert manifest["generation_summary"]["scaffolded_bundles"] == 1
     assert manifest["verification_summary"]["by_rule_source"] == {}
     assert manifest["verification_summary"]["by_trust"] == {}
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "compiler-first"
@@ -1112,9 +1260,123 @@ def test_bundle_promotion_allows_medium_verification_trust_for_compiler_runtime_
     assert manifest["promotion"]["eligible"] is True
     assert manifest["verification_rule_source"] == "compiler_runtime_rule"
     assert manifest["verification_trust"] == "medium"
+    assert manifest["verification_independence"] == "compiler_coupled"
     assert manifest["verification_summary"]["by_rule_source"] == {"compiler_runtime_rule": 1}
     assert manifest["verification_summary"]["by_trust"] == {"medium": 1}
+    assert manifest["verification_summary"]["by_independence"] == {"compiler_coupled": 1}
     assert manifest["verification_summary"]["low_trust_bundles"] == 0
+
+
+def test_bundle_promotion_can_require_independent_verification_for_compiler_runtime_rule(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-pack-independent-required"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": "name-open-redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "compiler_supported": True,
+            "compiler_strategy": "open_redirect_reflect",
+            "compiler_reason": "compiler strategy and scaffold are available",
+            "generation_origin": "compiler_generated",
+            "semantic_profile": {
+                "schema_version": "semantic_profile@1.0",
+                "sid": sid,
+                "slug": "name-open-redirect",
+                "requested_name": "Open Redirect",
+                "normalized_vuln_id": "NAME-OPEN-REDIRECT",
+                "family": "open_redirect",
+                "support_level": "compiler_supported",
+                "compiler_strategy": "open_redirect_reflect",
+                "compiler_supported": True,
+                "compiler_reason": "compiler strategy and scaffold are available",
+                "stack_profile": {"language": "python", "framework": "flask"},
+                "scenario_shape": {"service_entry": "app.py", "poc_entry": "poc.py", "service_port": 5000},
+                "semantic_signature": {
+                    "input_vector": ["next parameter"],
+                    "sink": ["redirect("],
+                    "exploit_precondition": ["open redirect"],
+                },
+                "verification_contract": {"success_signature": "Exploit SUCCESS", "output_mode": "auto"},
+                "derived_assertions": {"semantic_gate_required": True},
+                "evidence_relevance": {},
+            },
+            "provenance": {
+                "generation_origin": "compiler_generated",
+                "fallback_used": False,
+                "family_override_applied": False,
+                "llm_stub_used": False,
+                "source": "generator_manifest",
+            },
+        },
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "name-open-redirect",
+                        "vuln_id": "NAME-OPEN-REDIRECT",
+                        "verify_pass": True,
+                        "semantic_supported": True,
+                        "semantic_status": "aligned",
+                        "verification_rule_source": "compiler_runtime_rule",
+                        "verification_trust": "medium",
+                        "verification_trust_reason": "compiler-derived runtime rule",
+                        "verification_independence": "compiler_coupled",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "policy": {"verifier": {"min_promotion_independence": "independent"}},
+        },
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["promotion"]["eligible"] is False
+    assert any("verify_independence:compiler_coupled" in reason for reason in manifest["promotion"]["reasons"])
+    assert any("verify_independence_policy:min_independent" in reason for reason in manifest["promotion"]["reasons"])
 
 
 def test_write_manifest_classifies_compiler_supported_known_family_without_static_rule_as_known_regression(
@@ -1341,8 +1603,8 @@ def test_write_failure_manifest_surfaces_research_short_circuit_provenance(tmp_p
                             "retry_recommended": False,
                             "unsupported_bundles": [
                                 {
-                                    "slug": "name-ldap-injection",
-                                    "vuln_id": "NAME-LDAP-INJECTION",
+                                    "slug": "name-custom-weird-vuln",
+                                    "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
                                     "support_level": "unsupported",
                                 }
                             ],
@@ -1359,14 +1621,14 @@ def test_write_failure_manifest_surfaces_research_short_circuit_provenance(tmp_p
         {
             "schema_version": "resolved_contract@1.0",
             "sid": sid,
-            "slug": "name-ldap-injection",
-            "vuln_id": "NAME-LDAP-INJECTION",
+            "slug": "name-custom-weird-vuln",
+            "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
             "semantic_profile": {
                 "schema_version": "semantic_profile@1.0",
                 "sid": sid,
-                "slug": "name-ldap-injection",
-                "normalized_vuln_id": "NAME-LDAP-INJECTION",
-                "family": "ldap_injection",
+                "slug": "name-custom-weird-vuln",
+                "normalized_vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                "family": "custom_weird_vuln",
                 "support_level": "unsupported",
                 "compiler_supported": False,
                 "compiler_reason": "semantic family unsupported for compiler-backed generation",
@@ -1380,12 +1642,12 @@ def test_write_failure_manifest_surfaces_research_short_circuit_provenance(tmp_p
             "artifacts": str(artifacts_dir),
             "workspace": str(workspace_dir),
         },
-        "requirement": {"vuln_id": "NAME-LDAP-INJECTION"},
+        "requirement": {"vuln_id": "NAME-CUSTOM-WEIRD-VULN"},
         "run_matrix": {
             "vuln_bundles": [
                 {
-                    "vuln_id": "NAME-LDAP-INJECTION",
-                    "slug": "name-ldap-injection",
+                    "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                    "slug": "name-custom-weird-vuln",
                     "workspace_subdir": "app",
                 }
             ]
@@ -1399,10 +1661,16 @@ def test_write_failure_manifest_surfaces_research_short_circuit_provenance(tmp_p
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert manifest["failure"]["terminal_failure_class"] == "semantic_support_missing"
+    assert manifest["semantic_supported"] is False
+    assert manifest["semantic_status"] == "unsupported"
+    assert manifest["semantic_source"] == "semantic_profile"
     assert manifest["bundles"][0]["failure"]["terminal_failure_class"] == "semantic_support_missing"
     assert manifest["bundles"][0]["provenance"]["generation_origin"] == "research_short_circuit"
     assert manifest["bundles"][0]["provenance"]["source"] == "loop_state"
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "pre-generation fail-closed"
+    assert manifest["bundles"][0]["semantic_supported"] is False
+    assert manifest["bundles"][0]["semantic_status"] == "unsupported"
+    assert manifest["bundles"][0]["semantic_source"] == "semantic_profile"
 
 
 def test_bundle_scoped_research_failure_does_not_poison_other_multi_vuln_bundle(

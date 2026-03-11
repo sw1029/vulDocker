@@ -18,3 +18,14 @@ def test_mysql_union_template_flag_token_matches_template_metadata() -> None:
     assert expected
     assert expected in app_text
     assert expected in schema_text
+
+
+def test_built_in_templates_surface_explicit_stack_metadata() -> None:
+    template_paths = sorted((REPO_ROOT / "workspaces" / "templates").rglob("template.json"))
+    assert template_paths
+
+    for path in template_paths:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        assert metadata.get("stack_id") == "python/flask"
+        assert metadata.get("language") == "python"
+        assert metadata.get("framework") == "flask"

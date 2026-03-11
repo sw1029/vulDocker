@@ -179,6 +179,62 @@ def test_reviewer_surfaces_low_verifier_trust_issue_without_blocking(tmp_path: P
     assert any("verifier contract trust is low" in issue.get("issue", "").lower() for issue in summary["issues_sample"])
 
 
+def test_reviewer_surfaces_compiler_coupled_verifier_issue_without_blocking(tmp_path: Path, monkeypatch) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    run_log = artifacts_dir / "run" / "run.log"
+    run_log.write_text("Exploit SUCCESS\n", encoding="utf-8")
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"exit_code": 0, "run_attempted": True, "sid": "sid-review", "slug": "name-open-redirect"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "resolved_contract.json").write_text(
+        json.dumps({"semantic_contract": {"status": "aligned"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    service = ReviewerService.__new__(ReviewerService)
+    service.sid = "sid-review"
+    service.plan = {  # type: ignore[attr-defined]
+        "requirement": {},
+        "paths": {"metadata": str(metadata_dir), "artifacts": str(artifacts_dir)},
+    }
+    service.metadata_root = metadata_dir  # type: ignore[attr-defined]
+    service.loop_controller = _LoopStub()  # type: ignore[attr-defined]
+    service.llm = _LLMStub()  # type: ignore[attr-defined]
+    service.bundles = [VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")]  # type: ignore[attr-defined]
+    service._scan_workspace = lambda bundle, exploit_success=False: []  # type: ignore[attr-defined]
+
+    def _fake_evaluate_with_vuln(*args, **kwargs) -> Dict[str, Any]:
+        return {
+            "verify_pass": True,
+            "status": "evaluated",
+            "evidence": "Exploit SUCCESS",
+            "semantic_supported": True,
+            "semantic_status": "aligned",
+            "guard_consistency": {
+                "available": True,
+                "required_but_missing": False,
+                "verifier": {"passed": True, "blocking": False, "violations": []},
+                "workspace": {"passed": True, "blocking": False, "violations": []},
+            },
+            "verification_rule_source": "compiler_runtime_rule",
+            "verification_trust": "medium",
+            "verification_trust_reason": "compiler-derived runtime rule",
+            "verification_independence": "compiler_coupled",
+        }
+
+    monkeypatch.setattr("agents.reviewer.service.evaluate_with_vuln", _fake_evaluate_with_vuln)
+
+    service.run()
+
+    summary = json.loads((metadata_dir / "reviewer_report.json").read_text(encoding="utf-8"))
+    assert summary["blocking_bundles"] == []
+    assert any("compiler-coupled" in issue.get("issue", "").lower() for issue in summary["issues_sample"])
+
+
 def test_reviewer_skips_llm_feedback_for_clean_runs_by_default(tmp_path: Path) -> None:
     service = ReviewerService.__new__(ReviewerService)
     service.sid = "sid-review"
@@ -204,6 +260,72 @@ def test_reviewer_skips_llm_feedback_for_clean_runs_by_default(tmp_path: Path) -
 
     bundle_report = json.loads((tmp_path / "reviewer_report.json").read_text(encoding="utf-8"))
     assert bundle_report["blocking_bundles"] == []
+
+
+def test_reviewer_skips_research_blocked_bundle_but_reviews_runnable_bundle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    blocked = VulnBundle(vuln_id="NAME-CUSTOM-WEIRD-VULN", slug="name-custom-weird-vuln", workspace_subdir="app/name-custom-weird-vuln")
+    runnable = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app/name-open-redirect")
+
+    service = ReviewerService.__new__(ReviewerService)
+    service.sid = "sid-review"
+    service.plan = {  # type: ignore[attr-defined]
+        "requirement": {},
+        "paths": {"metadata": str(tmp_path)},
+        "features": {"multi_vuln": True},
+    }
+    service.metadata_root = tmp_path  # type: ignore[attr-defined]
+    service.loop_controller = _LoopStub()  # type: ignore[attr-defined]
+    service.llm = _FailIfCalledLLM()  # type: ignore[attr-defined]
+    service.bundles = [blocked, runnable]  # type: ignore[attr-defined]
+    service._scan_workspace = lambda bundle, exploit_success=False: []  # type: ignore[attr-defined]
+    service._semantic_contract_issues = lambda bundle: []  # type: ignore[attr-defined]
+    service._confidence_issues = lambda bundle: []  # type: ignore[attr-defined]
+
+    def _evaluate_bundle(bundle: VulnBundle) -> ReviewerContext:
+        if bundle.slug == blocked.slug:
+            raise AssertionError("research-blocked bundle should not reach _evaluate_bundle")
+        return ReviewerContext(
+            sid="sid-review",
+            bundle=bundle,
+            log_path=tmp_path / "run.log",
+            log_excerpt="ok",
+            success=True,
+            issues=[],
+            blocking=False,
+            reason="",
+            fix_hint="",
+        )
+
+    service._evaluate_bundle = _evaluate_bundle  # type: ignore[attr-defined]
+
+    def _fake_blocker(_plan: Dict[str, Any], bundle: VulnBundle) -> Dict[str, Any]:
+        if bundle.slug != blocked.slug:
+            return {}
+        return {
+            "bundle_slug": blocked.slug,
+            "vuln_id": blocked.vuln_id,
+            "reason": "unsupported free-form bundle was fail-closed before generation",
+            "report_path": str(tmp_path / "bundles" / blocked.slug / "researcher_report.json"),
+        }
+
+    monkeypatch.setattr("agents.reviewer.service.bundle_research_blocker", _fake_blocker)
+
+    service.run()
+
+    summary = json.loads((tmp_path / "reviewer_report.json").read_text(encoding="utf-8"))
+    index = json.loads((tmp_path / "reviewer_reports.json").read_text(encoding="utf-8"))
+    blocked_report = json.loads(
+        (tmp_path / "bundles" / blocked.slug / "reviewer_report.json").read_text(encoding="utf-8")
+    )
+
+    assert summary["blocking_bundles"] == []
+    assert summary["success"] is True
+    assert any(entry["slug"] == blocked.slug and entry.get("research_blocked") is True for entry in index["bundles"])
+    assert blocked_report["research_blocked"] is True
+    assert blocked_report["blocking"] is False
 
 
 def test_reviewer_blocks_on_semantic_contract_contradiction(tmp_path: Path) -> None:

@@ -67,6 +67,38 @@
       "    init_runtime_state()"
     ]
   },
+  "ldap_injection_filter": {
+    "import_block": [
+      "import re",
+      "from flask import Flask, jsonify, request"
+    ],
+    "route_block": [
+      "@app.get('/search')",
+      "def search():",
+      "    # Registry-backed compiler fragment: user-controlled input is concatenated into an LDAP filter string.",
+      "    user = request.args.get('user', 'alice')",
+      "    ldap_filter = '(&(uid=' + user + ')(status=active))'",
+      "    rows = search_directory(ldap_filter)",
+      "    return jsonify({'count': len(rows), 'rows': rows, 'filter': ldap_filter, 'flag': 'FLAG{LDAPI_OK}'})"
+    ],
+    "app_setup_block": [
+      "DIRECTORY = [",
+      "    {'uid': 'alice', 'status': 'active', 'role': 'user'},",
+      "    {'uid': 'admin', 'status': 'active', 'role': 'admin'},",
+      "]",
+      "",
+      "def search_directory(ldap_filter: str):",
+      "    lowered = ldap_filter.lower()",
+      "    if '(|(uid=*))' in lowered or '*)(|' in lowered:",
+      "        return DIRECTORY",
+      "    match = re.search(r'\\(uid=([^\\)]+)\\)', ldap_filter)",
+      "    if not match:",
+      "        return []",
+      "    uid = match.group(1)",
+      "    return [entry for entry in DIRECTORY if entry['uid'] == uid and entry['status'] == 'active']"
+    ],
+    "startup_block": []
+  },
   "open_redirect_reflect": {
     "import_block": [
       "from flask import Flask, redirect, request"

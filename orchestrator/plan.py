@@ -69,6 +69,10 @@ def _runtime_surface_digest(normalization: RequirementNormalization) -> str:
     runtime = runtime if isinstance(runtime, dict) else {}
     payload = {
         "generator_mode": str(requirement.get("generator_mode") or "synthesis"),
+        "stack": {
+            "language": str(requirement.get("language") or "").strip().lower(),
+            "framework": str(requirement.get("framework") or "").strip().lower(),
+        },
         "runtime": {
             "db": str(runtime.get("db") or "").strip().lower(),
             "allow_external_db": bool(runtime.get("allow_external_db", False)),

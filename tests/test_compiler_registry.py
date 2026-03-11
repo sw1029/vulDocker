@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agents.generator.compiler import compile_manifest
 from agents.generator.service import GeneratorService
+from common.contracts import compiler_support_summary
 
 try:
     import yaml
@@ -11,14 +12,20 @@ except Exception:  # pragma: no cover
     yaml = None
 
 
-def _semantic_profile(strategy: str, *, requested_name: str, normalized_vuln_id: str) -> dict:
+def _semantic_profile(
+    strategy: str,
+    *,
+    requested_name: str,
+    normalized_vuln_id: str,
+    framework: str = "flask",
+) -> dict:
     return {
         "requested_name": requested_name,
         "normalized_vuln_id": normalized_vuln_id,
         "compiler_strategy": strategy,
         "compiler_supported": True,
         "scenario_shape": {"service_port": 5000},
-        "stack_profile": {"language": "python", "framework": "flask"},
+        "stack_profile": {"language": "python", "framework": framework},
     }
 
 
@@ -59,6 +66,48 @@ def test_generator_writes_compiler_derived_runtime_rule_for_name_family(tmp_path
     )
 
 
+def test_generator_writes_stack_aware_compiler_runtime_rule_for_fastapi_name_family(tmp_path: Path) -> None:
+    if yaml is None:
+        raise AssertionError("PyYAML is required for runtime rule serialization tests")
+
+    result = compile_manifest(
+        sid="sid-registry-open-redirect-fastapi",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "framework": "fastapi",
+        },
+        semantic_profile=_semantic_profile(
+            "open_redirect_reflect",
+            requested_name="Open Redirect",
+            normalized_vuln_id="NAME-OPEN-REDIRECT",
+            framework="fastapi",
+        ),
+    )
+    assert result is not None
+
+    service = GeneratorService.__new__(GeneratorService)
+    service.runtime_rules_dir = tmp_path / "runtime_rules"  # type: ignore[attr-defined]
+    service.requirement = {"vuln_id": "NAME-OPEN-REDIRECT"}  # type: ignore[attr-defined]
+    service._write_compiler_runtime_rule(result)  # type: ignore[attr-defined]
+
+    rule_path = service.runtime_rules_dir / "name-open-redirect.yaml"  # type: ignore[attr-defined]
+    payload = yaml.safe_load(rule_path.read_text(encoding="utf-8"))
+    patterns = payload.get("patterns") or []
+    assert any(
+        entry.get("type") == "file_contains" and entry.get("contains") == "RedirectResponse("
+        for entry in patterns
+    )
+    assert any(
+        entry.get("type") == "file_contains" and entry.get("contains") == "next: str = Query("
+        for entry in patterns
+    )
+    assert not any(
+        entry.get("type") == "file_contains" and entry.get("contains") == "request.args.get('next'"
+        for entry in patterns
+    )
+
+
 def test_open_redirect_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
     result = compile_manifest(
         sid="sid-registry-open-redirect",
@@ -76,9 +125,17 @@ def test_open_redirect_registry_manifest_records_scaffold_and_fragment_metadata(
     assert metadata["stack_scaffold_version"] == "1.0"
     assert metadata["fragment_id"] == "redirect_next_route"
     assert metadata["compose_mode"] == "registry"
+    assert result.manifest["build"]["command"] == "pip install --no-cache-dir -r requirements.txt"
+    assert result.manifest["run"]["command"] == "python app.py"
+    assert result.manifest["poc"]["cmd"] == "python poc.py --base-url {{base_url}}"
     assert result.manifest["poc"]["flag_token"] == "FLAG{OPEN_REDIRECT_OK}"
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    readme = next(item for item in result.manifest["files"] if item["path"] == "README.md")
     assert "next_url = request.args.get('next'" in service_main["content"]
+    assert "python/flask" in readme["content"]
+    assert "redirect_next_route" in readme["content"]
+    assert "Service behavior: python/flask registry-backed open redirect service." in readme["content"]
+    assert "Exploit contract: Registry-backed open redirect PoC." in readme["content"]
 
 
 def test_csrf_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
@@ -146,6 +203,29 @@ def test_code_injection_registry_manifest_records_scaffold_and_fragment_metadata
     assert result.manifest["poc"]["flag_token"] == "FLAG{CODEI_OK}"
 
 
+def test_ldap_injection_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
+    result = compile_manifest(
+        sid="sid-registry-ldapi",
+        requirement={"vuln_id": "NAME-LDAP-INJECTION", "vuln_name": "LDAP Injection"},
+        semantic_profile=_semantic_profile(
+            "ldap_injection_filter",
+            requested_name="LDAP Injection",
+            normalized_vuln_id="NAME-LDAP-INJECTION",
+        ),
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/flask"
+    assert metadata["stack_scaffold_version"] == "1.0"
+    assert metadata["fragment_id"] == "ldap_filter_concat_route"
+    assert metadata["compose_mode"] == "registry"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    assert "ldap_filter = '(&(uid=' + user + ')(status=active))'" in service_main["content"]
+    assert "search_directory(ldap_filter)" in service_main["content"]
+    assert result.manifest["poc"]["flag_token"] == "FLAG{LDAPI_OK}"
+
+
 def test_sqli_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
     result = compile_manifest(
         sid="sid-registry-sqli",
@@ -195,10 +275,13 @@ def test_mysql_sqli_registry_manifest_records_external_db_metadata() -> None:
     assert result.manifest["run"]["env"]["DB_HOST"] == "sqli-db"
     assert result.manifest["run"]["env"]["DB_USER"] == "sqli"
     requirements_txt = next(item for item in result.manifest["files"] if item["path"] == "requirements.txt")
+    readme = next(item for item in result.manifest["files"] if item["path"] == "README.md")
     assert "mysql-connector-python==8.1.0" in requirements_txt["content"]
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
     assert "mysql.connector.connect" in service_main["content"]
     assert "missing-db-host" in service_main["content"]
+    assert "Runtime assumptions: external service dependency with env contract" in readme["content"]
+    assert "DB_HOST" in readme["content"]
 
 
 def test_mysql_sqli_registry_manifest_uses_catalog_runtime_surface_with_custom_sidecar_values() -> None:
@@ -264,6 +347,203 @@ def test_template_injection_registry_manifest_records_scaffold_and_fragment_meta
     assert result.manifest["poc"]["flag_token"] == "FLAG{SSTI_OK}"
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
     assert "render_template_string(template)" in service_main["content"]
+
+
+def test_open_redirect_fastapi_registry_manifest_uses_second_scaffold() -> None:
+    result = compile_manifest(
+        sid="sid-registry-open-redirect-fastapi",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "language": "python",
+            "framework": "fastapi",
+        },
+        semantic_profile={
+            **_semantic_profile(
+                "open_redirect_reflect",
+                requested_name="Open Redirect",
+                normalized_vuln_id="NAME-OPEN-REDIRECT",
+            ),
+            "stack_profile": {"language": "python", "framework": "fastapi"},
+        },
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/fastapi"
+    assert metadata["fragment_id"] == "redirect_next_route_fastapi"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    poc = next(item for item in result.manifest["files"] if item["role"] == "poc_entry")
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "RedirectResponse(url=next, status_code=302)" in service_main["content"]
+    assert "Open Redirect compiler PoC (FastAPI)" in poc["content"]
+    assert "[open-redirect-fastapi-compiler]" in poc["content"]
+
+
+def test_compiler_support_summary_is_framework_aware_for_second_scaffold() -> None:
+    open_redirect_fastapi = compiler_support_summary(
+        "NAME-OPEN-REDIRECT",
+        {"language": "python", "framework": "fastapi"},
+    )
+    template_injection_fastapi = compiler_support_summary(
+        "NAME-TEMPLATE-INJECTION",
+        {"language": "python", "framework": "fastapi"},
+    )
+    sqli_fastapi = compiler_support_summary(
+        "CWE-89",
+        {"language": "python", "framework": "fastapi"},
+    )
+    xss_fastapi = compiler_support_summary(
+        "CWE-79",
+        {"language": "python", "framework": "fastapi"},
+    )
+    ssrf_fastapi = compiler_support_summary(
+        "CWE-918",
+        {"language": "python", "framework": "fastapi"},
+    )
+
+    assert open_redirect_fastapi["compiler_supported"] is True
+    assert open_redirect_fastapi["compiler_strategy"] == "open_redirect_reflect"
+    assert template_injection_fastapi["compiler_supported"] is True
+    assert template_injection_fastapi["compiler_strategy"] == "template_injection_render"
+    path_traversal_fastapi = compiler_support_summary(
+        "CWE-22",
+        {"language": "python", "framework": "fastapi"},
+    )
+    assert path_traversal_fastapi["compiler_supported"] is True
+    assert path_traversal_fastapi["compiler_strategy"] == "path_traversal_file_read"
+    assert xss_fastapi["compiler_supported"] is True
+    assert xss_fastapi["compiler_strategy"] == "xss_reflected"
+    assert ssrf_fastapi["compiler_supported"] is True
+    assert ssrf_fastapi["compiler_strategy"] == "ssrf_loopback_fetch"
+    assert sqli_fastapi["compiler_supported"] is False
+    assert sqli_fastapi["compiler_reason"] == "compiler scaffold registry not implemented"
+
+
+def test_path_traversal_fastapi_registry_manifest_uses_second_scaffold() -> None:
+    result = compile_manifest(
+        sid="sid-registry-path-traversal-fastapi",
+        requirement={
+            "vuln_id": "CWE-22",
+            "vuln_name": "Path Traversal",
+            "language": "python",
+            "framework": "fastapi",
+        },
+        semantic_profile={
+            **_semantic_profile(
+                "path_traversal_file_read",
+                requested_name="Path Traversal",
+                normalized_vuln_id="CWE-22",
+            ),
+            "stack_profile": {"language": "python", "framework": "fastapi"},
+        },
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/fastapi"
+    assert metadata["fragment_id"] == "file_read_download_route_fastapi"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    poc = next(item for item in result.manifest["files"] if item["role"] == "poc_entry")
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "target = BASE_DIR / path" in service_main["content"]
+    assert "Path Traversal compiler PoC (FastAPI)" in poc["content"]
+    assert "[path-traversal-fastapi-compiler]" in poc["content"]
+
+
+def test_template_injection_fastapi_registry_manifest_uses_second_scaffold() -> None:
+    result = compile_manifest(
+        sid="sid-registry-template-fastapi",
+        requirement={
+            "vuln_id": "NAME-TEMPLATE-INJECTION",
+            "vuln_name": "Template Injection",
+            "language": "python",
+            "framework": "fastapi",
+        },
+        semantic_profile={
+            **_semantic_profile(
+                "template_injection_render",
+                requested_name="Template Injection",
+                normalized_vuln_id="NAME-TEMPLATE-INJECTION",
+            ),
+            "stack_profile": {"language": "python", "framework": "fastapi"},
+        },
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/fastapi"
+    assert metadata["fragment_id"] == "render_jinja_template_fastapi"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    poc = next(item for item in result.manifest["files"] if item["role"] == "poc_entry")
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "template = Template('<h1>Hello ' + name + '</h1>')" in service_main["content"]
+    assert "return HTMLResponse(template.render())" in service_main["content"]
+    assert "Template Injection compiler PoC (FastAPI)" in poc["content"]
+    assert "[template-injection-fastapi-compiler]" in poc["content"]
+
+
+def test_xss_fastapi_registry_manifest_uses_second_scaffold() -> None:
+    result = compile_manifest(
+        sid="sid-registry-xss-fastapi",
+        requirement={
+            "vuln_id": "CWE-79",
+            "vuln_name": "Reflected XSS",
+            "language": "python",
+            "framework": "fastapi",
+        },
+        semantic_profile={
+            **_semantic_profile(
+                "xss_reflected",
+                requested_name="Reflected XSS",
+                normalized_vuln_id="CWE-79",
+            ),
+            "stack_profile": {"language": "python", "framework": "fastapi"},
+        },
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/fastapi"
+    assert metadata["fragment_id"] == "render_reflect_route_fastapi"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    poc = next(item for item in result.manifest["files"] if item["role"] == "poc_entry")
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "return HTMLResponse(\"<div class='result'>\" + name + \"</div>\")" in service_main["content"]
+    assert "Reflected XSS compiler PoC (FastAPI)" in poc["content"]
+    assert "[xss-fastapi-compiler]" in poc["content"]
+
+
+def test_ssrf_fastapi_registry_manifest_uses_second_scaffold() -> None:
+    result = compile_manifest(
+        sid="sid-registry-ssrf-fastapi",
+        requirement={
+            "vuln_id": "CWE-918",
+            "vuln_name": "SSRF",
+            "language": "python",
+            "framework": "fastapi",
+        },
+        semantic_profile={
+            **_semantic_profile(
+                "ssrf_loopback_fetch",
+                requested_name="SSRF",
+                normalized_vuln_id="CWE-918",
+            ),
+            "stack_profile": {"language": "python", "framework": "fastapi"},
+        },
+    )
+
+    assert result is not None
+    metadata = result.manifest["metadata"]
+    assert metadata["stack_scaffold_id"] == "python/fastapi"
+    assert metadata["fragment_id"] == "loopback_fetch_route_fastapi"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    poc = next(item for item in result.manifest["files"] if item["role"] == "poc_entry")
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "resp = requests.get(url, timeout=2)" in service_main["content"]
+    assert "return Response(" in service_main["content"]
+    assert "SSRF compiler PoC (FastAPI)" in poc["content"]
+    assert "[ssrf-fastapi-compiler]" in poc["content"]
 
 
 def test_xxe_registry_manifest_records_scaffold_fragment_and_extra_files() -> None:

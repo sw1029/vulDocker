@@ -73,6 +73,28 @@ def test_researcher_fail_policy_rejects_unsupported_generator_op() -> None:
     assert normalized is None
 
 
+def test_researcher_warn_policy_records_dropped_unsupported_generator_op() -> None:
+    service = _service_stub()
+    payload = {
+        "generator_assertions": [{"op": "totally_unknown_op", "path": "app.py"}],
+        "verifier_assertions": [],
+    }
+
+    normalized = service._normalize_guard_payload_ops(  # type: ignore[attr-defined]
+        payload,
+        unsupported_policy="warn",
+        bundle=None,
+        report={},
+    )
+
+    assert normalized is not None
+    assert normalized["generator_assertions"] == [{"op": "role_exists", "role": "service_main"}]
+    dropped = normalized["normalization"]["dropped_ops"]
+    warnings = normalized["normalization"]["warnings"]
+    assert {"op": "totally_unknown_op", "scope": "generator", "reason": "unsupported_op"} in dropped
+    assert any("dropped unsupported guard assertion op in generator" in item for item in warnings)
+
+
 def test_researcher_normalizes_file_regex_any_patterns_into_regex_and_globs() -> None:
     service = _service_stub()
     payload = {
@@ -636,23 +658,23 @@ def test_align_verifier_assertions_drops_weak_response_marker_for_template_injec
     assert any("normalized runtime verification contract" in item for item in warnings)
 
 
-def test_fallback_guard_spec_uses_normalized_runtime_verification_spec_for_template_injection() -> None:
-    service = _service_stub("NAME-TEMPLATE-INJECTION")
-    service.sid = "sid-template"  # type: ignore[attr-defined]
-    service.requirement = {"vuln_id": "NAME-TEMPLATE-INJECTION"}  # type: ignore[attr-defined]
+def test_fallback_guard_spec_uses_normalized_runtime_verification_spec_for_path_traversal() -> None:
+    service = _service_stub("CWE-22")
+    service.sid = "sid-path"  # type: ignore[attr-defined]
+    service.requirement = {"vuln_id": "CWE-22"}  # type: ignore[attr-defined]
     service._allow_runtime_rule_override_static = lambda: False  # type: ignore[attr-defined]
     service._report_confidence = lambda report: "high"  # type: ignore[attr-defined]
     service._fallback_generator_assertions = (  # type: ignore[attr-defined]
         lambda bundle: ResearcherService._fallback_generator_assertions(service, bundle)
     )
-    bundle = type("Bundle", (), {"vuln_id": "NAME-TEMPLATE-INJECTION", "slug": "name-template-injection"})()
+    bundle = type("Bundle", (), {"vuln_id": "CWE-22", "slug": "cwe-22"})()
 
     payload = service._fallback_guard_spec(  # type: ignore[attr-defined]
         report={
             "verification_spec": {
                 "success_text_markers": ["49"],
                 "flag_token": "49",
-                "assertion_program": "print('OK: SSTI confirmed')\nprint('FAIL: marker not found')\n",
+                "assertion_program": "print('OK: Path Traversal confirmed')\nprint('FAIL: marker not found')\n",
             },
             "semantic_signature": {},
         },
@@ -664,13 +686,15 @@ def test_fallback_guard_spec_uses_normalized_runtime_verification_spec_for_templ
     generator_assertions = payload["generator_assertions"]
     verifier_assertions = payload["verifier_assertions"]
     assert any(
-        item.get("op") == "manifest_field_contains" and item.get("string") == "OK: SSTI confirmed"
+        item.get("op") == "manifest_field_contains"
+        and item.get("field") == "poc.success_signature"
+        and item.get("string") == "Exploit SUCCESS"
         for item in generator_assertions
     )
     assert any(
         item.get("op") == "manifest_field_contains"
         and item.get("field") == "metadata.fragment_id"
-        and item.get("string") == "render_template_string_concat"
+        and item.get("string") == "file_read_download_route"
         for item in generator_assertions
     )
     assert any(
@@ -679,7 +703,10 @@ def test_fallback_guard_spec_uses_normalized_runtime_verification_spec_for_templ
         and item.get("string") == "registry"
         for item in generator_assertions
     )
-    assert any(item.get("op") == "contains" and item.get("string") == "OK: SSTI confirmed" for item in verifier_assertions)
+    assert any(
+        item.get("op") == "contains" and item.get("string") == "Exploit SUCCESS"
+        for item in verifier_assertions
+    )
     assert not any(item.get("string") == "49" for item in verifier_assertions if item.get("op") == "contains")
 
 

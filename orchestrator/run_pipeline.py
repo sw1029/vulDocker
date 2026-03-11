@@ -1191,6 +1191,16 @@ def _overall_verify_pass(sid: str) -> bool:
     return bool(payload.get("overall_pass"))
 
 
+def _has_successful_verified_bundles(sid: str) -> bool:
+    evals_path = get_artifacts_dir(sid) / "reports" / "evals.json"
+    payload = _load_json(evals_path) or {}
+    results = payload.get("results") or []
+    for entry in results:
+        if isinstance(entry, dict) and entry.get("verify_pass") is True:
+            return True
+    return False
+
+
 def _analyze_verify_failures(sid: str) -> Dict[str, Any]:
     evals_path = get_artifacts_dir(sid) / "reports" / "evals.json"
     payload = _load_json(evals_path) or {}
@@ -1559,6 +1569,7 @@ def main() -> None:
             reason, hint, meta = _summarize_verify_failure(sid)
             verify_analysis = _analyze_verify_failures(sid)
             failure_stage = "VERIFY"
+            run_reviewer_for_partial_progress = False
             if partial_research_failure and _verify_failures_match_partial_research_failure(
                 verify_analysis,
                 partial_research_failure,
@@ -1572,6 +1583,7 @@ def main() -> None:
                     "Some bundles were intentionally fail-closed after RESEARCH. "
                     "Add stronger evidence/compiler support for those bundles or split the request."
                 )
+                run_reviewer_for_partial_progress = _has_successful_verified_bundles(sid)
             elif verify_analysis.get("terminal_semantic_unsupported"):
                 meta["terminal_failure_class"] = "semantic_support_missing"
                 meta["retry_recommended"] = False
@@ -1584,6 +1596,26 @@ def main() -> None:
                     "policy.verifier.low_trust_unknown_policy to warn for synthetic regression lanes."
                 )
             controller.record_failure(stage=failure_stage, reason=reason, fix_hint=hint, blocking=True, metadata=meta)
+            if run_reviewer_for_partial_progress and not args.skip_reviewer:
+                rc, duration = _run_step_timed(
+                    _python_cmd(
+                        "agents/reviewer/main.py",
+                        "--sid",
+                        sid,
+                        "--mode",
+                        args.mode,
+                        "--artifact-only",
+                    )
+                )
+                _record_perf_event(
+                    sid,
+                    perf_events,
+                    loop=controller.current_loop,
+                    stage="REVIEW",
+                    duration_s=duration,
+                    returncode=rc,
+                    note="partial-progress reviewer run",
+                )
             if meta.get("terminal_failure_class") == "bundle_scoped_research_failure":
                 LOGGER.info(
                     "Stopping retries for %s after VERIFY: bundle-scoped RESEARCH failures already explain the skipped bundles (%s)",

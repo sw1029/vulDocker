@@ -39,7 +39,7 @@
       "verify_pass": true,
       "run_passed": true,
       "exit_code": 0,
-      "promotion_eligible": false,
+      "promotion_eligible": true,
       "compiler_supported": true,
       "compiler_strategy": "open_redirect_reflect",
       "compiler_family": "open_redirect",
@@ -51,10 +51,11 @@
       "dynamicness_verdict": "compiler-first",
       "semantic_supported": true,
       "semantic_status": "aligned",
-      "verification_rule_source": "compiler_runtime_rule",
-      "verification_trust": "medium",
-      "generalization_class": "real_free_form_non_generalizing",
-      "counts_as_generalization": false
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "verification_independence": "independent",
+      "generalization_class": "real_free_form_positive",
+      "counts_as_generalization": true
     }
   ],
   "reviewer": {

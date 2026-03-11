@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -130,17 +132,17 @@ def test_contract_marks_cwe352_as_compiler_supported_when_strategy_exists(tmp_pa
     assert payload["compiler_supported"] is True
 
 
-def test_contract_surfaces_requirement_aware_lower_bound_when_compiler_disabled(tmp_path: Path) -> None:
+def test_contract_keeps_static_rule_lower_bound_when_compiler_disabled_for_cwe22(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
-        vuln_id="NAME-TEMPLATE-INJECTION",
+        vuln_id="CWE-22",
         metadata_dir=tmp_path,
         workspace_dir=None,
         generator_mode="research_seed",
-        bundle_slug="name-template-injection",
+        bundle_slug="cwe-22",
         requirement={
-            "vuln_name": "Template Injection",
-            "vuln_id": "NAME-TEMPLATE-INJECTION",
+            "vuln_name": "Path Traversal",
+            "vuln_id": "CWE-22",
             "compiler": {"enabled": False},
             "language": "python",
             "framework": "flask",
@@ -149,11 +151,11 @@ def test_contract_surfaces_requirement_aware_lower_bound_when_compiler_disabled(
 
     lower_bound = payload["lower_bound"]
     assert lower_bound["family_non_remote_available"] is True
-    assert lower_bound["effective_non_remote_available"] is False
+    assert lower_bound["effective_non_remote_available"] is True
     assert lower_bound["compiler_path_enabled"] is False
-    assert "disabled by requirement" in lower_bound["effective_reason"]
-    assert payload["effective_non_remote_available"] is False
-    assert payload["semantic_profile"]["lower_bound"]["effective_non_remote_available"] is False
+    assert lower_bound["effective_reason"] == "static rule available"
+    assert payload["effective_non_remote_available"] is True
+    assert payload["semantic_profile"]["lower_bound"]["effective_non_remote_available"] is True
 
 
 def test_contract_keeps_static_rule_lower_bound_when_compiler_disabled(tmp_path: Path) -> None:
@@ -538,6 +540,71 @@ def test_contract_marks_name_template_injection_as_compiler_supported(tmp_path: 
     assert payload["compiler_strategy"] == "template_injection_render"
 
 
+def test_contract_marks_name_ldap_injection_as_compiler_supported(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-LDAP-INJECTION",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="name-ldap-injection",
+        requirement={
+            "vuln_name": "LDAP Injection",
+            "vuln_id": "NAME-LDAP-INJECTION",
+            "language": "python",
+            "framework": "flask",
+        },
+        researcher_report={
+            "researcher_report": {
+                "verification_spec": {"success_text_markers": ["Exploit SUCCESS"]},
+            }
+        },
+    )
+
+    profile = payload["semantic_profile"]
+    assert profile["family"] == "ldap_injection"
+    assert profile["support_level"] == "compiler_supported"
+    assert profile["compiler_strategy"] == "ldap_injection_filter"
+    assert profile["compiler_supported"] is True
+    assert payload["compiler_supported"] is True
+    assert payload["compiler_strategy"] == "ldap_injection_filter"
+
+
+@pytest.mark.parametrize(
+    ("vuln_id", "vuln_name"),
+    [
+        ("NAME-OPEN-REDIRECT", "Open Redirect"),
+        ("NAME-TEMPLATE-INJECTION", "Template Injection"),
+        ("NAME-XXE", "XML External Entity"),
+        ("NAME-LDAP-INJECTION", "LDAP Injection"),
+    ],
+)
+def test_contract_surfaces_static_rule_for_supported_freeform_name_family(
+    tmp_path: Path,
+    vuln_id: str,
+    vuln_name: str,
+) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id=vuln_id,
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug=vuln_id.lower(),
+        requirement={
+            "vuln_name": vuln_name,
+            "vuln_id": vuln_id,
+            "language": "python",
+            "framework": "flask",
+        },
+    )
+
+    lower_bound = payload["lower_bound"]
+    assert lower_bound["static_rule_available"] is True
+    assert lower_bound["family_non_remote_available"] is True
+    assert payload["semantic_profile"]["lower_bound"]["static_rule_available"] is True
+
+
 def test_contract_populates_profile_signature_for_name_template_injection_without_research_semantics(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
@@ -693,6 +760,20 @@ def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_
         json.dumps(
             {
                 "template_id": "flask_sqlite_raw",
+                "template_stack_id": "python/flask",
+                "template_language": "python",
+                "template_framework": "flask",
+                "requested_stack_id": "python/flask",
+                "template_stack_match": True,
+                "template_runtime_surface_status": "not_required",
+                "template_runtime_surface_reason": "template runtime requirements are satisfied",
+                "template_runtime_diagnostics": {
+                    "matches": True,
+                    "status": "not_required",
+                    "reason": "template runtime requirements are satisfied",
+                    "requested_stack_id": "python/flask",
+                    "template_stack_id": "python/flask",
+                },
                 "service_entry": "app.py",
                 "poc_entry": "poc.py",
                 "ports": {"app": 5000},
@@ -723,6 +804,11 @@ def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_
     assert payload["provenance"]["template_id"] == "flask_sqlite_raw"
     assert payload["provenance"]["source"] == "generator_template"
     assert payload["service_env"] == {"DB_HOST": "sqli-db", "DB_NAME": "sqliapp"}
+    assert payload["template_stack_id"] == "python/flask"
+    assert payload["requested_stack_id"] == "python/flask"
+    assert payload["template_stack_match"] is True
+    assert payload["template_runtime_surface_status"] == "not_required"
+    assert payload["template_runtime_diagnostics"]["matches"] is True
 
 
 def test_contract_rule_resolution_supports_name_prefixed_runtime_rules(tmp_path: Path, monkeypatch) -> None:

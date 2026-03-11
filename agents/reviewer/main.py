@@ -19,12 +19,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reviewer agent")
     parser.add_argument("--sid", required=True, help="Scenario ID")
     parser.add_argument("--mode", default="deterministic", help="Decoding profile name")
+    parser.add_argument(
+        "--artifact-only",
+        action="store_true",
+        help="Generate reviewer artifacts without mutating loop controller state.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    service = ReviewerService(args.sid, mode=args.mode)
+    service = ReviewerService(args.sid, mode=args.mode, record_loop_outcome=not args.artifact_only)
     service.run()
     LOGGER.info("Reviewer completed for %s", args.sid)
 

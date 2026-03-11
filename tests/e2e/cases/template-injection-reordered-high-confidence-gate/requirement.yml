@@ -1,0 +1,12 @@
+vuln_name: Injection in Jinja template
+policy:
+  verifier:
+    prefer_rule: true
+    strict_flag_default: true
+    min_name_resolution_confidence: high
+seed: 4343
+
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 4343

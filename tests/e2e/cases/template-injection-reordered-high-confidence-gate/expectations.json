@@ -1,0 +1,54 @@
+{
+  "manifest": {
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": false,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "compiler_family": "template_injection",
+    "stack_scaffold_id": "python/flask",
+    "stack_scaffold_version": "1.0",
+    "fragment_id": "render_template_string_concat",
+    "compose_mode": "registry",
+    "name_resolution": {
+      "input": "Injection in Jinja template",
+      "resolved_vuln_id": "NAME-TEMPLATE-INJECTION",
+      "source": "fragment_strategy_fallback",
+      "confidence": "medium",
+      "match_class": "token_match"
+    },
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first",
+    "generalization_class": "real_free_form_non_generalizing",
+    "counts_as_generalization": false,
+    "generalization_confidence": "medium",
+    "generalization_basis": "token_match"
+  },
+  "evals": [
+    {
+      "slug": "name-template-injection",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": false,
+      "compiler_supported": true,
+      "compiler_strategy": "template_injection_render",
+      "compiler_family": "template_injection",
+      "stack_scaffold_id": "python/flask",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "render_template_string_concat",
+      "compose_mode": "registry",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "generalization_class": "real_free_form_non_generalizing",
+      "counts_as_generalization": false,
+      "generalization_confidence": "medium",
+      "generalization_basis": "token_match"
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

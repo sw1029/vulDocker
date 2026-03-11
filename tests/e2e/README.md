@@ -6,7 +6,7 @@
 
 - `requirement.yml`: 선언형 요구 정의. 전체 요구를 직접 작성하거나 `base_requirement.yml`을
   `base_requirement` + `overrides` 방식으로 참조할 수 있다.
-- `expectations.json`: 실행 결과(Manifest/Reviewer)에 대한 검증 조건. `compiler_supported` 같은 capability metadata뿐 아니라 `generation_origin`, `dynamicness_verdict` 같은 provenance field도 함께 검증할 수 있다.
+- `expectations.json`: 실행 결과(Manifest/Reviewer)에 대한 검증 조건. `compiler_supported` 같은 capability metadata뿐 아니라 `generation_origin`, `dynamicness_verdict`, nested `generation_summary`/`verification_summary` 같은 provenance and quality rollup도 함께 검증할 수 있다.
 - `outputs/<sid>/`: (선택) 런너가 남긴 스냅샷. 로컬 반복 시 용량이 부담되면 `--no-snapshot`으로 생략 가능하다.
 
 ## 단일 케이스 실행 예시

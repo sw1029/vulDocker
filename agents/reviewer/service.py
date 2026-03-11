@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from common.guardrails import GuardEngine, load_guard_spec
 from common.llm import LLMClient
 from common.logging import get_logger
+from common.bundle_state import bundle_research_blocker
 from common.paths import ensure_dir
 from common.plan import load_plan
 from common.prompts import build_reviewer_prompt
@@ -50,9 +52,10 @@ class ReviewerContext:
 class ReviewerService:
     """Analyzes executor logs + static patterns and records loop outcomes."""
 
-    def __init__(self, sid: str, mode: str = "deterministic") -> None:
+    def __init__(self, sid: str, mode: str = "deterministic", *, record_loop_outcome: bool = True) -> None:
         self.sid = sid
         self.plan = load_plan(sid)
+        self.record_loop_outcome = record_loop_outcome
         self.metadata_root = ensure_dir(Path(self.plan["paths"]["metadata"]))
         self._register_runtime_rules()
         loop_cfg = self.plan.get("loop", {"max_loops": 3})
@@ -66,7 +69,8 @@ class ReviewerService:
         self.bundles = load_vuln_bundles(self.plan)
 
     def run(self) -> None:
-        if self.loop_controller.current_loop == 0:
+        record_loop_outcome = getattr(self, "record_loop_outcome", True)
+        if record_loop_outcome and self.loop_controller.current_loop == 0:
             self.loop_controller.start_loop()
 
         bundle_reports: List[Dict[str, Any]] = []
@@ -74,6 +78,12 @@ class ReviewerService:
         blocking_bundles: List[str] = []
 
         for bundle in self.bundles:
+            research_blocker = bundle_research_blocker(self.plan, bundle)
+            if research_blocker:
+                report = self._write_research_blocked_bundle_report(bundle, research_blocker)
+                bundle_reports.append(report)
+                aggregated_issues.extend(report.get("issues_sample") or [])
+                continue
             context = self._evaluate_bundle(bundle)
             static_issues = self._scan_workspace(bundle, exploit_success=context.success)
             semantic_contract_issues = self._semantic_contract_issues(bundle)
@@ -128,6 +138,9 @@ class ReviewerService:
         self._write_summary(summary_report)
         self._write_index(bundle_reports)
 
+        if not record_loop_outcome:
+            return
+
         if blocking_overall:
             reason = f"Blocking issues detected in bundles: {', '.join(blocking_bundles)}"
             self.loop_controller.record_failure(
@@ -139,6 +152,42 @@ class ReviewerService:
             )
         else:
             self.loop_controller.record_success(stage="REVIEW", note="All bundles cleared reviewer checks")
+
+    def _write_research_blocked_bundle_report(self, bundle: VulnBundle, blocker: Dict[str, Any]) -> Dict[str, Any]:
+        issue = self._issue_stub(
+            bundle=bundle,
+            file="researcher_report.json",
+            line=1,
+            issue=str(blocker.get("reason") or "Bundle was fail-closed before generation"),
+            fix_hint=(
+                "Add compiler-backed support or stronger researcher evidence for this bundle "
+                "before expecting reviewable runtime artifacts."
+            ),
+            evidence=[str(blocker.get("report_path") or "")] if blocker.get("report_path") else [],
+            severity="low",
+            blocking=False,
+        )
+        report = {
+            "sid": self.sid,
+            "bundle": {"vuln_id": bundle.vuln_id, "slug": bundle.slug},
+            "trace_id": f"{self.sid}-review-{bundle.slug}-{self.loop_controller.current_loop}",
+            "loop_count": self.loop_controller.current_loop,
+            "issues": [issue],
+            "blocking": False,
+            "success": False,
+            "research_blocked": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        bundle_path = self._write_bundle_report(bundle, report)
+        return {
+            "vuln_id": bundle.vuln_id,
+            "slug": bundle.slug,
+            "report_path": str(bundle_path),
+            "blocking": False,
+            "issues": 1,
+            "research_blocked": True,
+            "issues_sample": [issue],
+        }
 
     def _evaluate_bundle(self, bundle: VulnBundle) -> ReviewerContext:
         log_path = artifacts_dir_for_bundle(self.plan, bundle, "run") / "run.log"
@@ -251,6 +300,9 @@ class ReviewerService:
         verification_trust = str(result.get("verification_trust") or "").strip().lower()
         verification_rule_source = str(result.get("verification_rule_source") or "").strip().lower()
         verification_trust_reason = str(result.get("verification_trust_reason") or "").strip()
+        verification_independence = str(result.get("verification_independence") or "").strip().lower()
+        if not verification_independence and verification_rule_source == "compiler_runtime_rule":
+            verification_independence = "compiler_coupled"
 
         if verification_trust == "low":
             label = verification_rule_source or "self-derived verifier contract"
@@ -266,6 +318,26 @@ class ReviewerService:
                     fix_hint=(
                         "Treat this bundle as inspection-only until a declared static/runtime rule or "
                         "independent verifier path is available."
+                    ),
+                    evidence=contract_evidence,
+                    severity="medium",
+                    blocking=False,
+                )
+            )
+
+        if verification_independence == "compiler_coupled":
+            detail = "Verifier evidence is compiler-coupled (compiler_runtime_rule)"
+            if verification_trust_reason:
+                detail += f": {verification_trust_reason}"
+            issues.append(
+                self._issue_stub(
+                    bundle=bundle,
+                    file="resolved_contract.json",
+                    line=1,
+                    issue=detail,
+                    fix_hint=(
+                        "Treat this as a medium-confidence compiler-backed verdict; add a declared independent "
+                        "verification rule if this family needs high-confidence promotion."
                     ),
                     evidence=contract_evidence,
                     severity="medium",
@@ -528,10 +600,7 @@ class ReviewerService:
             if not isinstance(pattern, dict):
                 continue
             ptype = str(pattern.get("type") or "").strip().lower()
-            if ptype not in {"file_contains", "poc_contains"}:
-                continue
-            needle = pattern.get("contains")
-            if not isinstance(needle, str) or not needle:
+            if ptype not in {"file_contains", "poc_contains", "file_regex_contains"}:
                 continue
             path = pattern.get("path")
             if not isinstance(path, str) or not path.strip():
@@ -562,13 +631,25 @@ class ReviewerService:
                 text = target.read_text(encoding="utf-8")
             except Exception:
                 continue
-            if needle not in text:
+            if ptype == "file_regex_contains":
+                regex = pattern.get("pattern")
+                if not isinstance(regex, str) or not regex:
+                    continue
+                matched = bool(re.search(regex, text, flags=re.IGNORECASE))
+                issue_text = f"Rule pattern miss: expected /{regex}/ in {resolved}"
+            else:
+                needle = pattern.get("contains")
+                if not isinstance(needle, str) or not needle:
+                    continue
+                matched = needle in text
+                issue_text = f"Rule pattern miss: expected '{needle}' in {resolved}"
+            if not matched:
                 issues.append(
                     self._issue_stub(
                         bundle=bundle,
                         file=resolved,
                         line=1,
-                        issue=f"Rule pattern miss: expected '{needle}' in {resolved}",
+                        issue=issue_text,
                         fix_hint="Align generator output with rule patterns or update runtime_rules for this SID",
                         severity="high" if not exploit_success else "medium",
                         blocking=not exploit_success,

@@ -1,0 +1,53 @@
+{
+  "manifest": {
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "compiler_family": "xss",
+    "stack_scaffold_id": "python/fastapi",
+    "stack_scaffold_version": "1.0",
+    "fragment_id": "render_reflect_route_fastapi",
+    "compose_mode": "registry",
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first",
+    "verification_rule_source": "declared_rule",
+    "verification_trust": "high",
+    "verification_independence": "independent",
+    "semantic_supported": true,
+    "semantic_status": "aligned",
+    "semantic_source": "generator_manifest",
+    "generalization_class": "known_family_regression",
+    "counts_as_generalization": false
+  },
+  "evals": [
+    {
+      "slug": "cwe-79",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": true,
+      "compiler_supported": true,
+      "compiler_strategy": "xss_reflected",
+      "compiler_family": "xss",
+      "stack_scaffold_id": "python/fastapi",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "render_reflect_route_fastapi",
+      "compose_mode": "registry",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "verification_independence": "independent",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "semantic_source": "generator_manifest",
+      "generalization_class": "known_family_regression",
+      "counts_as_generalization": false
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

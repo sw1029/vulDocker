@@ -203,10 +203,24 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "rule": eval_result.get("rule"),
                 "promotion_eligible": (bundle.get("promotion") or {}).get("eligible"),
                 "promotion_reasons": (bundle.get("promotion") or {}).get("reasons") or [],
-                "semantic_supported": eval_result.get("semantic_supported"),
-                "semantic_status": eval_result.get("semantic_status"),
+                "semantic_supported": (
+                    eval_result.get("semantic_supported")
+                    if isinstance(eval_result, dict) and eval_result.get("semantic_supported") is not None
+                    else bundle.get("semantic_supported")
+                ),
+                "semantic_status": (
+                    eval_result.get("semantic_status")
+                    if isinstance(eval_result, dict) and eval_result.get("semantic_status")
+                    else bundle.get("semantic_status")
+                ),
+                "semantic_source": (
+                    eval_result.get("semantic_source")
+                    if isinstance(eval_result, dict) and eval_result.get("semantic_source")
+                    else bundle.get("semantic_source")
+                ),
                 "verification_rule_source": eval_result.get("verification_rule_source"),
                 "verification_trust": eval_result.get("verification_trust"),
+                "verification_independence": eval_result.get("verification_independence"),
                 "verification_trust_reason": eval_result.get("verification_trust_reason"),
                 "compiler_supported": compiler_contract.get("compiler_supported"),
                 "compiler_strategy": compiler_contract.get("compiler_strategy"),
@@ -217,6 +231,7 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "fragment_id": compiler_contract.get("fragment_id"),
                 "compose_mode": compiler_contract.get("compose_mode"),
                 "service_env": compiler_contract.get("service_env"),
+                "name_resolution": bundle.get("name_resolution") or {},
                 "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
                 "llm_fixture_used": (bundle.get("provenance") or {}).get("llm_fixture_used"),
                 "dynamicness_verdict": (bundle.get("dynamicness") or {}).get("verdict"),
@@ -228,6 +243,8 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "generalization_class": (bundle.get("generalization") or {}).get("class"),
                 "counts_as_generalization": (bundle.get("generalization") or {}).get("counts_as_generalization"),
                 "generalization_reason": (bundle.get("generalization") or {}).get("reason"),
+                "generalization_confidence": (bundle.get("generalization") or {}).get("confidence"),
+                "generalization_basis": (bundle.get("generalization") or {}).get("basis"),
                 "failure_reason": (bundle.get("failure") or {}).get("reason"),
                 "terminal_failure_class": (bundle.get("failure") or {}).get("terminal_failure_class"),
             }
@@ -238,7 +255,10 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "pipeline_result": manifest.get("pipeline_result"),
         "promotion_eligible": (manifest.get("promotion") or {}).get("eligible"),
         "promotion_reasons": (manifest.get("promotion") or {}).get("reasons") or [],
+        "generation_summary": manifest.get("generation_summary") or {},
         "compiler_contract_summary": manifest.get("compiler_contract_summary") or {},
+        "verification_summary": manifest.get("verification_summary") or {},
+        "name_resolution_summary": manifest.get("name_resolution_summary") or {},
         "generalization_summary": manifest.get("generalization_summary") or {},
         "partial_progress_summary": manifest.get("partial_progress_summary") or {},
         "compiler_supported": manifest.get("compiler_supported"),
@@ -254,6 +274,10 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "generation_origin": manifest.get("generation_origin"),
         "verification_rule_source": manifest.get("verification_rule_source"),
         "verification_trust": manifest.get("verification_trust"),
+        "verification_independence": manifest.get("verification_independence"),
+        "semantic_supported": manifest.get("semantic_supported"),
+        "semantic_status": manifest.get("semantic_status"),
+        "semantic_source": manifest.get("semantic_source"),
         "llm_fixture_used": (
             manifest.get("llm_fixture_used")
             if isinstance(manifest.get("llm_fixture_used"), bool)
@@ -270,6 +294,8 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "generalization_class": manifest.get("generalization_class"),
         "counts_as_generalization": manifest.get("counts_as_generalization"),
         "generalization_reason": manifest.get("generalization_reason"),
+        "generalization_confidence": manifest.get("generalization_confidence"),
+        "generalization_basis": manifest.get("generalization_basis"),
         "pipeline_returncode": pipeline_returncode,
         "failure": manifest.get("failure") or {},
         "bundles": bundles,
@@ -293,6 +319,26 @@ def _bundle_index(summary: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         if vuln and vuln not in index:
             index[vuln] = bundle
     return index
+
+
+def _validate_partial_mapping(
+    actual: Dict[str, Any],
+    expected: Dict[str, Any],
+    *,
+    prefix: str,
+    errors: List[str],
+) -> None:
+    for key, expected_value in expected.items():
+        actual_value = actual.get(key)
+        path = f"{prefix}.{key}"
+        if isinstance(expected_value, dict):
+            if not isinstance(actual_value, dict):
+                errors.append(f"{path} expected {expected_value!r} but observed {actual_value!r}")
+                continue
+            _validate_partial_mapping(actual_value, expected_value, prefix=path, errors=errors)
+            continue
+        if actual_value != expected_value:
+            errors.append(f"{path} expected {expected_value!r} but observed {actual_value!r}")
 
 
 def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]) -> None:
@@ -358,6 +404,24 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"verification_trust expected {manifest_expect['verification_trust']!r} but observed {summary.get('verification_trust')!r}"
             )
+    if "verification_independence" in manifest_expect:
+        actual = str(summary.get("verification_independence") or "")
+        if actual != str(manifest_expect["verification_independence"]):
+            errors.append(
+                "verification_independence expected "
+                f"{manifest_expect['verification_independence']!r} but observed {summary.get('verification_independence')!r}"
+            )
+    if "semantic_supported" in manifest_expect:
+        actual = summary.get("semantic_supported")
+        if actual != manifest_expect["semantic_supported"]:
+            errors.append(
+                f"semantic_supported expected {manifest_expect['semantic_supported']!r} but observed {summary.get('semantic_supported')!r}"
+            )
+    for key in ("semantic_status", "semantic_source"):
+        if key in manifest_expect:
+            actual = str(summary.get(key) or "")
+            if actual != str(manifest_expect[key]):
+                errors.append(f"{key} expected {manifest_expect[key]!r} but observed {summary.get(key)!r}")
     if "provider_health_state" in manifest_expect:
         actual = str(summary.get("provider_health_state") or "")
         if actual != str(manifest_expect["provider_health_state"]):
@@ -406,22 +470,43 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
                 "counts_as_generalization expected "
                 f"{manifest_expect['counts_as_generalization']!r} but observed {summary.get('counts_as_generalization')!r}"
             )
+    for key in ("generalization_confidence", "generalization_basis"):
+        if key in manifest_expect:
+            actual = str(summary.get(key) or "")
+            if actual != str(manifest_expect[key]):
+                errors.append(f"{key} expected {manifest_expect[key]!r} but observed {summary.get(key)!r}")
+    generation_summary_expect = manifest_expect.get("generation_summary")
+    if isinstance(generation_summary_expect, dict):
+        _validate_partial_mapping(
+            summary.get("generation_summary") or {},
+            generation_summary_expect,
+            prefix="generation_summary",
+            errors=errors,
+        )
+    verification_summary_expect = manifest_expect.get("verification_summary")
+    if isinstance(verification_summary_expect, dict):
+        _validate_partial_mapping(
+            summary.get("verification_summary") or {},
+            verification_summary_expect,
+            prefix="verification_summary",
+            errors=errors,
+        )
     partial_progress_expect = manifest_expect.get("partial_progress_summary")
     if isinstance(partial_progress_expect, dict):
-        actual = summary.get("partial_progress_summary") or {}
-        for key, expected in partial_progress_expect.items():
-            if actual.get(key) != expected:
-                errors.append(
-                    f"partial_progress_summary.{key} expected {expected!r} but observed {actual.get(key)!r}"
-                )
+        _validate_partial_mapping(
+            summary.get("partial_progress_summary") or {},
+            partial_progress_expect,
+            prefix="partial_progress_summary",
+            errors=errors,
+        )
     failure_expect = manifest_expect.get("failure")
     if isinstance(failure_expect, dict):
-        actual = summary.get("failure") or {}
-        for key, expected in failure_expect.items():
-            if actual.get(key) != expected:
-                errors.append(
-                    f"failure.{key} expected {expected!r} but observed {actual.get(key)!r}"
-                )
+        _validate_partial_mapping(
+            summary.get("failure") or {},
+            failure_expect,
+            prefix="failure",
+            errors=errors,
+        )
     bundle_index = _bundle_index(summary)
     for entry in expectations.get("evals", []):
         key = (entry.get("slug") or entry.get("vuln_id") or "").lower()
@@ -493,6 +578,10 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: semantic_status expected {entry['semantic_status']!r} but was {bundle.get('semantic_status')!r}"
             )
+        if "semantic_source" in entry and str(bundle.get("semantic_source") or "") != str(entry["semantic_source"]):
+            errors.append(
+                f"bundle {bundle['slug']}: semantic_source expected {entry['semantic_source']!r} but was {bundle.get('semantic_source')!r}"
+            )
         if "verification_rule_source" in entry and str(bundle.get("verification_rule_source") or "") != str(entry["verification_rule_source"]):
             errors.append(
                 f"bundle {bundle['slug']}: verification_rule_source expected {entry['verification_rule_source']!r} but was {bundle.get('verification_rule_source')!r}"
@@ -500,6 +589,10 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
         if "verification_trust" in entry and str(bundle.get("verification_trust") or "") != str(entry["verification_trust"]):
             errors.append(
                 f"bundle {bundle['slug']}: verification_trust expected {entry['verification_trust']!r} but was {bundle.get('verification_trust')!r}"
+            )
+        if "verification_independence" in entry and str(bundle.get("verification_independence") or "") != str(entry["verification_independence"]):
+            errors.append(
+                f"bundle {bundle['slug']}: verification_independence expected {entry['verification_independence']!r} but was {bundle.get('verification_independence')!r}"
             )
         if "generalization_class" in entry and str(bundle.get("generalization_class") or "") != str(entry["generalization_class"]):
             errors.append(
@@ -509,6 +602,11 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: counts_as_generalization expected {entry['counts_as_generalization']!r} but was {bundle.get('counts_as_generalization')!r}"
             )
+        for key in ("generalization_confidence", "generalization_basis"):
+            if key in entry and str(bundle.get(key) or "") != str(entry[key]):
+                errors.append(
+                    f"bundle {bundle['slug']}: {key} expected {entry[key]!r} but was {bundle.get(key)!r}"
+                )
         if "terminal_failure_class" in entry and str(bundle.get("terminal_failure_class") or "") != str(entry["terminal_failure_class"]):
             errors.append(
                 f"bundle {bundle['slug']}: terminal_failure_class expected {entry['terminal_failure_class']!r} but was {bundle.get('terminal_failure_class')!r}"

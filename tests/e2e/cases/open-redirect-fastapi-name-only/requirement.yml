@@ -1,0 +1,3 @@
+vuln_name: Open Redirect
+language: python
+framework: fastapi

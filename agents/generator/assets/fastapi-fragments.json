@@ -1,0 +1,199 @@
+{
+  "open_redirect_reflect": {
+    "family": "open_redirect",
+    "fragment_id": "redirect_next_route_fastapi",
+    "pattern_tags": [
+      "compiler_generated",
+      "open_redirect",
+      "fastapi"
+    ],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for open redirect on python/fastapi.",
+    "service_description": "python/fastapi registry-backed open redirect service.",
+    "poc_description": "Registry-backed open redirect PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{OPEN_REDIRECT_OK}",
+    "service_side_tokens": [
+      "RedirectResponse(",
+      "next: str = Query(",
+      "@app.get('/go')"
+    ],
+    "semantic_signature": {
+      "input_vector": [
+        "query parameter",
+        "redirect target",
+        "url parameter"
+      ],
+      "sink": [
+        "redirect response",
+        "location header",
+        "http redirect sink"
+      ],
+      "exploit_precondition": [
+        "open redirect",
+        "unvalidated redirect target",
+        "external redirect"
+      ]
+    },
+    "requirements_content": "fastapi==0.111.0\nuvicorn==0.30.1\nrequests==2.31.0\n"
+  },
+  "path_traversal_file_read": {
+    "family": "path_traversal",
+    "fragment_id": "file_read_download_route_fastapi",
+    "pattern_tags": [
+      "compiler_generated",
+      "path_traversal",
+      "fastapi"
+    ],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for path traversal on python/fastapi.",
+    "service_description": "python/fastapi registry-backed path traversal service.",
+    "poc_description": "Registry-backed path traversal PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{PATH_TRAVERSAL_OK}",
+    "service_side_tokens": [
+      "target = BASE_DIR / path",
+      "read_text(",
+      "@app.get('/download')"
+    ],
+    "semantic_signature": {
+      "input_vector": [
+        "query parameter",
+        "path parameter"
+      ],
+      "sink": [
+        "open(",
+        "read_text",
+        "filesystem read sink"
+      ],
+      "exploit_precondition": [
+        "../",
+        "path traversal",
+        "request-controlled filesystem path"
+      ]
+    },
+    "requirements_content": "fastapi==0.111.0\nuvicorn==0.30.1\nrequests==2.31.0\n",
+    "extra_files": [
+      {
+        "path": "secret.txt",
+        "role": "helper",
+        "description": "Traversal target file containing the exfiltration marker.",
+        "content": "FLAG{PATH_TRAVERSAL_OK}\n"
+      },
+      {
+        "path": "files/note.txt",
+        "role": "helper",
+        "description": "Safe in-root file used by the vulnerable route.",
+        "content": "safe-note\n"
+      }
+    ]
+  },
+  "template_injection_render": {
+    "family": "template_injection",
+    "fragment_id": "render_jinja_template_fastapi",
+    "pattern_tags": [
+      "compiler_generated",
+      "template_injection",
+      "fastapi"
+    ],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for template injection on python/fastapi.",
+    "service_description": "python/fastapi registry-backed template injection service.",
+    "poc_description": "Registry-backed template injection PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{SSTI_OK}",
+    "service_side_tokens": [
+      "Template(",
+      "template.render()",
+      "@app.get('/greet')"
+    ],
+    "semantic_signature": {
+      "input_vector": [
+        "query parameter",
+        "user-controlled request parameter"
+      ],
+      "sink": [
+        "template.render",
+        "jinja2 template rendering",
+        "template source construction"
+      ],
+      "exploit_precondition": [
+        "template injection",
+        "server-side template injection",
+        "user-controlled template source"
+      ]
+    },
+    "requirements_content": "fastapi==0.111.0\nuvicorn==0.30.1\njinja2==3.1.4\nrequests==2.31.0\n"
+  },
+  "xss_reflected": {
+    "family": "xss",
+    "fragment_id": "render_reflect_route_fastapi",
+    "pattern_tags": [
+      "compiler_generated",
+      "xss",
+      "fastapi"
+    ],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for reflected XSS on python/fastapi.",
+    "service_description": "python/fastapi registry-backed reflected XSS service.",
+    "poc_description": "Registry-backed reflected XSS PoC.",
+    "success_signature": "Exploit SUCCESS",
+    "flag_token": "FLAG{XSS_OK}",
+    "service_side_tokens": [
+      "HTMLResponse(",
+      "name: str = Query(",
+      "@app.get('/search')"
+    ],
+    "semantic_signature": {
+      "input_vector": [
+        "query parameter",
+        "user-controlled request parameter",
+        "user input"
+      ],
+      "sink": [
+        "HTMLResponse",
+        "template response",
+        "unescaped HTML reflection"
+      ],
+      "exploit_precondition": [
+        "<script>",
+        "unescaped reflection",
+        "cross-site scripting"
+      ]
+    },
+    "requirements_content": "fastapi==0.111.0\nuvicorn==0.30.1\nrequests==2.31.0\n"
+  },
+  "ssrf_loopback_fetch": {
+    "family": "ssrf",
+    "fragment_id": "loopback_fetch_route_fastapi",
+    "pattern_tags": [
+      "compiler_generated",
+      "ssrf",
+      "fastapi"
+    ],
+    "notes": "Registry-backed compiler scaffold/fragment bundle for SSRF on python/fastapi.",
+    "service_description": "python/fastapi registry-backed SSRF service.",
+    "poc_description": "Registry-backed SSRF PoC.",
+    "success_signature": "FLAG{SSRF_OK}",
+    "flag_token": "FLAG{SSRF_OK}",
+    "service_side_tokens": [
+      "requests.get(",
+      "/metadata",
+      "url: str = Query("
+    ],
+    "semantic_signature": {
+      "input_vector": [
+        "query parameter",
+        "url parameter",
+        "user-controlled url"
+      ],
+      "sink": [
+        "requests.get",
+        "http client request",
+        "server-side fetch"
+      ],
+      "exploit_precondition": [
+        "server-side request forgery",
+        "metadata endpoint",
+        "internal target"
+      ]
+    },
+    "requirements_content": "fastapi==0.111.0\nuvicorn==0.30.1\nrequests==2.31.0\n"
+  }
+}

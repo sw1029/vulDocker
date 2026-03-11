@@ -26,6 +26,8 @@ VALID_GUARD_AUTOFIX_LEVELS = {"none", "manifest", "code"}
 VALID_GUARD_UNSUPPORTED_OP_POLICIES = {"normalize_retry", "fail", "warn"}
 VALID_GUARD_LOW_CONFIDENCE_POLICIES = {"warn", "guard_fallback", "fail_closed"}
 VALID_VERIFIER_LOW_TRUST_POLICIES = {"warn", "fail_closed"}
+VALID_VERIFIER_PROMOTION_INDEPENDENCE = {"compiler_coupled", "independent"}
+VALID_VERIFIER_NAME_RESOLUTION_CONFIDENCE = {"low", "medium", "high"}
 DEFAULT_GUARD_SEMANTIC_REFRESH_THRESHOLD = 2
 DEFAULT_GUARD_FAILURE_FINGERPRINT_WINDOW = 3
 VALID_SEARCH_FILTER_KEYS = {"include_domains", "exclude_domains", "time_range", "country", "search_lang"}
@@ -149,6 +151,41 @@ def slugify_vuln_id(value: str) -> str:
     return slug or "vuln"
 
 
+def _name_resolution_match_class(source: str) -> str:
+    token = str(source or "").strip().lower()
+    if token in {"alias", "explicit_alias"}:
+        return "catalog_alias"
+    if token == "fragment_strategy_fallback":
+        return "token_match"
+    if token == "synthetic_name":
+        return "synthetic_name"
+    if token in {"explicit_identifier", "resolved_only"}:
+        return "exact_identifier"
+    return "unknown"
+
+
+def _name_resolution_confidence(source: str) -> str:
+    token = str(source or "").strip().lower()
+    if token in {"alias", "explicit_alias", "explicit_identifier", "resolved_only"}:
+        return "high"
+    if token == "fragment_strategy_fallback":
+        return "medium"
+    if token == "synthetic_name":
+        return "low"
+    return "unknown"
+
+
+def _decorate_name_resolution(payload: Dict[str, Any]) -> Dict[str, str]:
+    source = str(payload.get("source") or "").strip()
+    payload["match_class"] = _name_resolution_match_class(source)
+    payload["confidence"] = _name_resolution_confidence(source)
+    return {
+        str(key): str(value)
+        for key, value in payload.items()
+        if isinstance(key, str) and key and value not in (None, "")
+    }
+
+
 def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str, Any]:
     for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name"):
         raw = requirement.get(key)
@@ -156,17 +193,17 @@ def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str
             continue
         mapped, source = _mapped_vuln_id_with_source(raw)
         if mapped:
-            return {
+            return _decorate_name_resolution({
                 "input": raw.strip(),
                 "resolved_vuln_id": mapped,
                 "source": source or "unknown",
-            }
+            })
         synthetic = f"NAME-{slugify_vuln_id(raw).upper()}"
-        return {
+        return _decorate_name_resolution({
             "input": raw.strip(),
             "resolved_vuln_id": synthetic,
             "source": "synthetic_name",
-        }
+        })
 
     for key in ("vuln_id", "cwe_id", "cve_id"):
         raw = requirement.get(key)
@@ -180,18 +217,18 @@ def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str
         resolution_source = source or "explicit_identifier"
         if source == "alias" and resolved != raw.strip():
             resolution_source = "explicit_alias"
-        return {
+        return _decorate_name_resolution({
             "input": raw.strip(),
             "resolved_vuln_id": resolved,
             "source": resolution_source,
-        }
+        })
 
     if primary_vuln:
-        return {
+        return _decorate_name_resolution({
             "input": primary_vuln,
             "resolved_vuln_id": primary_vuln,
             "source": "resolved_only",
-        }
+        })
     return {}
 
 
@@ -206,11 +243,11 @@ def _name_resolution_from_target(target: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     if field in {"vuln_id", "cwe_id", "cve_id"} and source == "alias":
         source = "explicit_alias"
-    return {
+    return _decorate_name_resolution({
         "input": raw_input,
         "resolved_vuln_id": resolved,
         "source": source,
-    }
+    })
 
 
 class RequirementValidationError(ValueError):
@@ -262,12 +299,12 @@ def normalize_requirement(
     normalized_req["multi_vuln"] = multi_vuln
     if targets:
         normalized_req["vuln_id_resolutions"] = [
-            {
+            _decorate_name_resolution({
                 "field": str(entry.get("field") or ""),
                 "input": str(entry.get("input") or ""),
                 "resolved_vuln_id": str(entry.get("vuln_id") or ""),
                 "source": str(entry.get("source") or ""),
-            }
+            })
             for entry in targets
         ]
     name_resolution = _name_resolution_from_target(targets[0]) if targets else {}
@@ -635,6 +672,24 @@ def _normalize_verifier_policy(
         verifier["low_trust_unknown_policy"] = "warn"
     else:
         verifier["low_trust_unknown_policy"] = low_trust_policy
+    promotion_independence = str(verifier.get("min_promotion_independence") or "compiler_coupled").strip().lower()
+    if promotion_independence not in VALID_VERIFIER_PROMOTION_INDEPENDENCE:
+        warnings.append(
+            "policy.verifier.min_promotion_independence must be one of "
+            f"{sorted(VALID_VERIFIER_PROMOTION_INDEPENDENCE)}; falling back to compiler_coupled"
+        )
+        promotion_independence = "compiler_coupled"
+    verifier["min_promotion_independence"] = promotion_independence
+    min_name_resolution_confidence = str(
+        verifier.get("min_name_resolution_confidence") or "low"
+    ).strip().lower()
+    if min_name_resolution_confidence not in VALID_VERIFIER_NAME_RESOLUTION_CONFIDENCE:
+        warnings.append(
+            "policy.verifier.min_name_resolution_confidence must be one of "
+            f"{sorted(VALID_VERIFIER_NAME_RESOLUTION_CONFIDENCE)}; falling back to low"
+        )
+        min_name_resolution_confidence = "low"
+    verifier["min_name_resolution_confidence"] = min_name_resolution_confidence
     policy["verifier"] = verifier
 
 

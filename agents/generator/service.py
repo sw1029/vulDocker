@@ -24,11 +24,17 @@ from common.guardrails import (
 from common.hints import normalize_hint_payload
 from common.llm import LLMClient
 from common.logging import get_logger
-from common.contracts import build_generator_contract, load_semantic_profile, write_generator_contract
+from common.contracts import (
+    build_generator_contract,
+    executor_feasibility_summary,
+    load_semantic_profile,
+    write_generator_contract,
+)
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_generator_prompt
 from common.runtime_assets import record_generated_runtime_asset
+from common.runtime_surface import derive_service_env
 from common.rules import list_rules, load_rule, load_static_rule, rule_filename_for_vuln_id
 from common.run_matrix import (
     VulnBundle,
@@ -36,13 +42,15 @@ from common.run_matrix import (
     metadata_dir_for_bundle,
     workspace_dir_for_bundle,
 )
+from common.vuln_catalog import resolve_compiler_strategy
 from common.variability import VariationManager
 from rag import latest_failure_context, load_boilerplate, load_hints, load_static_context
 from orchestrator.loop_controller import LoopController
 
 from .synthesis import ManifestValidationError, SynthesisEngine, SynthesisLimits, SynthesisOutcome
-from .compiler import CompilerResult, compile_manifest
+from .compiler import CompilerResult, compile_manifest, compiler_fragment_spec
 from .flask_fragment_registry import FLASK_FRAGMENT_REGISTRY
+from .template_metadata import normalize_template_metadata
 
 LOGGER = get_logger(__name__)
 
@@ -99,6 +107,23 @@ class TemplateSpec:
     @property
     def db(self) -> str:
         return str(self.metadata.get("db") or "").lower()
+
+    @property
+    def language(self) -> str:
+        return str(self.metadata.get("language") or "").strip().lower()
+
+    @property
+    def framework(self) -> str:
+        return str(self.metadata.get("framework") or "").strip().lower()
+
+    @property
+    def stack_id(self) -> str:
+        value = str(self.metadata.get("stack_id") or "").strip().lower()
+        if value:
+            return value
+        if self.language and self.framework:
+            return f"{self.language}/{self.framework}"
+        return ""
 
     @property
     def tags(self) -> List[str]:
@@ -191,7 +216,7 @@ class TemplateRegistry:
             if not base.exists():
                 continue
             for metadata_file in base.rglob("template.json"):
-                meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+                meta = normalize_template_metadata(json.loads(metadata_file.read_text(encoding="utf-8")))
                 template_id = meta.get("id") or metadata_file.parent.name
                 templates.append(
                     TemplateSpec(
@@ -682,10 +707,12 @@ class GeneratorService:
         )
 
     def _write_compiler_runtime_rule(self, result: CompilerResult) -> None:
-        spec = FLASK_FRAGMENT_REGISTRY.get(result.strategy)
+        manifest = result.manifest if isinstance(result.manifest, dict) else {}
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        stack_name = str(metadata.get("stack_scaffold_id") or metadata.get("stack") or "").strip().lower()
+        spec = compiler_fragment_spec(stack_name, result.strategy) or FLASK_FRAGMENT_REGISTRY.get(result.strategy)
         if spec is None:
             return
-        manifest = result.manifest if isinstance(result.manifest, dict) else {}
         poc = manifest.get("poc") if isinstance(manifest.get("poc"), dict) else {}
         success_signature = str(poc.get("success_signature") or "").strip()
         if not success_signature:
@@ -1058,17 +1085,18 @@ class GeneratorService:
 
     def _select_template(self) -> Tuple[TemplateSpec, List[TemplateCandidate]]:
         # Prefer templates matching vuln_id tags and runtime DB; respect external DB policy.
-        allow_external = self._allow_external_db()
         req_vuln = str(self.requirement.get("vuln_id") or "").strip().lower()
         req_db = str(((self.requirement.get("runtime") or {}).get("db")) or "").strip().lower()
         req_pattern = str(self.requirement.get("pattern_id") or "").strip().lower()
         researcher_tags = self._researcher_hint_tags()
 
-        all_templates = self._get_registry().templates
+        all_templates = [
+            template
+            for template in self._get_registry().templates
+            if self._template_runtime_surface_matches(template)
+        ]
         scored: List[Tuple[float, TemplateSpec]] = []
         for t in all_templates:
-            if not allow_external and t.requires_external_db:
-                continue
             score = 0.0
             if req_vuln and req_vuln in t.tags:
                 score += 3.0
@@ -1088,8 +1116,15 @@ class GeneratorService:
         if not scored:
             seed = self.variation_manager.pattern_seed_with_offset(self.loop_index)
             k = self._candidate_k()
-            candidates = self._get_registry().sample_candidates(seed=seed, k=k)
-            return candidates[0].template, candidates
+            candidates = [
+                candidate
+                for candidate in self._get_registry().sample_candidates(seed=seed, k=k)
+                if self._template_runtime_surface_matches(candidate.template)
+            ]
+            if candidates:
+                return candidates[0].template, candidates
+            fallback_candidates = self._get_registry().sample_candidates(seed=seed, k=k)
+            return fallback_candidates[0].template, fallback_candidates
 
         scored.sort(key=lambda x: x[0], reverse=True)
         best = scored[0][1]
@@ -1101,14 +1136,13 @@ class GeneratorService:
         return best, candidates
 
     def _has_viable_template(self) -> bool:
-        allow_external = self._allow_external_db()
         req_vuln = str(self.requirement.get("vuln_id") or "").strip().lower()
         req_db = str(((self.requirement.get("runtime") or {}).get("db")) or "").strip().lower()
         if not req_vuln or not req_db:
             return False
         templates = self._get_registry().templates
         for t in templates:
-            if not allow_external and t.requires_external_db:
+            if not self._template_runtime_surface_matches(t):
                 continue
             vuln_match = req_vuln in t.tags
             db_match = req_db == t.db
@@ -1117,14 +1151,13 @@ class GeneratorService:
         return False
 
     def _has_compatible_template(self) -> bool:
-        allow_external = self._allow_external_db()
         req_vuln = str(self.requirement.get("vuln_id") or "").strip().lower()
         req_pattern = str(self.requirement.get("pattern_id") or "").strip().lower()
         if not req_vuln and not req_pattern:
             return False
         templates = self._get_registry().templates
         for template in templates:
-            if not allow_external and template.requires_external_db:
+            if not self._template_runtime_surface_matches(template):
                 continue
             tags = set(template.tags)
             if req_vuln and req_vuln in tags:
@@ -1132,6 +1165,143 @@ class GeneratorService:
             if req_pattern and req_pattern == (template.pattern_id or "").lower():
                 return True
         return False
+
+    def _template_runtime_surface_matches(self, template: TemplateSpec) -> bool:
+        diagnostics = self._template_runtime_diagnostics(template)
+        return bool(diagnostics.get("matches"))
+
+    def _template_runtime_diagnostics(self, template: TemplateSpec) -> Dict[str, Any]:
+        requested_stack_id = self._requested_stack_id()
+        template_stack_id = str(getattr(template, "stack_id", "") or "").strip().lower()
+        requested_db = self._runtime_db()
+        template_db = str(getattr(template, "db", "") or "").strip().lower()
+        requires_external_db = bool(getattr(template, "requires_external_db", False))
+        template_env_keys = sorted(
+            {
+                str(key).strip()
+                for key in getattr(template, "service_env", {}).keys()
+                if isinstance(key, str) and str(key).strip()
+            }
+        )
+        expected_env = self._template_expected_service_env(template)
+        expected_env_keys = sorted(expected_env)
+        stack_match = self._template_stack_matches(template)
+
+        diagnostics: Dict[str, Any] = {
+            "matches": True,
+            "requested_stack_id": requested_stack_id or None,
+            "template_stack_id": template_stack_id or None,
+            "stack_match": stack_match,
+            "requested_db": requested_db or None,
+            "template_db": template_db or None,
+            "requires_external_db": requires_external_db,
+            "template_service_env_keys": template_env_keys,
+            "expected_service_env_keys": expected_env_keys,
+            "status": "not_required",
+            "reason": "template runtime requirements are satisfied",
+        }
+
+        if not stack_match:
+            diagnostics["matches"] = False
+            diagnostics["status"] = "stack_mismatch"
+            diagnostics["reason"] = "template stack metadata does not match requested stack"
+            return diagnostics
+
+        allow_external = self._allow_external_db()
+        if not allow_external and requires_external_db:
+            diagnostics["matches"] = False
+            diagnostics["status"] = "external_db_disallowed"
+            diagnostics["reason"] = "template requires external DB but runtime disallows it"
+            return diagnostics
+
+        if requested_db and not (bool(template_db) and template_db == requested_db):
+            diagnostics["matches"] = False
+            diagnostics["status"] = "db_mismatch"
+            diagnostics["reason"] = "template DB surface does not match requested runtime DB"
+            return diagnostics
+
+        if requires_external_db:
+            feasibility = executor_feasibility_summary(
+                self.requirement,
+                self._executor_policy_for_template_runtime_surface(),
+                requires_external_db=True,
+            )
+            diagnostics["executor_feasibility_status"] = str(feasibility.get("status") or "").strip().lower() or None
+            diagnostics["executor_feasibility_reason"] = str(feasibility.get("reason") or "").strip() or None
+            if diagnostics["executor_feasibility_status"] != "configured":
+                diagnostics["matches"] = False
+                diagnostics["status"] = "executor_misconfigured"
+                diagnostics["reason"] = (
+                    diagnostics["executor_feasibility_reason"]
+                    or "executor surface does not satisfy external DB contract"
+                )
+                return diagnostics
+            diagnostics["status"] = "configured"
+
+        if template_env_keys and expected_env:
+            expected_keys = set(expected_env)
+            if not set(template_env_keys).issubset(expected_keys):
+                diagnostics["matches"] = False
+                diagnostics["status"] = "env_contract_mismatch"
+                diagnostics["reason"] = "template env contract is not satisfied by derived runtime surface"
+                return diagnostics
+
+        return diagnostics
+
+    def _template_stack_matches(self, template: TemplateSpec) -> bool:
+        requested = self._requested_stack_id()
+        if not requested:
+            return True
+        template_stack = str(getattr(template, "stack_id", "") or "").strip().lower()
+        if template_stack:
+            return template_stack == requested
+        template_language = str(getattr(template, "language", "") or "").strip().lower()
+        template_framework = str(getattr(template, "framework", "") or "").strip().lower()
+        if template_language and template_framework:
+            return f"{template_language}/{template_framework}" == requested
+        return True
+
+    def _requested_stack_id(self) -> str:
+        requirement = self.requirement if isinstance(self.requirement, dict) else {}
+        language = str(requirement.get("language") or "").strip().lower()
+        framework = str(requirement.get("framework") or "").strip().lower()
+        if language and framework:
+            return f"{language}/{framework}"
+        return ""
+
+    def _executor_policy_for_template_runtime_surface(self) -> Dict[str, Any]:
+        executor = self.requirement.get("executor") if isinstance(self.requirement, dict) else None
+        if isinstance(executor, dict):
+            return executor
+        plan = self.plan if isinstance(getattr(self, "plan", None), dict) else {}
+        policy = plan.get("policy") if isinstance(plan, dict) else {}
+        executor = policy.get("executor") if isinstance(policy, dict) else None
+        return executor if isinstance(executor, dict) else {}
+
+    def _template_expected_service_env(self, template: TemplateSpec) -> Dict[str, str]:
+        vuln_id = str(self.requirement.get("vuln_id") or "").strip()
+        if not vuln_id:
+            return {}
+        strategy = resolve_compiler_strategy(vuln_id, self.requirement)
+        if not strategy:
+            return {}
+        metadata = getattr(template, "metadata", {})
+        ports = metadata.get("ports") if isinstance(metadata, dict) else {}
+        service_port = 5000
+        if isinstance(ports, dict):
+            for key in ("app", "service", "http"):
+                try:
+                    candidate = int(ports.get(key))
+                except Exception:
+                    candidate = None
+                if candidate and candidate > 0:
+                    service_port = candidate
+                    break
+        return derive_service_env(
+            compiler_strategy=strategy,
+            requirement=self.requirement,
+            service_port=service_port,
+        )
 
     def _researcher_hint_tags(self) -> Set[str]:
         report_path = self.metadata_dir / "researcher_report.json"
@@ -1180,10 +1350,18 @@ class GeneratorService:
             template_root == self.runtime_templates_dir or self.runtime_templates_dir in template_root.parents
         )
         generation_origin = "runtime_template_clone" if runtime_template_selected else "built_in_template"
+        diagnostics = self._template_runtime_diagnostics(selection)
         selection_payload = {
             "sid": self.sid,
             "template_id": selection.id,
             "pattern_id": selection.pattern_id,
+            "template_stack_id": selection.stack_id or None,
+            "template_language": selection.language or None,
+            "template_framework": selection.framework or None,
+            "requested_stack_id": diagnostics.get("requested_stack_id"),
+            "template_stack_match": diagnostics.get("stack_match"),
+            "template_runtime_surface_status": diagnostics.get("status"),
+            "template_runtime_surface_reason": diagnostics.get("reason"),
             "scenario_type": selection.scenario_type,
             "requires_external_db": selection.requires_external_db,
             "ports": selection.metadata.get("ports") if isinstance(selection.metadata, dict) else {},
@@ -1207,6 +1385,7 @@ class GeneratorService:
             "llm_stub_used": bool(getattr(self.llm, "use_stub", False)),
             "llm_fixture_used": bool(getattr(self.llm, "fixture_used", False)),
             "template_root": str(template_root),
+            "template_runtime_diagnostics": diagnostics,
         }
         summary_path = self.metadata_dir / "generator_template.json"
         summary_path.write_text(json.dumps(selection_payload, indent=2, ensure_ascii=False), encoding="utf-8")

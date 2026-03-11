@@ -442,10 +442,10 @@
   },
   "NAME-LDAP-INJECTION": {
     "family": "ldap_injection",
-    "support_level": "unsupported",
+    "support_level": "compiler_supported",
     "display_name": "LDAP Injection",
     "pattern_id": "ldap-injection",
-    "fragment_strategy": "",
+    "fragment_strategy": "ldap_injection_filter",
     "user_deps": [
       "requests==2.31.0"
     ],

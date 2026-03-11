@@ -13,12 +13,16 @@
     "name_resolution": {
       "input": "Injection in Jinja template",
       "resolved_vuln_id": "NAME-TEMPLATE-INJECTION",
-      "source": "fragment_strategy_fallback"
+      "source": "fragment_strategy_fallback",
+      "confidence": "medium",
+      "match_class": "token_match"
     },
     "generation_origin": "compiler_generated",
     "dynamicness_verdict": "compiler-first",
-    "generalization_class": "real_free_form_positive",
-    "counts_as_generalization": true
+    "generalization_class": "real_free_form_non_generalizing",
+    "counts_as_generalization": false,
+    "generalization_confidence": "medium",
+    "generalization_basis": "token_match"
   },
   "evals": [
     {
@@ -38,8 +42,10 @@
       "dynamicness_verdict": "compiler-first",
       "semantic_supported": true,
       "semantic_status": "aligned",
-      "generalization_class": "real_free_form_positive",
-      "counts_as_generalization": true
+      "generalization_class": "real_free_form_non_generalizing",
+      "counts_as_generalization": false,
+      "generalization_confidence": "medium",
+      "generalization_basis": "token_match"
     }
   ],
   "reviewer": {

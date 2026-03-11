@@ -1,0 +1,54 @@
+cwe: NAME-TEMPLATE-INJECTION
+version: 2
+scenario_type: web-poc
+
+verification:
+  source: runtime
+  require_flag: true
+  flag_mode: strict
+  exit_code: zero
+
+output:
+  mode: auto
+  format: auto
+  json_success_key: success
+  json_success_value: true
+  json_flag_key: flag
+  json:
+    success_key: success
+    success_value: true
+    flag_key: flag
+
+llm:
+  assist_default: false
+  assertion_budget: 8
+
+runtime:
+  success_mode: text
+  success_text_markers:
+    - Exploit SUCCESS
+  flag_token: FLAG{SSTI_OK}
+  assertion_program:
+    - op: contains
+      string: Exploit SUCCESS
+    - op: contains
+      string: FLAG{SSTI_OK}
+
+success_signature: Exploit SUCCESS
+flag_token: FLAG{SSTI_OK}
+requires_external_db: false
+strict_flag: true
+
+patterns:
+  - type: file_regex_contains
+    path: "{{service_entry}}"
+    pattern: "render_template_string|template\\.render\\("
+  - type: file_regex_contains
+    path: "{{service_entry}}"
+    pattern: "template\\s*=\\s*(?:Template\\()?['\\\"]<h1>Hello\\s*['\\\"]\\s*\\+\\s*name"
+  - type: poc_contains
+    path: "{{poc_entry}}"
+    contains: "Exploit SUCCESS"
+  - type: poc_contains
+    path: "{{poc_entry}}"
+    contains: "FLAG{SSTI_OK}"

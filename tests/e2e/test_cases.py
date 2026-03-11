@@ -249,6 +249,7 @@ def test_trusted_dynamic_sqli_case(tmp_path: Path) -> None:
     bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "cwe-89")
     assert bundle["verification_rule_source"] == "declared_rule"
     assert bundle["verification_trust"] == "high"
+    assert bundle["verification_independence"] == "independent"
     assert bundle["llm_fixture_used"] is True
 
 
@@ -358,8 +359,9 @@ def test_template_injection_name_only_case(tmp_path: Path) -> None:
     )
     bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-template-injection")
     assert "Using generator_manifest.json PoC contract as fallback rule" not in str(bundle.get("evidence") or "")
-    assert bundle["verification_rule_source"] == "compiler_runtime_rule"
-    assert bundle["verification_trust"] == "medium"
+    assert bundle["verification_rule_source"] == "declared_rule"
+    assert bundle["verification_trust"] == "high"
+    assert bundle["verification_independence"] == "independent"
     assert summary["reviewer"]["blocking_bundles"] == []
 
 
@@ -469,6 +471,8 @@ def test_template_injection_paraphrase_name_only_case(tmp_path: Path) -> None:
     assert summary["compiler_strategy"] == "template_injection_render"
     assert summary["name_resolution"]["source"] == "alias"
     assert summary["name_resolution"]["resolved_vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert summary["name_resolution"]["confidence"] == "high"
+    assert summary["name_resolution"]["match_class"] == "catalog_alias"
     assert summary["generalization_class"] == "real_free_form_positive"
     assert summary["counts_as_generalization"] is True
     assert any(
@@ -512,16 +516,110 @@ def test_template_injection_reordered_name_only_case(tmp_path: Path) -> None:
     assert summary["compiler_strategy"] == "template_injection_render"
     assert summary["name_resolution"]["source"] == "fragment_strategy_fallback"
     assert summary["name_resolution"]["resolved_vuln_id"] == "NAME-TEMPLATE-INJECTION"
-    assert summary["generalization_class"] == "real_free_form_positive"
-    assert summary["counts_as_generalization"] is True
+    assert summary["name_resolution"]["confidence"] == "medium"
+    assert summary["name_resolution"]["match_class"] == "token_match"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["counts_as_generalization"] is False
+    assert summary["generalization_confidence"] == "medium"
+    assert summary["generalization_basis"] == "token_match"
     assert any(
         bundle["slug"] == "name-template-injection"
         and bundle.get("verify_pass")
         and bundle.get("compiler_supported") is True
-        and bundle.get("counts_as_generalization") is True
+        and bundle.get("counts_as_generalization") is False
         for bundle in summary["bundles"]
     )
     assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
+def test_template_injection_reordered_high_confidence_gate_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/template-injection-reordered-high-confidence-gate"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is False
+    assert any("name_resolution_confidence:medium" in reason for reason in summary["promotion_reasons"])
+    assert any("name_resolution_policy:min_high" in reason for reason in summary["promotion_reasons"])
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "template_injection_render"
+    assert summary["name_resolution"]["source"] == "fragment_strategy_fallback"
+    assert summary["name_resolution"]["resolved_vuln_id"] == "NAME-TEMPLATE-INJECTION"
+    assert summary["name_resolution"]["confidence"] == "medium"
+    assert summary["name_resolution"]["match_class"] == "token_match"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["counts_as_generalization"] is False
+    assert summary["generalization_confidence"] == "medium"
+    assert summary["generalization_basis"] == "token_match"
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-template-injection")
+    assert bundle["promotion_eligible"] is False
+    assert bundle["counts_as_generalization"] is False
+    assert bundle["generalization_confidence"] == "medium"
+    assert bundle["generalization_basis"] == "token_match"
+    assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
+def test_template_injection_fastapi_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/template-injection-fastapi-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is True
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "template_injection_render"
+    assert summary["stack_scaffold_id"] == "python/fastapi"
+    assert summary["fragment_id"] == "render_jinja_template_fastapi"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-template-injection")
+    assert bundle["verify_pass"] is True
+    assert bundle["stack_scaffold_id"] == "python/fastapi"
+    assert bundle["fragment_id"] == "render_jinja_template_fastapi"
+    assert bundle["verification_rule_source"] == "declared_rule"
+    assert bundle["verification_trust"] == "high"
+    assert bundle["verification_independence"] == "independent"
 
 
 @pytest.mark.e2e
@@ -558,6 +656,49 @@ def test_xss_name_only_case(tmp_path: Path) -> None:
         for bundle in summary["bundles"]
     )
     assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
+def test_xss_fastapi_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/xss-fastapi-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is True
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "xss_reflected"
+    assert summary["stack_scaffold_id"] == "python/fastapi"
+    assert summary["fragment_id"] == "render_reflect_route_fastapi"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "cwe-79")
+    assert bundle["verify_pass"] is True
+    assert bundle["stack_scaffold_id"] == "python/fastapi"
+    assert bundle["fragment_id"] == "render_reflect_route_fastapi"
+    assert bundle["verification_rule_source"] == "declared_rule"
+    assert bundle["verification_trust"] == "high"
+    assert bundle["verification_independence"] == "independent"
 
 
 @pytest.mark.e2e
@@ -733,6 +874,9 @@ def test_open_redirect_name_only_case(tmp_path: Path) -> None:
     assert summary["promotion_eligible"] is True
     assert summary["compiler_supported"] is True
     assert summary["compiler_strategy"] == "open_redirect_reflect"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
     assert summary["generalization_class"] == "real_free_form_positive"
     assert summary["counts_as_generalization"] is True
     assert any(
@@ -744,6 +888,174 @@ def test_open_redirect_name_only_case(tmp_path: Path) -> None:
         for bundle in summary["bundles"]
     )
     bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-open-redirect")
+    assert bundle["verification_rule_source"] == "declared_rule"
+    assert bundle["verification_trust"] == "high"
+    assert bundle["verification_independence"] == "independent"
+    assert "Using generator_manifest.json PoC contract as fallback rule" not in str(bundle.get("evidence") or "")
+
+
+@pytest.mark.e2e
+def test_open_redirect_fastapi_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/open-redirect-fastapi-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is True
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "open_redirect_reflect"
+    assert summary["stack_scaffold_id"] == "python/fastapi"
+    assert summary["fragment_id"] == "redirect_next_route_fastapi"
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-open-redirect")
+    assert bundle["verify_pass"] is True
+    assert bundle["stack_scaffold_id"] == "python/fastapi"
+    assert bundle["fragment_id"] == "redirect_next_route_fastapi"
+
+
+@pytest.mark.e2e
+def test_ssrf_fastapi_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/ssrf-fastapi-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is True
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "ssrf_loopback_fetch"
+    assert summary["stack_scaffold_id"] == "python/fastapi"
+    assert summary["fragment_id"] == "loopback_fetch_route_fastapi"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "cwe-918")
+    assert bundle["verify_pass"] is True
+    assert bundle["stack_scaffold_id"] == "python/fastapi"
+    assert bundle["fragment_id"] == "loopback_fetch_route_fastapi"
+    assert bundle["verification_rule_source"] == "declared_rule"
+    assert bundle["verification_trust"] == "high"
+    assert bundle["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_path_traversal_fastapi_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/path-traversal-fastapi-name-only"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is True
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "path_traversal_file_read"
+    assert summary["stack_scaffold_id"] == "python/fastapi"
+    assert summary["fragment_id"] == "file_read_download_route_fastapi"
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "cwe-22")
+    assert bundle["verify_pass"] is True
+    assert bundle["stack_scaffold_id"] == "python/fastapi"
+    assert bundle["fragment_id"] == "file_read_download_route_fastapi"
+
+
+@pytest.mark.e2e
+def test_open_redirect_name_only_independent_gate_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    case_dir = REPO_ROOT / "tests/e2e/cases/open-redirect-name-only-independent-gate"
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is True
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "open_redirect_reflect"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+    assert summary["generalization_class"] == "real_free_form_positive"
+    assert summary["counts_as_generalization"] is True
+    assert summary["generation_summary"]["by_compose_mode"] == {"registry": 1}
+    assert summary["generation_summary"]["by_stack_scaffold_id"] == {"python/flask": 1}
+    assert summary["generation_summary"]["registry_compose_bundles"] == 1
+    assert summary["generation_summary"]["template_origin_bundles"] == 0
+    assert summary["verification_summary"]["by_independence"] == {"independent": 1}
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-open-redirect")
+    assert bundle["promotion_eligible"] is True
+    assert bundle["verification_rule_source"] == "declared_rule"
+    assert bundle["verification_trust"] == "high"
+    assert bundle["verification_independence"] == "independent"
+    assert bundle["counts_as_generalization"] is True
     assert "Using generator_manifest.json PoC contract as fallback rule" not in str(bundle.get("evidence") or "")
 
 
@@ -821,6 +1133,8 @@ def test_open_redirect_paraphrase_name_only_case(tmp_path: Path) -> None:
     assert summary["compiler_strategy"] == "open_redirect_reflect"
     assert summary["name_resolution"]["source"] == "alias"
     assert summary["name_resolution"]["resolved_vuln_id"] == "NAME-OPEN-REDIRECT"
+    assert summary["name_resolution"]["confidence"] == "high"
+    assert summary["name_resolution"]["match_class"] == "catalog_alias"
     assert summary["generalization_class"] == "real_free_form_positive"
     assert summary["counts_as_generalization"] is True
     assert any(
@@ -866,14 +1180,18 @@ def test_open_redirect_reordered_name_only_case(tmp_path: Path) -> None:
     assert summary["compiler_strategy"] == "open_redirect_reflect"
     assert summary["name_resolution"]["source"] == "fragment_strategy_fallback"
     assert summary["name_resolution"]["resolved_vuln_id"] == "NAME-OPEN-REDIRECT"
-    assert summary["generalization_class"] == "real_free_form_positive"
-    assert summary["counts_as_generalization"] is True
+    assert summary["name_resolution"]["confidence"] == "medium"
+    assert summary["name_resolution"]["match_class"] == "token_match"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["counts_as_generalization"] is False
+    assert summary["generalization_confidence"] == "medium"
+    assert summary["generalization_basis"] == "token_match"
     assert any(
         bundle["slug"] == "name-open-redirect"
         and bundle.get("verify_pass")
         and bundle.get("promotion_eligible")
         and bundle.get("compiler_supported") is True
-        and bundle.get("counts_as_generalization") is True
+        and bundle.get("counts_as_generalization") is False
         for bundle in summary["bundles"]
     )
     assert summary["reviewer"]["blocking_bundles"] == []
@@ -908,6 +1226,9 @@ def test_xxe_name_only_case(tmp_path: Path) -> None:
     assert summary["promotion_eligible"] is True
     assert summary["compiler_supported"] is True
     assert summary["compiler_strategy"] == "xxe_xml_entity_resolve"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
     assert summary["generalization_class"] == "real_free_form_positive"
     assert summary["counts_as_generalization"] is True
     assert any(
@@ -915,6 +1236,9 @@ def test_xxe_name_only_case(tmp_path: Path) -> None:
         and bundle.get("verify_pass")
         and bundle.get("promotion_eligible")
         and bundle.get("compiler_supported") is True
+        and bundle.get("verification_rule_source") == "declared_rule"
+        and bundle.get("verification_trust") == "high"
+        and bundle.get("verification_independence") == "independent"
         and bundle.get("counts_as_generalization") is True
         for bundle in summary["bundles"]
     )
@@ -951,16 +1275,27 @@ def test_multi_name_only_supported_case(tmp_path: Path) -> None:
     assert summary["promotion_eligible"] is True
     assert summary["generation_origin"] == "compiler_generated"
     assert summary["dynamicness_verdict"] == "compiler-first"
-    assert summary["verification_rule_source"] == "compiler_runtime_rule"
-    assert summary["verification_trust"] == "medium"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+    assert summary["generalization_class"] == "real_free_form_positive"
+    assert summary["counts_as_generalization"] is True
+    assert summary["generalization_confidence"] == "high"
+    assert summary["generalization_basis"] == "catalog_alias"
     assert len(summary["bundles"]) == 2
     assert summary["compiler_contract_summary"]["supported_bundles"] == 2
     assert summary["generalization_summary"]["positive_generalization_bundles"] == 2
+    assert summary["name_resolution_summary"]["by_source"] == {"alias": 2}
+    assert summary["name_resolution_summary"]["by_confidence"] == {"high": 2}
 
     bundle_index = {bundle["slug"]: bundle for bundle in summary["bundles"]}
     assert sorted(bundle_index) == ["name-open-redirect", "name-template-injection"]
     assert bundle_index["name-template-injection"]["compiler_strategy"] == "template_injection_render"
     assert bundle_index["name-open-redirect"]["compiler_strategy"] == "open_redirect_reflect"
+    assert bundle_index["name-template-injection"]["name_resolution"]["confidence"] == "high"
+    assert bundle_index["name-open-redirect"]["name_resolution"]["confidence"] == "high"
+    assert bundle_index["name-template-injection"]["verification_rule_source"] == "declared_rule"
+    assert bundle_index["name-open-redirect"]["verification_rule_source"] == "declared_rule"
     assert all(bundle.get("generation_origin") == "compiler_generated" for bundle in bundle_index.values())
     assert all(bundle.get("dynamicness_verdict") == "compiler-first" for bundle in bundle_index.values())
     assert all(bundle.get("counts_as_generalization") is True for bundle in bundle_index.values())
@@ -1010,12 +1345,12 @@ def test_multi_name_mixed_partial_case(tmp_path: Path) -> None:
 
 
 @pytest.mark.e2e
-def test_ldap_injection_negative_case(tmp_path: Path) -> None:
+def test_ldap_injection_name_only_case(tmp_path: Path) -> None:
     reason = _skip_reason()
     if reason:
         pytest.skip(reason)
 
-    case_dir = REPO_ROOT / "tests/e2e/cases/ldap-injection-negative"
+    case_dir = REPO_ROOT / "tests/e2e/cases/ldap-injection-name-only"
     cmd = [
         sys.executable,
         str(REPO_ROOT / "tests/e2e/run_case.py"),
@@ -1034,16 +1369,26 @@ def test_ldap_injection_negative_case(tmp_path: Path) -> None:
     assert summary_path.exists(), "summary.json was not created"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["sid"].startswith("sid-"), "SID was not recorded"
-    assert summary["pipeline_result"] == "failure"
-    assert summary["promotion_eligible"] is False
-    assert summary["manifest_file"] == "failure_manifest.json"
-    assert summary["generalization_class"] == "unsupported_free_form_negative"
-    assert summary["counts_as_generalization"] is False
+    assert summary["pipeline_result"] == "success"
+    assert summary["promotion_eligible"] is True
+    assert summary["manifest_file"] == "manifest.json"
+    assert summary["compiler_supported"] is True
+    assert summary["compiler_strategy"] == "ldap_injection_filter"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+    assert summary["generalization_class"] == "real_free_form_positive"
+    assert summary["counts_as_generalization"] is True
     assert any(
         bundle["slug"] == "name-ldap-injection"
-        and bundle.get("compiler_supported") is False
-        and bundle.get("generalization_class") == "unsupported_free_form_negative"
-        and "unsupported" in str(bundle.get("compiler_reason") or "").lower()
+        and bundle.get("verify_pass") is True
+        and bundle.get("compiler_supported") is True
+        and bundle.get("compiler_strategy") == "ldap_injection_filter"
+        and bundle.get("verification_rule_source") == "declared_rule"
+        and bundle.get("verification_trust") == "high"
+        and bundle.get("verification_independence") == "independent"
+        and bundle.get("generalization_class") == "real_free_form_positive"
+        and bundle.get("counts_as_generalization") is True
         for bundle in summary["bundles"]
     )
 
@@ -1079,11 +1424,11 @@ def test_foobar_name_only_negative_case(tmp_path: Path) -> None:
     assert summary["provider_health_state"] == "not_probed"
     assert summary["failure"]["stage"] == "RESEARCH"
     assert summary["failure"]["terminal_failure_class"] == "semantic_support_missing"
-    assert summary["name_resolution"] == {
-        "input": "Foobar",
-        "resolved_vuln_id": "NAME-FOOBAR",
-        "source": "synthetic_name",
-    }
+    assert summary["name_resolution"]["input"] == "Foobar"
+    assert summary["name_resolution"]["resolved_vuln_id"] == "NAME-FOOBAR"
+    assert summary["name_resolution"]["source"] == "synthetic_name"
+    assert summary["name_resolution"]["confidence"] == "low"
+    assert summary["name_resolution"]["match_class"] == "synthetic_name"
     assert summary["generalization_class"] == "unsupported_free_form_negative"
     assert summary["counts_as_generalization"] is False
     assert any(
@@ -1231,6 +1576,7 @@ def test_unknown_cwe_live_tavily_case(tmp_path: Path) -> None:
         and bundle.get("counts_as_generalization") is False
         and bundle.get("verification_rule_source") == "runtime_rule_candidate"
         and bundle.get("verification_trust") == "low"
+        and bundle.get("verification_independence") == "self_derived"
         for bundle in summary["bundles"]
     )
     assert summary["reviewer"]["blocking_bundles"] == []
@@ -1279,6 +1625,7 @@ def test_unknown_cwe_live_low_trust_fail_closed_case(tmp_path: Path) -> None:
         and bundle.get("run_passed") is True
         and bundle.get("verification_rule_source") == "runtime_rule_candidate"
         and bundle.get("verification_trust") == "low"
+        and bundle.get("verification_independence") == "self_derived"
         and bundle.get("terminal_failure_class") == "low_trust_verification"
         and "low-trust verifier contract blocked by policy" in str(bundle.get("evidence") or "")
         for bundle in summary["bundles"]

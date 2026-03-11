@@ -27,6 +27,7 @@
       "semantic_status": "aligned",
       "verification_rule_source": "declared_rule",
       "verification_trust": "high",
+      "verification_independence": "independent",
       "generalization_class": "known_family_regression",
       "counts_as_generalization": false
     }

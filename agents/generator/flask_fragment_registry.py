@@ -145,153 +145,26 @@ def _poc_asset_payload(strategy: str, port: int) -> Dict[str, str]:
         "poc_content": poc_content,
     }
 
-
-def _csrf_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("csrf_missing_token", port)
-
-
-def _sqli_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("sqli_string_concat", port)
+def _poc_builder(strategy: str) -> Callable[[int], Dict[str, str]]:
+    return lambda port, _strategy=strategy: _poc_asset_payload(_strategy, port)
 
 
-def _sqli_mysql_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("sqli_string_concat_mysql", port)
+def _build_fragment_registry() -> Dict[str, FlaskFragmentSpec]:
+    registry: Dict[str, FlaskFragmentSpec] = {}
+    for strategy in sorted(_fragment_catalog()):
+        registry[strategy] = FlaskFragmentSpec(
+            strategy=strategy,
+            import_block=_fragment_code_text(strategy, "import_block"),
+            route_block=_fragment_code_text(strategy, "route_block"),
+            poc_builder=_poc_builder(strategy),
+            app_setup_block=_fragment_code_text(strategy, "app_setup_block"),
+            startup_block=_fragment_code_text(strategy, "startup_block"),
+            **_fragment_kwargs(strategy),
+        )
+    return registry
 
 
-def _path_traversal_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("path_traversal_file_read", port)
-
-
-def _ssrf_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("ssrf_loopback_fetch", port)
-
-
-def _deserialization_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("deserialization_pickle_body", port)
-
-
-def _open_redirect_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("open_redirect_reflect", port)
-
-
-def _command_injection_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("command_injection_shell", port)
-
-
-def _code_injection_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("code_injection_eval", port)
-
-
-def _template_injection_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("template_injection_render", port)
-
-
-def _xss_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("xss_reflected", port)
-
-
-def _xxe_poc_content(port: int) -> Dict[str, str]:
-    return _poc_asset_payload("xxe_xml_entity_resolve", port)
-
-
-FLASK_FRAGMENT_REGISTRY: Dict[str, FlaskFragmentSpec] = {
-    "csrf_missing_token": FlaskFragmentSpec(
-        strategy="csrf_missing_token",
-        import_block=_fragment_code_text("csrf_missing_token", "import_block"),
-        route_block=_fragment_code_text("csrf_missing_token", "route_block"),
-        poc_builder=_csrf_poc_content,
-        app_setup_block=_fragment_code_text("csrf_missing_token", "app_setup_block"),
-        startup_block=_fragment_code_text("csrf_missing_token", "startup_block"),
-        **_fragment_kwargs("csrf_missing_token"),
-    ),
-    "command_injection_shell": FlaskFragmentSpec(
-        strategy="command_injection_shell",
-        import_block=_fragment_code_text("command_injection_shell", "import_block"),
-        route_block=_fragment_code_text("command_injection_shell", "route_block"),
-        poc_builder=_command_injection_poc_content,
-        **_fragment_kwargs("command_injection_shell"),
-    ),
-    "code_injection_eval": FlaskFragmentSpec(
-        strategy="code_injection_eval",
-        import_block=_fragment_code_text("code_injection_eval", "import_block"),
-        route_block=_fragment_code_text("code_injection_eval", "route_block"),
-        poc_builder=_code_injection_poc_content,
-        app_setup_block=_fragment_code_text("code_injection_eval", "app_setup_block"),
-        startup_block=_fragment_code_text("code_injection_eval", "startup_block"),
-        **_fragment_kwargs("code_injection_eval"),
-    ),
-    "open_redirect_reflect": FlaskFragmentSpec(
-        strategy="open_redirect_reflect",
-        import_block=_fragment_code_text("open_redirect_reflect", "import_block"),
-        route_block=_fragment_code_text("open_redirect_reflect", "route_block"),
-        poc_builder=_open_redirect_poc_content,
-        **_fragment_kwargs("open_redirect_reflect"),
-    ),
-    "template_injection_render": FlaskFragmentSpec(
-        strategy="template_injection_render",
-        import_block=_fragment_code_text("template_injection_render", "import_block"),
-        route_block=_fragment_code_text("template_injection_render", "route_block"),
-        poc_builder=_template_injection_poc_content,
-        **_fragment_kwargs("template_injection_render"),
-    ),
-    "xss_reflected": FlaskFragmentSpec(
-        strategy="xss_reflected",
-        import_block=_fragment_code_text("xss_reflected", "import_block"),
-        route_block=_fragment_code_text("xss_reflected", "route_block"),
-        poc_builder=_xss_poc_content,
-        **_fragment_kwargs("xss_reflected"),
-    ),
-    "path_traversal_file_read": FlaskFragmentSpec(
-        strategy="path_traversal_file_read",
-        import_block=_fragment_code_text("path_traversal_file_read", "import_block"),
-        route_block=_fragment_code_text("path_traversal_file_read", "route_block"),
-        poc_builder=_path_traversal_poc_content,
-        app_setup_block=_fragment_code_text("path_traversal_file_read", "app_setup_block"),
-        startup_block=_fragment_code_text("path_traversal_file_read", "startup_block"),
-        **_fragment_kwargs("path_traversal_file_read"),
-    ),
-    "sqli_string_concat": FlaskFragmentSpec(
-        strategy="sqli_string_concat",
-        import_block=_fragment_code_text("sqli_string_concat", "import_block"),
-        route_block=_fragment_code_text("sqli_string_concat", "route_block"),
-        poc_builder=_sqli_poc_content,
-        app_setup_block=_fragment_code_text("sqli_string_concat", "app_setup_block"),
-        startup_block=_fragment_code_text("sqli_string_concat", "startup_block"),
-        **_fragment_kwargs("sqli_string_concat"),
-    ),
-    "sqli_string_concat_mysql": FlaskFragmentSpec(
-        strategy="sqli_string_concat_mysql",
-        import_block=_fragment_code_text("sqli_string_concat_mysql", "import_block"),
-        route_block=_fragment_code_text("sqli_string_concat_mysql", "route_block"),
-        poc_builder=_sqli_mysql_poc_content,
-        app_setup_block=_fragment_code_text("sqli_string_concat_mysql", "app_setup_block"),
-        startup_block=_fragment_code_text("sqli_string_concat_mysql", "startup_block"),
-        **_fragment_kwargs("sqli_string_concat_mysql"),
-    ),
-    "ssrf_loopback_fetch": FlaskFragmentSpec(
-        strategy="ssrf_loopback_fetch",
-        import_block=_fragment_code_text("ssrf_loopback_fetch", "import_block"),
-        route_block=_fragment_code_text("ssrf_loopback_fetch", "route_block"),
-        poc_builder=_ssrf_poc_content,
-        **_fragment_kwargs("ssrf_loopback_fetch"),
-    ),
-    "deserialization_pickle_body": FlaskFragmentSpec(
-        strategy="deserialization_pickle_body",
-        import_block=_fragment_code_text("deserialization_pickle_body", "import_block"),
-        route_block=_fragment_code_text("deserialization_pickle_body", "route_block"),
-        poc_builder=_deserialization_poc_content,
-        app_setup_block=_fragment_code_text("deserialization_pickle_body", "app_setup_block"),
-        startup_block=_fragment_code_text("deserialization_pickle_body", "startup_block"),
-        **_fragment_kwargs("deserialization_pickle_body"),
-    ),
-    "xxe_xml_entity_resolve": FlaskFragmentSpec(
-        strategy="xxe_xml_entity_resolve",
-        import_block=_fragment_code_text("xxe_xml_entity_resolve", "import_block"),
-        route_block=_fragment_code_text("xxe_xml_entity_resolve", "route_block"),
-        poc_builder=_xxe_poc_content,
-        **_fragment_kwargs("xxe_xml_entity_resolve"),
-    ),
-}
+FLASK_FRAGMENT_REGISTRY: Dict[str, FlaskFragmentSpec] = _build_fragment_registry()
 
 
 def _resolve_exact_fragment_strategy(vuln_id: str) -> str | None:

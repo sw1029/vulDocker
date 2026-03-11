@@ -6,11 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agents.generator.fastapi_fragment_registry import FASTAPI_FRAGMENT_REGISTRY
 from agents.generator.flask_fragment_registry import FLASK_FRAGMENT_REGISTRY
 from agents.generator.scaffold_registry import load_scaffold_spec
 from common.runtime_surface import derive_service_env
 
-SUPPORTED_COMPILER_STRATEGIES = frozenset(FLASK_FRAGMENT_REGISTRY)
+STACK_FRAGMENT_REGISTRIES: Dict[str, Dict[str, Any]] = {
+    "python/flask": FLASK_FRAGMENT_REGISTRY,
+    "python/fastapi": FASTAPI_FRAGMENT_REGISTRY,
+}
 ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
 COMPILER_TARGETS_PATH = ASSETS_ROOT / "compiler-targets.json"
 
@@ -22,8 +26,25 @@ class CompilerResult:
     notes: str = ""
 
 
-def supported_compiler_strategies() -> set[str]:
-    return set(SUPPORTED_COMPILER_STRATEGIES)
+def compiler_registry_for_stack(stack_name: str | None) -> Dict[str, Any]:
+    token = str(stack_name or "").strip().lower() or "python/flask"
+    return STACK_FRAGMENT_REGISTRIES.get(token, {})
+
+
+def supported_compiler_strategies(stack_name: str | None = None) -> set[str]:
+    if stack_name:
+        return set(compiler_registry_for_stack(stack_name))
+    strategies: set[str] = set()
+    for registry in STACK_FRAGMENT_REGISTRIES.values():
+        strategies.update(registry)
+    return strategies
+
+
+def compiler_fragment_spec(stack_name: str | None, strategy: str | None) -> Any | None:
+    token = str(strategy or "").strip()
+    if not token:
+        return None
+    return compiler_registry_for_stack(stack_name).get(token)
 
 
 def _default_compiler_targets() -> Dict[str, Dict[str, str]]:
@@ -48,8 +69,10 @@ def compile_manifest(
     requirement: Dict[str, Any],
     semantic_profile: Dict[str, Any],
 ) -> Optional[CompilerResult]:
+    stack = _stack_name(semantic_profile)
+    registry = compiler_registry_for_stack(stack)
     strategy = str(semantic_profile.get("compiler_strategy") or "").strip()
-    fragment = FLASK_FRAGMENT_REGISTRY.get(strategy)
+    fragment = registry.get(strategy)
     defaults = _default_compiler_targets().get(strategy)
     if fragment is None or defaults is None:
         return None
@@ -63,7 +86,7 @@ def compile_manifest(
             default_name=defaults["name"],
             default_vuln_id=defaults["vuln_id"],
         ),
-        notes=f"python/flask scaffold + registry fragment({fragment.family})",
+        notes=f"{stack} scaffold + registry fragment({fragment.family})",
     )
 
 
@@ -76,9 +99,12 @@ def _compile_registered_flask_fragment_manifest(
     default_name: str,
     default_vuln_id: str,
 ) -> Dict[str, Any]:
-    fragment = FLASK_FRAGMENT_REGISTRY[strategy]
-    port = _service_port(semantic_profile)
     stack = _stack_name(semantic_profile)
+    registry = compiler_registry_for_stack(stack)
+    fragment = registry.get(strategy)
+    if fragment is None:
+        return None
+    port = _service_port(semantic_profile)
     scaffold = load_scaffold_spec(stack)
     if scaffold is None:
         return None
@@ -94,18 +120,12 @@ def _compile_registered_flask_fragment_manifest(
     app_setup_block = fragment.app_setup_block.replace("{{port}}", str(port)).strip()
     route_block = fragment.route_block.replace("{{port}}", str(port)).strip()
     startup_block = fragment.startup_block.replace("{{port}}", str(port))
-    app_content = (
-        import_block
-        + "\n\n"
-        + "app = Flask(__name__)\n\n"
-        + (app_setup_block + "\n\n" if app_setup_block else "")
-        + scaffold.render_health_route()
-        + "\n"
-        + route_block
-        + "\n"
-        + "if __name__ == '__main__':\n"
-        + startup_block
-        + f"    app.run(host={scaffold.service_host!r}, port={port})\n"
+    app_content = scaffold.render_service(
+        import_block=import_block,
+        app_setup_block=app_setup_block,
+        route_block=route_block,
+        startup_block=startup_block,
+        port=port,
     )
     run_env = derive_service_env(
         compiler_strategy=strategy,
@@ -130,7 +150,23 @@ def _compile_registered_flask_fragment_manifest(
         notes=fragment.notes,
         service_description=fragment.service_description,
         poc_description=fragment.poc_description,
+        build_command=scaffold.render_build_command(),
+        run_command=scaffold.render_run_command(service_path=service_path),
+        poc_command=scaffold.render_poc_command(poc_path="poc.py"),
         dockerfile_content=scaffold.render_dockerfile(service_path=service_path, port=port),
+        readme_content=scaffold.render_readme(
+            requested_name=requested_name,
+            port=port,
+            vuln_id=vuln_id,
+            service_path=service_path,
+            fragment_id=fragment.fragment_id,
+            service_description=fragment.service_description,
+            poc_description=fragment.poc_description,
+            runtime_assumptions=_runtime_assumptions(
+                run_env=run_env,
+                requires_external_db=fragment.requires_external_db,
+            ),
+        ),
         stack_scaffold_id=scaffold.scaffold_id,
         stack_scaffold_version=scaffold.version,
         fragment_id=fragment.fragment_id,
@@ -157,7 +193,11 @@ def _compiler_manifest_from_parts(
     compiler_family: str,
     pattern_tags: List[str],
     notes: str,
+    build_command: str,
+    run_command: str,
+    poc_command: str,
     dockerfile_content: str,
+    readme_content: str,
     flag_token: str = "",
     service_description: str = "",
     poc_description: str = "",
@@ -198,21 +238,14 @@ def _compiler_manifest_from_parts(
             "path": "README.md",
             "role": "helper",
             "description": "Quickstart instructions.",
-            "content": (
-                f"# {requested_name} compiler bundle\n"
-                "```bash\n"
-                "docker build -t compiler-bundle .\n"
-                f"docker run -p {port}:{port} compiler-bundle\n"
-                f"python poc.py --base-url http://127.0.0.1:{port}\n"
-                "```\n"
-            ),
+            "content": readme_content,
         },
     ]
     if extra_files:
         files.extend(extra_files)
     deps = [line.strip() for line in requirements_content.splitlines() if line.strip()]
     poc_payload: Dict[str, Any] = {
-        "cmd": "python poc.py --base-url {{base_url}}",
+        "cmd": poc_command,
         "success_signature": success_signature,
     }
     if flag_token:
@@ -222,8 +255,8 @@ def _compiler_manifest_from_parts(
         "pattern_tags": pattern_tags,
         "files": files,
         "deps": deps,
-        "build": {"command": "pip install --no-cache-dir -r requirements.txt"},
-        "run": {"command": f"python {service_path}", "port": port},
+        "build": {"command": build_command},
+        "run": {"command": run_command, "port": port},
         "poc": poc_payload,
         "notes": notes,
         "metadata": {
@@ -269,3 +302,24 @@ def _stack_name(semantic_profile: Dict[str, Any]) -> str:
     language = str(stack_profile.get("language") or "python").strip().lower()
     framework = str(stack_profile.get("framework") or "flask").strip().lower()
     return f"{language}/{framework}"
+
+
+def _runtime_assumptions(
+    *,
+    run_env: Optional[Dict[str, str]],
+    requires_external_db: bool,
+) -> str:
+    env = {
+        str(key).strip(): str(value)
+        for key, value in (run_env or {}).items()
+        if isinstance(key, str) and str(key).strip() and value not in (None, "")
+    }
+    if requires_external_db and env:
+        env_keys = ", ".join(sorted(env))
+        return f"external service dependency with env contract {{{env_keys}}}"
+    if requires_external_db:
+        return "external service dependency is required"
+    if env:
+        env_keys = ", ".join(sorted(env))
+        return f"service expects runtime env {{{env_keys}}}"
+    return ""

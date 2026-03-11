@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from pathlib import Path
 from typing import Any, Dict, List
 
 from common.roles import role_matches
 
 _CANONICAL_NAME_ALIASES = {
+    "name-ldap-filter-injection": "name-ldap-injection",
     "name-open-redirection": "name-open-redirect",
     "name-unvalidated-redirect": "name-open-redirect",
     "name-unvalidated-redirection": "name-open-redirect",
@@ -28,6 +31,7 @@ SUPPORTED_VULN_IDS = {
     "cwe-502",
     "cwe-94",
     "cwe-918",
+    "name-ldap-injection",
     "name-open-redirect",
     "name-template-injection",
     "name-xxe",
@@ -41,6 +45,12 @@ FAMILY_CANONICAL_TAGS = {
     "cwe-94": {"request_input", "code_input", "code_sink", "code_injection"},
     "cwe-79": {"request_input", "template_sink", "xss"},
     "cwe-502": {"serialized_input", "deserialization_sink", "deserialization"},
+    "name-ldap-injection": {
+        "request_input",
+        "ldap_input",
+        "ldap_filter_sink",
+        "ldap_injection",
+    },
     "name-open-redirect": {"request_input", "redirect_target", "redirect_sink", "open_redirect"},
     "name-template-injection": {
         "request_input",
@@ -95,6 +105,15 @@ BASELINE_SEMANTIC_SIGNATURES = {
         "input_vector": ["request.data", "serialized payload"],
         "sink": ["pickle.loads", "yaml.load", "jsonpickle.decode"],
         "exploit_precondition": ["untrusted deserialization", "attacker-controlled serialized input"],
+    },
+    "name-ldap-injection": {
+        "input_vector": ["request.args", "ldap user parameter", "user-controlled directory lookup input"],
+        "sink": ["LDAP filter construction", "directory search", "search_directory("],
+        "exploit_precondition": [
+            "user input concatenated into LDAP filter",
+            "ldap injection",
+            "filter bypass via wildcard or OR clause",
+        ],
     },
     "name-open-redirect": {
         "input_vector": ["request.args", "next parameter", "redirect target", "url parameter"],
@@ -155,9 +174,12 @@ _HTTP_CLIENT_RE = re.compile(
     r"\b(?:requests\.(?:get|post|put|delete|request)|urllib\.request|urlopen)\b",
     re.IGNORECASE,
 )
-_URL_INPUT_RE = re.compile(r"\brequest\.(?:args|form|values|get_json|json)\b|url\s*=", re.IGNORECASE)
+_URL_INPUT_RE = re.compile(
+    r"\brequest\.(?:args|form|values|get_json|json)\b|url\s*=|Query\s*\(",
+    re.IGNORECASE,
+)
 _REDIRECT_SINK_RE = re.compile(
-    r"\bredirect\s*\(|response\.headers\[['\"]location['\"]\]|location header",
+    r"\b(?:redirect|RedirectResponse)\s*\(|response\.headers\[['\"]location['\"]\]|location header",
     re.IGNORECASE,
 )
 _SSRF_INDICATOR_RE = re.compile(
@@ -165,7 +187,7 @@ _SSRF_INDICATOR_RE = re.compile(
     re.IGNORECASE,
 )
 _TEMPLATE_SINK_RE = re.compile(
-    r"\b(?:render_template_string|jinja2\.template|jinja2\.environment|from_string|template\.render)\b",
+    r"\b(?:render_template_string|jinja2\.template|jinja2\.environment|from_string|template\.render|htmlresponse)\b",
     re.IGNORECASE,
 )
 _DESERIALIZATION_SINK_RE = re.compile(
@@ -191,6 +213,12 @@ _COMMAND_INPUT_RE = re.compile(
     r"\brequest\.(?:args|form|values|get_json|json)\b|cmd\s*=",
     re.IGNORECASE,
 )
+_LDAP_SEARCH_SINK_RE = re.compile(r"\b(?:search_directory|ldap_search|conn\.search)\s*\(", re.IGNORECASE)
+_LDAP_INPUT_RE = re.compile(
+    r"\brequest\.(?:args|form|values|get_json|json)\b|user\s*=|username\s*=",
+    re.IGNORECASE,
+)
+_LDAP_FILTER_HINT_RE = re.compile(r"\bldap_filter\b|\(\s*&?\s*\(uid=|\(\s*cn=", re.IGNORECASE)
 _CODE_EXEC_RE = re.compile(r"\b(?:eval|exec)\s*\(", re.IGNORECASE)
 _CODE_INPUT_RE = re.compile(
     r"\brequest\.(?:args|form|values|get_json|json)\b|code\s*=",
@@ -199,6 +227,10 @@ _CODE_INPUT_RE = re.compile(
 _SERIALIZED_INPUT_RE = re.compile(r"\brequest\.(?:get_data|data|json)\b", re.IGNORECASE)
 _REQUEST_ASSIGN_RE = re.compile(
     r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*request\.(?:args|form|values|get_json|json|get_data|data)\b[^\n]*",
+    re.IGNORECASE,
+)
+_FASTAPI_BOUND_PARAM_RE = re.compile(
+    r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*[^=\n]+\s*=\s*(?:Query|Form|Body)\s*\(",
     re.IGNORECASE,
 )
 _SERVICE_SIDE_CODE_EXTS = {".py", ".js", ".ts", ".php", ".rb", ".java", ".go", ".sql"}
@@ -329,6 +361,12 @@ def semantic_term_aliases(term: str) -> set[str]:
         aliases.add("xxe")
     if any(key in token for key in {"resolve_entities", "load_dtd", "external entity resolution enabled"}):
         aliases.add("external_entity_resolution")
+    if any(key in token for key in {"ldap user parameter", "directory lookup input", "ldap filter input"}):
+        aliases.add("ldap_input")
+    if any(key in token for key in {"ldap filter construction", "directory search", "search_directory("}):
+        aliases.add("ldap_filter_sink")
+    if any(key in token for key in {"ldap injection", "ldap filter injection", "filter bypass"}):
+        aliases.add("ldap_injection")
     return aliases
 
 
@@ -372,28 +410,31 @@ def evaluate_manifest_semantics(vuln_id: str, manifest: Dict[str, Any]) -> Dict[
         }
 
     service_text, combined_text, file_count = _collect_manifest_text(manifest)
+    semantic_text = service_text or combined_text
     if normalized == "cwe-352":
-        report = _evaluate_cwe_352(service_text, combined_text)
+        report = _evaluate_cwe_352(semantic_text, semantic_text)
     elif normalized == "cwe-89":
-        report = _evaluate_cwe_89(combined_text)
+        report = _evaluate_cwe_89(semantic_text)
     elif normalized == "cwe-22":
-        report = _evaluate_cwe_22(combined_text)
+        report = _evaluate_cwe_22(semantic_text)
     elif normalized == "cwe-78":
-        report = _evaluate_cwe_78(combined_text)
+        report = _evaluate_cwe_78(semantic_text)
     elif normalized == "cwe-79":
-        report = _evaluate_cwe_79(combined_text)
+        report = _evaluate_cwe_79(semantic_text)
     elif normalized == "cwe-94":
-        report = _evaluate_cwe_94(combined_text)
+        report = _evaluate_cwe_94(semantic_text)
     elif normalized == "cwe-502":
-        report = _evaluate_cwe_502(combined_text)
+        report = _evaluate_cwe_502(semantic_text)
+    elif normalized == "name-ldap-injection":
+        report = _evaluate_name_ldap_injection(semantic_text)
     elif normalized == "name-open-redirect":
-        report = _evaluate_name_open_redirect(combined_text)
+        report = _evaluate_name_open_redirect(semantic_text)
     elif normalized == "name-template-injection":
-        report = _evaluate_name_template_injection(combined_text)
+        report = _evaluate_name_template_injection(semantic_text)
     elif normalized == "name-xxe":
-        report = _evaluate_name_xxe(combined_text)
+        report = _evaluate_name_xxe(semantic_text)
     else:
-        report = _evaluate_cwe_918(combined_text)
+        report = _evaluate_cwe_918(semantic_text)
     report["supported"] = True
     report["vuln_id"] = normalized
     report["scanned_files"] = file_count
@@ -441,7 +482,9 @@ def _collect_manifest_text(manifest: Dict[str, Any]) -> tuple[str, str, int]:
         return "", "", 0
     all_chunks: List[str] = []
     service_chunks: List[str] = []
+    conventional_service_chunks: List[str] = []
     python_chunks: List[str] = []
+    conventional_service_names = {"app.py", "main.py", "server.py", "service.py"}
     for entry in files:
         if not isinstance(entry, dict):
             continue
@@ -452,13 +495,19 @@ def _collect_manifest_text(manifest: Dict[str, Any]) -> tuple[str, str, int]:
         role = entry.get("role")
         if not _is_service_side_manifest_entry(path=path, role=role):
             continue
-        all_chunks.append(content)
+        normalized = _normalize_service_side_semantic_text(path, content)
+        all_chunks.append(normalized)
+        name = Path(path).name
         if role_matches(role, "service_main"):
-            service_chunks.append(content)
+            service_chunks.append(normalized)
+        elif name in conventional_service_names:
+            conventional_service_chunks.append(normalized)
         elif path.endswith(".py"):
-            python_chunks.append(content)
+            python_chunks.append(normalized)
     if service_chunks:
         service_text = "\n".join(service_chunks)
+    elif conventional_service_chunks:
+        service_text = "\n".join(conventional_service_chunks)
     elif python_chunks:
         service_text = "\n".join(python_chunks)
     else:
@@ -536,21 +585,24 @@ def _evaluate_cwe_89(combined_text: str) -> Dict[str, Any]:
 
 def _evaluate_cwe_22(combined_text: str) -> Dict[str, Any]:
     has_file_sink = bool(_FILE_READ_RE.search(combined_text))
-    has_path_input = bool(_PATH_INPUT_RE.search(combined_text))
+    input_vars = _request_bound_vars(combined_text)
+    has_path_input = bool(_PATH_INPUT_RE.search(combined_text) or input_vars)
     has_traversal_indicator = bool(_PATH_TRAVERSAL_RE.search(combined_text))
+    has_input_to_sink_flow = _has_path_input_flow(combined_text)
     errors: List[str] = []
     if not has_file_sink:
         errors.append("missing filesystem read sink for CWE-22")
     if has_file_sink and not has_path_input:
         errors.append("missing request-controlled path/filename input for CWE-22")
-    if has_file_sink and has_path_input and not has_traversal_indicator:
-        errors.append("missing traversal indicator (../, /etc/passwd, os.path.join) for CWE-22")
+    if has_file_sink and has_path_input and not (has_input_to_sink_flow or has_traversal_indicator):
+        errors.append("missing request-controlled path-to-file-sink flow for CWE-22")
     return {
         "semantic_match": not errors,
         "errors": errors,
         "signals": {
             "file_sink_present": has_file_sink,
             "path_input_present": has_path_input,
+            "input_to_file_sink_flow_present": has_input_to_sink_flow,
             "traversal_indicator_present": has_traversal_indicator,
         },
     }
@@ -717,6 +769,32 @@ def _evaluate_name_template_injection(combined_text: str) -> Dict[str, Any]:
     }
 
 
+def _evaluate_name_ldap_injection(combined_text: str) -> Dict[str, Any]:
+    has_search_sink = bool(_LDAP_SEARCH_SINK_RE.search(combined_text))
+    has_input_source = bool(_LDAP_INPUT_RE.search(combined_text))
+    has_filter_builder = bool(_LDAP_FILTER_HINT_RE.search(combined_text))
+    has_input_to_sink_flow = _has_ldap_input_flow(combined_text)
+    errors: List[str] = []
+    if not has_search_sink:
+        errors.append("missing LDAP/directory search sink for LDAP injection scenario")
+    if has_search_sink and not has_input_source:
+        errors.append("missing request-controlled LDAP input for LDAP injection scenario")
+    if has_search_sink and has_input_source and not has_filter_builder:
+        errors.append("missing LDAP filter construction hint for LDAP injection scenario")
+    if has_search_sink and has_input_source and not has_input_to_sink_flow:
+        errors.append("missing request-controlled LDAP filter-to-search flow for LDAP injection scenario")
+    return {
+        "semantic_match": not errors,
+        "errors": errors,
+        "signals": {
+            "ldap_search_sink_present": has_search_sink,
+            "ldap_input_present": has_input_source,
+            "ldap_filter_builder_present": has_filter_builder,
+            "input_to_ldap_sink_flow_present": has_input_to_sink_flow,
+        },
+    }
+
+
 def _evaluate_name_xxe(combined_text: str) -> Dict[str, Any]:
     has_parser = bool(_XML_PARSER_RE.search(combined_text) and _XML_PARSE_CALL_RE.search(combined_text))
     has_xml_input = bool(_XML_INPUT_RE.search(combined_text))
@@ -840,7 +918,119 @@ def _has_input_variable_to_execute_flow(text: str) -> bool:
 
 
 def _request_bound_vars(text: str) -> set[str]:
-    return {match.group(1) for match in _REQUEST_ASSIGN_RE.finditer(text)}
+    request_bound = {match.group(1) for match in _REQUEST_ASSIGN_RE.finditer(text)}
+    fastapi_bound = {match.group(1) for match in _FASTAPI_BOUND_PARAM_RE.finditer(text)}
+    return request_bound | fastapi_bound
+
+
+def _normalize_service_side_semantic_text(path: str, content: str) -> str:
+    if not path.endswith(".py"):
+        return content
+    return _strip_python_comments(content)
+
+
+def _strip_python_comments(text: str) -> str:
+    try:
+        filtered = [
+            token
+            for token in tokenize.generate_tokens(io.StringIO(text).readline)
+            if token.type != tokenize.COMMENT
+        ]
+        return tokenize.untokenize(filtered)
+    except (tokenize.TokenError, IndentationError):
+        return text
+
+
+def _has_path_input_flow(text: str) -> bool:
+    tainted_vars = set(_request_bound_vars(text))
+    path_vars: set[str] = set()
+
+    def _references_any(expr: str, names: set[str]) -> bool:
+        return any(re.search(rf"\b{re.escape(name)}\b", expr) for name in names)
+
+    def _arg_uses_path_input(expr: str) -> bool:
+        if _PATH_INPUT_RE.search(expr):
+            return True
+        return _references_any(expr, tainted_vars | path_vars)
+
+    def _looks_path_builder(expr: str) -> bool:
+        lowered = expr.lower()
+        if not _references_any(expr, tainted_vars | path_vars):
+            return False
+        return any(
+            marker in lowered
+            for marker in ("os.path.join", ".joinpath(", "path(")
+        ) or " / " in expr
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        tree = None
+
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets = [target.id for target in node.targets if isinstance(target, ast.Name)]
+                if not targets:
+                    continue
+                expr = ast.unparse(node.value)
+                if _PATH_INPUT_RE.search(expr) or _references_any(expr, tainted_vars):
+                    tainted_vars.update(targets)
+                if _looks_path_builder(expr):
+                    path_vars.update(targets)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+                expr = ast.unparse(node.value)
+                if _PATH_INPUT_RE.search(expr) or _references_any(expr, tainted_vars):
+                    tainted_vars.add(node.target.id)
+                if _looks_path_builder(expr):
+                    path_vars.add(node.target.id)
+            elif isinstance(node, ast.Call):
+                func = node.func
+                func_name = ""
+                if isinstance(func, ast.Attribute):
+                    func_name = func.attr.lower()
+                elif isinstance(func, ast.Name):
+                    func_name = func.id.lower()
+
+                if func_name in {"open", "send_file"} and node.args:
+                    if _arg_uses_path_input(ast.unparse(node.args[0])):
+                        return True
+                elif func_name == "send_from_directory":
+                    if len(node.args) >= 2 and _arg_uses_path_input(ast.unparse(node.args[1])):
+                        return True
+                    for keyword in node.keywords:
+                        if keyword.arg in {"path", "filename", "name"} and _arg_uses_path_input(ast.unparse(keyword.value)):
+                            return True
+                elif func_name in {"read_text", "read_bytes"} and isinstance(func, ast.Attribute):
+                    if _arg_uses_path_input(ast.unparse(func.value)):
+                        return True
+
+    if re.search(
+        r"\b(?:open|send_file)\s*\([^)]*request\.(?:args|form|values|get_json|json)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    for variable in tainted_vars | path_vars:
+        if re.search(
+            rf"\b(?:open|send_file)\s*\([^)]*\b{re.escape(variable)}\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        if re.search(
+            rf"\bsend_from_directory\s*\([^,]+,\s*{re.escape(variable)}\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        if re.search(
+            rf"\b{re.escape(variable)}\s*\.(?:read_text|read_bytes)\s*\(",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    return False
 
 
 def _has_deserialization_input_flow(text: str) -> bool:
@@ -877,6 +1067,50 @@ def _has_command_input_flow(text: str) -> bool:
     return False
 
 
+def _has_ldap_input_flow(text: str) -> bool:
+    if re.search(
+        r"search_directory\s*\([^)]*request\.(?:args|form|values|get_json|json)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    filter_vars: set[str] = set()
+    for variable in _request_bound_vars(text):
+        if re.search(
+            rf"ldap_filter\s*=\s*[^\n]*(?:\+\s*{re.escape(variable)}\b|\b{re.escape(variable)}\b\s*\+)",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            filter_vars.add("ldap_filter")
+        if re.search(
+            rf"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*[^\n]*(?:\+\s*{re.escape(variable)}\b|\b{re.escape(variable)}\b\s*\+)",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            filter_vars.update(
+                match.group(1)
+                for match in re.finditer(
+                    rf"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*[^\n]*(?:\+\s*{re.escape(variable)}\b|\b{re.escape(variable)}\b\s*\+)",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+            )
+        if re.search(
+            rf"search_directory\s*\(\s*{re.escape(variable)}\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    for variable in filter_vars:
+        if re.search(
+            rf"search_directory\s*\(\s*{re.escape(variable)}\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
 def _has_code_input_flow(text: str) -> bool:
     if re.search(
         r"(eval|exec)\s*\(\s*request\.(?:args|form|values|get_json|json)",
@@ -900,7 +1134,7 @@ def _has_template_input_flow(text: str, input_vars: set[str]) -> bool:
     if not _TEMPLATE_SINK_RE.search(text):
         return False
     direct_template_flow = re.search(
-        r"render_template_string\s*\([^)]*request\.(?:args|form|values|get_json|json)",
+        r"(?:render_template_string|HTMLResponse)\s*\([^)]*request\.(?:args|form|values|get_json|json)",
         text,
         flags=re.IGNORECASE,
     )
@@ -913,6 +1147,8 @@ def _has_template_input_flow(text: str, input_vars: set[str]) -> bool:
             rf"template\s*=\s*f[\"'][^\n]*\{{\s*{re.escape(variable)}\s*\}}",
             rf"render_template_string\s*\([^)]*\+\s*{re.escape(variable)}\b",
             rf"render_template_string\s*\([^)]*\b{re.escape(variable)}\b[^)]*\.format\s*\(",
+            rf"HTMLResponse\s*\([^)]*\+\s*{re.escape(variable)}\b",
+            rf"HTMLResponse\s*\([^)]*\b{re.escape(variable)}\b\s*\+",
         )
         if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns):
             return True
@@ -922,8 +1158,12 @@ def _has_template_input_flow(text: str, input_vars: set[str]) -> bool:
 def _has_redirect_input_flow(text: str, input_vars: set[str]) -> bool:
     if re.search(r"redirect\s*\(\s*request\.(?:args|form|values|get_json|json)", text, flags=re.IGNORECASE):
         return True
+    if re.search(r"RedirectResponse\s*\(\s*url\s*=\s*request\.(?:args|form|values|get_json|json)", text, flags=re.IGNORECASE):
+        return True
     for variable in input_vars:
         if re.search(rf"redirect\s*\(\s*{re.escape(variable)}\b", text, flags=re.IGNORECASE):
+            return True
+        if re.search(rf"RedirectResponse\s*\(\s*url\s*=\s*{re.escape(variable)}\b", text, flags=re.IGNORECASE):
             return True
     return False
 

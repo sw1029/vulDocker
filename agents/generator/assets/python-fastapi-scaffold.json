@@ -1,0 +1,64 @@
+{
+  "scaffold_id": "python/fastapi",
+  "version": "1.0",
+  "language": "python",
+  "framework": "fastapi",
+  "aliases": [
+    "python-fastapi",
+    "fastapi"
+  ],
+  "base_image": "python:3.11-slim",
+  "workdir": "/app",
+  "requirements_path": "requirements.txt",
+  "install_command": "pip install --no-cache-dir -r requirements.txt",
+  "run_command_template": "python {{service_path}}",
+  "poc_command_template": "python {{poc_path}} --base-url {{base_url}}",
+  "service_entry": "app.py",
+  "service_host": "0.0.0.0",
+  "health_route": {
+    "path": "/health",
+    "response": "{'ok': True}"
+  },
+  "service_template": [
+    "{{import_block}}",
+    "",
+    "app = FastAPI()",
+    "",
+    "{{app_setup_block}}",
+    "{{health_route}}",
+    "",
+    "{{route_block}}",
+    "",
+    "if __name__ == '__main__':",
+    "{{startup_block}}",
+    "    import uvicorn",
+    "    uvicorn.run(app, host={{service_host_repr}}, port={{port}})"
+  ],
+  "readme_template": [
+    "# {{requested_name}} compiler bundle",
+    "",
+    "Generated from scaffold `{{scaffold_id}}` and fragment `{{fragment_id}}`.",
+    "",
+    "- Vulnerability ID: `{{vuln_id}}`",
+    "- Service entry: `{{service_path}}`",
+    "- Health check: `GET {{health_route_path}}`",
+    "- Default port: `{{port}}`",
+    "{{service_description_line}}",
+    "{{poc_description_line}}",
+    "{{runtime_assumptions_line}}",
+    "",
+    "```bash",
+    "docker build -t compiler-bundle .",
+    "docker run -p {{port}}:{{port}} compiler-bundle",
+    "python poc.py --base-url http://127.0.0.1:{{port}}",
+    "```"
+  ],
+  "dockerfile_template": [
+    "FROM {{base_image}}",
+    "WORKDIR {{workdir}}",
+    "COPY . {{workdir}}",
+    "RUN {{install_command}}",
+    "EXPOSE {{port}}",
+    "CMD [\"python\", \"{{service_path}}\"]"
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "manifest": {
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "promotion_eligible": true,
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "compiler_family": "open_redirect",
+    "stack_scaffold_id": "python/flask",
+    "stack_scaffold_version": "1.0",
+    "fragment_id": "redirect_next_route",
+    "compose_mode": "registry",
+    "generation_origin": "compiler_generated",
+    "dynamicness_verdict": "compiler-first",
+    "verification_rule_source": "declared_rule",
+    "verification_trust": "high",
+    "verification_independence": "independent",
+    "generalization_class": "real_free_form_positive",
+    "counts_as_generalization": true,
+    "generation_summary": {
+      "by_origin": {
+        "compiler_generated": 1
+      },
+      "by_dynamicness_verdict": {
+        "compiler-first": 1
+      },
+      "by_compose_mode": {
+        "registry": 1
+      },
+      "by_stack_scaffold_id": {
+        "python/flask": 1
+      },
+      "template_origin_bundles": 0,
+      "template_assisted_bundles": 0,
+      "registry_compose_bundles": 1,
+      "scaffolded_bundles": 1
+    },
+    "verification_summary": {
+      "by_rule_source": {
+        "declared_rule": 1
+      },
+      "by_trust": {
+        "high": 1
+      },
+      "by_independence": {
+        "independent": 1
+      }
+    }
+  },
+  "evals": [
+    {
+      "slug": "name-open-redirect",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "promotion_eligible": true,
+      "compiler_supported": true,
+      "compiler_strategy": "open_redirect_reflect",
+      "compiler_family": "open_redirect",
+      "stack_scaffold_id": "python/flask",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "redirect_next_route",
+      "compose_mode": "registry",
+      "generation_origin": "compiler_generated",
+      "dynamicness_verdict": "compiler-first",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "verification_independence": "independent",
+      "generalization_class": "real_free_form_positive",
+      "counts_as_generalization": true
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

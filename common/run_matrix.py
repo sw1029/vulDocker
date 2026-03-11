@@ -51,6 +51,22 @@ def bundle_requirement(requirement: Dict[str, Any], bundle: VulnBundle) -> Dict[
     scoped = deepcopy(requirement)
     scoped["vuln_id"] = bundle.vuln_id
     scoped["vuln_ids"] = [bundle.vuln_id]
+    raw_resolutions = requirement.get("vuln_id_resolutions")
+    if isinstance(raw_resolutions, list):
+        matches = [
+            dict(entry)
+            for entry in raw_resolutions
+            if isinstance(entry, dict) and str(entry.get("resolved_vuln_id") or "").strip() == bundle.vuln_id
+        ]
+        if matches:
+            scoped["vuln_id_resolutions"] = matches
+            primary = matches[0]
+            scoped["name_resolution"] = {
+                str(key): value
+                for key, value in primary.items()
+                if str(key) in {"input", "resolved_vuln_id", "source", "match_class", "confidence"}
+                and value not in (None, "")
+            }
     return scoped
 
 

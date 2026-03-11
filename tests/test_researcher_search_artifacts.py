@@ -349,3 +349,101 @@ def test_search_filters_are_propagated_to_request_payload(monkeypatch, tmp_path:
     assert trace["request"]["include_domains"] == ["mitre.org", "owasp.org"]
     assert trace["request"]["exclude_domains"] == ["example.com"]
     assert trace["request"]["time_range"] == "30d"
+
+
+def _write_template_fixture(template_dir: Path, metadata: dict) -> None:
+    (template_dir / "app").mkdir(parents=True, exist_ok=True)
+    (template_dir / "app" / "app.py").write_text("print('template')\n", encoding="utf-8")
+    (template_dir / "template.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+
+def test_candidate_template_prefers_runtime_compatible_template(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    sqlite_template = repo_root / "workspaces" / "templates" / "sqli" / "flask_sqlite_raw"
+    mysql_template = repo_root / "workspaces" / "templates" / "sqli" / "flask_mysql_union"
+    _write_template_fixture(
+        sqlite_template,
+        {
+            "id": "flask_sqlite_raw",
+            "tags": ["cwe-89"],
+            "db": "sqlite",
+            "pattern_id": "sqli-string-concat",
+            "stability_score": 0.40,
+            "requires_external_db": False,
+        },
+    )
+    _write_template_fixture(
+        mysql_template,
+        {
+            "id": "flask_mysql_union",
+            "tags": ["cwe-89"],
+            "db": "mysql",
+            "pattern_id": "sqli-union-mysql",
+            "stability_score": 0.95,
+            "requires_external_db": True,
+        },
+    )
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CWE-89",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service.runtime_templates_dir.mkdir(parents=True, exist_ok=True)  # type: ignore[attr-defined]
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-89",
+        "pattern_id": "sqli-string-concat",
+        "runtime": {"db": "sqlite", "allow_external_db": False},
+        "researcher": {"generate_candidate_templates": True},
+    }
+    monkeypatch.setattr("agents.researcher.service.get_repo_root", lambda: repo_root)
+
+    bundle = type("Bundle", (), {"vuln_id": "CWE-89"})()
+    template_path = service._generate_candidate_template(bundle)  # type: ignore[attr-defined]
+
+    assert template_path is not None
+    assert template_path.name == "cwe-89-flask_sqlite_raw"
+    metadata = json.loads((template_path / "template.json").read_text(encoding="utf-8"))
+    assert metadata["id"] == "cwe-89-candidate"
+    assert metadata["name"] == "CWE-89 candidate template"
+    assert metadata["stack_id"] == "python/flask"
+    assert metadata["language"] == "python"
+    assert metadata["framework"] == "flask"
+
+
+def test_candidate_template_skips_external_db_only_template_when_runtime_disallows_it(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    mysql_template = repo_root / "workspaces" / "templates" / "sqli" / "flask_mysql_union"
+    _write_template_fixture(
+        mysql_template,
+        {
+            "id": "flask_mysql_union",
+            "tags": ["cwe-89"],
+            "db": "mysql",
+            "pattern_id": "sqli-union-mysql",
+            "stability_score": 0.95,
+            "requires_external_db": True,
+        },
+    )
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CWE-89",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service.runtime_templates_dir.mkdir(parents=True, exist_ok=True)  # type: ignore[attr-defined]
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-89",
+        "pattern_id": "sqli-string-concat",
+        "runtime": {"db": "sqlite", "allow_external_db": False},
+        "researcher": {"generate_candidate_templates": True},
+    }
+    monkeypatch.setattr("agents.researcher.service.get_repo_root", lambda: repo_root)
+
+    bundle = type("Bundle", (), {"vuln_id": "CWE-89"})()
+    template_path = service._generate_candidate_template(bundle)  # type: ignore[attr-defined]
+
+    assert template_path is None

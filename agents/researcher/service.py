@@ -55,6 +55,7 @@ from agents.generator.flask_fragment_registry import (
     fragment_semantic_signature,
     service_side_file_contains_tokens,
 )
+from agents.generator.template_metadata import normalize_template_metadata
 from orchestrator.plugins import ReactLoop, ReactSpan
 from rag.static_loader import load_static_context
 from rag.tools import SearchExecution, SearchResult, SearchRequest, WebSearchTool
@@ -765,7 +766,8 @@ class ResearcherService:
                 warnings.append(f"unsupported guard assertion op in {scope}: {mapped_op}")
                 return None
 
-                dropped_ops.append({"op": mapped_op, "scope": scope, "reason": "unsupported_op"})
+            dropped_ops.append({"op": mapped_op, "scope": scope, "reason": "unsupported_op"})
+            warnings.append(f"dropped unsupported guard assertion op in {scope}: {mapped_op}")
         return normalized
 
     def _filter_stdlib_dependency_assertion(
@@ -2595,8 +2597,10 @@ class ResearcherService:
             data = json.loads(template_json.read_text(encoding="utf-8"))
         else:
             data = {"id": dest.name}
+        data = normalize_template_metadata(data)
         data["id"] = f"{bundle.vuln_id.lower()}-candidate"
         data["name"] = f"{bundle.vuln_id} candidate template"
+        data = normalize_template_metadata(data)
         template_json.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         metadata_root = getattr(self, "metadata_root", None)
         if isinstance(metadata_root, Path):
@@ -2608,7 +2612,7 @@ class ResearcherService:
         if not template_json.exists():
             return {}
         try:
-            return json.loads(template_json.read_text(encoding="utf-8"))
+            return normalize_template_metadata(json.loads(template_json.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
             return {}
 
@@ -2855,6 +2859,13 @@ class ResearcherService:
         return [file_contains(token) for token in tokens]
 
     def _generate_candidate_template(self, bundle: VulnBundle) -> Path | None:
+        def _coerce_bool(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(value)
+
         vuln_id = (bundle.vuln_id or "").strip().lower()
         if not vuln_id:
             return None
@@ -2862,6 +2873,11 @@ class ResearcherService:
             vuln_id = vuln_id.replace("_", "-", 1)
         if not vuln_id.startswith("cwe-") and "cwe" in vuln_id:
             vuln_id = vuln_id.replace("cwe", "cwe-", 1)
+        runtime = self.requirement.get("runtime") if isinstance(self.requirement, dict) else {}
+        runtime = runtime if isinstance(runtime, dict) else {}
+        requested_db = str(runtime.get("db") or runtime.get("database") or "").strip().lower()
+        allow_external_db = _coerce_bool(runtime.get("allow_external_db") or self.requirement.get("allow_external_db"))
+        requested_pattern = str(self.requirement.get("pattern_id") or "").strip().lower()
 
         repo_root = get_repo_root()
         template_root = repo_root / "workspaces" / "templates"
@@ -2882,10 +2898,19 @@ class ResearcherService:
             normalized_tags = [str(tag).strip().lower() for tag in tags if isinstance(tag, str) and tag.strip()]
             if vuln_id not in normalized_tags:
                 continue
+            template_db = str(meta.get("db") or "").strip().lower()
+            if requested_db and template_db and requested_db != template_db:
+                continue
+            requires_external_db = _coerce_bool(meta.get("requires_external_db"))
+            if requires_external_db and not allow_external_db:
+                continue
             try:
                 score = float(meta.get("stability_score", 0.0))
             except Exception:
                 score = 0.0
+            pattern_id = str(meta.get("pattern_id") or "").strip().lower()
+            if requested_pattern and pattern_id and requested_pattern == pattern_id:
+                score += 1.0
             if best is None or score > best[0]:
                 best = (score, meta_path.parent)
 
