@@ -102,16 +102,36 @@ class ResearcherService:
         self._search_health_path: Path | None = None
         self._search_degraded = False
         self._last_evidence_relevance: Dict[str, Any] | None = None
+        self._query_plan: Dict[str, Any] = {}
+        self._query_plan_index: Dict[str, Dict[str, Any]] = {}
+        self._family_hypothesis_summary: Dict[str, Any] = {}
 
     def run(self) -> Path:
         snapshot = self._snapshot_id()
         rag_context = load_static_context(snapshot)
-        queries = self.react_loop.queries_from_requirement(self.requirement)
+        query_plan = self.react_loop.query_plan_from_requirement(
+            self.requirement,
+            limit=self._effective_query_plan_limit(),
+        )
+        queries = [str(entry.get("query") or "").strip() for entry in query_plan.get("queries") or [] if str(entry.get("query") or "").strip()]
+        self._query_plan = query_plan
+        self._query_plan_index = {
+            str(entry.get("query") or "").strip(): entry
+            for entry in query_plan.get("queries") or []
+            if isinstance(entry, dict) and str(entry.get("query") or "").strip()
+        }
         active_bundle = self.bundle
-        with self.react_loop.span(queries=queries) as span:
+        with self.react_loop.span(queries=queries, query_plan=query_plan) as span:
             search_hits = self._collect_search_results(queries, span=span)
             search_meta = self._write_search_artifacts(search_hits, policy=self._search_policy())
             evidence = self._build_evidence_payload(search_hits)
+            evidence_type_summary = self._summarize_evidence_types(search_hits)
+            tech_stack_candidates = self._infer_tech_stack_candidates(search_hits, query_plan)
+            family_hypothesis_summary = self.react_loop.rank_family_hypotheses(
+                search_hits,
+                base_hypotheses=list(query_plan.get("family_hypotheses") or []),
+            )
+            self._family_hypothesis_summary = family_hypothesis_summary
             quality, quality_reason = self._evaluate_evidence_quality(active_bundle, search_hits)
             relevance_report = self._last_evidence_relevance or {
                 "score": 0.0,
@@ -132,6 +152,10 @@ class ResearcherService:
                     "search_health_path": str(search_meta["health_path"]) if search_meta.get("health_path") else None,
                     "search_degraded": bool(search_meta.get("degraded")),
                     "evidence": evidence,
+                    "query_plan": query_plan,
+                    "evidence_type_summary": evidence_type_summary,
+                    "tech_stack_candidates": tech_stack_candidates,
+                    "family_hypothesis_summary": family_hypothesis_summary,
                     "semantic_signature": {},
                     "evidence_relevance": relevance_report,
                     "quality": "insufficient",
@@ -139,6 +163,7 @@ class ResearcherService:
                     "guard_fallback": False,
                     "guard_spec_path": None,
                     "created_at": datetime.now(timezone.utc).isoformat(),
+                    "llm_execution": self._llm_execution_summary(),
                 }
                 report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
                     report,
@@ -162,6 +187,10 @@ class ResearcherService:
             )
             report["search_degraded"] = bool(search_meta.get("degraded"))
             report["evidence"] = evidence
+            report["query_plan"] = query_plan
+            report["evidence_type_summary"] = evidence_type_summary
+            report["tech_stack_candidates"] = tech_stack_candidates
+            report["family_hypothesis_summary"] = family_hypothesis_summary
             report["evidence_relevance"] = relevance_report
             report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
                 report,
@@ -171,6 +200,9 @@ class ResearcherService:
             report["quality_reason"] = quality_reason or "sufficient evidence"
             report["guard_fallback"] = guard_fallback
             report["created_at"] = datetime.now(timezone.utc).isoformat()
+            llm_execution = self._llm_execution_summary()
+            if llm_execution:
+                report["llm_execution"] = llm_execution
             self._last_report = report
             guard_spec_path, guard_ensemble_path = self._build_and_write_guard_spec(
                 report=report,
@@ -194,6 +226,7 @@ class ResearcherService:
             queries=queries,
             search_results=[hit.to_payload() for hit in search_hits],
             report_path=path,
+            query_plan=query_plan,
         )
         LOGGER.info("Researcher report saved to %s", path)
         return path
@@ -265,6 +298,7 @@ class ResearcherService:
             self._search_records.append(
                 {
                     "query": query,
+                    "query_plan_entry": self._query_plan_index.get(query) or {},
                     "provider": execution.provider if isinstance(execution, SearchExecution) else None,
                     "policy": search_policy,
                     "request": request_payload,
@@ -291,6 +325,7 @@ class ResearcherService:
             trace_path = traces_dir / f"{index:02d}-{digest}.json"
             payload = {
                 "query": query,
+                "query_plan_entry": record.get("query_plan_entry") or {},
                 "provider": record.get("provider"),
                 "policy": policy,
                 "request": record.get("request") or {},
@@ -399,8 +434,33 @@ class ResearcherService:
         path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         return path
 
+    def _llm_execution_summary(self) -> Dict[str, Any]:
+        llm = getattr(self, "llm", None)
+        if llm is None:
+            return {}
+        payload: Dict[str, Any] = {}
+        if bool(getattr(llm, "observed_provider_attempted", False)):
+            payload["provider_attempted"] = True
+        if bool(getattr(llm, "observed_provider_succeeded", False)):
+            payload["provider_succeeded"] = True
+        if bool(getattr(llm, "observed_stub_fallback", False)):
+            payload["stub_fallback"] = True
+        if bool(getattr(llm, "observed_fixture_used", False)):
+            payload["fixture_used"] = True
+        error_class = str(getattr(llm, "last_error_class", "") or "").strip()
+        if error_class:
+            payload["last_error_class"] = error_class
+        error_message = str(getattr(llm, "last_error_message", "") or "").strip()
+        if error_message:
+            payload["last_error_message"] = error_message
+        return payload
+
     def write_skip_report(self, reason: str) -> Path:
         active_bundle = self.bundle
+        query_plan = self.react_loop.query_plan_from_requirement(
+            self.requirement,
+            limit=self._effective_query_plan_limit(),
+        )
         report = {
             "sid": self.sid,
             "vuln_id": active_bundle.vuln_id if active_bundle else self.requirement.get("vuln_id"),
@@ -411,6 +471,9 @@ class ResearcherService:
             "search_health_path": None,
             "search_degraded": False,
             "evidence": [],
+            "query_plan": query_plan,
+            "evidence_type_summary": {},
+            "family_hypothesis_summary": {},
             "semantic_signature": {},
             "evidence_relevance": {},
             "quality": "skipped",
@@ -419,6 +482,7 @@ class ResearcherService:
             "guard_spec_path": None,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "skipped_reason": reason,
+            "llm_execution": self._llm_execution_summary(),
         }
         report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
             report,
@@ -438,6 +502,10 @@ class ResearcherService:
         fix_hint: str = "",
     ) -> Path:
         active_bundle = self.bundle
+        query_plan = self.react_loop.query_plan_from_requirement(
+            self.requirement,
+            limit=self._effective_query_plan_limit(),
+        )
         report = {
             "sid": self.sid,
             "vuln_id": active_bundle.vuln_id if active_bundle else self.requirement.get("vuln_id"),
@@ -448,6 +516,9 @@ class ResearcherService:
             "search_health_path": None,
             "search_degraded": False,
             "evidence": [],
+            "query_plan": query_plan,
+            "evidence_type_summary": {},
+            "family_hypothesis_summary": {},
             "semantic_signature": {},
             "evidence_relevance": {},
             "quality": "insufficient",
@@ -459,6 +530,7 @@ class ResearcherService:
             "retry_recommended": False,
             "fix_hint": fix_hint,
             "skipped_reason": reason,
+            "llm_execution": self._llm_execution_summary(),
         }
         report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
             report,
@@ -542,6 +614,23 @@ class ResearcherService:
             return False
         return bool(researcher_cfg.get("generate_candidate_templates", False))
 
+    def _effective_query_plan_limit(self) -> int:
+        limit = max(1, int(self.search_limit or 1))
+        if not self._dynamic_eval_enabled():
+            return limit
+        if not self._bundle_is_name_driven(self.bundle):
+            return limit
+        if self.requirement.get("language") and self.requirement.get("framework"):
+            return limit
+        stack_hypotheses = (
+            self.requirement.get("stack_hypotheses")
+            if isinstance(self.requirement.get("stack_hypotheses"), list)
+            else []
+        )
+        if len(stack_hypotheses) < 2:
+            return limit
+        return max(limit, 4)
+
     def _allow_runtime_rule_override_static(self) -> bool:
         plan_policy = self.plan.get("policy") or {}
         if not isinstance(plan_policy, dict):
@@ -562,6 +651,25 @@ class ResearcherService:
         if isinstance(plan_policy, dict) and "require_researcher_evidence" in plan_policy:
             return bool(plan_policy.get("require_researcher_evidence"))
         return self._bundle_is_unknown(bundle)
+
+    def _open_world_strict_mode(self) -> bool:
+        plan_policy = self.plan.get("policy") or {}
+        if not isinstance(plan_policy, dict):
+            return False
+        return bool(plan_policy.get("open_world_strict"))
+
+    def _bundle_is_name_driven(self, bundle: VulnBundle | None) -> bool:
+        if bundle is None:
+            request_identity = self.requirement.get("request_identity")
+            if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
+                return True
+            vuln_id = str(self.requirement.get("vuln_id") or "").strip().upper()
+            return vuln_id.startswith("NAME-")
+        requirement_view = bundle_requirement(self.plan["requirement"], bundle)
+        request_identity = requirement_view.get("request_identity")
+        if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
+            return True
+        return str(bundle.vuln_id or "").strip().upper().startswith("NAME-")
 
     def _guard_policy(self) -> Dict[str, Any]:
         plan_policy = self.plan.get("policy") or {}
@@ -647,6 +755,27 @@ class ResearcherService:
         if norm_generators is None:
             return None
         norm_generators = self._trim_generator_assertions(norm_generators, warnings=warnings)
+        if self._dynamic_eval_enabled():
+            compiler_metadata_fields = {
+                "metadata.stack_scaffold_id",
+                "metadata.fragment_id",
+                "metadata.compose_mode",
+                "metadata.compiler_strategy",
+            }
+            filtered_generators = [
+                assertion
+                for assertion in norm_generators
+                if not (
+                    isinstance(assertion, dict)
+                    and str(assertion.get("op") or "").strip().lower() == "manifest_field_contains"
+                    and str(assertion.get("field") or "").strip() in compiler_metadata_fields
+                )
+            ]
+            if len(filtered_generators) != len(norm_generators):
+                warnings.append(
+                    "removed compiler-lower-bound metadata assertions from generator_assertions for dynamic name-only posture"
+                )
+            norm_generators = filtered_generators
         norm_verifiers = self._normalize_assertions_for_scope(
             assertions=verifier_assertions,
             scope="verifier",
@@ -1251,6 +1380,22 @@ class ResearcherService:
         pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
         raw_label = self._raw_vuln_label()
         assertions = fragment_guard_generator_assertions(vuln_id, pattern_id=pattern_id, raw_label=raw_label)
+        if self._dynamic_eval_enabled():
+            compiler_metadata_fields = {
+                "metadata.stack_scaffold_id",
+                "metadata.fragment_id",
+                "metadata.compose_mode",
+                "metadata.compiler_strategy",
+            }
+            assertions = [
+                assertion
+                for assertion in assertions
+                if not (
+                    isinstance(assertion, dict)
+                    and str(assertion.get("op") or "").strip().lower() == "manifest_field_contains"
+                    and str(assertion.get("field") or "").strip() in compiler_metadata_fields
+                )
+            ]
         if not assertions:
             assertions = [
                 {"op": "role_exists", "role": "service_main"},
@@ -1266,6 +1411,36 @@ class ResearcherService:
             }
         )
         return assertions
+
+    def _dynamic_eval_enabled(self) -> bool:
+        requirement_policy = self.requirement.get("policy") if isinstance(self.requirement.get("policy"), dict) else {}
+        if isinstance(requirement_policy, dict) and bool(requirement_policy.get("dynamic_eval")):
+            return True
+        request_identity = (
+            self.requirement.get("request_identity")
+            if isinstance(self.requirement.get("request_identity"), dict)
+            else {}
+        )
+        name_driven = bool((request_identity or {}).get("name_driven")) or str(
+            self.requirement.get("vuln_id") or ""
+        ).upper().startswith("NAME-")
+        if (
+            name_driven
+            and isinstance(requirement_policy, dict)
+            and str(requirement_policy.get("name_only_mode") or "").strip().lower() in {"dynamic", "strict_dynamic"}
+        ):
+            return True
+        plan = getattr(self, "plan", {})
+        plan_policy = plan.get("policy") if isinstance(plan, dict) else {}
+        if isinstance(plan_policy, dict) and bool(plan_policy.get("dynamic_eval")):
+            return True
+        if (
+            name_driven
+            and isinstance(plan_policy, dict)
+            and str(plan_policy.get("name_only_mode") or "").strip().lower() in {"dynamic", "strict_dynamic"}
+        ):
+            return True
+        return False
 
     def _build_and_write_guard_spec(
         self,
@@ -1662,7 +1837,27 @@ class ResearcherService:
         search_policy = self._search_policy()
         require_evidence = self._require_researcher_evidence(bundle)
         unknown = self._bundle_is_unknown(bundle)
+        name_driven = self._bundle_is_name_driven(bundle)
+        open_world_strict = self._open_world_strict_mode()
         remote_hits = [hit for hit in search_hits if str(hit.source).strip().lower() == "remote"]
+        if open_world_strict and name_driven and self._search_degraded:
+            vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
+            return (
+                "insufficient",
+                (
+                    f"Insufficient researcher evidence for {vuln}: open_world_strict requires non-degraded remote research, "
+                    "but the search provider degraded to local/fallback results."
+                ),
+            )
+        if open_world_strict and name_driven and not remote_hits:
+            vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
+            return (
+                "insufficient",
+                (
+                    f"Insufficient researcher evidence for {vuln}: open_world_strict requires at least one remote hit "
+                    "for name-driven lanes, but none were found."
+                ),
+            )
         if search_policy == "remote_required" and not remote_hits:
             vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
             return (
@@ -1771,6 +1966,9 @@ class ResearcherService:
         negative_hits = 0
         for hit in search_hits:
             text = self._search_hit_text(hit)
+            query_plan_entry = self._query_plan_index.get(str(hit.query or "").strip()) or {}
+            expected_evidence_type = str(query_plan_entry.get("evidence_type") or "").strip().lower()
+            evidence_type = self._classify_evidence_type(hit)
             matched = {
                 "family_terms": self._matched_terms(text, profile.get("family_terms") or []),
                 "stack_terms": self._matched_terms(text, profile.get("stack_terms") or []),
@@ -1803,6 +2001,10 @@ class ResearcherService:
                 if matched[bucket]:
                     score += 0.10
                     overall_matches[bucket] = True
+            if evidence_type in {"advisory", "writeup", "reference_impl"}:
+                score += 0.03
+            if expected_evidence_type and evidence_type == expected_evidence_type:
+                score += 0.05
             if str(hit.source or "").strip().lower() == "remote":
                 remote_hits += 1
                 score += 0.05
@@ -1823,6 +2025,8 @@ class ResearcherService:
                     "title": str(hit.title or ""),
                     "url": str(hit.url or ""),
                     "source": str(hit.source or ""),
+                    "evidence_type": evidence_type,
+                    "query_target": expected_evidence_type or None,
                     "score": round(min(1.0, score), 3),
                     "negative_penalty": round(negative_penalty, 3),
                     "matched": matched,
@@ -1858,6 +2062,12 @@ class ResearcherService:
             1.0,
             max(0.0, (0.55 * strongest) + (0.20 * support) + (0.20 * coverage) + remote_bonus - (0.10 * negative_ratio)),
         )
+        semantic_alignment = any(
+            overall_matches.get(key)
+            for key in ("family", "exploit", "input_vector", "sink", "exploit_precondition")
+        )
+        if self._bundle_is_unknown(bundle) and not semantic_alignment:
+            overall = min(overall, max(0.0, self._relevance_threshold(bundle) - 0.05))
         return {
             "score": round(overall, 3),
             "threshold": self._relevance_threshold(bundle),
@@ -1877,6 +2087,9 @@ class ResearcherService:
     ) -> float:
         return float(self._score_evidence_relevance(bundle, search_hits).get("score") or 0.0)
 
+    def _allow_pattern_guidance(self, bundle: VulnBundle | None) -> bool:
+        return not self._bundle_is_unknown(bundle)
+
     def _relevance_terms(self, bundle: VulnBundle | None) -> List[str]:
         return list(self._relevance_profile(bundle).get("family_terms") or [])
 
@@ -1884,6 +2097,7 @@ class ResearcherService:
         vuln_id = str(bundle.vuln_id if bundle else self.requirement.get("vuln_id") or "").strip().lower()
         family_terms: List[str] = []
         exploit_terms: List[str] = []
+        allow_pattern_guidance = self._allow_pattern_guidance(bundle)
         if vuln_id in {"cwe-89", "cwe_89"}:
             family_terms.extend(["sql injection", "sqli", "union select", "where id =", "or 1=1"])
             exploit_terms.extend(["or 1=1", "union select", "boolean-based"])
@@ -1908,7 +2122,7 @@ class ResearcherService:
         elif vuln_id in {"cwe-502", "cwe_502"}:
             family_terms.extend(["insecure deserialization", "deserialization", "pickle", "yaml.load"])
             exploit_terms.extend(["pickle.loads", "yaml.load", "untrusted deserialization"])
-        else:
+        elif allow_pattern_guidance:
             pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
             if "sqli" in pattern_id or "sql" in pattern_id:
                 family_terms.extend(["sql injection", "sqli", "sql", "sqlite"])
@@ -1960,7 +2174,10 @@ class ResearcherService:
             "family_terms": self._dedupe_strings(family_terms),
             "stack_terms": self._dedupe_strings(stack_terms),
             "exploit_terms": self._dedupe_strings(exploit_terms),
-            "negative_terms": self._negative_relevance_terms(vuln_id=vuln_id, pattern_id=str(self.requirement.get("pattern_id") or "")),
+            "negative_terms": self._negative_relevance_terms(
+                vuln_id=vuln_id,
+                pattern_id=str(self.requirement.get("pattern_id") or "") if allow_pattern_guidance else "",
+            ),
             "semantic_terms": semantic_signature,
         }
 
@@ -2092,9 +2309,15 @@ class ResearcherService:
     def _build_evidence_payload(self, search_hits: List[SearchResult]) -> List[Dict[str, Any]]:
         payload: List[Dict[str, Any]] = []
         for hit in search_hits:
+            query_plan_entry = self._query_plan_index.get(str(hit.query or "").strip()) or {}
+            evidence_type = self._classify_evidence_type(hit)
             item: Dict[str, Any] = {
                 "query": hit.query or "",
+                "query_target": str(query_plan_entry.get("evidence_type") or "").strip() or None,
+                "evidence_type": evidence_type,
                 "source": hit.source,
+                "title": hit.title,
+                "provider": hit.provider,
                 "url": hit.url,
                 "snippet": hit.snippet,
                 "retrieved_at": hit.retrieved_at or datetime.now(timezone.utc).isoformat(),
@@ -2103,6 +2326,160 @@ class ResearcherService:
                 item["published"] = hit.published
             payload.append(item)
         return payload
+
+    def _summarize_evidence_types(self, search_hits: List[SearchResult]) -> Dict[str, Any]:
+        by_type: Dict[str, int] = {}
+        by_query_target: Dict[str, int] = {}
+        matched_target_count = 0
+        for hit in search_hits:
+            actual = self._classify_evidence_type(hit)
+            if actual:
+                by_type[actual] = by_type.get(actual, 0) + 1
+            query_plan_entry = self._query_plan_index.get(str(hit.query or "").strip()) or {}
+            expected = str(query_plan_entry.get("evidence_type") or "").strip()
+            if expected:
+                by_query_target[expected] = by_query_target.get(expected, 0) + 1
+                if actual == expected:
+                    matched_target_count += 1
+        return {
+            "by_type": by_type,
+            "by_query_target": by_query_target,
+            "matched_target_count": matched_target_count,
+            "query_count": len(self._query_plan_index),
+            "hit_count": len(search_hits),
+        }
+
+    def _infer_tech_stack_candidates(
+        self,
+        search_hits: List[SearchResult],
+        query_plan: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        candidates: Dict[str, Dict[str, Any]] = {}
+
+        def add_candidate(
+            language: str,
+            framework: str,
+            *,
+            score: float,
+            source: str,
+        ) -> None:
+            lang = str(language or "").strip().lower()
+            fw = str(framework or "").strip().lower()
+            if not lang or not fw:
+                return
+            stack_id = f"{lang}/{fw}"
+            entry = candidates.get(stack_id)
+            if entry is None:
+                entry = {
+                    "language": lang,
+                    "framework": fw,
+                    "stack_id": stack_id,
+                    "score": 0.0,
+                    "sources": [],
+                }
+                candidates[stack_id] = entry
+            entry["score"] = round(float(entry.get("score") or 0.0) + max(0.0, float(score or 0.0)), 3)
+            sources = entry.get("sources")
+            if not isinstance(sources, list):
+                sources = []
+                entry["sources"] = sources
+            if source and source not in sources:
+                sources.append(source)
+
+        explicit_language = str(self.requirement.get("language") or "").strip().lower()
+        explicit_framework = str(self.requirement.get("framework") or "").strip().lower()
+        if explicit_language and explicit_framework:
+            add_candidate(explicit_language, explicit_framework, score=1.0, source="explicit_requirement")
+
+        stack_hypotheses = query_plan.get("stack_hypotheses") if isinstance(query_plan.get("stack_hypotheses"), list) else []
+        for index, entry in enumerate(stack_hypotheses):
+            if not isinstance(entry, dict):
+                continue
+            add_candidate(
+                str(entry.get("language") or ""),
+                str(entry.get("framework") or ""),
+                score=0.25 if index == 0 else 0.15,
+                source=str(entry.get("source") or "stack_hypothesis"),
+            )
+
+        known_framework_markers = {
+            "python/flask": ["flask"],
+            "python/fastapi": ["fastapi", "uvicorn"],
+        }
+
+        for hit in search_hits:
+            query_text = str(hit.query or "").strip()
+            query_plan_entry = self._query_plan_index.get(query_text) or {}
+            expected_type = str(query_plan_entry.get("evidence_type") or "").strip().lower()
+            text = " ".join(
+                str(part or "").strip().lower()
+                for part in (hit.title, hit.url, hit.snippet, hit.raw_content)
+                if str(part or "").strip()
+            )
+            for stack_id, markers in known_framework_markers.items():
+                language, framework = stack_id.split("/", 1)
+                if expected_type == "stack_anchor" and any(marker in query_text.lower() for marker in (stack_id, framework)):
+                    add_candidate(language, framework, score=0.35, source="stack_anchor_query")
+                marker_hits = sum(1 for marker in markers if marker in text)
+                if marker_hits:
+                    add_candidate(language, framework, score=0.25 + (0.1 * max(0, marker_hits - 1)), source="search_hit_text")
+
+        ranked = sorted(candidates.values(), key=lambda item: float(item.get("score") or 0.0), reverse=True)
+        payload: List[Dict[str, Any]] = []
+        for item in ranked:
+            score = round(float(item.get("score") or 0.0), 3)
+            confidence = "low"
+            if score >= 0.9:
+                confidence = "high"
+            elif score >= 0.45:
+                confidence = "medium"
+            payload.append(
+                {
+                    "language": str(item.get("language") or "").strip().lower(),
+                    "framework": str(item.get("framework") or "").strip().lower(),
+                    "stack_id": str(item.get("stack_id") or "").strip().lower(),
+                    "score": score,
+                    "confidence": confidence,
+                    "sources": list(item.get("sources") or []),
+                }
+            )
+        return payload
+
+    @staticmethod
+    def _classify_evidence_type(hit: SearchResult) -> str:
+        text = " ".join(
+            str(part or "").strip().lower()
+            for part in (hit.title, hit.url, hit.snippet)
+            if str(part or "").strip()
+        )
+        if not text:
+            return "reference"
+        if (
+            "github.com" in text
+            or "gitlab" in text
+            or "docker-compose" in text
+            or "dockerfile" in text
+            or ("vulnerable example" in text and "poc" in text)
+        ):
+            return "reference_impl"
+        if any(token in text for token in ("writeup", "walkthrough", "medium.com", "blog", "exploit tutorial")):
+            return "writeup"
+        if any(token in text for token in ("cve-", "cwe-", "nvd", "owasp", "advisory", "vulnerability.circl", "security advisory")):
+            return "advisory"
+        if any(
+            token in text
+            for token in (
+                "success signature",
+                "flag token",
+                "verification",
+                "allow_redirects=false",
+                "location header",
+                "docker run",
+                "python poc.py",
+            )
+        ):
+            return "oracle_hint"
+        return "reference"
 
     def _resolve_semantic_signature(
         self,
@@ -2224,9 +2601,15 @@ class ResearcherService:
             "sink": [],
             "exploit_precondition": [],
         }
-        corpus = self._semantic_inference_corpus(report)
+        if self._bundle_is_unknown(bundle):
+            # Unsupported/open-world lanes must not inherit a known-family
+            # semantic contract from incidental stack terms (for example
+            # "sqlite3" or "cursor.execute") found in noisy evidence.
+            return normalize_semantic_signature(result)
+        corpus = self._semantic_inference_corpus(report, bundle)
         lowered = corpus.lower()
-        pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower()
+        allow_pattern_guidance = self._allow_pattern_guidance(bundle)
+        pattern_id = str(self.requirement.get("pattern_id") or "").strip().lower() if allow_pattern_guidance else ""
         vuln_id = str(bundle.vuln_id if bundle else self.requirement.get("vuln_id") or "").strip().lower()
         raw_vuln_label = self._raw_vuln_label().strip().lower()
         pattern_signature = normalize_semantic_signature(
@@ -2372,7 +2755,7 @@ class ResearcherService:
 
         return normalize_semantic_signature(result)
 
-    def _semantic_inference_corpus(self, report: Dict[str, Any]) -> str:
+    def _semantic_inference_corpus(self, report: Dict[str, Any], bundle: VulnBundle | None) -> str:
         fragments: List[str] = []
 
         def collect(value: Any) -> None:
@@ -2403,7 +2786,7 @@ class ResearcherService:
                 "risks": report.get("risks") if isinstance(report, dict) else None,
                 "semantic_signature": report.get("semantic_signature") if isinstance(report, dict) else None,
                 "requirement_intent": self.requirement.get("intent"),
-                "pattern_id": self.requirement.get("pattern_id"),
+                "pattern_id": self.requirement.get("pattern_id") if self._allow_pattern_guidance(bundle) else None,
                 "framework": self.requirement.get("framework"),
                 "language": self.requirement.get("language"),
                 "runtime": self.requirement.get("runtime"),
@@ -2413,9 +2796,11 @@ class ResearcherService:
 
     def _default_semantic_signature(self, bundle: VulnBundle | None) -> Dict[str, Any]:
         normalized = self._normalized_vuln_id(bundle) or "cwe-unknown"
+        allow_pattern_guidance = self._allow_pattern_guidance(bundle)
+        pattern_id = str(self.requirement.get("pattern_id") or "") if allow_pattern_guidance else ""
         registry_signature = fragment_semantic_signature(
             bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or normalized),
-            pattern_id=str(self.requirement.get("pattern_id") or ""),
+            pattern_id=pattern_id,
             raw_label=self._raw_vuln_label(),
         )
         if any(registry_signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
@@ -2423,10 +2808,7 @@ class ResearcherService:
         baseline = baseline_semantic_signature(normalized)
         if any(baseline.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
             return baseline
-        pattern_signature = self._pattern_semantic_signature(
-            str(self.requirement.get("pattern_id") or ""),
-            self._raw_vuln_label(),
-        )
+        pattern_signature = self._pattern_semantic_signature(pattern_id, self._raw_vuln_label())
         if any(pattern_signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
             return pattern_signature
         if normalized == "cwe-352":

@@ -117,6 +117,237 @@ def _semantic_contract(requirement: Dict[str, object]) -> str:
     return "- Keep generated code semantically aligned with vuln_id (input vector, sink, exploit precondition)."
 
 
+def _is_name_only_requirement(requirement: Dict[str, object]) -> bool:
+    vuln = str((requirement or {}).get("vuln_id") or "").strip().upper()
+    return vuln.startswith("NAME-")
+
+
+def _has_researcher_report_payload(researcher_report: str) -> bool:
+    text = str(researcher_report or "").strip()
+    return bool(text and text != "(none provided)")
+
+
+def _parse_researcher_report_payload(researcher_report: str) -> Dict[str, Any]:
+    text = str(researcher_report or "").strip()
+    if not text or text == "(none provided)":
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _runtime_recipe_contract(requirement: Dict[str, object]) -> str:
+    req = requirement if isinstance(requirement, dict) else {}
+    runtime_recipe = req.get("runtime_recipe") if isinstance(req.get("runtime_recipe"), dict) else {}
+    runtime = req.get("runtime") if isinstance(req.get("runtime"), dict) else {}
+    executor = req.get("executor") if isinstance(req.get("executor"), dict) else {}
+    service_port = runtime_recipe.get("service_port")
+    if not isinstance(service_port, int):
+        runtime_port = runtime.get("service_port")
+        service_port = runtime_port if isinstance(runtime_port, int) else None
+    db = str(runtime_recipe.get("db") or runtime.get("db") or runtime.get("database") or "none").strip().lower() or "none"
+    language = str(runtime_recipe.get("language") or req.get("language") or "").strip().lower()
+    framework = str(runtime_recipe.get("framework") or req.get("framework") or "").strip().lower()
+    stack_locked = bool(runtime_recipe.get("stack_locked")) or bool(req.get("language") and req.get("framework"))
+    raw_hypotheses = runtime_recipe.get("stack_hypotheses") if isinstance(runtime_recipe.get("stack_hypotheses"), list) else req.get("stack_hypotheses")
+    stack_hypotheses: List[str] = []
+    if isinstance(raw_hypotheses, list):
+        for entry in raw_hypotheses:
+            if not isinstance(entry, dict):
+                continue
+            cand_language = str(entry.get("language") or "").strip().lower()
+            cand_framework = str(entry.get("framework") or "").strip().lower()
+            if not cand_language or not cand_framework:
+                continue
+            source = str(entry.get("source") or "").strip().lower() or "unknown"
+            confidence = str(entry.get("confidence") or "").strip().lower() or "unknown"
+            stack_hypotheses.append(f"{cand_language}/{cand_framework} ({source}, {confidence})")
+    topology = str(runtime_recipe.get("topology") or "").strip().lower()
+    if not topology:
+        sidecars = executor.get("sidecars") if isinstance(executor.get("sidecars"), list) else []
+        topology = "service_plus_sidecar" if sidecars else "single_service"
+    network_mode = (
+        str(runtime_recipe.get("network_mode") or executor.get("network_mode") or "none").strip().lower() or "none"
+    )
+    raw_sidecars = runtime_recipe.get("sidecars") if isinstance(runtime_recipe.get("sidecars"), list) else executor.get("sidecars")
+    sidecar_labels: List[str] = []
+    if isinstance(raw_sidecars, list):
+        for entry in raw_sidecars:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            sidecar_type = str(entry.get("type") or "").strip()
+            if name and sidecar_type:
+                sidecar_labels.append(f"{name}:{sidecar_type}")
+            elif name:
+                sidecar_labels.append(name)
+            elif sidecar_type:
+                sidecar_labels.append(sidecar_type)
+    sidecar_text = ", ".join(sidecar_labels) if sidecar_labels else "none"
+    stack_line = ""
+    if language and framework and stack_locked:
+        stack_line = f"- Preferred stack: `{language}/{framework}`."
+    elif language and framework:
+        stack_line = f"- Current top stack hypothesis: `{language}/{framework}` (not locked)."
+    else:
+        stack_line = "- Stack is not fixed yet; prefer the lightest viable stack only when evidence supports it."
+    lines = [
+        stack_line,
+        f"- Preferred topology: `{topology}`.",
+        f"- Runtime DB expectation: `{db}`.",
+        f"- Network mode expectation: `{network_mode}`.",
+        f"- Sidecars: `{sidecar_text}`.",
+    ]
+    if stack_hypotheses:
+        lines.append("- Ordered stack hypotheses: `" + "`, `".join(stack_hypotheses) + "`.")
+    if service_port:
+        lines.append(f"- Service must bind the declared app port: `{service_port}`.")
+    return "\n".join(lines)
+
+
+def _generation_posture_contract(
+    requirement: Dict[str, object],
+    *,
+    researcher_report: str,
+    guard_spec: str,
+) -> str:
+    lines: List[str] = []
+    if _is_name_only_requirement(requirement):
+        lines.extend(
+            [
+                "- Treat this as name-driven/open-world synthesis, not as proof that a built-in family template exists.",
+                "- Do not import repo-specific demo routes, parameter names, or sinks unless Guard Spec or Researcher evidence requires them.",
+                "- If evidence is weak, prefer a minimal topology over family-specific flourish.",
+            ]
+        )
+    else:
+        lines.append("- Treat this as a known-family regression lane unless Researcher/Guard data contradicts it.")
+    if _has_researcher_report_payload(researcher_report):
+        lines.append("- Researcher Report overrides static priors for route naming, topology, and exploit flow details.")
+    if guard_spec:
+        lines.append("- Guard Spec is the authority for semantic anchors and must override repo-internal heuristics on conflict.")
+    return "\n".join(lines)
+
+
+def _family_hypothesis_contract(researcher_report: str) -> str:
+    payload = _parse_researcher_report_payload(researcher_report)
+    summary = payload.get("family_hypothesis_summary") if isinstance(payload.get("family_hypothesis_summary"), dict) else {}
+    if not isinstance(summary, dict) or not summary:
+        return "- No researcher family hypothesis summary was provided."
+    top_family = str(summary.get("top_family") or "").strip()
+    top_confidence = str(summary.get("top_confidence") or "").strip().lower()
+    contradiction_count = int(summary.get("contradiction_count") or 0) if isinstance(summary.get("contradiction_count"), (int, float)) else 0
+    contradictory_families = [
+        str(item).strip()
+        for item in summary.get("contradictory_families") or []
+        if isinstance(item, str) and str(item).strip()
+    ] if isinstance(summary.get("contradictory_families"), list) else []
+    top_margin = summary.get("top_margin")
+    ambiguous = summary.get("ambiguous") is True
+
+    lines: List[str] = []
+    if top_family:
+        lines.append(
+            f"- Researcher top family hypothesis: `{top_family}` (confidence: `{top_confidence or 'unknown'}`)."
+        )
+    if top_margin is not None:
+        lines.append(f"- Researcher top-family margin: `{top_margin}`.")
+    if contradiction_count:
+        lines.append(
+            f"- Family hypothesis is ambiguous: `{contradiction_count}` contradictory family candidates"
+            + (f" (`{', '.join(contradictory_families)}`)." if contradictory_families else ".")
+        )
+        lines.append("- When ambiguous, prefer minimal topology and avoid overcommitting to family-specific sinks unless Guard Spec or evidence is explicit.")
+    elif top_family:
+        lines.append("- Use the top family only as a working hypothesis; do not copy repo demo structure unless evidence requires it.")
+    if ambiguous and not contradiction_count:
+        lines.append("- Family hypothesis margin is weak; keep the implementation minimal and evidence-driven.")
+    return "\n".join(lines) if lines else "- No researcher family hypothesis summary was provided."
+
+
+def _exploit_oracle_contract(requirement: Dict[str, object]) -> str:
+    req = requirement if isinstance(requirement, dict) else {}
+    oracle = req.get("exploit_oracle") if isinstance(req.get("exploit_oracle"), dict) else {}
+    if not isinstance(oracle, dict) or not oracle:
+        return "- No structured exploit oracle was provided."
+    lines: List[str] = []
+    source = str(oracle.get("source") or "").strip()
+    if source:
+        lines.append(f"- Oracle source: `{source}`.")
+    success_signature = str(oracle.get("success_signature") or "").strip()
+    if success_signature:
+        lines.append(f"- Success signature: `{success_signature}`.")
+    flag_token = str(oracle.get("flag_token") or "").strip()
+    if flag_token:
+        lines.append(f"- Flag token: `{flag_token}`.")
+    success_mode = str(oracle.get("success_mode") or "").strip()
+    if success_mode:
+        lines.append(f"- Success mode: `{success_mode}`.")
+    json_success_key = str(oracle.get("json_success_key") or "").strip()
+    if json_success_key:
+        lines.append(f"- JSON success key: `{json_success_key}`.")
+    json_flag_key = str(oracle.get("json_flag_key") or "").strip()
+    if json_flag_key:
+        lines.append(f"- JSON flag key: `{json_flag_key}`.")
+    poc_cmd = str(oracle.get("poc_cmd") or "").strip()
+    if poc_cmd:
+        lines.append(f"- Preferred PoC command: `{poc_cmd}`.")
+    return "\n".join(lines) if lines else "- No structured exploit oracle was provided."
+
+
+def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
+    req = requirement if isinstance(requirement, dict) else {}
+    spec = req.get("name_only_generation_spec") if isinstance(req.get("name_only_generation_spec"), dict) else {}
+    if not isinstance(spec, dict) or not spec:
+        return "- No name-only generation spec was provided."
+    lines: List[str] = []
+    request_label = str(spec.get("request_label") or "").strip()
+    if request_label:
+        lines.append(f"- Original request label: `{request_label}`.")
+    resolved_vuln_id = str(spec.get("resolved_vuln_id") or "").strip()
+    if resolved_vuln_id:
+        lines.append(f"- Resolved vuln id: `{resolved_vuln_id}`.")
+    effective_mode = str(spec.get("effective_mode") or "").strip()
+    if effective_mode:
+        lines.append(f"- Name-only effective mode: `{effective_mode}`.")
+    working_family = str(spec.get("family_working_hypothesis") or "").strip()
+    working_family_source = str(spec.get("family_hypothesis_source") or "").strip()
+    if working_family:
+        source_text = f" ({working_family_source})" if working_family_source else ""
+        lines.append(f"- Working family hypothesis: `{working_family}`{source_text}.")
+    runtime_recipe_summary = (
+        spec.get("runtime_recipe_summary")
+        if isinstance(spec.get("runtime_recipe_summary"), dict)
+        else {}
+    )
+    if isinstance(runtime_recipe_summary, dict) and runtime_recipe_summary:
+        language = str(runtime_recipe_summary.get("language") or "").strip()
+        framework = str(runtime_recipe_summary.get("framework") or "").strip()
+        topology = str(runtime_recipe_summary.get("topology") or "").strip()
+        if language and framework:
+            lines.append(f"- Runtime working stack: `{language}/{framework}`.")
+        if topology:
+            lines.append(f"- Runtime working topology: `{topology}`.")
+    required_contract = spec.get("required_contract") if isinstance(spec.get("required_contract"), dict) else {}
+    if isinstance(required_contract, dict) and required_contract:
+        required_bits: List[str] = []
+        for key in (
+            "require_research",
+            "require_remote_research",
+            "allow_degraded_fallback",
+            "allow_lower_bound_recovery",
+            "require_independent_verifier",
+            "require_live_llm",
+        ):
+            if key in required_contract:
+                required_bits.append(f"{key}={bool(required_contract.get(key))}")
+        if required_bits:
+            lines.append("- Name-only execution contract: `" + "`, `".join(required_bits) + "`.")
+    return "\n".join(lines) if lines else "- No name-only generation spec was provided."
+
+
 def build_generator_prompt(
     requirement: Dict[str, object],
     rag_context: str,
@@ -171,10 +402,24 @@ def build_synthesis_prompt(
     flag_token = _flag_token(requirement)
     structured_success = _structured_success_contract(requirement)
     semantic_contract = _semantic_contract(requirement)
+    runtime_recipe_contract = _runtime_recipe_contract(requirement)
+    generation_posture = _generation_posture_contract(
+        requirement,
+        researcher_report=researcher_report,
+        guard_spec=guard_spec,
+    )
+    family_hypothesis_contract = _family_hypothesis_contract(researcher_report)
+    exploit_oracle_contract = _exploit_oracle_contract(requirement)
+    name_only_generation_spec_contract = _name_only_generation_spec_contract(requirement)
     if guard_spec:
         semantic_contract = (
             "- Primary semantic contract is defined by Guard Spec semantic_signature.\n"
             "- Generated code and PoC must satisfy Guard Spec generator_assertions without contradiction."
+        )
+    elif _is_name_only_requirement(requirement):
+        semantic_contract = (
+            "- Primary semantic contract should come from Researcher Report and any structured runtime/verification evidence.\n"
+            "- If the requirement only provides a name, avoid inventing extra family-specific semantics beyond the available evidence."
         )
     contract_block = (
         f"- Success signature: `{success_signature}`\n"
@@ -211,6 +456,11 @@ def build_synthesis_prompt(
         "If Failure Hint Payload JSON is provided, you MUST satisfy must_fix/prompt_instructions first and avoid repeating the same failure fingerprint."
         "\n\n# Execution Constraints (MUST)\n{constraints}\n\n# Requirement\n{req}\n\n# Synthesis Limits\n{limits}"
         "\n\n# Resolved Contract (MUST)\n{contract_block}"
+        "\n\n# Runtime Recipe (Prefer over guessing)\n{runtime_recipe_contract}"
+        "\n\n# Name-Only Generation Spec\n{name_only_generation_spec_contract}"
+        "\n\n# Exploit Oracle\n{exploit_oracle_contract}"
+        "\n\n# Generation Posture\n{generation_posture}"
+        "\n\n# Researcher Family Hypothesis\n{family_hypothesis_contract}"
         "\n\n# Supported Guard Ops\n{supported_ops}"
         "\n\n# Vulnerability Semantics (MUST)\n{semantic_contract}"
         "\n\n# Internal Hints\n{hints}\n\n# Researcher Report (JSON)\n{researcher}"
@@ -221,6 +471,11 @@ def build_synthesis_prompt(
             req=requirement_payload,
             limits=limits_payload,
             contract_block=contract_block,
+            runtime_recipe_contract=runtime_recipe_contract,
+            name_only_generation_spec_contract=name_only_generation_spec_contract,
+            exploit_oracle_contract=exploit_oracle_contract,
+            generation_posture=generation_posture,
+            family_hypothesis_contract=family_hypothesis_contract,
             supported_ops=supported_ops,
             semantic_contract=semantic_contract,
             hints=hints or "(none provided)",

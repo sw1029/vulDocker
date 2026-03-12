@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from common.contracts import (
 )
 from common.bundle_state import collect_bundle_research_blockers
 from common.logging import get_logger
+from common.name_only import build_name_only_contract
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
 from common.runtime_assets import (
@@ -43,6 +45,7 @@ from common.runtime_assets import (
 )
 from common.run_matrix import bundle_requirement, load_vuln_bundles, metadata_dir_for_bundle
 from orchestrator.loop_controller import LoopController
+from agents.researcher.service import ResearcherService
 
 LOGGER = get_logger(__name__)
 
@@ -349,6 +352,19 @@ def _refresh_researcher_for_guard_failure(
     return False, ""
 
 
+def _generator_terminal_failure_class(failure: Dict[str, Any] | None) -> str:
+    if not isinstance(failure, dict):
+        return ""
+    code = str(failure.get("guard_error_code") or "").strip().lower()
+    mapping = {
+        "guard_semantic_mismatch": "guard_semantic_mismatch",
+        "guard_assertion_schema_error": "guard_assertion_schema_error",
+        "guard_dsl_unsupported_op": "guard_dsl_unsupported_op",
+        "guard_dependency_missing": "guard_dependency_missing",
+    }
+    return mapping.get(code, "")
+
+
 def _record_deferred_refresh(
     sid: str,
     *,
@@ -382,15 +398,32 @@ def _record_deferred_refresh(
     _write_json(loop_state_path, state)
 
 
-def _run_step(cmd: List[str]) -> int:
+def _subprocess_env_for_sid(sid: str = "") -> Dict[str, str] | None:
+    if not sid:
+        return None
+    failure_class = _pipeline_llm_failure_class(sid)
+    if failure_class not in {"quota_exhausted", "auth_failure"}:
+        return None
+    env = dict(os.environ)
+    env["VUL_FORCE_LLM_STUB"] = "1"
+    env["VUL_FORCE_LLM_STUB_REASON"] = failure_class
+    return env
+
+
+def _run_step(cmd: List[str], *, sid: str = "") -> int:
     LOGGER.info("Running command: %s", " ".join(cmd))
-    proc = subprocess.run(cmd, cwd=str(REPO_ROOT), check=False)
+    proc = subprocess.run(
+        cmd,
+        cwd=str(REPO_ROOT),
+        check=False,
+        env=_subprocess_env_for_sid(sid),
+    )
     return int(proc.returncode or 0)
 
 
-def _run_step_timed(cmd: List[str]) -> Tuple[int, float]:
+def _run_step_timed(cmd: List[str], *, sid: str = "") -> Tuple[int, float]:
     started = time.perf_counter()
-    rc = _run_step(cmd)
+    rc = _run_step(cmd, sid=sid)
     return rc, max(0.0, time.perf_counter() - started)
 
 
@@ -405,6 +438,283 @@ def _researcher_force_run(plan: Dict[str, Any]) -> bool:
     if value is None:
         return False
     return _as_bool(value)
+
+
+def _researcher_shadow_mode(plan: Dict[str, Any]) -> bool:
+    requirement = plan.get("requirement") or {}
+    if not isinstance(requirement, dict):
+        return False
+    researcher_cfg = requirement.get("researcher") or {}
+    if not isinstance(researcher_cfg, dict):
+        return False
+    value = researcher_cfg.get("shadow_mode")
+    if value is None:
+        return False
+    return _as_bool(value)
+
+
+def _name_only_contract(plan: Dict[str, Any]) -> Dict[str, Any]:
+    policy = plan.get("policy") if isinstance(plan, dict) else {}
+    if isinstance(policy, dict):
+        contract = policy.get("name_only_contract")
+        if isinstance(contract, dict):
+            return contract
+    requirement = plan.get("requirement") if isinstance(plan, dict) else {}
+    return build_name_only_contract(requirement=requirement, policy=policy)
+
+
+def _name_only_mode(plan: Dict[str, Any]) -> str:
+    policy = plan.get("policy") or {}
+    if not isinstance(policy, dict):
+        return "compatibility"
+    token = str(policy.get("name_only_mode") or "").strip().lower()
+    if token in {"dynamic", "strict_dynamic"}:
+        return token
+    return "compatibility"
+
+
+def _open_world_strict_mode(plan: Dict[str, Any]) -> bool:
+    policy = plan.get("policy") or {}
+    if not isinstance(policy, dict):
+        return False
+    value = policy.get("open_world_strict")
+    if value is None:
+        return False
+    return _as_bool(value)
+
+
+def _dynamic_eval_mode(plan: Dict[str, Any]) -> bool:
+    policy = plan.get("policy") or {}
+    if not isinstance(policy, dict):
+        return False
+    value = policy.get("dynamic_eval")
+    if value is None:
+        return False
+    return _as_bool(value)
+
+
+def _bundle_is_name_driven(plan: Dict[str, Any], bundle) -> bool:
+    requirement = plan.get("requirement") or {}
+    requirement_view = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+    request_identity = requirement_view.get("request_identity") if isinstance(requirement_view, dict) else {}
+    if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
+        return True
+    vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
+    return vuln_id.startswith("NAME-")
+
+
+def _strict_name_only_gate_required(plan: Dict[str, Any]) -> bool:
+    if _name_only_mode(plan) != "strict_dynamic":
+        return False
+    bundles = load_vuln_bundles(plan)
+    if not bundles:
+        return False
+    return any(_bundle_is_name_driven(plan, bundle) for bundle in bundles)
+
+
+def _bundle_generator_posture(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
+    metadata_dir = metadata_dir_for_bundle(plan, bundle)
+    manifest_payload = _load_json(metadata_dir / "generator_manifest.json") or {}
+    manifest = (
+        manifest_payload.get("manifest")
+        if isinstance(manifest_payload.get("manifest"), dict)
+        else manifest_payload
+    )
+    provenance = manifest_payload.get("provenance") if isinstance(manifest_payload.get("provenance"), dict) else {}
+    metadata = manifest.get("metadata") if isinstance(manifest, dict) and isinstance(manifest.get("metadata"), dict) else {}
+    dynamic_eval = _load_json(metadata_dir / "dynamic_eval.json") or {}
+
+    def _bool(value: Any) -> bool | None:
+        if value is None:
+            return None
+        return _as_bool(value)
+
+    posture = {
+        "generation_origin": str(
+            manifest_payload.get("generation_origin")
+            or provenance.get("generation_origin")
+            or metadata.get("generation_origin")
+            or ""
+        ).strip().lower(),
+        "fallback_used": _bool(
+            manifest_payload.get("fallback_used")
+            if "fallback_used" in manifest_payload
+            else provenance.get("fallback_used")
+        ),
+        "fallback_class": str(
+            manifest_payload.get("fallback_class")
+            or provenance.get("fallback_class")
+            or metadata.get("fallback_class")
+            or ""
+        ).strip().lower(),
+        "materializer": str(
+            provenance.get("materializer")
+            or metadata.get("materializer")
+            or ""
+        ).strip().lower(),
+        "llm_stub_used": _bool(
+            manifest_payload.get("llm_stub_used")
+            if "llm_stub_used" in manifest_payload
+            else provenance.get("llm_stub_used")
+        ),
+        "llm_fixture_used": _bool(
+            manifest_payload.get("llm_fixture_used")
+            if "llm_fixture_used" in manifest_payload
+            else provenance.get("llm_fixture_used")
+        ),
+        "dynamic_eval_status": str((dynamic_eval or {}).get("status") or "").strip().lower(),
+    }
+    return posture
+
+
+def _strict_name_only_generator_gate_failure(plan: Dict[str, Any]) -> Dict[str, Any]:
+    if not _strict_name_only_gate_required(plan):
+        return {}
+    bundles = load_vuln_bundles(plan)
+    if not bundles:
+        return {}
+
+    failed_bundles: List[Dict[str, Any]] = []
+    for bundle in bundles:
+        if not _bundle_is_name_driven(plan, bundle):
+            continue
+        posture = _bundle_generator_posture(plan, bundle)
+        reasons: List[str] = []
+        generation_origin = str(posture.get("generation_origin") or "").strip().lower()
+        if generation_origin != "llm_manifest":
+            reasons.append(f"generation_origin={generation_origin or 'unknown'}")
+        if posture.get("fallback_used") is True or generation_origin == "deterministic_fallback":
+            reasons.append("deterministic_fallback")
+        if posture.get("llm_stub_used") is True:
+            reasons.append("llm_stub_used")
+        if posture.get("llm_fixture_used") is True:
+            reasons.append("llm_fixture_used")
+        dynamic_eval_status = str(posture.get("dynamic_eval_status") or "").strip().lower()
+        if dynamic_eval_status in {"degraded_success", "lower_bound_recovered"}:
+            reasons.append(f"dynamic_eval_status={dynamic_eval_status}")
+        if not reasons:
+            continue
+        failed_bundles.append(
+            {
+                "slug": bundle.slug,
+                "vuln_id": bundle.vuln_id,
+                "generation_origin": generation_origin or "unknown",
+                "fallback_class": str(posture.get("fallback_class") or "").strip(),
+                "materializer": str(posture.get("materializer") or "").strip(),
+                "dynamic_eval_status": dynamic_eval_status or "unknown",
+                "llm_stub_used": posture.get("llm_stub_used") is True,
+                "llm_fixture_used": posture.get("llm_fixture_used") is True,
+                "reasons": reasons,
+            }
+        )
+
+    if not failed_bundles:
+        return {}
+
+    lines = []
+    for item in failed_bundles:
+        detail = (
+            f"{item['slug']} ({item['vuln_id']}): "
+            + ", ".join(item["reasons"])
+        )
+        if item["fallback_class"]:
+            detail += f", fallback_class={item['fallback_class']}"
+        if item["materializer"]:
+            detail += f", materializer={item['materializer']}"
+        lines.append(f"- {detail}")
+    reason = (
+        "strict_dynamic policy rejects the generated name-only bundle before EXECUTOR because the generation path "
+        "already closed below the required open-world bar:\n"
+        + "\n".join(lines)
+    )
+    fix_hint = (
+        "Provide live researcher-backed LLM generation that closes via llm_manifest without stub/fixture or deterministic fallback, "
+        "or relax policy.name_only_mode to dynamic/compatibility."
+    )
+    return {
+        "reason": reason,
+        "fix_hint": fix_hint,
+        "metadata": {
+            "terminal_failure_class": "strict_dynamic_disallowed_generation_path",
+            "retry_recommended": False,
+            "required_gate": "strict_dynamic",
+            "failed_bundles": failed_bundles,
+        },
+    }
+
+
+def _manifest_bundle_is_name_driven(bundle_payload: Dict[str, Any]) -> bool:
+    if not isinstance(bundle_payload, dict):
+        return False
+    request_identity = bundle_payload.get("request_identity")
+    if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
+        return True
+    vuln_id = str(bundle_payload.get("vuln_id") or "").strip().upper()
+    return vuln_id.startswith("NAME-")
+
+
+def _strict_name_only_gate_failure(plan: Dict[str, Any], sid: str) -> Dict[str, Any]:
+    if not _strict_name_only_gate_required(plan):
+        return {}
+    manifest = _load_json(get_metadata_dir(sid) / "manifest.json") or {}
+    bundles = manifest.get("bundles") or []
+    if not isinstance(bundles, list):
+        return {}
+
+    failing_bundles: List[Dict[str, Any]] = []
+    for entry in bundles:
+        if not _manifest_bundle_is_name_driven(entry):
+            continue
+        strict_open_world = entry.get("strict_open_world")
+        if isinstance(strict_open_world, dict) and strict_open_world.get("counts_as_generalization") is True:
+            continue
+        dynamic_eval = entry.get("dynamic_eval") if isinstance(entry.get("dynamic_eval"), dict) else {}
+        provenance = entry.get("provenance") if isinstance(entry.get("provenance"), dict) else {}
+        strict_open_world = strict_open_world if isinstance(strict_open_world, dict) else {}
+        failing_bundles.append(
+            {
+                "slug": str(entry.get("slug") or "").strip() or str(entry.get("vuln_id") or "").strip() or "unknown",
+                "vuln_id": str(entry.get("vuln_id") or "").strip() or "UNKNOWN",
+                "strict_open_world_class": str(strict_open_world.get("class") or "").strip() or "unknown",
+                "strict_open_world_reason": str(strict_open_world.get("reason") or "").strip() or "",
+                "dynamic_eval_status": str(dynamic_eval.get("status") or "").strip() or "unknown",
+                "generation_origin": str(provenance.get("generation_origin") or "").strip() or "unknown",
+                "fallback_class": str(provenance.get("fallback_class") or "").strip() or "",
+                "materializer": str(provenance.get("materializer") or "").strip() or "",
+            }
+        )
+    if not failing_bundles:
+        return {}
+
+    lines = []
+    for item in failing_bundles:
+        detail = (
+            f"{item['slug']} ({item['vuln_id']}): strict_open_world={item['strict_open_world_class']}, "
+            f"dynamic_eval={item['dynamic_eval_status']}, generation_origin={item['generation_origin']}"
+        )
+        if item["fallback_class"]:
+            detail += f", fallback_class={item['fallback_class']}"
+        if item["materializer"]:
+            detail += f", materializer={item['materializer']}"
+        lines.append(f"- {detail}")
+    reason = (
+        "strict_dynamic policy requires strict open-world positive evidence, but the run closed below that bar:\n"
+        + "\n".join(lines)
+    )
+    fix_hint = (
+        "Either relax policy.name_only_mode to dynamic/compatibility, or improve the lane so it closes via "
+        "trusted staged synthesis plus independent verification instead of degraded deterministic fallback."
+    )
+    return {
+        "reason": reason,
+        "fix_hint": fix_hint,
+        "metadata": {
+            "terminal_failure_class": "strict_open_world_not_satisfied",
+            "retry_recommended": False,
+            "required_gate": "strict_dynamic",
+            "failed_bundles": failing_bundles,
+        },
+    }
 
 
 def _seed_generator_contracts(plan: Dict[str, Any]) -> None:
@@ -431,16 +741,40 @@ def _seed_generator_contracts(plan: Dict[str, Any]) -> None:
         write_generator_contract(metadata_dir, payload)
 
 
+def _write_researcher_skip_reports(plan: Dict[str, Any], sid: str, reason: str) -> None:
+    for bundle in load_vuln_bundles(plan):
+        metadata_dir = metadata_dir_for_bundle(plan, bundle)
+        report_path = metadata_dir / "researcher_report.json"
+        if report_path.exists():
+            continue
+        service = ResearcherService(
+            sid,
+            mode="deterministic",
+            search_limit=1,
+            plan=plan,
+            bundle=bundle,
+        )
+        service.write_skip_report(reason)
+
+
 def _can_skip_researcher(plan: Dict[str, Any], *, refresh_requested: bool) -> bool:
     if refresh_requested:
         return False
     if _researcher_force_run(plan):
+        return False
+    if _dynamic_eval_mode(plan):
         return False
     policy = plan.get("policy") or {}
     if isinstance(policy, dict) and _as_bool(policy.get("require_researcher_evidence")):
         return False
     bundles = load_vuln_bundles(plan)
     if not bundles:
+        return False
+    name_only_mode = _name_only_mode(plan)
+    name_driven_requested = any(_bundle_is_name_driven(plan, bundle) for bundle in bundles)
+    if name_driven_requested and name_only_mode in {"dynamic", "strict_dynamic"}:
+        return False
+    if (_open_world_strict_mode(plan) or (name_driven_requested and name_only_mode == "strict_dynamic")):
         return False
     requirement = plan.get("requirement") or {}
     if not isinstance(requirement, dict):
@@ -452,6 +786,23 @@ def _can_skip_researcher(plan: Dict[str, Any], *, refresh_requested: bool) -> bo
         )
         for bundle in bundles
     )
+
+
+def _can_tolerate_shadow_research_failure(plan: Dict[str, Any], failure_meta: Dict[str, Any]) -> bool:
+    if not _researcher_shadow_mode(plan):
+        return False
+    if _open_world_strict_mode(plan) or _name_only_mode(plan) == "strict_dynamic":
+        return False
+    if not _can_skip_researcher(plan, refresh_requested=False):
+        return False
+    if not isinstance(failure_meta, dict):
+        return False
+    terminal_failure_class = str(failure_meta.get("terminal_failure_class") or "").strip().lower()
+    # Shadow mode is for non-blocking spec accumulation on lower-bound lanes.
+    # Tolerate evidence/provider failures, but not unsupported-family hard stops.
+    if terminal_failure_class == "semantic_support_missing":
+        return False
+    return True
 
 
 def _bundle_requires_external_db(plan: Dict[str, Any], bundle) -> bool:
@@ -725,6 +1076,15 @@ def _search_health_payloads(sid: str) -> List[Dict[str, Any]]:
     return payloads
 
 
+def _researcher_report_paths(sid: str) -> List[Path]:
+    metadata_root = get_metadata_dir(sid)
+    paths = [metadata_root / "researcher_report.json"]
+    bundles_dir = metadata_root / "bundles"
+    if bundles_dir.exists():
+        paths.extend(sorted(bundles_dir.glob("*/researcher_report.json")))
+    return paths
+
+
 def _provider_failure_state_from_loop_state(sid: str) -> str:
     metadata_dir = get_metadata_dir(sid)
     loop_state = _load_json(metadata_dir / "loop_state.json") or {}
@@ -770,6 +1130,12 @@ def _pipeline_llm_stub_used(sid: str) -> bool:
             continue
         if _payload_llm_stub_used(payload):
             return True
+    for path in _researcher_report_paths(sid):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        if _researcher_report_llm_stub_used(payload):
+            return True
     for record in _load_generator_failure_records(sid):
         if _failure_record_llm_stub_used(record):
             return True
@@ -782,6 +1148,12 @@ def _pipeline_llm_fixture_used(sid: str) -> bool:
         if not isinstance(payload, dict):
             continue
         if _payload_llm_fixture_used(payload):
+            return True
+    for path in _researcher_report_paths(sid):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        if _researcher_report_llm_fixture_used(payload):
             return True
     for record in _load_generator_failure_records(sid):
         if _failure_record_llm_fixture_used(record):
@@ -823,6 +1195,13 @@ def _pipeline_llm_failure_class(sid: str) -> str:
         if not isinstance(payload, dict):
             continue
         token = _payload_llm_failure_class(payload)
+        if token:
+            return token
+    for path in _researcher_report_paths(sid):
+        payload = _load_json(path)
+        if not isinstance(payload, dict):
+            continue
+        token = _researcher_report_llm_failure_class(payload)
         if token:
             return token
     for record in _load_generator_failure_records(sid):
@@ -870,6 +1249,36 @@ def _failure_record_llm_failure_class(record: Dict[str, Any]) -> str:
     direct = record.get("llm_failure_class")
     if isinstance(direct, str) and direct.strip():
         return direct.strip()
+    return ""
+
+
+def _researcher_report_llm_stub_used(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    llm_execution = payload.get("llm_execution")
+    if not isinstance(llm_execution, dict):
+        return False
+    return llm_execution.get("stub_fallback") is True
+
+
+def _researcher_report_llm_fixture_used(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    llm_execution = payload.get("llm_execution")
+    if not isinstance(llm_execution, dict):
+        return False
+    return llm_execution.get("fixture_used") is True
+
+
+def _researcher_report_llm_failure_class(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    llm_execution = payload.get("llm_execution")
+    if not isinstance(llm_execution, dict):
+        return ""
+    token = llm_execution.get("last_error_class")
+    if isinstance(token, str) and token.strip():
+        return token.strip()
     return ""
 
 
@@ -1331,8 +1740,14 @@ def main() -> None:
                     sid,
                 )
                 break
-            if not args.researcher_every_loop and _can_skip_researcher(plan, refresh_requested=researcher_refresh_requested):
+            can_skip_researcher = (
+                not args.researcher_every_loop
+                and _can_skip_researcher(plan, refresh_requested=researcher_refresh_requested)
+            )
+            shadow_mode = can_skip_researcher and _researcher_shadow_mode(plan)
+            if can_skip_researcher and not shadow_mode:
                 note = "researcher skipped: compiler/static supported path"
+                _write_researcher_skip_reports(plan, sid, note)
                 controller.record_success(stage="RESEARCH", note=note)
                 _record_perf_event(
                     sid,
@@ -1346,8 +1761,10 @@ def main() -> None:
                 researcher_ran = True
                 researcher_refresh_requested = False
             else:
+                research_note = "researcher shadow run"
                 rc, duration = _run_step_timed(
-                    _python_cmd("agents/researcher/main.py", "--sid", sid, "--mode", args.mode)
+                    _python_cmd("agents/researcher/main.py", "--sid", sid, "--mode", args.mode),
+                    sid=sid,
                 )
                 _record_perf_event(
                     sid,
@@ -1356,6 +1773,7 @@ def main() -> None:
                     stage="RESEARCH",
                     duration_s=duration,
                     returncode=rc,
+                    note=research_note if shadow_mode else "",
                 )
                 if rc != 0:
                     failure_reason, fix_hint, failure_meta = _research_failure_details(plan, rc)
@@ -1369,6 +1787,20 @@ def main() -> None:
                             sid,
                             [item.get("bundle_slug") for item in bundle_scoped.get("failed_bundles") or []],
                             bundle_scoped.get("runnable_bundles") or [],
+                        )
+                        research_note = "researcher partial failure tolerated"
+                    elif _can_tolerate_shadow_research_failure(plan, failure_meta):
+                        partial_research_failure = {}
+                        researcher_ran = True
+                        researcher_refresh_requested = False
+                        research_note = (
+                            "researcher shadow failure tolerated: "
+                            + str(failure_meta.get("terminal_failure_class") or "research_failure")
+                        )
+                        LOGGER.info(
+                            "Continuing pipeline for %s after non-blocking RESEARCH shadow failure (%s)",
+                            sid,
+                            str(failure_meta.get("terminal_failure_class") or "research_failure"),
                         )
                     else:
                         controller.record_failure(
@@ -1391,6 +1823,7 @@ def main() -> None:
                         break
                 else:
                     partial_research_failure = {}
+                    research_note = "researcher succeeded"
                 _seed_generator_contracts(plan)
                 terminal_profile = _terminal_research_failure_from_semantic_profile(plan)
                 if terminal_profile.get("terminal"):
@@ -1407,18 +1840,19 @@ def main() -> None:
                             "retry_recommended": False,
                             "unsupported_bundles": terminal_profile.get("bundles") or [],
                         },
-                    )
+                        )
                     LOGGER.info(
                         "Stopping before GENERATOR for %s: semantic_profile marked all relevant free-form bundles unsupported",
                         sid,
                     )
                     break
-                controller.record_success(stage="RESEARCH", note="researcher succeeded")
+                controller.record_success(stage="RESEARCH", note=research_note)
                 researcher_ran = True
                 researcher_refresh_requested = False
 
         rc, duration = _run_step_timed(
-            _python_cmd("agents/generator/main.py", "--sid", sid, "--mode", args.mode, "--single-attempt")
+            _python_cmd("agents/generator/main.py", "--sid", sid, "--mode", args.mode, "--single-attempt"),
+            sid=sid,
         )
         _record_perf_event(
             sid,
@@ -1462,6 +1896,9 @@ def main() -> None:
                     if isinstance(next_action, dict):
                         planned_next_action = next_action
                         metadata["planned_next_action"] = next_action
+                terminal_failure_class = _generator_terminal_failure_class(latest_failure)
+                if terminal_failure_class:
+                    metadata["terminal_failure_class"] = terminal_failure_class
             controller.record_failure(
                 stage="GENERATOR",
                 reason=reason,
@@ -1496,6 +1933,30 @@ def main() -> None:
                 LOGGER.info("Researcher refresh deferred: loop limit reached for %s", sid)
             break
 
+        strict_generator_gate = _strict_name_only_generator_gate_failure(plan)
+        if strict_generator_gate:
+            _record_perf_event(
+                sid,
+                perf_events,
+                loop=controller.current_loop,
+                stage="NAME_ONLY_GATE",
+                duration_s=0.0,
+                returncode=1,
+                note="strict_dynamic generator posture rejected before executor",
+            )
+            controller.record_failure(
+                stage="GENERATOR",
+                reason=str(strict_generator_gate.get("reason") or "strict_dynamic generator posture rejected"),
+                fix_hint=str(
+                    strict_generator_gate.get("fix_hint")
+                    or "Name-only strict dynamic requires a non-degraded live dynamic generation path."
+                ),
+                blocking=True,
+                metadata=strict_generator_gate.get("metadata") or {},
+            )
+            LOGGER.info("Stopping before EXECUTOR for %s: strict_dynamic generator posture rejected", sid)
+            break
+
         executor_precheck = _terminal_executor_precheck(plan)
         if executor_precheck.get("terminal"):
             _record_perf_event(
@@ -1520,7 +1981,10 @@ def main() -> None:
             LOGGER.info("Stopping before EXECUTOR for %s: executor dependency precheck failed", sid)
             break
 
-        rc, duration = _run_step_timed(_python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--build"))
+        rc, duration = _run_step_timed(
+            _python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--build"),
+            sid=sid,
+        )
         _record_perf_event(
             sid,
             perf_events,
@@ -1537,7 +2001,10 @@ def main() -> None:
                 continue
             break
 
-        rc, duration = _run_step_timed(_python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--run"))
+        rc, duration = _run_step_timed(
+            _python_cmd("executor/runtime/docker_local.py", "--sid", sid, "--run"),
+            sid=sid,
+        )
         _record_perf_event(
             sid,
             perf_events,
@@ -1556,7 +2023,7 @@ def main() -> None:
 
         controller.record_success(stage="EXECUTOR", note="executor build+run succeeded")
 
-        rc, duration = _run_step_timed(_python_cmd("evals/poc_verifier/main.py", "--sid", sid))
+        rc, duration = _run_step_timed(_python_cmd("evals/poc_verifier/main.py", "--sid", sid), sid=sid)
         _record_perf_event(
             sid,
             perf_events,
@@ -1605,7 +2072,8 @@ def main() -> None:
                         "--mode",
                         args.mode,
                         "--artifact-only",
-                    )
+                    ),
+                    sid=sid,
                 )
                 _record_perf_event(
                     sid,
@@ -1645,7 +2113,10 @@ def main() -> None:
         controller.record_success(stage="VERIFY", note="verifier passed")
 
         if not args.skip_reviewer:
-            rc, duration = _run_step_timed(_python_cmd("agents/reviewer/main.py", "--sid", sid, "--mode", args.mode))
+            rc, duration = _run_step_timed(
+                _python_cmd("agents/reviewer/main.py", "--sid", sid, "--mode", args.mode),
+                sid=sid,
+            )
             _record_perf_event(
                 sid,
                 perf_events,
@@ -1660,7 +2131,7 @@ def main() -> None:
                     continue
                 break
 
-        rc, duration = _run_step_timed(_python_cmd("evals/diversity_metrics.py", "--sid", sid))
+        rc, duration = _run_step_timed(_python_cmd("evals/diversity_metrics.py", "--sid", sid), sid=sid)
         _record_perf_event(
             sid,
             perf_events,
@@ -1701,7 +2172,7 @@ def main() -> None:
             pack_cmd = _python_cmd("orchestrator/pack.py", "--sid", sid)
             if allow_intentional:
                 pack_cmd.append("--allow-intentional-vuln")
-            rc, duration = _run_step_timed(pack_cmd)
+            rc, duration = _run_step_timed(pack_cmd, sid=sid)
             _record_perf_event(
                 sid,
                 perf_events,
@@ -1714,6 +2185,20 @@ def main() -> None:
                 _write_failure_summary_manifest(sid, plan)
             else:
                 _refresh_manifest_after_pack(sid, plan)
+                strict_gate_failure = _strict_name_only_gate_failure(plan, sid)
+                if strict_gate_failure:
+                    controller.record_failure(
+                        stage="PACK",
+                        reason=str(strict_gate_failure.get("reason") or "strict open-world gate not satisfied"),
+                        fix_hint=str(
+                            strict_gate_failure.get("fix_hint")
+                            or "strict_dynamic requires strict open-world positive evidence"
+                        ),
+                        blocking=True,
+                        metadata=strict_gate_failure.get("metadata") or {},
+                    )
+                    _refresh_manifest_after_pack(sid, plan)
+                    raise SystemExit(1)
 
         return
 
@@ -1723,7 +2208,7 @@ def main() -> None:
         pack_cmd = _python_cmd("orchestrator/pack.py", "--sid", sid)
         if allow_intentional:
             pack_cmd.append("--allow-intentional-vuln")
-        rc, duration = _run_step_timed(pack_cmd)
+        rc, duration = _run_step_timed(pack_cmd, sid=sid)
         _record_perf_event(
             sid,
             perf_events,

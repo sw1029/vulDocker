@@ -1,26 +1,29 @@
 {
   "manifest": {
-    "overall_pass": true,
+    "overall_pass": null,
     "promotion_eligible": false,
-    "pipeline_result": "success",
-    "manifest_file": "manifest.json",
-    "pipeline_returncode": 0,
-    "generation_origin": "deterministic_fallback",
-    "dynamicness_verdict": "deterministic fallback dependent",
+    "pipeline_result": "failure",
+    "manifest_file": "failure_manifest.json",
+    "pipeline_returncode": 1,
+    "generation_origin": "research_short_circuit",
+    "dynamicness_verdict": "pre-generation fail-closed",
     "generalization_class": "synthetic_regression",
     "counts_as_generalization": false
   },
   "evals": [
     {
       "slug": "cwe-9999",
-      "verify_pass": true,
-      "run_passed": true,
-      "exit_code": 0,
+      "verify_pass": null,
+      "run_passed": null,
+      "exit_code": null,
       "promotion_eligible": false,
-      "generation_origin": "deterministic_fallback",
-      "dynamicness_verdict": "deterministic fallback dependent",
+      "generation_origin": "research_short_circuit",
+      "dynamicness_verdict": "pre-generation fail-closed",
       "generalization_class": "synthetic_regression",
-      "counts_as_generalization": false
+      "counts_as_generalization": false,
+      "failure_reason_contains": [
+        "low relevance score"
+      ]
     }
   ],
   "reviewer": {

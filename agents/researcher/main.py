@@ -24,6 +24,15 @@ from common.run_matrix import bundle_requirement, load_vuln_bundles
 LOGGER = get_logger(__name__)
 
 
+def _name_only_mode(policy: dict[str, object] | object) -> str:
+    if not isinstance(policy, dict):
+        return "compatibility"
+    token = str(policy.get("name_only_mode") or "").strip().lower()
+    if token in {"dynamic", "strict_dynamic"}:
+        return token
+    return "compatibility"
+
+
 def _preseeded_semantic_fail_closed_reason(bundle, profile: dict[str, object]) -> tuple[str, str] | None:
     vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip()
     if not vuln_id or not vuln_id.upper().startswith("NAME-"):
@@ -51,6 +60,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", default="deterministic", help="Decoding profile override")
     parser.add_argument("--search-limit", type=int, default=3, help="Results per query")
     return parser.parse_args()
+
+
+def _should_skip_bundle_research(
+    *,
+    plan: dict[str, object],
+    requirement_view: dict[str, object],
+    bundle,
+    force_run: bool,
+) -> bool:
+    if force_run:
+        return False
+    plan_policy = plan.get("policy") if isinstance(plan, dict) else {}
+    bundle_policy = requirement_view.get("policy") if isinstance(requirement_view.get("policy"), dict) else {}
+    effective_policy = bundle_policy if isinstance(bundle_policy, dict) and bundle_policy else plan_policy
+    request_identity = (
+        requirement_view.get("request_identity")
+        if isinstance(requirement_view.get("request_identity"), dict)
+        else {}
+    )
+    name_driven = bool((request_identity or {}).get("name_driven")) or str(getattr(bundle, "vuln_id", "") or "").upper().startswith("NAME-")
+    mode = _name_only_mode(effective_policy)
+    dynamic_eval = bool(effective_policy.get("dynamic_eval")) if isinstance(effective_policy, dict) else False
+    open_world_strict = bool(effective_policy.get("open_world_strict")) if isinstance(effective_policy, dict) else False
+    if name_driven and mode in {"dynamic", "strict_dynamic"}:
+        dynamic_eval = True
+    if name_driven and mode == "strict_dynamic":
+        open_world_strict = True
+    if dynamic_eval:
+        return False
+    if open_world_strict and name_driven:
+        return False
+    return can_resolve_without_remote_research_for_requirement(bundle.vuln_id, requirement_view)
 
 
 def main() -> None:
@@ -96,9 +137,11 @@ def main() -> None:
             )
             LOGGER.info("Researcher fail-closed for %s (%s): %s", args.sid, bundle.vuln_id, reason)
             continue
-        if not force_run and can_resolve_without_remote_research_for_requirement(
-            bundle.vuln_id,
-            requirement_view,
+        if _should_skip_bundle_research(
+            plan=plan,
+            requirement_view=requirement_view,
+            bundle=bundle,
+            force_run=force_run,
         ):
             reason = "researcher skipped: compiler/static supported bundle"
             path = service.write_skip_report(reason)

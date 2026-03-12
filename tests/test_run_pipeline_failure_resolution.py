@@ -395,6 +395,352 @@ def test_cannot_skip_researcher_when_required_or_refresh_requested() -> None:
     ) is False
 
 
+def test_researcher_shadow_mode_helper_reads_requirement_flag() -> None:
+    plan = {"requirement": {"researcher": {"shadow_mode": True}}}
+
+    assert run_pipeline._researcher_shadow_mode(plan) is True
+
+
+def test_open_world_strict_mode_helper_reads_policy_flag() -> None:
+    plan = {"policy": {"open_world_strict": True}}
+
+    assert run_pipeline._open_world_strict_mode(plan) is True
+
+
+def test_dynamic_eval_mode_helper_reads_policy_flag() -> None:
+    plan = {"policy": {"dynamic_eval": True}}
+
+    assert run_pipeline._dynamic_eval_mode(plan) is True
+
+
+def test_generator_terminal_failure_class_maps_guard_semantic_mismatch() -> None:
+    payload = {"guard_error_code": "guard_semantic_mismatch"}
+
+    assert run_pipeline._generator_terminal_failure_class(payload) == "guard_semantic_mismatch"
+
+
+def test_subprocess_env_for_sid_disables_remote_llm_after_quota_failure(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-provider-circuit-breaker"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "llm_execution": {
+                    "provider_attempted": True,
+                    "stub_fallback": True,
+                    "last_error_class": "quota_exhausted",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+
+    env = run_pipeline._subprocess_env_for_sid(sid)
+
+    assert env is not None
+    assert env["VUL_FORCE_LLM_STUB"] == "1"
+    assert env["VUL_FORCE_LLM_STUB_REASON"] == "quota_exhausted"
+
+
+def test_name_only_mode_helper_defaults_to_compatibility() -> None:
+    assert run_pipeline._name_only_mode({}) == "compatibility"
+
+
+def test_strict_name_only_gate_required_only_for_name_only_strict_dynamic() -> None:
+    assert run_pipeline._strict_name_only_gate_required({}) is False
+    assert run_pipeline._strict_name_only_gate_required(
+        {
+            "policy": {"name_only_mode": "strict_dynamic"},
+            "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]},
+        }
+    ) is True
+    assert run_pipeline._strict_name_only_gate_required(
+        {
+            "policy": {"name_only_mode": "strict_dynamic"},
+            "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+        }
+    ) is False
+
+
+def test_strict_name_only_gate_failure_reports_degraded_success_bundle(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-strict-name-only-gate"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "bundles": [
+                    {
+                        "slug": "name-open-redirect",
+                        "vuln_id": "NAME-OPEN-REDIRECT",
+                        "request_identity": {"name_driven": True},
+                        "dynamic_eval": {"status": "degraded_success"},
+                        "provenance": {
+                            "generation_origin": "deterministic_fallback",
+                            "fallback_class": "semantic_guided",
+                            "materializer": "minimal_dynamic",
+                        },
+                        "strict_open_world": {
+                            "class": "strict_minimal_dynamic_fallback",
+                            "counts_as_generalization": False,
+                            "reason": "bundle closed through a semantic-guided minimal dynamic materializer",
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    plan = {
+        "policy": {"name_only_mode": "strict_dynamic"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]},
+    }
+
+    failure = run_pipeline._strict_name_only_gate_failure(plan, sid)
+
+    assert failure["metadata"]["terminal_failure_class"] == "strict_open_world_not_satisfied"
+    assert failure["metadata"]["required_gate"] == "strict_dynamic"
+    assert failure["metadata"]["failed_bundles"][0]["dynamic_eval_status"] == "degraded_success"
+    assert "strict_open_world=strict_minimal_dynamic_fallback" in failure["reason"]
+
+
+def test_strict_name_only_generator_gate_failure_rejects_stub_backed_fallback_before_executor(
+    tmp_path: Path,
+) -> None:
+    metadata_root = tmp_path / "metadata" / "sid-name-only-generator-gate"
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_origin": "deterministic_fallback",
+                "fallback_used": True,
+                "llm_stub_used": True,
+                "provenance": {
+                    "generation_origin": "deterministic_fallback",
+                    "fallback_used": True,
+                    "fallback_class": "semantic_guided",
+                    "llm_stub_used": True,
+                },
+                "manifest": {
+                    "metadata": {
+                        "generation_origin": "deterministic_fallback",
+                        "fallback_class": "semantic_guided",
+                        "materializer": "minimal_dynamic",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_root / "dynamic_eval.json").write_text(
+        json.dumps({"status": "degraded_success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    plan = {
+        "paths": {"metadata": str(metadata_root)},
+        "policy": {"name_only_mode": "strict_dynamic"},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}
+            ]
+        },
+        "features": {"multi_vuln": False},
+        "requirement": {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+        },
+    }
+
+    failure = run_pipeline._strict_name_only_generator_gate_failure(plan)
+
+    assert failure["metadata"]["terminal_failure_class"] == "strict_dynamic_disallowed_generation_path"
+    assert failure["metadata"]["required_gate"] == "strict_dynamic"
+    assert failure["metadata"]["failed_bundles"][0]["dynamic_eval_status"] == "degraded_success"
+    assert "llm_stub_used" in failure["reason"]
+
+
+def test_strict_name_only_gate_failure_is_empty_for_positive_bundle(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-strict-name-only-pass"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "bundles": [
+                    {
+                        "slug": "name-custom-dynamic",
+                        "vuln_id": "NAME-CUSTOM-DYNAMIC",
+                        "request_identity": {"name_driven": True},
+                        "dynamic_eval": {"status": "dynamic_success"},
+                        "provenance": {"generation_origin": "llm_manifest"},
+                        "strict_open_world": {
+                            "class": "strict_open_world_positive",
+                            "counts_as_generalization": True,
+                            "reason": "trusted strict open-world positive",
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    plan = {
+        "policy": {"name_only_mode": "strict_dynamic"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-CUSTOM-DYNAMIC", "slug": "name-custom-dynamic", "workspace_subdir": "app"}]},
+    }
+
+    assert run_pipeline._strict_name_only_gate_failure(plan, sid) == {}
+
+
+def test_can_skip_researcher_is_disabled_for_name_only_dynamic_mode() -> None:
+    plan = {
+        "requirement": {
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {
+                "request_label": "Open Redirect",
+                "input_mode": "free_form_name",
+                "name_driven": True,
+            },
+            "researcher": {},
+        },
+        "policy": {"require_researcher_evidence": False, "name_only_mode": "dynamic"},
+        "run_matrix": {
+            "vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]
+        },
+    }
+
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is False
+
+
+def test_can_skip_researcher_is_disabled_for_name_driven_lane_in_open_world_strict_mode() -> None:
+    plan = {
+        "requirement": {
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {
+                "request_label": "Open Redirect",
+                "input_mode": "free_form_name",
+                "name_driven": True,
+            },
+            "researcher": {},
+        },
+        "policy": {"require_researcher_evidence": False, "open_world_strict": True},
+        "run_matrix": {
+            "vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]
+        },
+    }
+
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is False
+
+
+def test_can_skip_researcher_is_disabled_when_dynamic_eval_is_enabled() -> None:
+    plan = {
+        "requirement": {
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {
+                "request_label": "Open Redirect",
+                "input_mode": "free_form_name",
+                "name_driven": True,
+            },
+            "researcher": {},
+        },
+        "policy": {"require_researcher_evidence": False, "dynamic_eval": True},
+        "run_matrix": {
+            "vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]
+        },
+    }
+
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is False
+
+
+def test_shadow_research_failure_can_be_tolerated_for_known_lower_bound_lane() -> None:
+    plan = {
+        "requirement": {"researcher": {"shadow_mode": True}},
+        "policy": {"require_researcher_evidence": False},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+    }
+
+    tolerated = run_pipeline._can_tolerate_shadow_research_failure(
+        plan,
+        {"terminal_failure_class": "remote_provider_unavailable"},
+    )
+
+    assert tolerated is True
+
+
+def test_shadow_research_failure_is_not_tolerated_when_open_world_strict_mode_is_enabled() -> None:
+    plan = {
+        "requirement": {"researcher": {"shadow_mode": True}},
+        "policy": {"require_researcher_evidence": False, "open_world_strict": True},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+    }
+
+    tolerated = run_pipeline._can_tolerate_shadow_research_failure(
+        plan,
+        {"terminal_failure_class": "remote_provider_unavailable"},
+    )
+
+    assert tolerated is False
+
+
+def test_shadow_research_failure_is_not_tolerated_for_unsupported_family() -> None:
+    plan = {
+        "requirement": {"researcher": {"shadow_mode": True}},
+        "policy": {"require_researcher_evidence": False},
+        "run_matrix": {
+            "vuln_bundles": [{"vuln_id": "NAME-CUSTOM-WEIRD-VULN", "slug": "name-custom-weird-vuln", "workspace_subdir": "app"}]
+        },
+    }
+
+    tolerated = run_pipeline._can_tolerate_shadow_research_failure(
+        plan,
+        {"terminal_failure_class": "semantic_support_missing"},
+    )
+
+    assert tolerated is False
+
+
+def test_write_researcher_skip_reports_materializes_skip_artifacts(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+
+    class _FakeResearcherService:
+        def __init__(self, sid, mode="deterministic", search_limit=1, *, plan=None, bundle=None):  # noqa: ANN001
+            self.sid = sid
+            self.plan = plan
+            self.bundle = bundle
+            self.metadata_dir = tmp_path / "metadata" / sid
+
+        def write_skip_report(self, reason: str):  # noqa: ANN001
+            calls.append((self.bundle.slug, reason))
+            self.metadata_dir.mkdir(parents=True, exist_ok=True)
+            path = self.metadata_dir / "researcher_report.json"
+            path.write_text("{}", encoding="utf-8")
+            return path
+
+    plan = {
+        "sid": "sid-skip-report",
+        "paths": {"metadata": str(tmp_path / "metadata" / "sid-skip-report")},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+        "requirement": {"vuln_id": "CWE-89"},
+    }
+    monkeypatch.setattr(run_pipeline, "ResearcherService", _FakeResearcherService)
+
+    run_pipeline._write_researcher_skip_reports(plan, "sid-skip-report", "researcher skipped")
+
+    assert calls == [("cwe-89", "researcher skipped")]
+
+
 def test_terminal_executor_precheck_blocks_missing_sidecar_policy() -> None:
     plan = {
         "requirement": {
@@ -728,6 +1074,41 @@ def test_write_perf_summary_uses_failure_records_for_llm_health(tmp_path: Path, 
     assert payload["llm_failure_class"] == "quota_exhausted"
 
 
+def test_write_perf_summary_uses_researcher_report_for_llm_health(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-perf-researcher-llm"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "quality": "sufficient",
+                "llm_execution": {
+                    "provider_attempted": True,
+                    "provider_succeeded": False,
+                    "stub_fallback": True,
+                    "last_error_class": "quota_exhausted",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "RESEARCH", "duration_s": 1.0, "returncode": 0, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 0, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["provider_health_state"] == "llm_degraded"
+    assert payload["llm_stub_used"] is True
+    assert payload["llm_failure_class"] == "quota_exhausted"
+
+
 def test_write_perf_summary_marks_compiler_only_lane_as_not_probed(tmp_path: Path, monkeypatch) -> None:
     sid = "sid-perf-compiler-only"
     metadata_root = tmp_path / "metadata" / sid
@@ -908,6 +1289,43 @@ def test_write_perf_summary_surfaces_executor_feasibility_misconfiguration(tmp_p
     assert payload["executor_feasibility_status"] == "misconfigured"
     assert payload["executor_feasibility"][0]["requires_external_db"] is True
     assert payload["executor_feasibility"][0]["status"] == "misconfigured"
+
+
+def test_write_perf_summary_surfaces_executor_feasibility_sidecar_type_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-perf-executor-sidecar-type-mismatch"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(
+        run_pipeline,
+        "load_plan",
+        lambda incoming_sid: {
+            "sid": incoming_sid,
+            "requirement": {"vuln_id": "CWE-89", "runtime": {"db": "mysql", "allow_external_db": True}},
+            "policy": {
+                "executor": {
+                    "allow_network": True,
+                    "network_mode": "bridge",
+                    "sidecars": [{"name": "postgres-main", "type": "postgres"}],
+                }
+            },
+            "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+        },
+    )
+    events = [
+        {"loop": 1, "stage": "EXECUTOR_PRECHECK", "duration_s": 0.0, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 0, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["executor_feasibility_status"] == "misconfigured"
+    assert payload["executor_feasibility"][0]["required_sidecar_types"] == ["mariadb", "mysql"]
+    assert payload["executor_feasibility"][0]["matching_sidecars"] == []
 
 
 def test_analyze_verify_failures_marks_terminal_semantic_unsupported(tmp_path: Path, monkeypatch) -> None:

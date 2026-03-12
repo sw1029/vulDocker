@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from common.contracts import can_resolve_without_remote_research_for_requirement
+from common.name_only import VALID_NAME_ONLY_MODES, build_name_only_contract
 from common.vuln_catalog import (
     catalog_profile_defaults,
     mapped_vuln_id_with_source,
@@ -28,6 +29,20 @@ VALID_GUARD_LOW_CONFIDENCE_POLICIES = {"warn", "guard_fallback", "fail_closed"}
 VALID_VERIFIER_LOW_TRUST_POLICIES = {"warn", "fail_closed"}
 VALID_VERIFIER_PROMOTION_INDEPENDENCE = {"compiler_coupled", "independent"}
 VALID_VERIFIER_NAME_RESOLUTION_CONFIDENCE = {"low", "medium", "high"}
+AVAILABLE_STACK_HYPOTHESIS_POOL = (
+    {
+        "language": "python",
+        "framework": "flask",
+        "source": "available_skeleton",
+        "confidence": "low",
+    },
+    {
+        "language": "python",
+        "framework": "fastapi",
+        "source": "available_skeleton",
+        "confidence": "low",
+    },
+)
 DEFAULT_GUARD_SEMANTIC_REFRESH_THRESHOLD = 2
 DEFAULT_GUARD_FAILURE_FINGERPRINT_WINDOW = 3
 VALID_SEARCH_FILTER_KEYS = {"include_domains", "exclude_domains", "time_range", "country", "search_lang"}
@@ -186,6 +201,45 @@ def _decorate_name_resolution(payload: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _request_identity_from_resolution(
+    requirement: Dict[str, Any],
+    resolution: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(resolution, dict):
+        return {}
+    raw_input = str(resolution.get("input") or "").strip()
+    resolved_vuln_id = str(resolution.get("resolved_vuln_id") or "").strip()
+    source = str(resolution.get("source") or "").strip().lower()
+    match_class = str(resolution.get("match_class") or "").strip().lower()
+    confidence = str(resolution.get("confidence") or "").strip().lower()
+    field = str(resolution.get("field") or "").strip()
+    if not raw_input or not resolved_vuln_id:
+        return {}
+
+    input_mode = "explicit_identifier"
+    if field in {"vuln_name", "vulnerability_name", "weakness_name", "cwe_name"}:
+        input_mode = "free_form_name"
+    elif source == "synthetic_name":
+        input_mode = "free_form_name"
+
+    normalized_label = normalize_vuln_label(raw_input)
+    return {
+        "request_label": raw_input,
+        "normalized_request_label": normalized_label,
+        "resolved_vuln_id": resolved_vuln_id,
+        "input_mode": input_mode,
+        "source": source or "unknown",
+        "match_class": match_class or "unknown",
+        "confidence": confidence or "unknown",
+        "field": field or None,
+        "synthetic_resolution": source == "synthetic_name",
+        "catalog_backed_resolution": match_class == "catalog_alias",
+        "token_match_resolution": match_class == "token_match",
+        "exact_identifier_resolution": match_class == "exact_identifier",
+        "name_driven": input_mode == "free_form_name",
+    }
+
+
 def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str, Any]:
     for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name"):
         raw = requirement.get(key)
@@ -194,12 +248,14 @@ def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str
         mapped, source = _mapped_vuln_id_with_source(raw)
         if mapped:
             return _decorate_name_resolution({
+                "field": key,
                 "input": raw.strip(),
                 "resolved_vuln_id": mapped,
                 "source": source or "unknown",
             })
         synthetic = f"NAME-{slugify_vuln_id(raw).upper()}"
         return _decorate_name_resolution({
+            "field": key,
             "input": raw.strip(),
             "resolved_vuln_id": synthetic,
             "source": "synthetic_name",
@@ -218,6 +274,7 @@ def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str
         if source == "alias" and resolved != raw.strip():
             resolution_source = "explicit_alias"
         return _decorate_name_resolution({
+            "field": key,
             "input": raw.strip(),
             "resolved_vuln_id": resolved,
             "source": resolution_source,
@@ -225,6 +282,7 @@ def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str
 
     if primary_vuln:
         return _decorate_name_resolution({
+            "field": "resolved_only",
             "input": primary_vuln,
             "resolved_vuln_id": primary_vuln,
             "source": "resolved_only",
@@ -244,6 +302,7 @@ def _name_resolution_from_target(target: Dict[str, Any]) -> Dict[str, Any]:
     if field in {"vuln_id", "cwe_id", "cve_id"} and source == "alias":
         source = "explicit_alias"
     return _decorate_name_resolution({
+        "field": field,
         "input": raw_input,
         "resolved_vuln_id": resolved,
         "source": source,
@@ -307,12 +366,31 @@ def normalize_requirement(
             })
             for entry in targets
         ]
+        normalized_req["vuln_request_identities"] = [
+            _request_identity_from_resolution(
+                normalized_req,
+                _decorate_name_resolution({
+                    "field": str(entry.get("field") or ""),
+                    "input": str(entry.get("input") or ""),
+                    "resolved_vuln_id": str(entry.get("vuln_id") or ""),
+                    "source": str(entry.get("source") or ""),
+                }),
+            )
+            for entry in targets
+        ]
+        normalized_req["vuln_request_identities"] = [
+            entry for entry in normalized_req["vuln_request_identities"] if isinstance(entry, dict) and entry
+        ]
     name_resolution = _name_resolution_from_target(targets[0]) if targets else {}
     if not name_resolution:
         name_resolution = _name_resolution(normalized_req, effective[0])
     if name_resolution:
         normalized_req["name_resolution"] = name_resolution
+        request_identity = _request_identity_from_resolution(normalized_req, name_resolution)
+        if request_identity:
+            normalized_req["request_identity"] = request_identity
     _apply_minimal_input_defaults(normalized_req, effective, warnings)
+    _normalize_unknown_pattern_seed(normalized_req, effective, warnings)
     _normalize_research_policy(normalized_req, effective, warnings)
     _normalize_pipeline_policy(normalized_req, effective, warnings)
 
@@ -436,6 +514,98 @@ def _profile_defaults_for_vuln(vuln_id: str, *, raw_name: str = "") -> Dict[str,
     return profile
 
 
+def _name_only_open_world_posture(requirement: Dict[str, Any]) -> bool:
+    contract = build_name_only_contract(requirement=requirement)
+    return bool(
+        contract.get("enabled")
+        and str(contract.get("effective_mode") or "").strip().lower() in {"dynamic", "dynamic_eval", "strict_dynamic"}
+    )
+
+
+def _normalized_stack_hypotheses(raw: Any) -> List[Dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    hypotheses: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        language = str(entry.get("language") or "").strip().lower()
+        framework = str(entry.get("framework") or "").strip().lower()
+        if not language or not framework:
+            continue
+        key = (language, framework)
+        if key in seen:
+            continue
+        seen.add(key)
+        payload = {
+            "language": language,
+            "framework": framework,
+            "stack_id": f"{language}/{framework}",
+            "source": str(entry.get("source") or "unknown").strip().lower() or "unknown",
+            "confidence": str(entry.get("confidence") or "unknown").strip().lower() or "unknown",
+        }
+        hypotheses.append(payload)
+    return hypotheses
+
+
+def _ensure_stack_hypotheses(
+    requirement: Dict[str, Any],
+    *,
+    profile: Dict[str, Any],
+    warnings: List[str],
+    defer_stack_defaults: bool,
+    applied: List[str],
+) -> None:
+    normalized = _normalized_stack_hypotheses(requirement.get("stack_hypotheses"))
+    if normalized:
+        requirement["stack_hypotheses"] = normalized
+        return
+    if not defer_stack_defaults:
+        return
+
+    hypotheses: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_candidate(language: Any, framework: Any, *, source: str, confidence: str) -> None:
+        lang = str(language or "").strip().lower()
+        fw = str(framework or "").strip().lower()
+        if not lang or not fw:
+            return
+        key = (lang, fw)
+        if key in seen:
+            return
+        seen.add(key)
+        hypotheses.append(
+            {
+                "language": lang,
+                "framework": fw,
+                "stack_id": f"{lang}/{fw}",
+                "source": source,
+                "confidence": confidence,
+            }
+        )
+
+    explicit_language = requirement.get("language")
+    explicit_framework = requirement.get("framework")
+    add_candidate(explicit_language, explicit_framework, source="explicit_requirement", confidence="high")
+    add_candidate(profile.get("language"), profile.get("framework"), source="profile_prior", confidence="low")
+    for candidate in AVAILABLE_STACK_HYPOTHESIS_POOL:
+        add_candidate(
+            candidate.get("language"),
+            candidate.get("framework"),
+            source=str(candidate.get("source") or "available_skeleton"),
+            confidence=str(candidate.get("confidence") or "low"),
+        )
+    if not hypotheses:
+        return
+    requirement["stack_hypotheses"] = hypotheses
+    applied.append("stack_hypotheses")
+    warnings.append(
+        "Deferred hard stack defaults for name-only dynamic posture; using stack_hypotheses as soft candidates instead."
+    )
+
+
 def _apply_minimal_input_defaults(
     requirement: Dict[str, Any],
     effective_vuln_ids: List[str],
@@ -444,6 +614,7 @@ def _apply_minimal_input_defaults(
     primary_vuln = effective_vuln_ids[0] if effective_vuln_ids else str(requirement.get("vuln_id") or "")
     raw_name = _named_vuln_label(requirement)
     profile = _profile_defaults_for_vuln(primary_vuln, raw_name=raw_name)
+    defer_stack_defaults = _name_only_open_world_posture(requirement)
     applied: List[str] = []
 
     def _apply(key: str, value: Any) -> None:
@@ -455,14 +626,16 @@ def _apply_minimal_input_defaults(
     _apply("requirement_id", f"AUTO-{slugify_vuln_id(primary_vuln or 'unknown').upper()}")
     _apply("intent", f"Auto-normalized minimal-input run for {profile.get('display_name') or primary_vuln}")
     _apply("vuln_label", profile.get("display_name"))
-    _apply("language", profile.get("language"))
-    _apply("framework", profile.get("framework"))
+    if not defer_stack_defaults:
+        _apply("language", profile.get("language"))
+        _apply("framework", profile.get("framework"))
     _apply("seed", profile.get("seed"))
     _apply("retriever_commit", profile.get("retriever_commit"))
     _apply("corpus_snapshot", profile.get("corpus_snapshot"))
     _apply("pattern_id", profile.get("pattern_id"))
     _apply("deps_digest", profile.get("deps_digest"))
-    _apply("base_image_digest", profile.get("base_image_digest"))
+    if not defer_stack_defaults:
+        _apply("base_image_digest", profile.get("base_image_digest"))
     _apply("generator_mode", profile.get("generator_mode"))
 
     runtime = requirement.get("runtime")
@@ -471,6 +644,8 @@ def _apply_minimal_input_defaults(
         requirement["runtime"] = runtime
     runtime_defaults = profile.get("runtime") if isinstance(profile.get("runtime"), dict) else {}
     for key, value in runtime_defaults.items():
+        if defer_stack_defaults and key in {"base_image", "package_manager"}:
+            continue
         if runtime.get(key) in (None, "", [], {}):
             runtime[key] = deepcopy(value)
             applied.append(f"runtime.{key}")
@@ -489,6 +664,14 @@ def _apply_minimal_input_defaults(
         if isinstance(default_user_deps, list) and default_user_deps:
             requirement["user_deps"] = deepcopy(default_user_deps)
             applied.append("user_deps")
+
+    _ensure_stack_hypotheses(
+        requirement,
+        profile=profile,
+        warnings=warnings,
+        defer_stack_defaults=defer_stack_defaults,
+        applied=applied,
+    )
 
     if applied:
         requirement["_normalization_defaults"] = {
@@ -570,6 +753,11 @@ def _normalize_research_policy(
         not can_resolve_without_remote_research_for_requirement(vuln_id, requirement)
         for vuln_id in effective_vuln_ids
     )
+    policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+    name_only_mode = str(policy.get("name_only_mode") or "").strip().lower() if isinstance(policy, dict) else ""
+    name_driven = any(str(vuln_id or "").strip().upper().startswith("NAME-") for vuln_id in effective_vuln_ids)
+    if name_driven and name_only_mode == "strict_dynamic":
+        remote_required = True
     default_policy = "remote_required" if remote_required else "remote_prefer"
     raw_policy = str(researcher.get("search_policy") or default_policy).strip().lower()
     if raw_policy not in VALID_SEARCH_POLICIES:
@@ -583,6 +771,10 @@ def _normalize_research_policy(
         researcher["generate_candidate_templates"] = _as_bool(researcher.get("generate_candidate_templates"))
     else:
         researcher["generate_candidate_templates"] = False
+    if "shadow_mode" in researcher:
+        researcher["shadow_mode"] = _as_bool(researcher.get("shadow_mode"))
+    else:
+        researcher["shadow_mode"] = False
     researcher["search_filters"] = _normalize_search_filters(researcher.get("search_filters"), warnings)
     requirement["researcher"] = researcher
 
@@ -640,16 +832,66 @@ def _normalize_pipeline_policy(
         not can_resolve_without_remote_research_for_requirement(vuln_id, requirement)
         for vuln_id in effective_vuln_ids
     )
+    name_driven = any(str(vuln_id or "").strip().upper().startswith("NAME-") for vuln_id in effective_vuln_ids)
     policy["allow_runtime_rule_override_static"] = _as_bool(
         policy.get("allow_runtime_rule_override_static", False)
     )
+    policy["allow_name_family_fallback"] = _as_bool(
+        policy.get("allow_name_family_fallback", False)
+    )
+    policy["open_world_strict"] = _as_bool(policy.get("open_world_strict", False))
+    policy["dynamic_eval"] = _as_bool(policy.get("dynamic_eval", False))
+    policy["dynamic_eval_allow_lower_bound_fallback"] = _as_bool(
+        policy.get("dynamic_eval_allow_lower_bound_fallback", False)
+    )
+    raw_name_only_mode = str(policy.get("name_only_mode") or "").strip().lower()
+    if raw_name_only_mode and raw_name_only_mode not in VALID_NAME_ONLY_MODES:
+        warnings.append(
+            "policy.name_only_mode must be one of compatibility, dynamic, strict_dynamic; "
+            f"got '{raw_name_only_mode}', defaulting to compatibility"
+        )
+        raw_name_only_mode = ""
+    policy["name_only_mode"] = raw_name_only_mode or "compatibility"
     if "require_researcher_evidence" in policy:
         policy["require_researcher_evidence"] = _as_bool(policy.get("require_researcher_evidence"))
     else:
         policy["require_researcher_evidence"] = remote_required
+    if name_driven and policy["name_only_mode"] == "strict_dynamic":
+        policy["require_researcher_evidence"] = True
+    policy["allow_unknown_pattern_seed"] = _as_bool(policy.get("allow_unknown_pattern_seed", False))
     _normalize_guard_policy(policy, has_unknown=has_unknown, warnings=warnings)
     _normalize_verifier_policy(policy, has_unknown=has_unknown, warnings=warnings)
+    policy["name_only_contract"] = build_name_only_contract(requirement=requirement, policy=policy)
     requirement["policy"] = policy
+
+
+def _normalize_unknown_pattern_seed(
+    requirement: Dict[str, Any],
+    effective_vuln_ids: List[str],
+    warnings: List[str],
+) -> None:
+    if not effective_vuln_ids:
+        return
+    primary_vuln = str(effective_vuln_ids[0] or "").strip()
+    if not primary_vuln:
+        return
+    policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+    if _as_bool(policy.get("allow_unknown_pattern_seed", False)):
+        return
+    if can_resolve_without_remote_research_for_requirement(primary_vuln, requirement):
+        return
+    name_resolution = requirement.get("name_resolution") if isinstance(requirement.get("name_resolution"), dict) else {}
+    resolution_source = str(name_resolution.get("source") or "").strip().lower()
+    if resolution_source not in {"explicit_identifier", "synthetic_name", "resolved_only"}:
+        return
+    current_pattern = str(requirement.get("pattern_id") or "").strip()
+    if not current_pattern or current_pattern == "generic-web-vuln":
+        return
+    requirement["pattern_id"] = "generic-web-vuln"
+    warnings.append(
+        "Normalized pattern_id to generic-web-vuln for unsupported unknown family; "
+        f"inherited pattern seed '{current_pattern}' is ignored by default."
+    )
 
 
 def _normalize_verifier_policy(

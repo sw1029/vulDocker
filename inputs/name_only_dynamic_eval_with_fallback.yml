@@ -1,0 +1,8 @@
+requirement_id: EXAMPLE-NAME-DYNAMIC-EVAL-FALLBACK-0001
+intent: "Opt-in dynamic_eval example with lower-bound fallback for name-only Open Redirect lane"
+vuln_name: Open Redirect
+seed: 4243
+generator_mode: synthesis
+policy:
+  dynamic_eval: true
+  dynamic_eval_allow_lower_bound_fallback: true

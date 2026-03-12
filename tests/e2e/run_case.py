@@ -203,6 +203,8 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "rule": eval_result.get("rule"),
                 "promotion_eligible": (bundle.get("promotion") or {}).get("eligible"),
                 "promotion_reasons": (bundle.get("promotion") or {}).get("reasons") or [],
+                "memory_promotion_eligible": (bundle.get("memory_promotion") or {}).get("eligible"),
+                "memory_promotion_reasons": (bundle.get("memory_promotion") or {}).get("reasons") or [],
                 "semantic_supported": (
                     eval_result.get("semantic_supported")
                     if isinstance(eval_result, dict) and eval_result.get("semantic_supported") is not None
@@ -231,6 +233,7 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "fragment_id": compiler_contract.get("fragment_id"),
                 "compose_mode": compiler_contract.get("compose_mode"),
                 "service_env": compiler_contract.get("service_env"),
+                "request_identity": bundle.get("request_identity") or {},
                 "name_resolution": bundle.get("name_resolution") or {},
                 "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
                 "llm_fixture_used": (bundle.get("provenance") or {}).get("llm_fixture_used"),
@@ -245,6 +248,19 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "generalization_reason": (bundle.get("generalization") or {}).get("reason"),
                 "generalization_confidence": (bundle.get("generalization") or {}).get("confidence"),
                 "generalization_basis": (bundle.get("generalization") or {}).get("basis"),
+                "open_world_class": (bundle.get("open_world") or {}).get("class"),
+                "counts_as_open_world_generalization": (bundle.get("open_world") or {}).get("counts_as_generalization"),
+                "open_world_reason": (bundle.get("open_world") or {}).get("reason"),
+                "open_world_confidence": (bundle.get("open_world") or {}).get("confidence"),
+                "open_world_basis": (bundle.get("open_world") or {}).get("basis"),
+                "strict_open_world_class": (bundle.get("strict_open_world") or {}).get("class"),
+                "counts_as_strict_open_world_generalization": (
+                    (bundle.get("strict_open_world") or {}).get("counts_as_generalization")
+                ),
+                "strict_open_world_reason": (bundle.get("strict_open_world") or {}).get("reason"),
+                "researcher_quality": (bundle.get("researcher") or {}).get("quality"),
+                "researcher_shadow_mode": (bundle.get("researcher") or {}).get("shadow_mode_enabled"),
+                "researcher_report_present": (bundle.get("researcher") or {}).get("report_present"),
                 "failure_reason": (bundle.get("failure") or {}).get("reason"),
                 "terminal_failure_class": (bundle.get("failure") or {}).get("terminal_failure_class"),
             }
@@ -255,11 +271,17 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "pipeline_result": manifest.get("pipeline_result"),
         "promotion_eligible": (manifest.get("promotion") or {}).get("eligible"),
         "promotion_reasons": (manifest.get("promotion") or {}).get("reasons") or [],
+        "memory_promotion": manifest.get("memory_promotion") or {},
+        "memory_promotion_eligible": manifest.get("memory_promotion_eligible"),
         "generation_summary": manifest.get("generation_summary") or {},
         "compiler_contract_summary": manifest.get("compiler_contract_summary") or {},
         "verification_summary": manifest.get("verification_summary") or {},
+        "researcher_summary": manifest.get("researcher_summary") or {},
+        "request_identity_summary": manifest.get("request_identity_summary") or {},
         "name_resolution_summary": manifest.get("name_resolution_summary") or {},
         "generalization_summary": manifest.get("generalization_summary") or {},
+        "open_world_summary": manifest.get("open_world_summary") or {},
+        "strict_open_world_summary": manifest.get("strict_open_world_summary") or {},
         "partial_progress_summary": manifest.get("partial_progress_summary") or {},
         "compiler_supported": manifest.get("compiler_supported"),
         "compiler_strategy": manifest.get("compiler_strategy"),
@@ -270,6 +292,7 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "fragment_id": manifest.get("fragment_id"),
         "compose_mode": manifest.get("compose_mode"),
         "service_env": manifest.get("service_env"),
+        "request_identity": manifest.get("request_identity") or {},
         "name_resolution": manifest.get("name_resolution") or {},
         "generation_origin": manifest.get("generation_origin"),
         "verification_rule_source": manifest.get("verification_rule_source"),
@@ -296,6 +319,15 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "generalization_reason": manifest.get("generalization_reason"),
         "generalization_confidence": manifest.get("generalization_confidence"),
         "generalization_basis": manifest.get("generalization_basis"),
+        "open_world_class": manifest.get("open_world_class"),
+        "counts_as_open_world_generalization": manifest.get("counts_as_open_world_generalization"),
+        "open_world_reason": manifest.get("open_world_reason"),
+        "open_world_confidence": manifest.get("open_world_confidence"),
+        "open_world_basis": manifest.get("open_world_basis"),
+        "strict_open_world_class": manifest.get("strict_open_world_class"),
+        "counts_as_strict_open_world_generalization": manifest.get("counts_as_strict_open_world_generalization"),
+        "strict_open_world_reason": manifest.get("strict_open_world_reason"),
+        "researcher": manifest.get("researcher") or {},
         "pipeline_returncode": pipeline_returncode,
         "failure": manifest.get("failure") or {},
         "bundles": bundles,
@@ -611,6 +643,10 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: terminal_failure_class expected {entry['terminal_failure_class']!r} but was {bundle.get('terminal_failure_class')!r}"
             )
+        failure_reason = str(bundle.get("failure_reason") or "")
+        for token in entry.get("failure_reason_contains", []):
+            if token not in failure_reason:
+                errors.append(f"bundle {bundle['slug']}: failure_reason missing substring '{token}'")
         evidence = bundle.get("evidence") or ""
         for token in entry.get("evidence_contains", []):
             if token not in evidence:

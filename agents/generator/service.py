@@ -10,7 +10,9 @@ import os
 import random
 import re
 import shutil
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -27,6 +29,7 @@ from common.logging import get_logger
 from common.contracts import (
     build_generator_contract,
     executor_feasibility_summary,
+    load_generator_contract,
     load_semantic_profile,
     write_generator_contract,
 )
@@ -34,7 +37,7 @@ from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_generator_prompt
 from common.runtime_assets import record_generated_runtime_asset
-from common.runtime_surface import derive_service_env
+from common.runtime_surface import derive_service_env, diagnose_runtime_surface
 from common.rules import list_rules, load_rule, load_static_rule, rule_filename_for_vuln_id
 from common.run_matrix import (
     VulnBundle,
@@ -439,6 +442,97 @@ class GeneratorService:
         path = self.metadata_dir / "user_deps.json"
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def _name_only_mode(self) -> str:
+        policy = self.requirement.get("policy") if isinstance(self.requirement, dict) else {}
+        if not isinstance(policy, dict):
+            return "compatibility"
+        token = str(policy.get("name_only_mode") or "").strip().lower()
+        if token in {"dynamic", "strict_dynamic"}:
+            return token
+        return "compatibility"
+
+    def _is_name_driven_request(self) -> bool:
+        if not isinstance(self.requirement, dict):
+            return False
+        request_identity = self.requirement.get("request_identity")
+        if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
+            return True
+        vuln_id = str(self.requirement.get("vuln_id") or "").strip().upper()
+        return vuln_id.startswith("NAME-")
+
+    def _dynamic_eval_enabled(self) -> bool:
+        policy = self.requirement.get("policy") if isinstance(self.requirement, dict) else {}
+        if not isinstance(policy, dict):
+            return False
+        if _as_bool(policy.get("dynamic_eval", False)):
+            return True
+        return self._is_name_driven_request() and self._name_only_mode() in {"dynamic", "strict_dynamic"}
+
+    def _dynamic_eval_allow_lower_bound_fallback(self) -> bool:
+        policy = self.requirement.get("policy") if isinstance(self.requirement, dict) else {}
+        if not isinstance(policy, dict):
+            return False
+        if self._is_name_driven_request() and self._name_only_mode() == "strict_dynamic":
+            return False
+        return _as_bool(policy.get("dynamic_eval_allow_lower_bound_fallback", False))
+
+    def _requirement_for_synthesis(self) -> Dict[str, Any]:
+        requirement = deepcopy(self.requirement) if isinstance(self.requirement, dict) else {}
+        contract = load_generator_contract(self.metadata_dir) or {}
+        for key in ("runtime_recipe", "exploit_oracle", "name_only_generation_spec"):
+            payload = contract.get(key) if isinstance(contract.get(key), dict) else {}
+            if payload:
+                requirement[key] = deepcopy(payload)
+        return requirement
+
+    def _dynamic_eval_status_path(self) -> Path:
+        return self.metadata_dir / "dynamic_eval.json"
+
+    def _write_dynamic_eval_status(
+        self,
+        status: str,
+        *,
+        lower_bound_fallback_used: bool = False,
+        fallback_path: str = "",
+    ) -> None:
+        payload = {
+            "enabled": self._dynamic_eval_enabled(),
+            "attempted": self._dynamic_eval_enabled(),
+            "status": str(status or "").strip() or "unknown",
+            "lower_bound_fallback_used": bool(lower_bound_fallback_used),
+            "fallback_path": str(fallback_path or "").strip() or None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._dynamic_eval_status_path().write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _try_lower_bound_fallback_after_dynamic_eval(self, context: GeneratorContext) -> bool:
+        if not self._dynamic_eval_allow_lower_bound_fallback():
+            return False
+        compiled = self._run_compiler_if_supported()
+        if compiled:
+            self._write_dynamic_eval_status(
+                "lower_bound_recovered",
+                lower_bound_fallback_used=True,
+                fallback_path="compiler",
+            )
+            self.loop_controller.record_success(
+                stage="GENERATOR",
+                note=f"dynamic_eval lower-bound compiler fallback: {compiled.strategy}",
+            )
+            return True
+        if self._has_viable_template():
+            self._write_dynamic_eval_status(
+                "lower_bound_recovered",
+                lower_bound_fallback_used=True,
+                fallback_path="template",
+            )
+            self._run_template(context, mode_label="dynamic-eval-template-fallback")
+            return True
+        return False
+
     def _researcher_report_for_prompt(self) -> str:
         path = self.metadata_dir / "researcher_report.json"
         if not path.exists():
@@ -456,6 +550,8 @@ class GeneratorService:
             "intent",
             "preconditions",
             "tech_stack_candidates",
+            "family_hypothesis_summary",
+            "evidence_relevance",
             "minimal_repro_steps",
             "pocs",
             "deps",
@@ -515,28 +611,51 @@ class GeneratorService:
     def run(self) -> None:
         context = self._build_context()
         self._ensure_loop_started()
+        dynamic_eval = self._dynamic_eval_enabled()
+        if dynamic_eval:
+            self._write_dynamic_eval_status("started")
         if self.generator_mode == "synthesis":
-            compiled = self._run_compiler_if_supported()
-            if compiled:
-                self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
-                return
-            self._run_synthesis_with_loops(context)
+            if not dynamic_eval:
+                compiled = self._run_compiler_if_supported()
+                if compiled:
+                    self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
+                    return
+            try:
+                outcome = self._run_synthesis_with_loops(context)
+                if dynamic_eval:
+                    self._write_dynamic_eval_status(self._dynamic_eval_status_for_outcome(outcome))
+            except Exception:
+                if dynamic_eval and self._try_lower_bound_fallback_after_dynamic_eval(context):
+                    return
+                if dynamic_eval:
+                    self._write_dynamic_eval_status("dynamic_failed")
+                raise
             return
         if self.generator_mode == "hybrid":
-            compiled = self._run_compiler_if_supported()
-            if compiled:
-                self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
-                return
+            if not dynamic_eval:
+                compiled = self._run_compiler_if_supported()
+                if compiled:
+                    self.loop_controller.record_success(stage="GENERATOR", note=f"compiler path: {compiled.strategy}")
+                    return
             try:
-                self._run_synthesis_with_loops(context)
+                outcome = self._run_synthesis_with_loops(context)
+                if dynamic_eval:
+                    self._write_dynamic_eval_status(self._dynamic_eval_status_for_outcome(outcome))
                 return
             except ManifestValidationError as exc:
+                if dynamic_eval and not self._dynamic_eval_allow_lower_bound_fallback():
+                    self._write_dynamic_eval_status("dynamic_failed")
+                    raise
                 if not self._has_compatible_template():
                     LOGGER.warning(
                         "Synthesis guard rejected all candidates for %s and no compatible template exists; preserving failure. %s",
                         self.sid,
                         exc,
                     )
+                    if dynamic_eval and self._try_lower_bound_fallback_after_dynamic_eval(context):
+                        return
+                    if dynamic_eval:
+                        self._write_dynamic_eval_status("dynamic_failed")
                     raise
                 LOGGER.warning(
                     "Synthesis guard rejected all candidates for %s; falling back to compatible template. %s",
@@ -544,16 +663,40 @@ class GeneratorService:
                     exc,
                 )
             except Exception as exc:  # pragma: no cover - safety net
+                if dynamic_eval and not self._dynamic_eval_allow_lower_bound_fallback():
+                    self._write_dynamic_eval_status("dynamic_failed")
+                    raise
                 if not self._has_compatible_template():
                     LOGGER.warning(
                         "Hybrid synthesis failure (%s) and no compatible template exists for %s; preserving failure.",
                         exc,
                         self.sid,
                     )
+                    if dynamic_eval and self._try_lower_bound_fallback_after_dynamic_eval(context):
+                        return
+                    if dynamic_eval:
+                        self._write_dynamic_eval_status("dynamic_failed")
                     raise
                 LOGGER.warning("Hybrid synthesis failure (%s); using compatible template path.", exc)
+            if dynamic_eval:
+                if self._try_lower_bound_fallback_after_dynamic_eval(context):
+                    return
+                self._write_dynamic_eval_status("dynamic_failed")
+                raise RuntimeError(
+                    "dynamic_eval lower-bound fallback was allowed, but no viable compiler/template path remained"
+                )
             self._run_template(context, mode_label="hybrid-template")
             return
+        if dynamic_eval:
+            try:
+                outcome = self._run_synthesis_with_loops(context)
+                self._write_dynamic_eval_status(self._dynamic_eval_status_for_outcome(outcome))
+                return
+            except Exception:
+                if self._try_lower_bound_fallback_after_dynamic_eval(context):
+                    return
+                self._write_dynamic_eval_status("dynamic_failed")
+                raise
         # In template mode, attempt a compatibility check first; if no viable
         # template exists for the requested vuln/runtime, fall back to LLM synthesis.
         if not self._has_viable_template():
@@ -794,7 +937,7 @@ class GeneratorService:
         if self.loop_controller.current_loop == 0:
             self.loop_controller.start_loop()
 
-    def _run_synthesis_with_loops(self, context: GeneratorContext) -> None:
+    def _run_synthesis_with_loops(self, context: GeneratorContext) -> SynthesisOutcome:
         if self.single_attempt:
             try:
                 outcome = self._run_synthesis_once(context)
@@ -808,7 +951,7 @@ class GeneratorService:
                     len(outcome.written_files),
                     self.sid,
                 )
-                return
+                return outcome
             except ManifestValidationError as exc:
                 failure_meta = self._latest_generator_failure()
                 reason = failure_meta.get("reason") or str(exc)
@@ -846,7 +989,7 @@ class GeneratorService:
                     len(outcome.written_files),
                     self.sid,
                 )
-                return
+                return outcome
             except ManifestValidationError as exc:
                 failure_meta = self._latest_generator_failure()
                 reason = failure_meta.get("reason") or str(exc)
@@ -870,6 +1013,15 @@ class GeneratorService:
                     continue
                 raise
 
+    @staticmethod
+    def _dynamic_eval_status_for_outcome(outcome: SynthesisOutcome) -> str:
+        selected = getattr(outcome, "selected", None)
+        if selected is None:
+            return "dynamic_success"
+        if bool(getattr(selected, "fallback_used", False)):
+            return "degraded_success"
+        return "dynamic_success"
+
     def _run_synthesis_once(self, context: GeneratorContext) -> SynthesisOutcome:
         engine = SynthesisEngine(
             sid=self.sid,
@@ -881,7 +1033,7 @@ class GeneratorService:
             user_deps=self.user_deps,
         )
         return engine.run(
-            requirement=self.requirement,
+            requirement=self._requirement_for_synthesis(),
             rag_context=context.rag,
             hints=context.hints,
             researcher_report=context.researcher_report,
@@ -1102,6 +1254,8 @@ class GeneratorService:
                 score += 3.0
             if req_db and req_db == t.db:
                 score += 2.0
+            if not req_db and not t.requires_external_db:
+                score += 1.0
             if req_pattern and req_pattern == (t.pattern_id or "").lower():
                 score += 1.0
             if researcher_tags:
@@ -1137,15 +1291,15 @@ class GeneratorService:
 
     def _has_viable_template(self) -> bool:
         req_vuln = str(self.requirement.get("vuln_id") or "").strip().lower()
-        req_db = str(((self.requirement.get("runtime") or {}).get("db")) or "").strip().lower()
-        if not req_vuln or not req_db:
+        req_db = self._runtime_db()
+        if not req_vuln:
             return False
         templates = self._get_registry().templates
         for t in templates:
             if not self._template_runtime_surface_matches(t):
                 continue
             vuln_match = req_vuln in t.tags
-            db_match = req_db == t.db
+            db_match = not req_db or req_db == t.db
             if vuln_match and db_match:
                 return True
         return False
@@ -1221,6 +1375,10 @@ class GeneratorService:
             return diagnostics
 
         if requires_external_db:
+            strategy = resolve_compiler_strategy(
+                str(self.requirement.get("vuln_id") or "").strip(),
+                self.requirement,
+            )
             feasibility = executor_feasibility_summary(
                 self.requirement,
                 self._executor_policy_for_template_runtime_surface(),
@@ -1237,6 +1395,25 @@ class GeneratorService:
                 )
                 return diagnostics
             diagnostics["status"] = "configured"
+            runtime_surface = diagnose_runtime_surface(
+                compiler_strategy=strategy,
+                requirement=self.requirement,
+                service_port=self._template_service_port(template),
+            )
+            missing_targets = runtime_surface.get("missing_sidecar_targets") or []
+            defaulted_sidecar_keys = runtime_surface.get("defaulted_sidecar_keys") or []
+            if missing_targets:
+                diagnostics["matches"] = False
+                diagnostics["status"] = "sidecar_contract_mismatch"
+                diagnostics["reason"] = "template runtime surface could not resolve a compatible sidecar target"
+                diagnostics["missing_sidecar_targets"] = missing_targets
+                return diagnostics
+            if defaulted_sidecar_keys:
+                diagnostics["matches"] = False
+                diagnostics["status"] = "sidecar_env_mismatch"
+                diagnostics["reason"] = "template runtime surface fell back to defaults for sidecar-backed env keys"
+                diagnostics["defaulted_sidecar_keys"] = defaulted_sidecar_keys
+                return diagnostics
 
         if template_env_keys and expected_env:
             expected_keys = set(expected_env)
@@ -1245,8 +1422,37 @@ class GeneratorService:
                 diagnostics["status"] = "env_contract_mismatch"
                 diagnostics["reason"] = "template env contract is not satisfied by derived runtime surface"
                 return diagnostics
+            value_mismatches = {}
+            for key, template_value in getattr(template, "service_env", {}).items():
+                expected_value = expected_env.get(key)
+                if expected_value is None:
+                    continue
+                if str(template_value) != str(expected_value):
+                    value_mismatches[key] = {
+                        "template": str(template_value),
+                        "expected": str(expected_value),
+                    }
+            if value_mismatches:
+                diagnostics["matches"] = False
+                diagnostics["status"] = "env_value_mismatch"
+                diagnostics["reason"] = "template env values do not match the derived runtime surface"
+                diagnostics["env_value_mismatches"] = value_mismatches
+                return diagnostics
 
         return diagnostics
+
+    def _template_service_port(self, template: TemplateSpec) -> int:
+        metadata = getattr(template, "metadata", {})
+        ports = metadata.get("ports") if isinstance(metadata, dict) else {}
+        if isinstance(ports, dict):
+            for key in ("app", "service", "http"):
+                try:
+                    candidate = int(ports.get(key))
+                except Exception:
+                    candidate = None
+                if candidate and candidate > 0:
+                    return candidate
+        return 5000
 
     def _template_stack_matches(self, template: TemplateSpec) -> bool:
         requested = self._requested_stack_id()
@@ -1285,22 +1491,10 @@ class GeneratorService:
         strategy = resolve_compiler_strategy(vuln_id, self.requirement)
         if not strategy:
             return {}
-        metadata = getattr(template, "metadata", {})
-        ports = metadata.get("ports") if isinstance(metadata, dict) else {}
-        service_port = 5000
-        if isinstance(ports, dict):
-            for key in ("app", "service", "http"):
-                try:
-                    candidate = int(ports.get(key))
-                except Exception:
-                    candidate = None
-                if candidate and candidate > 0:
-                    service_port = candidate
-                    break
         return derive_service_env(
             compiler_strategy=strategy,
             requirement=self.requirement,
-            service_port=service_port,
+            service_port=self._template_service_port(template),
         )
 
     def _researcher_hint_tags(self) -> Set[str]:

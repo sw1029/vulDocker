@@ -1,0 +1,121 @@
+requirement_id: E2E-UNKNOWN-0001
+intent: 'E2E 회귀: 레포에 없는 CWE도 synthesis 기반으로 end-to-end 검증'
+vuln_ids:
+- CWE-9999
+multi_vuln: false
+language: python
+framework: flask
+seed: 4242
+retriever_commit: stub
+corpus_snapshot: rag-snap-mvp
+pattern_id: generic-web-vuln
+deps_digest: sha256:placeholder
+base_image_digest: sha256:python311
+allow_intentional_vuln: true
+runtime:
+  base_image: python:3.11-slim
+  package_manager: pip
+  db: sqlite
+  allow_external_db: false
+user_deps:
+- requests==2.31.0
+- pymysql
+generator_mode: synthesis
+variation_key:
+  mode: deterministic
+  self_consistency_k: 1
+  pattern_pool_seed: 4242
+dep_guard:
+  llm_assist: true
+  auto_patch: true
+policy:
+  stop_on_first_failure: false
+  dynamic_eval: false
+  dynamic_eval_allow_lower_bound_fallback: false
+  guard:
+    enforcement: block_both
+    failure_policy: closed_unknown
+    dynamic_scope: assertions_semantics
+    unsupported_op_policy: normalize_retry
+    refresh_researcher_on_guard_dsl_error: true
+    semantic_refresh_threshold: 2
+    hint_payload_enabled: true
+    failure_fingerprint_window: 3
+    call_budget:
+      mode: bundle_once
+      ensemble_runs: 3
+    autofix:
+      level: code
+      max_attempts: 1
+    low_confidence_unknown_policy: warn
+  verifier:
+    require_exit_code_zero: true
+    strict_flag_default: false
+    prefer_rule: true
+    llm_assist: true
+    low_trust_unknown_policy: warn
+    min_promotion_independence: compiler_coupled
+    min_name_resolution_confidence: low
+  require_researcher_evidence: true
+  allow_runtime_rule_override_static: false
+  allow_name_family_fallback: false
+  open_world_strict: false
+  name_only_mode: compatibility
+  allow_unknown_pattern_seed: false
+executor:
+  allow_network: false
+  network_mode: none
+  sidecars: []
+researcher:
+  search_policy: remote_required
+  generate_candidate_templates: false
+  shadow_mode: false
+  search_filters: {}
+vuln_id: CWE-9999
+vuln_id_resolutions:
+- field: vuln_ids[0]
+  input: CWE-9999
+  resolved_vuln_id: CWE-9999
+  source: explicit_identifier
+  match_class: exact_identifier
+  confidence: high
+vuln_request_identities:
+- request_label: CWE-9999
+  normalized_request_label: cwe 9999
+  resolved_vuln_id: CWE-9999
+  input_mode: explicit_identifier
+  source: explicit_identifier
+  match_class: exact_identifier
+  confidence: high
+  field: vuln_ids[0]
+  synthetic_resolution: false
+  catalog_backed_resolution: false
+  token_match_resolution: false
+  exact_identifier_resolution: true
+  name_driven: false
+name_resolution:
+  field: vuln_ids[0]
+  input: CWE-9999
+  resolved_vuln_id: CWE-9999
+  source: explicit_identifier
+  match_class: exact_identifier
+  confidence: high
+request_identity:
+  request_label: CWE-9999
+  normalized_request_label: cwe 9999
+  resolved_vuln_id: CWE-9999
+  input_mode: explicit_identifier
+  source: explicit_identifier
+  match_class: exact_identifier
+  confidence: high
+  field: vuln_ids[0]
+  synthetic_resolution: false
+  catalog_backed_resolution: false
+  token_match_resolution: false
+  exact_identifier_resolution: true
+  name_driven: false
+vuln_label: CWE-9999
+_normalization_defaults:
+  profile: CWE-9999
+  applied_fields:
+  - vuln_label

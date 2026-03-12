@@ -16,7 +16,13 @@ SID_FIELDS = [
     "deps_digest",
     "base_image_digest",
 ]
-OPTIONAL_FIELDS = ["effective_vuln_ids_digest", "vuln_ids_digest", "generator_mode", "runtime_surface_digest"]
+OPTIONAL_FIELDS = [
+    "effective_vuln_ids_digest",
+    "vuln_ids_digest",
+    "generator_mode",
+    "runtime_surface_digest",
+    "policy_eval_digest",
+]
 
 
 def compute_sid(components: Dict[str, str]) -> str:

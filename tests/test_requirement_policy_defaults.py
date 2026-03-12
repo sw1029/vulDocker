@@ -55,6 +55,20 @@ def test_unknown_cwe_defaults_to_remote_required_research_evidence() -> None:
     assert verifier.get("min_name_resolution_confidence") == "low"
     assert researcher.get("search_policy") == "remote_required"
     assert researcher.get("generate_candidate_templates") is False
+    assert researcher.get("shadow_mode") is False
+    assert normalized.requirement["pattern_id"] == "generic-web-vuln"
+    assert policy.get("allow_unknown_pattern_seed") is False
+    assert any("generic-web-vuln" in warning for warning in normalized.warnings)
+
+
+def test_unknown_cwe_can_keep_pattern_seed_when_opted_in() -> None:
+    requirement = _base_requirement("CWE-9999")
+    requirement["policy"] = {"allow_unknown_pattern_seed": True}
+
+    normalized = normalize_requirement(requirement)
+
+    assert normalized.requirement["pattern_id"] == "test"
+    assert (normalized.requirement.get("policy") or {}).get("allow_unknown_pattern_seed") is True
 
 
 def test_known_cwe_defaults_to_remote_prefer_without_forced_evidence() -> None:
@@ -73,6 +87,110 @@ def test_known_cwe_defaults_to_remote_prefer_without_forced_evidence() -> None:
     assert guard.get("hint_payload_enabled") is True
     assert guard.get("failure_fingerprint_window") == 3
     assert researcher.get("search_policy") == "remote_prefer"
+    assert researcher.get("shadow_mode") is False
+    assert policy.get("open_world_strict") is False
+    assert policy.get("dynamic_eval") is False
+    assert policy.get("dynamic_eval_allow_lower_bound_fallback") is False
+
+
+def test_open_world_strict_policy_is_normalized_to_bool() -> None:
+    requirement = _base_requirement("CWE-89")
+    requirement["policy"] = {"open_world_strict": "yes"}
+
+    normalized = normalize_requirement(requirement)
+
+    assert (normalized.requirement.get("policy") or {}).get("open_world_strict") is True
+
+
+def test_dynamic_eval_policies_are_normalized_to_bool() -> None:
+    requirement = _base_requirement("NAME-OPEN-REDIRECT")
+    requirement["policy"] = {
+        "dynamic_eval": "yes",
+        "dynamic_eval_allow_lower_bound_fallback": "1",
+    }
+
+    normalized = normalize_requirement(requirement)
+    policy = normalized.requirement.get("policy") or {}
+
+    assert policy.get("dynamic_eval") is True
+    assert policy.get("dynamic_eval_allow_lower_bound_fallback") is True
+
+
+def test_name_only_mode_defaults_to_compatibility() -> None:
+    requirement = _base_requirement("NAME-OPEN-REDIRECT")
+
+    normalized = normalize_requirement(requirement)
+
+    policy = normalized.requirement.get("policy") or {}
+
+    assert policy.get("name_only_mode") == "compatibility"
+    assert (policy.get("name_only_contract") or {}).get("effective_mode") == "compatibility"
+    assert (policy.get("name_only_contract") or {}).get("allow_curated_lower_bound_closure") is True
+
+
+def test_name_only_mode_is_normalized_and_preserved() -> None:
+    requirement = _base_requirement("NAME-OPEN-REDIRECT")
+    requirement["policy"] = {"name_only_mode": "STRICT_DYNAMIC"}
+
+    normalized = normalize_requirement(requirement)
+    policy = normalized.requirement.get("policy") or {}
+
+    assert policy.get("name_only_mode") == "strict_dynamic"
+    assert policy.get("require_researcher_evidence") is True
+    assert (normalized.requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+    assert (policy.get("name_only_contract") or {}).get("require_strict_open_world") is True
+    assert (policy.get("name_only_contract") or {}).get("require_live_llm") is True
+    assert (policy.get("name_only_contract") or {}).get("allow_stub_llm") is False
+
+
+def test_name_only_dynamic_mode_defers_hard_stack_defaults_into_stack_hypotheses() -> None:
+    normalized = normalize_requirement(
+        {
+            "vuln_name": "Open Redirect",
+            "policy": {"name_only_mode": "dynamic"},
+        }
+    )
+    requirement = normalized.requirement
+    runtime = requirement.get("runtime") or {}
+    stack_hypotheses = requirement.get("stack_hypotheses") or []
+
+    assert requirement["vuln_id"] == "NAME-OPEN-REDIRECT"
+    assert "language" not in requirement
+    assert "framework" not in requirement
+    assert "base_image_digest" not in requirement
+    assert "base_image" not in runtime
+    assert "package_manager" not in runtime
+    assert runtime["allow_external_db"] is False
+    assert len(stack_hypotheses) >= 2
+    assert stack_hypotheses[0]["stack_id"] == "python/flask"
+    assert stack_hypotheses[0]["source"] == "profile_prior"
+    assert any(item["stack_id"] == "python/fastapi" for item in stack_hypotheses)
+    assert any("Deferred hard stack defaults" in warning for warning in normalized.warnings)
+
+
+def test_name_only_dynamic_eval_defers_hard_stack_defaults_into_stack_hypotheses() -> None:
+    normalized = normalize_requirement(
+        {
+            "vuln_name": "Open Redirect",
+            "policy": {"dynamic_eval": True},
+        }
+    )
+    requirement = normalized.requirement
+    runtime = requirement.get("runtime") or {}
+    stack_hypotheses = requirement.get("stack_hypotheses") or []
+
+    assert requirement["vuln_id"] == "NAME-OPEN-REDIRECT"
+    assert "language" not in requirement
+    assert "framework" not in requirement
+    assert "base_image_digest" not in requirement
+    assert "base_image" not in runtime
+    assert "package_manager" not in runtime
+    assert runtime["allow_external_db"] is False
+    assert len(stack_hypotheses) >= 2
+    assert stack_hypotheses[0]["stack_id"] == "python/flask"
+    assert any(item["stack_id"] == "python/fastapi" for item in stack_hypotheses)
+    assert any("Deferred hard stack defaults" in warning for warning in normalized.warnings)
+    assert ((requirement.get("policy") or {}).get("name_only_contract") or {}).get("effective_mode") == "dynamic_eval"
 
 
 def test_researcher_search_filters_are_normalized() -> None:
@@ -100,6 +218,15 @@ def test_researcher_search_filters_are_normalized() -> None:
     assert filters["search_lang"] == "en"
     assert "unknown_key" not in filters
     assert any("unknown keys" in warning for warning in normalized.warnings)
+
+
+def test_researcher_shadow_mode_is_normalized_to_bool() -> None:
+    requirement = _base_requirement("CWE-89")
+    requirement["researcher"] = {"shadow_mode": "yes"}
+
+    normalized = normalize_requirement(requirement)
+
+    assert (normalized.requirement.get("researcher") or {}).get("shadow_mode") is True
 
 
 def test_vuln_name_only_requirement_is_mapped_and_defaulted() -> None:
@@ -160,6 +287,11 @@ def test_template_injection_alias_is_canonicalized_to_supported_name_family() ->
     assert (requirement.get("name_resolution") or {}).get("match_class") == "catalog_alias"
     assert (requirement.get("policy") or {}).get("require_researcher_evidence") is False
     assert (requirement.get("researcher") or {}).get("search_policy") == "remote_prefer"
+    request_identity = requirement.get("request_identity") or {}
+    assert request_identity.get("request_label") == "Server Side Template Injection"
+    assert request_identity.get("input_mode") == "free_form_name"
+    assert request_identity.get("catalog_backed_resolution") is True
+    assert request_identity.get("synthetic_resolution") is False
 
 
 def test_path_traversal_with_compiler_disabled_keeps_static_rule_lower_bound() -> None:
@@ -328,6 +460,23 @@ def test_multi_vuln_mixed_freeform_entries_preserve_unknown_synthetic_bundle() -
     assert resolutions[1]["resolved_vuln_id"] == "NAME-OPEN-REDIRECT"
 
 
+def test_policy_disables_name_family_fallback_by_default() -> None:
+    normalized = normalize_requirement({"vuln_id": "Open Redirect"})
+
+    assert (normalized.requirement.get("policy") or {}).get("allow_name_family_fallback") is False
+
+
+def test_policy_normalizes_name_family_fallback_to_bool() -> None:
+    normalized = normalize_requirement(
+        {
+            "vuln_id": "Open Redirect",
+            "policy": {"allow_name_family_fallback": "true"},
+        }
+    )
+
+    assert (normalized.requirement.get("policy") or {}).get("allow_name_family_fallback") is True
+
+
 def test_bundle_requirement_uses_bundle_specific_name_resolution_for_multi_vuln_inputs() -> None:
     normalized = normalize_requirement(
         {
@@ -357,8 +506,16 @@ def test_bundle_requirement_uses_bundle_specific_name_resolution_for_multi_vuln_
 
     assert (template_req.get("name_resolution") or {}).get("resolved_vuln_id") == "NAME-TEMPLATE-INJECTION"
     assert (template_req.get("name_resolution") or {}).get("confidence") == "medium"
+    assert template_req.get("vuln_label") == "Injection in Jinja template"
+    assert template_req.get("vuln_name") == "Injection in Jinja template"
+    assert (template_req.get("request_identity") or {}).get("request_label") == "Injection in Jinja template"
+    assert (template_req.get("request_identity") or {}).get("match_class") == "token_match"
     assert (redirect_req.get("name_resolution") or {}).get("resolved_vuln_id") == "NAME-OPEN-REDIRECT"
     assert (redirect_req.get("name_resolution") or {}).get("confidence") == "high"
+    assert redirect_req.get("vuln_label") == "Open Redirect"
+    assert redirect_req.get("vuln_name") == "Open Redirect"
+    assert (redirect_req.get("request_identity") or {}).get("request_label") == "Open Redirect"
+    assert (redirect_req.get("request_identity") or {}).get("match_class") == "catalog_alias"
 
 
 def test_explicit_plaintext_vuln_id_is_promoted_to_synthetic_name() -> None:
@@ -382,6 +539,11 @@ def test_single_token_plaintext_vuln_id_is_promoted_to_synthetic_name() -> None:
     assert (requirement.get("name_resolution") or {}).get("confidence") == "low"
     assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
     assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+    request_identity = requirement.get("request_identity") or {}
+    assert request_identity.get("request_label") == "Foobar"
+    assert request_identity.get("input_mode") == "free_form_name"
+    assert request_identity.get("synthetic_resolution") is True
+    assert request_identity.get("catalog_backed_resolution") is False
 
 
 def test_single_token_vuln_name_is_promoted_to_synthetic_name() -> None:

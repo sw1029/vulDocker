@@ -41,6 +41,138 @@ def test_contract_uses_rule_defined_success_markers(tmp_path: Path) -> None:
     assert payload["compiler_strategy"] == "sqli_string_concat"
 
 
+def test_contract_preserves_family_hypothesis_summary_from_researcher_report(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="name-open-redirect",
+        researcher_report={
+            "researcher_report": {
+                "quality": "sufficient",
+                "family_hypothesis_summary": {
+                    "top_family": "open_redirect",
+                    "top_confidence": "high",
+                    "contradiction_count": 0,
+                    "contradictory_families": [],
+                },
+            }
+        },
+    )
+
+    semantic_contract = payload["semantic_contract"]
+    assert semantic_contract["family_hypothesis_summary"]["top_family"] == "open_redirect"
+    assert semantic_contract["family_hypothesis_summary"]["top_confidence"] == "high"
+
+
+def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "request_identity": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "input_mode": "free_form_name",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+                "name_driven": True,
+            },
+            "name_resolution": {
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+            },
+            "policy": {"name_only_mode": "dynamic"},
+            "stack_hypotheses": [
+                {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
+                {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
+            ],
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "open_redirect",
+                "top_confidence": "high",
+                "contradiction_count": 0,
+                "contradictory_families": [],
+            },
+            "verification_spec": {
+                "success_mode": "text",
+                "success_text_markers": ["Exploit SUCCESS"],
+                "flag_token": "FLAG{OPEN_REDIRECT_OK}",
+                "assertion_program": [{"op": "contains", "string": "Exploit SUCCESS"}],
+            },
+        },
+    )
+
+    oracle = payload["exploit_oracle"]
+    spec = payload["name_only_generation_spec"]
+
+    assert oracle["success_signature"] == "Exploit SUCCESS"
+    assert oracle["flag_token"] == "FLAG{OPEN_REDIRECT_OK}"
+    assert oracle["source"] == "researcher_verification_spec"
+    assert spec["request_label"] == "Open Redirect"
+    assert spec["family_working_hypothesis"] == "open_redirect"
+    assert spec["family_hypothesis_source"] == "researcher_family_hypothesis"
+    assert spec["request_identity_family"] == "open_redirect"
+    assert spec["required_contract"]["require_research"] is True
+    assert spec["exploit_oracle_summary"]["success_signature"] == "Exploit SUCCESS"
+
+
+def test_contract_name_only_generation_spec_can_fall_back_to_request_identity_family(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "request_identity": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "input_mode": "free_form_name",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+                "name_driven": True,
+            },
+            "name_resolution": {
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "sqli",
+                "top_confidence": "low",
+                "contradiction_count": 0,
+                "contradictory_families": [],
+            },
+        },
+    )
+
+    spec = payload["name_only_generation_spec"]
+
+    assert spec["researcher_family_hypothesis"] == "sqli"
+    assert spec["request_identity_family"] == "open_redirect"
+    assert spec["family_working_hypothesis"] == "open_redirect"
+    assert spec["family_hypothesis_source"] == "request_identity_fallback"
+
+
 def test_contract_uses_mysql_compiler_strategy_for_external_db_runtime(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
@@ -112,6 +244,114 @@ def test_contract_uses_catalog_driven_mysql_service_env_with_custom_sidecar_valu
         "DB_NAME": "custom_db",
     }
     assert payload["resolved"]["service_env"]["DB_HOST"] == "db-internal"
+
+
+def test_contract_surfaces_runtime_recipe_for_sidecar_backed_lane(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-89",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-89",
+        requirement={
+            "vuln_name": "SQL Injection",
+            "vuln_id": "CWE-89",
+            "pattern_id": "sqli-union-mysql",
+            "language": "python",
+            "framework": "flask",
+            "runtime": {"db": "mysql", "allow_external_db": True},
+            "executor": {
+                "allow_network": True,
+                "network_mode": "bridge",
+                "sidecars": [
+                    {
+                        "name": "mysql-main",
+                        "type": "mysql",
+                        "image": "mysql:8.0",
+                        "aliases": ["db-internal"],
+                    }
+                ],
+            },
+        },
+    )
+
+    recipe = payload["runtime_recipe"]
+    assert recipe["language"] == "python"
+    assert recipe["framework"] == "flask"
+    assert recipe["transport"] == "http"
+    assert recipe["db"] == "mysql"
+    assert recipe["allow_external_db"] is True
+    assert recipe["requires_external_db"] is True
+    assert recipe["network_mode"] == "bridge"
+    assert recipe["network_enabled"] is True
+    assert recipe["topology"] == "service_plus_sidecar"
+    assert recipe["sidecars"] == [
+        {
+            "name": "mysql-main",
+            "type": "mysql",
+            "image": "mysql:8.0",
+            "aliases": ["db-internal"],
+        }
+    ]
+    assert recipe["service_env"]["DB_HOST"] == "db-internal"
+
+
+def test_contract_runtime_recipe_surfaces_soft_stack_hypotheses_for_name_only_lane(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "stack_hypotheses": [
+                {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
+                {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
+            ],
+        },
+    )
+
+    recipe = payload["runtime_recipe"]
+    assert recipe["language"] == "python"
+    assert recipe["framework"] == "flask"
+    assert recipe["stack_locked"] is False
+    assert recipe["stack_source"] == "profile_prior"
+    assert recipe["stack_hypotheses"][0]["stack_id"] == "python/flask"
+    assert recipe["stack_hypotheses"][1]["stack_id"] == "python/fastapi"
+
+
+def test_contract_runtime_recipe_prefers_researcher_top_stack_candidate_when_unlocked(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        researcher_report={
+            "tech_stack_candidates": [
+                {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"},
+                {"language": "python", "framework": "flask", "stack_id": "python/flask", "confidence": "low"},
+            ]
+        },
+        requirement={
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "stack_hypotheses": [
+                {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
+                {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
+            ],
+        },
+    )
+
+    recipe = payload["runtime_recipe"]
+    assert recipe["framework"] == "fastapi"
+    assert recipe["stack_source"] == "researcher_candidate"
+    assert recipe["stack_locked"] is False
 
 
 def test_contract_marks_cwe352_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:

@@ -47,6 +47,19 @@ class LLMClient:
         self.last_error_class: Optional[str] = None
         self.last_error_message: Optional[str] = None
         self.last_error_retryable: Optional[bool] = None
+        self.last_used_stub: bool = False
+        self.last_provider_attempted: bool = False
+        self.last_provider_succeeded: bool = False
+        self.observed_stub_fallback: bool = False
+        self.observed_fixture_used: bool = False
+        self.observed_provider_attempted: bool = False
+        self.observed_provider_succeeded: bool = False
+        forced_stub_reason = str(os.environ.get("VUL_FORCE_LLM_STUB_REASON") or "").strip().lower()
+        if os.environ.get("VUL_FORCE_LLM_STUB"):
+            self.use_stub = True
+            self.last_error_class = forced_stub_reason or "provider_disabled"
+            self.last_error_message = "Remote LLM provider disabled by pipeline circuit breaker."
+            self.last_error_retryable = False
 
         api_key = (
             get_openai_api_key()
@@ -77,6 +90,7 @@ class LLMClient:
     def generate(self, messages: List[Dict[str, str]], *, tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """Generate a response from the underlying model or stub."""
 
+        self._reset_last_execution_state()
         self.fixture_used = False
         self.last_fixture_path = None
         fixture_response = self._fixture_response(messages)
@@ -85,9 +99,12 @@ class LLMClient:
             self.last_error_message = None
             self.last_error_retryable = None
             self._last_usage = None
+            self.observed_fixture_used = True
             return fixture_response
 
         if self.use_stub:
+            self.last_used_stub = True
+            self.observed_stub_fallback = True
             return self._stub_response(messages)
 
         self.last_error_class = None
@@ -107,6 +124,8 @@ class LLMClient:
             payload["tools"] = tools
 
         LOGGER.debug("Invoking litellm with payload keys: %s", list(payload))
+        self.last_provider_attempted = True
+        self.observed_provider_attempted = True
         try:
             response = litellm_completion(**payload)  # pragma: no cover - network call
         except Exception as exc:  # pragma: no cover - provider compatibility retry
@@ -124,16 +143,27 @@ class LLMClient:
                     raise
                 LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
                 self._record_error(exc)
+                self.last_used_stub = True
+                self.observed_stub_fallback = True
                 return self._stub_response(messages)
         try:
             self._last_usage = getattr(response, "usage", None)
+            self.last_provider_succeeded = True
+            self.observed_provider_succeeded = True
             return response["choices"][0]["message"]["content"]
         except Exception as exc:  # pragma: no cover - network failure fallback
             if not self._fallback_on_error:
                 raise
             LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
             self._record_error(exc)
+            self.last_used_stub = True
+            self.observed_stub_fallback = True
             return self._stub_response(messages)
+
+    def _reset_last_execution_state(self) -> None:
+        self.last_used_stub = False
+        self.last_provider_attempted = False
+        self.last_provider_succeeded = False
 
     @staticmethod
     def _is_unsupported_params_error(exc: Exception) -> bool:
@@ -169,6 +199,10 @@ class LLMClient:
         self.last_error_class = error_class
         self.last_error_message = token[:500] if token else None
         self.last_error_retryable = retryable
+        if error_class in {"quota_exhausted", "auth_failure"}:
+            # Non-transient provider failures should not be paid repeatedly
+            # within the same researcher/generator/reviewer run.
+            self.use_stub = True
 
     def _fixture_response(self, messages: List[Dict[str, str]]) -> Optional[str]:
         prompt_echo = "\n---\n".join(m.get("content", "") for m in messages if m.get("content"))

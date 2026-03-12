@@ -16,6 +16,7 @@ def _service_stub(vuln_id: str = "CWE-89") -> ResearcherService:
     service.requirement = {"vuln_id": vuln_id}  # type: ignore[attr-defined]
     service.plan = {"policy": {"guard": {"failure_policy": "closed_unknown"}}}  # type: ignore[attr-defined]
     service._last_evidence_relevance = None  # type: ignore[attr-defined]
+    service._query_plan_index = {}  # type: ignore[attr-defined]
     service._bundle_is_unknown = lambda bundle: False  # type: ignore[attr-defined]
     service._guard_missing_is_blocking = lambda bundle: False  # type: ignore[attr-defined]
     service._fallback_generator_assertions = lambda bundle: [  # type: ignore[attr-defined]
@@ -295,8 +296,63 @@ def test_unknown_cwe_low_confidence_policy_can_downgrade_to_guard_fallback() -> 
     assert "guard fallback mode" in reason.lower()
 
 
+def test_open_world_strict_name_driven_lane_requires_non_degraded_remote_search() -> None:
+    service = _service_stub("NAME-OPEN-REDIRECT")
+    service.plan = {"policy": {"open_world_strict": True}, "requirement": service.requirement}  # type: ignore[attr-defined]
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "request_identity": {"name_driven": True},
+    }
+    service._search_degraded = True  # type: ignore[attr-defined]
+    service._bundle_is_unknown = lambda bundle: False  # type: ignore[attr-defined]
+    service._require_researcher_evidence = lambda bundle: False  # type: ignore[attr-defined]
+    hits = [
+        SearchResult(
+            title="local note",
+            url="/tmp/local",
+            snippet="Open redirect notes",
+            source="local",
+            query="Open Redirect",
+        )
+    ]
+
+    quality, reason = service._evaluate_evidence_quality(None, hits)  # type: ignore[attr-defined]
+
+    assert quality == "insufficient"
+    assert "open_world_strict" in reason
+    assert "degraded" in reason
+
+
+def test_open_world_strict_name_driven_lane_requires_remote_hits() -> None:
+    service = _service_stub("NAME-OPEN-REDIRECT")
+    service.plan = {"policy": {"open_world_strict": True}, "requirement": service.requirement}  # type: ignore[attr-defined]
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "request_identity": {"name_driven": True},
+    }
+    service._search_degraded = False  # type: ignore[attr-defined]
+    service._bundle_is_unknown = lambda bundle: False  # type: ignore[attr-defined]
+    service._require_researcher_evidence = lambda bundle: False  # type: ignore[attr-defined]
+    hits = [
+        SearchResult(
+            title="local note",
+            url="/tmp/local",
+            snippet="Open redirect notes",
+            source="local",
+            query="Open Redirect",
+        )
+    ]
+
+    quality, reason = service._evaluate_evidence_quality(None, hits)  # type: ignore[attr-defined]
+
+    assert quality == "insufficient"
+    assert "open_world_strict" in reason
+    assert "at least one remote hit" in reason
+
+
 def test_unknown_cwe_query_token_does_not_inflate_relevance() -> None:
     service = _service_stub("CWE-9999")
+    service._bundle_is_unknown = lambda bundle: True  # type: ignore[attr-defined]
     service.requirement = {  # type: ignore[attr-defined]
         "vuln_id": "CWE-9999",
         "pattern_id": "sqli-string-concat",
@@ -318,9 +374,14 @@ def test_unknown_cwe_query_token_does_not_inflate_relevance() -> None:
 
     assert score < 0.30
 
+    profile = service._relevance_profile(None)  # type: ignore[attr-defined]
+    assert "sql injection" not in profile["family_terms"]
+    assert "sqli" not in profile["family_terms"]
 
-def test_unknown_semantic_signature_is_derived_from_pattern_and_verification_spec() -> None:
+
+def test_unknown_semantic_signature_does_not_infer_known_family_from_pattern_or_stack_hints() -> None:
     service = _service_stub("CWE-9999")
+    service._bundle_is_unknown = lambda bundle: True  # type: ignore[attr-defined]
     service.requirement = {  # type: ignore[attr-defined]
         "vuln_id": "CWE-9999",
         "pattern_id": "sqli-string-concat",
@@ -347,10 +408,12 @@ def test_unknown_semantic_signature_is_derived_from_pattern_and_verification_spe
 
     signature, sources = service._resolve_semantic_signature(report, None)  # type: ignore[attr-defined]
 
-    assert "heuristic" in sources
-    assert "request.args" in signature["input_vector"]
-    assert any(token in signature["sink"] for token in ["cursor.execute", "execute("])
-    assert any("string concatenation" in token or "input concatenated/interpolated into SQL sink" in token for token in signature["exploit_precondition"])
+    assert sources == ["empty"]
+    assert signature == {
+        "input_vector": [],
+        "sink": [],
+        "exploit_precondition": [],
+    }
 
 
 def test_known_family_semantic_signature_merge_stays_family_scoped() -> None:
@@ -441,6 +504,7 @@ def test_researcher_drops_stdlib_dependency_assertions_from_generator_guards() -
 
 def test_unknown_relevance_penalizes_wrong_family_remote_hits() -> None:
     service = _service_stub("CWE-9999")
+    service._bundle_is_unknown = lambda bundle: True  # type: ignore[attr-defined]
     service.requirement = {  # type: ignore[attr-defined]
         "vuln_id": "CWE-9999",
         "pattern_id": "sqli-string-concat",
@@ -708,6 +772,95 @@ def test_fallback_guard_spec_uses_normalized_runtime_verification_spec_for_path_
         for item in verifier_assertions
     )
     assert not any(item.get("string") == "49" for item in verifier_assertions if item.get("op") == "contains")
+
+
+def test_dynamic_eval_fallback_generator_assertions_drop_compiler_metadata_constraints() -> None:
+    service = _service_stub("NAME-OPEN-REDIRECT")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "vuln_name": "Open Redirect",
+        "pattern_id": "open-redirect",
+        "policy": {"dynamic_eval": True},
+    }
+    service._fallback_generator_assertions = (  # type: ignore[attr-defined]
+        lambda bundle: ResearcherService._fallback_generator_assertions(service, bundle)
+    )
+    bundle = type("Bundle", (), {"vuln_id": "NAME-OPEN-REDIRECT"})()
+
+    assertions = service._fallback_generator_assertions(bundle)  # type: ignore[attr-defined]
+    metadata_fields = {
+        str(assertion.get("field") or "")
+        for assertion in assertions
+        if isinstance(assertion, dict)
+    }
+
+    assert "metadata.stack_scaffold_id" not in metadata_fields
+    assert "metadata.fragment_id" not in metadata_fields
+    assert "metadata.compose_mode" not in metadata_fields
+    assert "metadata.compiler_strategy" not in metadata_fields
+    assert any(assertion.get("op") == "role_exists" for assertion in assertions)
+
+
+def test_name_only_dynamic_mode_fallback_generator_assertions_drop_compiler_metadata_constraints() -> None:
+    service = _service_stub("NAME-OPEN-REDIRECT")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "vuln_name": "Open Redirect",
+        "pattern_id": "open-redirect",
+        "policy": {"name_only_mode": "dynamic"},
+        "request_identity": {"name_driven": True},
+    }
+    service._fallback_generator_assertions = (  # type: ignore[attr-defined]
+        lambda bundle: ResearcherService._fallback_generator_assertions(service, bundle)
+    )
+    bundle = type("Bundle", (), {"vuln_id": "NAME-OPEN-REDIRECT"})()
+
+    assertions = service._fallback_generator_assertions(bundle)  # type: ignore[attr-defined]
+    metadata_fields = {
+        str(assertion.get("field") or "")
+        for assertion in assertions
+        if isinstance(assertion, dict)
+    }
+
+    assert "metadata.stack_scaffold_id" not in metadata_fields
+    assert "metadata.fragment_id" not in metadata_fields
+    assert "metadata.compose_mode" not in metadata_fields
+    assert "metadata.compiler_strategy" not in metadata_fields
+
+
+def test_name_only_dynamic_mode_candidate_guard_normalization_drops_compiler_metadata_constraints() -> None:
+    service = _service_stub("NAME-OPEN-REDIRECT")
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "policy": {"name_only_mode": "dynamic"},
+        "request_identity": {"name_driven": True},
+    }
+    payload = {
+        "generator_assertions": [
+            {"op": "role_exists", "role": "service_main"},
+            {"op": "manifest_field_contains", "field": "metadata.stack_scaffold_id", "string": "python/flask"},
+            {"op": "manifest_field_contains", "field": "metadata.fragment_id", "string": "redirect_next_route"},
+        ],
+        "verifier_assertions": [{"op": "contains", "string": "Exploit SUCCESS"}],
+    }
+
+    normalized = service._normalize_guard_payload_ops(  # type: ignore[attr-defined]
+        payload,
+        unsupported_policy="normalize_retry",
+        bundle=type("Bundle", (), {"vuln_id": "NAME-OPEN-REDIRECT"})(),
+        report={},
+    )
+
+    generator_assertions = normalized["generator_assertions"]  # type: ignore[index]
+    metadata_fields = {
+        str(assertion.get("field") or "")
+        for assertion in generator_assertions
+        if isinstance(assertion, dict)
+    }
+
+    assert "metadata.stack_scaffold_id" not in metadata_fields
+    assert "metadata.fragment_id" not in metadata_fields
+    assert any(assertion.get("op") == "role_exists" for assertion in generator_assertions)
 
 
 def test_default_semantic_signature_prefers_shared_registry_for_compiler_family() -> None:

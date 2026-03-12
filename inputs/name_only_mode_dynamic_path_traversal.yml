@@ -1,0 +1,7 @@
+requirement_id: EXAMPLE-NAME-ONLY-MODE-DYNAMIC-PATH-TRAVERSAL-0001
+intent: "Name-only dynamic mode example for Path Traversal"
+vuln_name: Path Traversal
+seed: 4343
+generator_mode: synthesis
+policy:
+  name_only_mode: dynamic

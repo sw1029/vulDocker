@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.logging import get_logger
+from common.name_only import build_name_only_contract
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.schema import RequirementNormalization, RequirementValidationError, normalize_requirement
 from common.sid import OPTIONAL_FIELDS, SID_FIELDS, compute_sid
@@ -85,6 +86,27 @@ def _runtime_surface_digest(normalization: RequirementNormalization) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def _policy_eval_digest(requirement: Dict[str, Any]) -> str:
+    policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+    if not isinstance(policy, dict):
+        return ""
+    payload = {
+        "dynamic_eval": bool(policy.get("dynamic_eval")),
+        "dynamic_eval_allow_lower_bound_fallback": bool(policy.get("dynamic_eval_allow_lower_bound_fallback")),
+        "open_world_strict": bool(policy.get("open_world_strict")),
+        "name_only_mode": str(policy.get("name_only_mode") or "").strip().lower() or "compatibility",
+    }
+    if not (
+        bool(payload["dynamic_eval"])
+        or bool(payload["dynamic_eval_allow_lower_bound_fallback"])
+        or bool(payload["open_world_strict"])
+        or payload["name_only_mode"] != "compatibility"
+    ):
+        return ""
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def _normalize_variation_key(requirement: Dict[str, Any]) -> Dict[str, Any]:
     seed = requirement.get("seed", 0)
     return VariationManager.normalize(requirement.get("variation_key"), seed=seed)
@@ -111,18 +133,32 @@ def _policy_config(normalization: RequirementNormalization) -> Dict[str, Any]:
         if candidate:
             search_policy = candidate
     guard_policy = policy_section.get("guard") if isinstance(policy_section.get("guard"), dict) else {}
-    return {
+    policy_payload = {
         "allow_intentional_vuln": allow_intentional,
         "stop_on_first_failure": stop_on_first_failure,
         "allow_runtime_rule_override_static": bool(
             policy_section.get("allow_runtime_rule_override_static", False)
         ),
+        "allow_name_family_fallback": bool(policy_section.get("allow_name_family_fallback", False)),
+        "open_world_strict": bool(policy_section.get("open_world_strict", False)),
+        "dynamic_eval": bool(policy_section.get("dynamic_eval", False)),
+        "dynamic_eval_allow_lower_bound_fallback": bool(
+            policy_section.get("dynamic_eval_allow_lower_bound_fallback", False)
+        ),
+        "name_only_mode": str(policy_section.get("name_only_mode") or "compatibility").strip().lower()
+        or "compatibility",
         "require_researcher_evidence": bool(policy_section.get("require_researcher_evidence", False)),
+        "allow_unknown_pattern_seed": bool(policy_section.get("allow_unknown_pattern_seed", False)),
         "guard": guard_policy,
         "researcher": {"search_policy": search_policy},
         "verifier": verifier_policy,
         "executor": normalization.executor_policy,
     }
+    policy_payload["name_only_contract"] = build_name_only_contract(
+        requirement=requirement,
+        policy=policy_payload,
+    )
+    return policy_payload
 
 
 def build_plan(normalization: RequirementNormalization) -> Dict[str, Any]:
@@ -130,6 +166,9 @@ def build_plan(normalization: RequirementNormalization) -> Dict[str, Any]:
     components["effective_vuln_ids_digest"] = normalization.effective_vuln_ids_digest
     components["generator_mode"] = str(normalization.requirement.get("generator_mode") or "synthesis")
     components["runtime_surface_digest"] = _runtime_surface_digest(normalization)
+    policy_eval_digest = _policy_eval_digest(normalization.requirement)
+    if policy_eval_digest:
+        components["policy_eval_digest"] = policy_eval_digest
     if normalization.vuln_ids_digest:
         components["vuln_ids_digest"] = normalization.vuln_ids_digest
     sid = compute_sid(components)

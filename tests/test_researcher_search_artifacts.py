@@ -30,8 +30,33 @@ class _ReactLoopStub:
     def queries_from_requirement(self, requirement):  # noqa: ANN001
         return ["unknown cwe exploit"]
 
+    def query_plan_from_requirement(self, requirement, *, limit=3):  # noqa: ANN001
+        return {
+            "request_label": str(requirement.get("vuln_id") or ""),
+            "family_hypotheses": [],
+            "exploit_hypotheses": [],
+            "queries": [
+                {
+                    "query": "unknown cwe exploit",
+                    "evidence_type": "writeup",
+                    "rationale": "stub",
+                    "priority": 1,
+                    "family": "",
+                }
+            ][:limit],
+        }
+
     def span(self, **kwargs):  # noqa: ANN003, ANN001
         return _Span()
+
+    def rank_family_hypotheses(self, search_results, *, base_hypotheses=None, limit=4):  # noqa: ANN001
+        return {
+            "ranked_families": [],
+            "top_family": None,
+            "top_confidence": None,
+            "contradiction_count": 0,
+            "contradictory_families": [],
+        }
 
     def record_researcher_report(self, **kwargs) -> None:  # noqa: ANN003
         return None
@@ -141,6 +166,9 @@ def test_remote_required_failure_records_search_health_path(monkeypatch, tmp_pat
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["search_health_path"] == str(health_path)
     assert report["resolved_contract_path"] == str(contract_path)
+    assert report["query_plan"]["queries"][0]["query"] == "unknown cwe exploit"
+    assert report["evidence_type_summary"]["hit_count"] == 0
+    assert report["family_hypothesis_summary"]["top_family"] is None
 
 
 def test_remote_prefer_degraded_search_is_recorded_in_report(monkeypatch, tmp_path: Path) -> None:
@@ -180,9 +208,79 @@ def test_remote_prefer_degraded_search_is_recorded_in_report(monkeypatch, tmp_pa
     assert report["search_degraded"] is True
     assert report["search_health_path"] == str(tmp_path / "search_health.json")
     assert report["resolved_contract_path"] == str(tmp_path / "resolved_contract.json")
+    assert report["query_plan"]["queries"][0]["evidence_type"] == "writeup"
+    assert report["evidence_type_summary"]["hit_count"] == 1
+    assert report["family_hypothesis_summary"]["top_family"] is None
     assert health["degraded"] is True
     assert health["local_result_count"] == 1
     assert contract["contract_stage"] == "research_seed"
+
+
+def test_name_only_dynamic_service_expands_query_plan_limit_for_stack_exploration(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="NAME-OPEN-REDIRECT",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service.requirement.update(  # type: ignore[attr-defined]
+        {
+            "policy": {"name_only_mode": "dynamic"},
+            "request_identity": {"name_driven": True},
+            "stack_hypotheses": [
+                {"language": "python", "framework": "flask"},
+                {"language": "python", "framework": "fastapi"},
+            ],
+        }
+    )
+    service.plan["policy"]["name_only_mode"] = "dynamic"  # type: ignore[index]
+
+    assert service._effective_query_plan_limit() == 4  # type: ignore[attr-defined]
+
+
+def test_researcher_infers_tech_stack_candidates_from_stack_anchor_hits(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="NAME-OPEN-REDIRECT",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    query_plan = {
+        "stack_hypotheses": [
+            {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
+            {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
+        ],
+        "queries": [
+            {
+                "query": "Open Redirect vulnerable example python/fastapi",
+                "evidence_type": "stack_anchor",
+            }
+        ],
+    }
+    service._query_plan_index = {  # type: ignore[attr-defined]
+        "Open Redirect vulnerable example python/fastapi": {
+            "query": "Open Redirect vulnerable example python/fastapi",
+            "evidence_type": "stack_anchor",
+        }
+    }
+
+    candidates = service._infer_tech_stack_candidates(  # type: ignore[attr-defined]
+        [
+            SearchResult(
+                title="FastAPI open redirect vulnerable example",
+                url="https://example.com/fastapi-open-redirect",
+                snippet="FastAPI RedirectResponse vulnerable example with open redirect sink",
+                source="remote",
+                provider="tavily",
+                query="Open Redirect vulnerable example python/fastapi",
+            )
+        ],
+        query_plan,
+    )
+
+    assert candidates[0]["stack_id"] == "python/fastapi"
+    assert candidates[0]["confidence"] in {"medium", "high"}
+    assert "stack_anchor_query" in candidates[0]["sources"]
 
 
 def test_success_report_canonicalizes_unknown_vuln_id(monkeypatch, tmp_path: Path) -> None:
@@ -234,7 +332,7 @@ class _Response:
         return self._payload
 
 
-def test_unknown_cwe_researcher_run_succeeds_with_mock_tavily(monkeypatch, tmp_path: Path) -> None:
+def test_unknown_cwe_researcher_run_fail_closes_when_only_wrong_family_tavily_hit_exists(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("agents.researcher.service.load_static_context", lambda _snapshot: "")
 
     def _fake_post(url, json, headers, timeout):  # noqa: ANN001
@@ -273,15 +371,25 @@ def test_unknown_cwe_researcher_run_succeeds_with_mock_tavily(monkeypatch, tmp_p
     )
     service.search_tool = WebSearchTool(provider="tavily", api_key="token")  # type: ignore[attr-defined]
 
-    path = service.run()
+    try:
+        service.run()
+    except RuntimeError as exc:
+        assert "low relevance score" in str(exc).lower()
+    else:  # pragma: no cover - fail closed is the contract under test
+        raise AssertionError("expected researcher to fail closed for unsupported unknown family")
 
-    report = json.loads(path.read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "researcher_report.json").read_text(encoding="utf-8"))
     health = json.loads((tmp_path / "search_health.json").read_text(encoding="utf-8"))
     contract = json.loads((tmp_path / "resolved_contract.json").read_text(encoding="utf-8"))
-    assert report["quality"] == "sufficient"
+    assert report["quality"] == "insufficient"
     assert report["search_degraded"] is False
     assert report["evidence"][0]["source"] == "remote"
     assert report["resolved_contract_path"] == str(tmp_path / "resolved_contract.json")
+    assert report["semantic_signature"] == {
+        "input_vector": [],
+        "sink": [],
+        "exploit_precondition": [],
+    }
     assert health["configured"] is True
     assert health["remote_result_count"] == 1
     assert contract["contract_stage"] == "research_seed"

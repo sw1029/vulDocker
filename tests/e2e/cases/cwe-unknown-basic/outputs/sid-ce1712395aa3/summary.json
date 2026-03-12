@@ -1,0 +1,366 @@
+{
+  "sid": "sid-ce1712395aa3",
+  "overall_pass": null,
+  "pipeline_result": "failure",
+  "promotion_eligible": false,
+  "promotion_reasons": [
+    "cwe-9999: pipeline:run_missing",
+    "cwe-9999: pipeline:verify_missing",
+    "cwe-9999: pipeline:review_missing",
+    "cwe-9999: unknown_evidence:low_confidence",
+    "cwe-9999: compiler:unsupported",
+    "cwe-9999: compiler_reason:semantic family unsupported for compiler-backed generation"
+  ],
+  "memory_promotion": {
+    "eligible": false,
+    "reasons": [
+      "base_promotion:ineligible",
+      "strict_open_world:strict_fail_closed_negative",
+      "artifact_quality:low",
+      "oracle_clarity:missing",
+      "topology_clarity:missing"
+    ]
+  },
+  "memory_promotion_eligible": false,
+  "generation_summary": {
+    "bundle_count": 1,
+    "by_origin": {
+      "research_short_circuit": 1
+    },
+    "by_dynamicness_verdict": {
+      "pre-generation fail-closed": 1
+    },
+    "by_compose_mode": {},
+    "by_stack_scaffold_id": {},
+    "llm_stub_bundles": 0,
+    "llm_fixture_bundles": 0,
+    "fallback_bundles": 0,
+    "family_override_bundles": 0,
+    "template_origin_bundles": 0,
+    "template_assisted_bundles": 0,
+    "registry_compose_bundles": 0,
+    "scaffolded_bundles": 0,
+    "dynamic_eval_attempted_bundles": 0,
+    "dynamic_eval_recovered_bundles": 0
+  },
+  "compiler_contract_summary": {
+    "bundle_count": 1,
+    "supported_bundles": 0,
+    "unsupported_bundles": 1,
+    "by_strategy": {},
+    "by_support_level": {
+      "unsupported": 1
+    }
+  },
+  "verification_summary": {
+    "bundle_count": 1,
+    "by_rule_source": {},
+    "by_trust": {},
+    "by_independence": {},
+    "low_trust_bundles": 0
+  },
+  "researcher_summary": {
+    "bundle_count": 1,
+    "shadow_mode_bundles": 0,
+    "report_present_bundles": 1,
+    "ran_bundles": 1,
+    "skipped_bundles": 0,
+    "degraded_bundles": 0,
+    "query_plan_bundles": 1,
+    "contradiction_bundles": 1,
+    "ambiguous_family_hypothesis_bundles": 1,
+    "by_quality": {
+      "insufficient": 1
+    },
+    "by_top_family_hypothesis": {
+      "sqli": 1
+    },
+    "by_top_family_confidence": {
+      "low": 1
+    },
+    "avg_query_target_match_rate": 0.667
+  },
+  "request_identity_summary": {
+    "bundle_count": 1,
+    "name_driven_bundles": 0,
+    "synthetic_resolution_bundles": 0,
+    "by_input_mode": {
+      "explicit_identifier": 1
+    },
+    "by_match_class": {
+      "exact_identifier": 1
+    },
+    "by_confidence": {
+      "high": 1
+    }
+  },
+  "name_resolution_summary": {
+    "bundle_count": 1,
+    "resolved_bundles": 1,
+    "by_source": {
+      "explicit_identifier": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_match_class": {
+      "exact_identifier": 1
+    }
+  },
+  "generalization_summary": {
+    "bundle_count": 1,
+    "positive_generalization_bundles": 0,
+    "by_class": {
+      "synthetic_regression": 1
+    },
+    "by_confidence": {},
+    "by_basis": {}
+  },
+  "open_world_summary": {
+    "bundle_count": 1,
+    "positive_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "template_dependent_bundles": 0,
+    "by_class": {
+      "synthetic_regression": 1
+    },
+    "by_confidence": {},
+    "by_basis": {}
+  },
+  "strict_open_world_summary": {
+    "bundle_count": 1,
+    "positive_strict_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "template_dependent_bundles": 0,
+    "fixture_backed_bundles": 0,
+    "stub_backed_bundles": 0,
+    "research_degraded_bundles": 0,
+    "verifier_coupled_bundles": 0,
+    "by_class": {
+      "strict_fail_closed_negative": 1
+    }
+  },
+  "partial_progress_summary": {
+    "bundle_count": 1,
+    "successful_bundles": 0,
+    "failed_bundles": 1,
+    "executed_bundles": 0,
+    "verified_bundles": 0,
+    "research_blocked_bundles": 1,
+    "partial_success": false
+  },
+  "compiler_supported": false,
+  "compiler_strategy": null,
+  "compiler_reason": "semantic family unsupported for compiler-backed generation",
+  "compiler_family": null,
+  "stack_scaffold_id": null,
+  "stack_scaffold_version": null,
+  "fragment_id": null,
+  "compose_mode": null,
+  "service_env": null,
+  "request_identity": {
+    "request_label": "CWE-9999",
+    "normalized_request_label": "cwe 9999",
+    "resolved_vuln_id": "CWE-9999",
+    "input_mode": "explicit_identifier",
+    "source": "explicit_identifier",
+    "match_class": "exact_identifier",
+    "confidence": "high",
+    "field": "vuln_ids[0]",
+    "synthetic_resolution": false,
+    "catalog_backed_resolution": false,
+    "token_match_resolution": false,
+    "exact_identifier_resolution": true,
+    "name_driven": false
+  },
+  "name_resolution": {
+    "field": "vuln_ids[0]",
+    "input": "CWE-9999",
+    "resolved_vuln_id": "CWE-9999",
+    "source": "explicit_identifier",
+    "match_class": "exact_identifier",
+    "confidence": "high"
+  },
+  "generation_origin": "research_short_circuit",
+  "verification_rule_source": null,
+  "verification_trust": null,
+  "verification_independence": null,
+  "semantic_supported": false,
+  "semantic_status": "unsupported",
+  "semantic_source": "resolved_contract.semantic_contract",
+  "llm_fixture_used": false,
+  "provider_health_state": "evidence_low_relevance",
+  "total_duration_s": 4.35,
+  "dynamicness_verdict": "pre-generation fail-closed",
+  "dynamicness_reason": "generation was skipped after evidence relevance precheck",
+  "family_non_remote_available": false,
+  "effective_non_remote_available": false,
+  "compiler_path_enabled": true,
+  "executor_feasibility_status": "not_required",
+  "generalization_class": "synthetic_regression",
+  "counts_as_generalization": false,
+  "generalization_reason": "explicit synthetic unknown identifier remains a regression lane",
+  "generalization_confidence": null,
+  "generalization_basis": null,
+  "open_world_class": "synthetic_regression",
+  "counts_as_open_world_generalization": false,
+  "open_world_reason": "explicit synthetic unknown identifier remains a regression lane",
+  "open_world_confidence": null,
+  "open_world_basis": null,
+  "strict_open_world_class": "strict_fail_closed_negative",
+  "counts_as_strict_open_world_generalization": false,
+  "strict_open_world_reason": "bundle stopped before generation, so it cannot count as strict open-world evidence",
+  "researcher": {
+    "shadow_mode_enabled": false,
+    "force_run": false,
+    "dynamic_eval_enabled": false,
+    "search_policy": "remote_required",
+    "report_present": true,
+    "ran": true,
+    "quality": "insufficient",
+    "quality_reason": "Insufficient researcher evidence for CWE-9999: low relevance score (0.22 < 0.30). Evidence does not align with requested vulnerability semantics.",
+    "search_health_path": "/home/ysw/vulDocker/metadata/sid-ce1712395aa3/search_health.json",
+    "search_degraded": false,
+    "guard_fallback": false,
+    "semantic_signature_source": [
+      "empty"
+    ],
+    "evidence_relevance_score": 0.223,
+    "evidence_relevance_threshold": 0.3,
+    "evidence_relevance_confidence": "low",
+    "query_plan_present": true,
+    "query_plan_family_hypothesis_count": 0,
+    "evidence_types": {
+      "writeup": 3,
+      "reference": 1,
+      "reference_impl": 5
+    },
+    "query_target_match_rate": 0.667,
+    "top_family_hypothesis": "sqli",
+    "top_family_hypothesis_confidence": "low",
+    "top_family_hypothesis_raw_confidence": "high",
+    "family_hypothesis_contradictions": 3,
+    "top_family_hypothesis_margin": 0.0,
+    "family_hypothesis_ambiguous": true
+  },
+  "pipeline_returncode": 1,
+  "failure": {
+    "stage": "RESEARCH",
+    "reason": "Insufficient researcher evidence for CWE-9999: low relevance score (0.22 < 0.30). Evidence does not align with requested vulnerability semantics.",
+    "fix_hint": "Improve evidence quality or lower the researcher evidence threshold for this lane.",
+    "timestamp": "2026-03-11T12:41:35.030521+00:00",
+    "terminal_failure_class": "evidence_low_relevance",
+    "retry_recommended": false,
+    "metadata": {
+      "exit_code": 1,
+      "bundle_slug": "cwe-9999",
+      "vuln_id": "CWE-9999",
+      "search_health_path": "/home/ysw/vulDocker/metadata/sid-ce1712395aa3/search_health.json",
+      "search_configured": true,
+      "remote_result_count": 9,
+      "search_provider": "tavily",
+      "terminal_failure_class": "evidence_low_relevance",
+      "retry_recommended": false
+    }
+  },
+  "bundles": [
+    {
+      "slug": "cwe-9999",
+      "vuln_id": "CWE-9999",
+      "verify_pass": null,
+      "evidence": "",
+      "run_passed": null,
+      "exit_code": null,
+      "run_log": null,
+      "rule": null,
+      "promotion_eligible": false,
+      "promotion_reasons": [
+        "pipeline:run_missing",
+        "pipeline:verify_missing",
+        "pipeline:review_missing",
+        "unknown_evidence:low_confidence",
+        "compiler:unsupported",
+        "compiler_reason:semantic family unsupported for compiler-backed generation"
+      ],
+      "memory_promotion_eligible": false,
+      "memory_promotion_reasons": [
+        "base_promotion:ineligible",
+        "strict_open_world:strict_fail_closed_negative",
+        "artifact_quality:low",
+        "oracle_clarity:missing",
+        "topology_clarity:missing"
+      ],
+      "semantic_supported": false,
+      "semantic_status": "unsupported",
+      "semantic_source": "resolved_contract.semantic_contract",
+      "verification_rule_source": null,
+      "verification_trust": null,
+      "verification_independence": null,
+      "verification_trust_reason": null,
+      "compiler_supported": false,
+      "compiler_strategy": null,
+      "compiler_reason": "semantic family unsupported for compiler-backed generation",
+      "compiler_family": null,
+      "stack_scaffold_id": null,
+      "stack_scaffold_version": null,
+      "fragment_id": null,
+      "compose_mode": null,
+      "service_env": null,
+      "request_identity": {
+        "request_label": "CWE-9999",
+        "normalized_request_label": "cwe 9999",
+        "resolved_vuln_id": "CWE-9999",
+        "input_mode": "explicit_identifier",
+        "source": "explicit_identifier",
+        "match_class": "exact_identifier",
+        "confidence": "high",
+        "field": "vuln_ids[0]",
+        "synthetic_resolution": false,
+        "catalog_backed_resolution": false,
+        "token_match_resolution": false,
+        "exact_identifier_resolution": true,
+        "name_driven": false
+      },
+      "name_resolution": {
+        "input": "CWE-9999",
+        "resolved_vuln_id": "CWE-9999",
+        "source": "explicit_identifier",
+        "match_class": "exact_identifier",
+        "confidence": "high"
+      },
+      "generation_origin": "research_short_circuit",
+      "llm_fixture_used": null,
+      "dynamicness_verdict": "pre-generation fail-closed",
+      "dynamicness_reason": "generation was skipped after evidence relevance precheck",
+      "family_non_remote_available": false,
+      "effective_non_remote_available": false,
+      "compiler_path_enabled": true,
+      "executor_feasibility_status": "not_required",
+      "generalization_class": "synthetic_regression",
+      "counts_as_generalization": false,
+      "generalization_reason": "explicit synthetic unknown identifier remains a regression lane",
+      "generalization_confidence": null,
+      "generalization_basis": null,
+      "open_world_class": "synthetic_regression",
+      "counts_as_open_world_generalization": false,
+      "open_world_reason": "explicit synthetic unknown identifier remains a regression lane",
+      "open_world_confidence": null,
+      "open_world_basis": null,
+      "strict_open_world_class": "strict_fail_closed_negative",
+      "counts_as_strict_open_world_generalization": false,
+      "strict_open_world_reason": "bundle stopped before generation, so it cannot count as strict open-world evidence",
+      "researcher_quality": "insufficient",
+      "researcher_shadow_mode": false,
+      "researcher_report_present": true,
+      "failure_reason": "Insufficient researcher evidence for CWE-9999: low relevance score (0.22 < 0.30). Evidence does not align with requested vulnerability semantics.",
+      "terminal_failure_class": "evidence_low_relevance"
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": [],
+    "issues_sample": []
+  },
+  "manifest_path": "/home/ysw/vulDocker/metadata/sid-ce1712395aa3/failure_manifest.json",
+  "manifest_file": "failure_manifest.json",
+  "reviewer_path": null
+}

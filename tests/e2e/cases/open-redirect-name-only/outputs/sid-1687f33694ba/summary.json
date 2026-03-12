@@ -1,0 +1,319 @@
+{
+  "sid": "sid-1687f33694ba",
+  "overall_pass": true,
+  "pipeline_result": "success",
+  "promotion_eligible": true,
+  "promotion_reasons": [],
+  "memory_promotion": {
+    "eligible": false,
+    "reasons": [
+      "strict_open_world:strict_curated_lower_bound",
+      "artifact_quality:medium",
+      "oracle_clarity:medium"
+    ]
+  },
+  "memory_promotion_eligible": false,
+  "generation_summary": {
+    "bundle_count": 1,
+    "by_origin": {
+      "compiler_generated": 1
+    },
+    "by_dynamicness_verdict": {
+      "compiler-first": 1
+    },
+    "by_compose_mode": {
+      "registry": 1
+    },
+    "by_stack_scaffold_id": {
+      "python/flask": 1
+    },
+    "llm_stub_bundles": 0,
+    "llm_fixture_bundles": 0,
+    "fallback_bundles": 0,
+    "family_override_bundles": 0,
+    "template_origin_bundles": 0,
+    "template_assisted_bundles": 0,
+    "registry_compose_bundles": 1,
+    "scaffolded_bundles": 1
+  },
+  "compiler_contract_summary": {
+    "bundle_count": 1,
+    "supported_bundles": 1,
+    "unsupported_bundles": 0,
+    "by_strategy": {
+      "open_redirect_reflect": 1
+    },
+    "by_support_level": {
+      "compiler_supported": 1
+    }
+  },
+  "verification_summary": {
+    "bundle_count": 1,
+    "by_rule_source": {
+      "declared_rule": 1
+    },
+    "by_trust": {
+      "high": 1
+    },
+    "by_independence": {
+      "independent": 1
+    },
+    "low_trust_bundles": 0
+  },
+  "researcher_summary": {
+    "bundle_count": 1,
+    "shadow_mode_bundles": 0,
+    "report_present_bundles": 1,
+    "ran_bundles": 1,
+    "skipped_bundles": 1,
+    "degraded_bundles": 0,
+    "by_quality": {
+      "skipped": 1
+    }
+  },
+  "request_identity_summary": {
+    "bundle_count": 1,
+    "name_driven_bundles": 1,
+    "synthetic_resolution_bundles": 0,
+    "by_input_mode": {
+      "free_form_name": 1
+    },
+    "by_match_class": {
+      "catalog_alias": 1
+    },
+    "by_confidence": {
+      "high": 1
+    }
+  },
+  "name_resolution_summary": {
+    "bundle_count": 1,
+    "resolved_bundles": 1,
+    "by_source": {
+      "alias": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_match_class": {
+      "catalog_alias": 1
+    }
+  },
+  "generalization_summary": {
+    "bundle_count": 1,
+    "positive_generalization_bundles": 1,
+    "by_class": {
+      "real_free_form_positive": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_basis": {
+      "catalog_alias": 1
+    }
+  },
+  "open_world_summary": {
+    "bundle_count": 1,
+    "positive_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 1,
+    "template_dependent_bundles": 0,
+    "by_class": {
+      "catalog_resolved_lower_bound": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_basis": {
+      "catalog_alias": 1
+    }
+  },
+  "strict_open_world_summary": {
+    "bundle_count": 1,
+    "positive_strict_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 1,
+    "template_dependent_bundles": 0,
+    "fixture_backed_bundles": 0,
+    "stub_backed_bundles": 0,
+    "research_degraded_bundles": 0,
+    "verifier_coupled_bundles": 0,
+    "by_class": {
+      "strict_curated_lower_bound": 1
+    }
+  },
+  "partial_progress_summary": {
+    "bundle_count": 1,
+    "successful_bundles": 1,
+    "failed_bundles": 0,
+    "executed_bundles": 1,
+    "verified_bundles": 1,
+    "research_blocked_bundles": 0,
+    "partial_success": false
+  },
+  "compiler_supported": true,
+  "compiler_strategy": "open_redirect_reflect",
+  "compiler_reason": "compiler strategy and scaffold are available",
+  "compiler_family": "open_redirect",
+  "stack_scaffold_id": "python/flask",
+  "stack_scaffold_version": "1.0",
+  "fragment_id": "redirect_next_route",
+  "compose_mode": "registry",
+  "service_env": null,
+  "request_identity": {
+    "request_label": "Open Redirect",
+    "normalized_request_label": "open redirect",
+    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+    "input_mode": "free_form_name",
+    "source": "alias",
+    "match_class": "catalog_alias",
+    "confidence": "high",
+    "field": "vuln_name",
+    "synthetic_resolution": false,
+    "catalog_backed_resolution": true,
+    "token_match_resolution": false,
+    "exact_identifier_resolution": false,
+    "name_driven": true
+  },
+  "name_resolution": {
+    "field": "vuln_name",
+    "input": "Open Redirect",
+    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+    "source": "alias",
+    "match_class": "catalog_alias",
+    "confidence": "high"
+  },
+  "generation_origin": "compiler_generated",
+  "verification_rule_source": "declared_rule",
+  "verification_trust": "high",
+  "verification_independence": "independent",
+  "semantic_supported": true,
+  "semantic_status": "aligned",
+  "semantic_source": "generator_manifest",
+  "llm_fixture_used": false,
+  "provider_health_state": "not_probed",
+  "total_duration_s": 7.45,
+  "dynamicness_verdict": "compiler-first",
+  "dynamicness_reason": "compiler-generated scaffold/fragment path was used",
+  "family_non_remote_available": true,
+  "effective_non_remote_available": true,
+  "compiler_path_enabled": true,
+  "executor_feasibility_status": "not_required",
+  "generalization_class": "real_free_form_positive",
+  "counts_as_generalization": true,
+  "generalization_reason": "free-form vuln_name lane closed via compiler-first without generic fallback",
+  "generalization_confidence": "high",
+  "generalization_basis": "catalog_alias",
+  "open_world_class": "catalog_resolved_lower_bound",
+  "counts_as_open_world_generalization": false,
+  "open_world_reason": "name-only lane resolved via catalog_alias and closed by compiler-first; this remains curated lower-bound evidence, not open-world generation",
+  "open_world_confidence": "high",
+  "open_world_basis": "catalog_alias",
+  "strict_open_world_class": "strict_curated_lower_bound",
+  "counts_as_strict_open_world_generalization": false,
+  "strict_open_world_reason": "bundle closed through an existing curated lower bound and is excluded from strict open-world evidence",
+  "researcher": {
+    "shadow_mode_enabled": false,
+    "force_run": false,
+    "search_policy": "remote_prefer",
+    "report_present": true,
+    "ran": true,
+    "quality": "skipped",
+    "quality_reason": "researcher skipped: compiler/static supported path",
+    "search_degraded": false,
+    "guard_fallback": false,
+    "semantic_signature_source": [
+      "pattern"
+    ]
+  },
+  "pipeline_returncode": 0,
+  "failure": {},
+  "bundles": [
+    {
+      "slug": "name-open-redirect",
+      "vuln_id": "NAME-OPEN-REDIRECT",
+      "verify_pass": true,
+      "evidence": "Found signature: Exploit SUCCESS, Found flag token: FLAG{OPEN_REDIRECT_OK}, [PASS::contains] substring=found: Exploit SUCCESS, [PASS::contains] substring=found: FLAG{OPEN_REDIRECT_OK}, app.py matches /redirect\\(|RedirectResponse\\(/, app.py matches /request\\.args\\.get\\('next'|next\\s*:\\s*str\\s*=\\s*Query\\(/, poc.py contains 'Exploit SUCCESS', poc.py contains 'FLAG{OPEN_REDIRECT_OK}', Semantic consistency check passed",
+      "run_passed": true,
+      "exit_code": 0,
+      "run_log": "/home/ysw/vulDocker/artifacts/sid-1687f33694ba/run/run.log",
+      "rule": "NAME-OPEN-REDIRECT",
+      "promotion_eligible": true,
+      "promotion_reasons": [],
+      "memory_promotion_eligible": false,
+      "memory_promotion_reasons": [
+        "strict_open_world:strict_curated_lower_bound",
+        "artifact_quality:medium",
+        "oracle_clarity:medium"
+      ],
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "semantic_source": "generator_manifest",
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "verification_independence": "independent",
+      "verification_trust_reason": "verification used a declared static/runtime rule contract",
+      "compiler_supported": true,
+      "compiler_strategy": "open_redirect_reflect",
+      "compiler_reason": "compiler strategy and scaffold are available",
+      "compiler_family": "open_redirect",
+      "stack_scaffold_id": "python/flask",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "redirect_next_route",
+      "compose_mode": "registry",
+      "service_env": null,
+      "request_identity": {
+        "request_label": "Open Redirect",
+        "normalized_request_label": "open redirect",
+        "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+        "input_mode": "free_form_name",
+        "source": "alias",
+        "match_class": "catalog_alias",
+        "confidence": "high",
+        "field": "vuln_name",
+        "synthetic_resolution": false,
+        "catalog_backed_resolution": true,
+        "token_match_resolution": false,
+        "exact_identifier_resolution": false,
+        "name_driven": true
+      },
+      "name_resolution": {
+        "input": "Open Redirect",
+        "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+        "source": "alias",
+        "match_class": "catalog_alias",
+        "confidence": "high"
+      },
+      "generation_origin": "compiler_generated",
+      "llm_fixture_used": false,
+      "dynamicness_verdict": "compiler-first",
+      "dynamicness_reason": "compiler-generated scaffold/fragment path was used",
+      "family_non_remote_available": true,
+      "effective_non_remote_available": true,
+      "compiler_path_enabled": true,
+      "executor_feasibility_status": "not_required",
+      "generalization_class": "real_free_form_positive",
+      "counts_as_generalization": true,
+      "generalization_reason": "free-form vuln_name lane closed via compiler-first without generic fallback",
+      "generalization_confidence": "high",
+      "generalization_basis": "catalog_alias",
+      "open_world_class": "catalog_resolved_lower_bound",
+      "counts_as_open_world_generalization": false,
+      "open_world_reason": "name-only lane resolved via catalog_alias and closed by compiler-first; this remains curated lower-bound evidence, not open-world generation",
+      "open_world_confidence": "high",
+      "open_world_basis": "catalog_alias",
+      "strict_open_world_class": "strict_curated_lower_bound",
+      "counts_as_strict_open_world_generalization": false,
+      "strict_open_world_reason": "bundle closed through an existing curated lower bound and is excluded from strict open-world evidence",
+      "researcher_quality": "skipped",
+      "researcher_shadow_mode": false,
+      "researcher_report_present": true,
+      "failure_reason": null,
+      "terminal_failure_class": null
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": [],
+    "issues_sample": []
+  },
+  "manifest_path": "/home/ysw/vulDocker/metadata/sid-1687f33694ba/manifest.json",
+  "manifest_file": "manifest.json",
+  "reviewer_path": "/home/ysw/vulDocker/metadata/sid-1687f33694ba/reviewer_report.json"
+}

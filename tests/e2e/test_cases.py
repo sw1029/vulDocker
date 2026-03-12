@@ -1563,20 +1563,24 @@ def test_unknown_cwe_live_tavily_case(tmp_path: Path) -> None:
     assert summary_path.exists(), "summary.json was not created"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "failure"
+    assert summary["manifest_file"] == "failure_manifest.json"
+    assert summary["failure"]["stage"] == "RESEARCH"
+    assert summary["failure"]["terminal_failure_class"] == "evidence_low_relevance"
     assert summary["promotion_eligible"] is False
     assert summary["generalization_class"] == "synthetic_regression"
     assert summary["counts_as_generalization"] is False
     assert summary["generalization_summary"]["positive_generalization_bundles"] == 0
     assert any(
         bundle["slug"] == "cwe-9999"
-        and bundle.get("verify_pass")
-        and bundle.get("run_passed")
+        and bundle.get("verify_pass") is None
+        and bundle.get("run_passed") is None
         and bundle.get("promotion_eligible") is False
         and bundle.get("generalization_class") == "synthetic_regression"
         and bundle.get("counts_as_generalization") is False
-        and bundle.get("verification_rule_source") == "runtime_rule_candidate"
-        and bundle.get("verification_trust") == "low"
-        and bundle.get("verification_independence") == "self_derived"
+        and bundle.get("generation_origin") == "research_short_circuit"
+        and bundle.get("terminal_failure_class") == "evidence_low_relevance"
+        and "low relevance score" in str(bundle.get("failure_reason") or "")
         for bundle in summary["bundles"]
     )
     assert summary["reviewer"]["blocking_bundles"] == []
@@ -1618,15 +1622,15 @@ def test_unknown_cwe_live_low_trust_fail_closed_case(tmp_path: Path) -> None:
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["pipeline_result"] == "failure"
     assert summary["manifest_file"] == "failure_manifest.json"
+    assert summary["failure"]["stage"] == "RESEARCH"
+    assert summary["failure"]["terminal_failure_class"] == "evidence_low_relevance"
     assert summary["promotion_eligible"] is False
     assert any(
         bundle["slug"] == "cwe-9999"
-        and bundle.get("verify_pass") is False
-        and bundle.get("run_passed") is True
-        and bundle.get("verification_rule_source") == "runtime_rule_candidate"
-        and bundle.get("verification_trust") == "low"
-        and bundle.get("verification_independence") == "self_derived"
-        and bundle.get("terminal_failure_class") == "low_trust_verification"
-        and "low-trust verifier contract blocked by policy" in str(bundle.get("evidence") or "")
+        and bundle.get("verify_pass") is None
+        and bundle.get("run_passed") is None
+        and bundle.get("generation_origin") == "research_short_circuit"
+        and bundle.get("terminal_failure_class") == "evidence_low_relevance"
+        and "low relevance score" in str(bundle.get("failure_reason") or "")
         for bundle in summary["bundles"]
     )

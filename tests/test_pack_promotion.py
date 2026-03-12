@@ -9,10 +9,23 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from orchestrator.pack import (
+    _bundle_generation_provenance,
     _bundle_dynamicness_verdict,
+    _bundle_dynamic_eval_summary,
     _bundle_generalization_verdict,
+    _bundle_intent_satisfaction,
+    _bundle_open_world_verdict,
+    _bundle_researcher_summary,
+    _bundle_strict_open_world_verdict,
+    _dynamic_eval_summary,
+    _bundle_memory_promotion_status,
     _generation_summary,
     _generalization_summary,
+    _intent_satisfaction_summary,
+    _memory_promotion_summary,
+    _open_world_summary,
+    _request_identity_summary,
+    _strict_open_world_summary,
     _bundle_promotion_status,
     _promotion_summary,
 )
@@ -41,6 +54,32 @@ def test_bundle_promotion_is_blocked_by_semantic_contradiction(tmp_path: Path) -
 
     assert promotion["eligible"] is False
     assert any("semantic_contract" in reason for reason in promotion["reasons"])
+
+
+def test_bundle_generation_provenance_reads_materializer_from_generator_manifest(tmp_path: Path) -> None:
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "metadata": {
+                        "generation_origin": "deterministic_fallback",
+                        "fallback_class": "semantic_guided",
+                        "materializer": "minimal_dynamic",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    provenance = _bundle_generation_provenance(
+        "sid-pack",
+        VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app"),
+        tmp_path,
+    )
+
+    assert provenance["materializer"] == "minimal_dynamic"
 
 
 def test_bundle_promotion_is_blocked_by_medium_confidence_unknown_noise(tmp_path: Path) -> None:
@@ -151,6 +190,73 @@ def test_bundle_promotion_is_blocked_by_low_verification_trust(tmp_path: Path) -
 
     assert promotion["eligible"] is False
     assert "verify_contract:generator_manifest_fallback" in promotion["reasons"]
+
+
+def test_bundle_promotion_tracks_contract_oracle_fallback_as_low_trust_contract_coupled(
+    tmp_path: Path,
+) -> None:
+    metadata_dir = tmp_path / "metadata"
+    artifacts_dir = tmp_path / "artifacts"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+
+    plan = {
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+        },
+        "features": {"multi_vuln": False},
+    }
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "metadata": {
+                        "generation_origin": "deterministic_fallback",
+                        "fallback_class": "semantic_guided",
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "cwe-89",
+                        "vuln_id": "CWE-89",
+                        "verify_pass": True,
+                        "semantic_supported": True,
+                        "semantic_status": "aligned",
+                        "verification_rule_source": "contract_oracle_fallback",
+                        "verification_trust": "low",
+                        "verification_independence": "contract_coupled",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    promotion = _bundle_promotion_status(plan, bundle)
+
+    assert promotion["eligible"] is False
+    assert "verify_contract:contract_oracle_fallback" in promotion["reasons"]
+    assert "verify_independence:contract_coupled" in promotion["reasons"]
 
 
 def test_bundle_promotion_is_blocked_by_name_resolution_confidence_policy(tmp_path: Path) -> None:
@@ -414,6 +520,891 @@ def test_bundle_generalization_surfaces_medium_confidence_token_match_for_free_f
     assert verdict["confidence"] == "medium"
     assert verdict["basis"] == "token_match"
     assert "medium/token_match" in verdict["reason"]
+
+
+def test_bundle_open_world_marks_catalog_resolved_name_only_lane_as_lower_bound_dependent() -> None:
+    bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
+
+    verdict = _bundle_open_world_verdict(
+        bundle,
+        pattern_id="open-redirect",
+        promotion={"eligible": True},
+        dynamicness={"verdict": "compiler-first"},
+        compiler_contract={"support_level": "compiler_supported", "compiler_supported": True},
+        provenance={"generation_origin": "compiler_generated"},
+        name_resolution={"confidence": "high", "match_class": "catalog_alias"},
+    )
+    summary = _open_world_summary(
+        [
+            {
+                "open_world": verdict,
+            }
+        ]
+    )
+
+    assert verdict["class"] == "catalog_resolved_lower_bound"
+    assert verdict["counts_as_generalization"] is False
+    assert verdict["lower_bound_dependent"] is True
+    assert verdict["template_dependent"] is False
+    assert verdict["confidence"] == "high"
+    assert verdict["basis"] == "catalog_alias"
+    assert "curated lower-bound evidence" in verdict["reason"]
+    assert summary["positive_open_world_bundles"] == 0
+    assert summary["lower_bound_dependent_bundles"] == 1
+    assert summary["by_class"]["catalog_resolved_lower_bound"] == 1
+
+
+def test_bundle_open_world_separates_semantic_guided_degraded_name_only_lane() -> None:
+    bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
+
+    verdict = _bundle_open_world_verdict(
+        bundle,
+        pattern_id="open-redirect",
+        promotion={"eligible": True},
+        dynamicness={"verdict": "deterministic fallback dependent"},
+        compiler_contract={"support_level": "compiler_supported", "compiler_supported": True},
+        provenance={"generation_origin": "deterministic_fallback", "fallback_class": "semantic_guided"},
+        name_resolution={"confidence": "high", "match_class": "catalog_alias"},
+    )
+    summary = _open_world_summary([{"open_world": verdict}])
+
+    assert verdict["class"] == "semantic_guided_degraded"
+    assert verdict["counts_as_generalization"] is False
+    assert verdict["lower_bound_dependent"] is True
+    assert verdict["confidence"] == "high"
+    assert verdict["basis"] == "catalog_alias"
+    assert "semantic-guided deterministic fallback" in verdict["reason"]
+    assert summary["lower_bound_dependent_bundles"] == 1
+    assert summary["by_class"]["semantic_guided_degraded"] == 1
+
+
+def test_bundle_open_world_separates_minimal_dynamic_name_only_lane() -> None:
+    bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
+
+    verdict = _bundle_open_world_verdict(
+        bundle,
+        pattern_id="open-redirect",
+        promotion={"eligible": True},
+        dynamicness={"verdict": "deterministic fallback dependent"},
+        compiler_contract={"support_level": "compiler_supported", "compiler_supported": True},
+        provenance={
+            "generation_origin": "deterministic_fallback",
+            "fallback_class": "semantic_guided",
+            "materializer": "minimal_dynamic",
+        },
+        name_resolution={"confidence": "high", "match_class": "catalog_alias"},
+    )
+    summary = _open_world_summary([{"open_world": verdict}])
+
+    assert verdict["class"] == "semantic_guided_minimal_dynamic"
+    assert verdict["counts_as_generalization"] is False
+    assert verdict["lower_bound_dependent"] is True
+    assert summary["by_class"]["semantic_guided_minimal_dynamic"] == 1
+
+
+def test_bundle_open_world_marks_dynamic_name_only_generator_failure_as_attempt_failure() -> None:
+    bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
+
+    verdict = _bundle_open_world_verdict(
+        bundle,
+        pattern_id="open-redirect",
+        promotion={"eligible": False},
+        dynamicness={"verdict": "deterministic fallback dependent"},
+        compiler_contract={"support_level": "compiler_supported", "compiler_supported": True},
+        provenance={"generation_origin": "deterministic_fallback", "fallback_class": "generic_unsupported_family"},
+        dynamic_eval={"enabled": True, "attempted": True, "status": "dynamic_failed"},
+        failure={"stage": "GENERATOR", "terminal_failure_class": "guard_semantic_mismatch"},
+        name_resolution={"confidence": "high", "match_class": "catalog_alias"},
+    )
+
+    assert verdict["class"] == "name_driven_dynamic_failed"
+    assert verdict["lower_bound_dependent"] is False
+    assert "attempted dynamic generation first" in verdict["reason"]
+
+
+def test_bundle_open_world_marks_template_lane_as_template_dependent() -> None:
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+
+    verdict = _bundle_open_world_verdict(
+        bundle,
+        pattern_id="sqli-union-mysql",
+        promotion={"eligible": True},
+        dynamicness={"verdict": "template-assisted"},
+        compiler_contract={"support_level": "builtin_supported", "compiler_supported": True},
+        provenance={"generation_origin": "built_in_template"},
+    )
+    summary = _open_world_summary(
+        [
+            {
+                "open_world": verdict,
+            }
+        ]
+    )
+
+    assert verdict["class"] == "known_family_regression"
+    assert verdict["template_dependent"] is True
+    assert verdict["lower_bound_dependent"] is True
+    assert summary["template_dependent_bundles"] == 1
+    assert summary["lower_bound_dependent_bundles"] == 1
+
+
+def test_bundle_strict_open_world_excludes_curated_lower_bound_lane() -> None:
+    bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
+
+    verdict = _bundle_strict_open_world_verdict(
+        bundle,
+        open_world={
+            "class": "catalog_resolved_lower_bound",
+            "counts_as_generalization": False,
+            "lower_bound_dependent": True,
+            "template_dependent": False,
+        },
+        dynamicness={"verdict": "compiler-first"},
+        provenance={"generation_origin": "compiler_generated"},
+        lower_bound={"effective_non_remote_available": True},
+        verification={"rule_source": "declared_rule", "trust": "high", "independence": "independent"},
+        researcher={"report_present": True, "quality": "skipped", "search_degraded": False},
+        semantic={"supported": True, "status": "aligned"},
+    )
+    summary = _strict_open_world_summary([{"strict_open_world": verdict}])
+
+    assert verdict["class"] == "strict_curated_lower_bound"
+    assert verdict["counts_as_generalization"] is False
+    assert verdict["lower_bound_dependent"] is True
+    assert summary["positive_strict_open_world_bundles"] == 0
+    assert summary["lower_bound_dependent_bundles"] == 1
+    assert summary["by_class"]["strict_curated_lower_bound"] == 1
+
+
+def test_bundle_strict_open_world_separates_semantic_guided_fallback_lane() -> None:
+    bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
+
+    verdict = _bundle_strict_open_world_verdict(
+        bundle,
+        open_world={
+            "class": "semantic_guided_degraded",
+            "counts_as_generalization": False,
+            "lower_bound_dependent": True,
+            "template_dependent": False,
+        },
+        dynamicness={"verdict": "deterministic fallback dependent"},
+        provenance={"generation_origin": "deterministic_fallback", "fallback_class": "semantic_guided"},
+        lower_bound={"effective_non_remote_available": True},
+        verification={"rule_source": "declared_rule", "trust": "high", "independence": "independent"},
+        researcher={"report_present": True, "quality": "sufficient", "search_degraded": False},
+        semantic={"supported": True, "status": "aligned"},
+    )
+    summary = _strict_open_world_summary([{"strict_open_world": verdict}])
+
+    assert verdict["class"] == "strict_semantic_guided_fallback"
+    assert verdict["counts_as_generalization"] is False
+    assert verdict["lower_bound_dependent"] is True
+    assert summary["lower_bound_dependent_bundles"] == 1
+    assert summary["by_class"]["strict_semantic_guided_fallback"] == 1
+
+
+def test_bundle_strict_open_world_separates_minimal_dynamic_fallback_lane() -> None:
+    bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
+
+    verdict = _bundle_strict_open_world_verdict(
+        bundle,
+        open_world={
+            "class": "semantic_guided_minimal_dynamic",
+            "counts_as_generalization": False,
+            "lower_bound_dependent": True,
+            "template_dependent": False,
+        },
+        dynamicness={"verdict": "deterministic fallback dependent"},
+        provenance={
+            "generation_origin": "deterministic_fallback",
+            "fallback_class": "semantic_guided",
+            "materializer": "minimal_dynamic",
+        },
+        lower_bound={"effective_non_remote_available": True},
+        verification={"rule_source": "declared_rule", "trust": "high", "independence": "independent"},
+        researcher={"report_present": True, "quality": "sufficient", "search_degraded": False},
+        semantic={"supported": True, "status": "aligned"},
+    )
+    summary = _strict_open_world_summary([{"strict_open_world": verdict}])
+
+    assert verdict["class"] == "strict_minimal_dynamic_fallback"
+    assert summary["by_class"]["strict_minimal_dynamic_fallback"] == 1
+
+
+def test_bundle_strict_open_world_marks_dynamic_name_only_generator_failure() -> None:
+    bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
+
+    verdict = _bundle_strict_open_world_verdict(
+        bundle,
+        open_world={
+            "class": "name_driven_dynamic_failed",
+            "counts_as_generalization": False,
+            "lower_bound_dependent": False,
+            "template_dependent": False,
+        },
+        dynamicness={"verdict": "deterministic fallback dependent"},
+        provenance={"generation_origin": "deterministic_fallback", "fallback_class": "generic_unsupported_family"},
+        lower_bound={"effective_non_remote_available": True},
+        verification={"rule_source": "declared_rule", "trust": "high", "independence": "independent"},
+        researcher={"report_present": True, "quality": "sufficient", "search_degraded": False},
+        semantic={"supported": True, "status": "aligned"},
+        dynamic_eval={"enabled": True, "attempted": True, "status": "dynamic_failed"},
+        failure={"stage": "GENERATOR", "terminal_failure_class": "guard_semantic_mismatch"},
+    )
+
+    assert verdict["class"] == "strict_dynamic_generation_failed"
+    assert verdict["lower_bound_dependent"] is False
+
+
+def test_bundle_strict_open_world_excludes_fixture_backed_dynamic_lane() -> None:
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+
+    verdict = _bundle_strict_open_world_verdict(
+        bundle,
+        open_world={
+            "class": "open_world_positive",
+            "counts_as_generalization": True,
+            "lower_bound_dependent": False,
+            "template_dependent": False,
+        },
+        dynamicness={"verdict": "trusted dynamic"},
+        provenance={"generation_origin": "llm_manifest", "llm_fixture_used": True},
+        lower_bound={"effective_non_remote_available": False},
+        verification={"rule_source": "declared_rule", "trust": "high", "independence": "independent"},
+        researcher={"report_present": True, "quality": "sufficient", "search_degraded": False},
+        semantic={"supported": True, "status": "aligned"},
+    )
+    summary = _strict_open_world_summary([{"strict_open_world": verdict}])
+
+    assert verdict["class"] == "strict_fixture_backed_dynamic"
+    assert verdict["fixture_backed"] is True
+    assert verdict["counts_as_generalization"] is False
+    assert summary["fixture_backed_bundles"] == 1
+    assert summary["positive_strict_open_world_bundles"] == 0
+
+
+def test_bundle_strict_open_world_prefers_template_specific_exclusion() -> None:
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+
+    verdict = _bundle_strict_open_world_verdict(
+        bundle,
+        open_world={
+            "class": "known_family_regression",
+            "counts_as_generalization": False,
+            "lower_bound_dependent": True,
+            "template_dependent": True,
+        },
+        dynamicness={"verdict": "template-assisted"},
+        provenance={"generation_origin": "built_in_template"},
+        lower_bound={"effective_non_remote_available": True},
+        verification={"rule_source": "declared_rule", "trust": "high", "independence": "independent"},
+        researcher={"report_present": True, "quality": "skipped", "search_degraded": False},
+        semantic={"supported": True, "status": "aligned"},
+    )
+
+    assert verdict["class"] == "strict_template_dependent"
+    assert verdict["template_dependent"] is True
+
+
+def test_bundle_strict_open_world_prefers_fixture_specific_exclusion_over_lower_bound() -> None:
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+
+    verdict = _bundle_strict_open_world_verdict(
+        bundle,
+        open_world={
+            "class": "known_family_regression",
+            "counts_as_generalization": False,
+            "lower_bound_dependent": True,
+            "template_dependent": False,
+        },
+        dynamicness={"verdict": "trusted dynamic"},
+        provenance={"generation_origin": "llm_manifest", "llm_fixture_used": True},
+        lower_bound={"effective_non_remote_available": True},
+        verification={"rule_source": "declared_rule", "trust": "high", "independence": "independent"},
+        researcher={"report_present": True, "quality": "sufficient", "search_degraded": False},
+        semantic={"supported": True, "status": "aligned"},
+    )
+
+    assert verdict["class"] == "strict_fixture_backed_dynamic"
+    assert verdict["fixture_backed"] is True
+
+
+def test_write_manifest_surfaces_researcher_summary_and_bundle_researcher_state(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-researcher-summary"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "vuln_id": "CWE-89",
+                "quality": "skipped",
+                "quality_reason": "researcher skipped: compiler/static supported bundle",
+                "search_policy": "remote_prefer",
+                "search_degraded": False,
+                "semantic_signature_source": ["baseline"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(json.dumps({"run_passed": True}), encoding="utf-8")
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps({"results": [{"slug": "cwe-89", "vuln_id": "CWE-89", "verify_pass": True}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_id": "CWE-89", "researcher": {"shadow_mode": True, "search_policy": "remote_prefer"}},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["researcher_summary"]["shadow_mode_bundles"] == 1
+    assert manifest["researcher_summary"]["report_present_bundles"] == 1
+    assert manifest["researcher_summary"]["by_quality"] == {"skipped": 1}
+    assert manifest["researcher"]["quality"] == "skipped"
+    assert manifest["researcher"]["shadow_mode_enabled"] is True
+
+
+def test_write_manifest_surfaces_strict_open_world_summary(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-strict-open-world"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "README.md").write_text("# bundle\n", encoding="utf-8")
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "quality": "skipped",
+                "quality_reason": "researcher skipped: compiler/static supported path",
+                "search_policy": "remote_prefer",
+                "search_degraded": False,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True, "executed": True, "service_port": 5000}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "slug": "name-open-redirect",
+                        "vuln_id": "NAME-OPEN-REDIRECT",
+                        "verify_pass": True,
+                        "semantic_supported": True,
+                        "semantic_status": "aligned",
+                        "verification_rule_source": "declared_rule",
+                        "verification_trust": "high",
+                        "verification_independence": "independent",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking": False, "success": True, "blocking_bundles": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": "name-open-redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "output_mode": "auto",
+            "provenance": {"generation_origin": "compiler_generated"},
+            "semantic_profile": {
+                "normalized_vuln_id": "NAME-OPEN-REDIRECT",
+                "support_level": "compiler_supported",
+                "compiler_supported": True,
+                "compiler_strategy": "open_redirect_reflect",
+                "compiler_reason": "compiler strategy and scaffold are available",
+            },
+        },
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_id": "NAME-OPEN-REDIRECT", "policy": {}, "name_resolution": {
+            "input": "Open Redirect",
+            "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+            "source": "alias",
+            "match_class": "catalog_alias",
+            "confidence": "high",
+        }},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_workspace_dir", lambda incoming_sid: tmp_path / "workspaces" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["strict_open_world_summary"]["positive_strict_open_world_bundles"] == 0
+    assert manifest["strict_open_world_summary"]["by_class"]["strict_curated_lower_bound"] == 1
+    assert manifest["strict_open_world_class"] == "strict_curated_lower_bound"
+    assert manifest["counts_as_strict_open_world_generalization"] is False
+
+
+def test_bundle_memory_promotion_rejects_curated_lower_bound_lane() -> None:
+    status = _bundle_memory_promotion_status(
+        {
+            "promotion": {"eligible": True, "reasons": []},
+            "strict_open_world": {"class": "strict_curated_lower_bound", "counts_as_generalization": False},
+            "artifact_quality": {"band": "high", "oracle_clarity": "high", "topology_clarity": "high"},
+        }
+    )
+    summary = _memory_promotion_summary(
+        [{"slug": "name-open-redirect", "memory_promotion": status}]
+    )
+
+    assert status["eligible"] is False
+    assert "strict_open_world:strict_curated_lower_bound" in status["reasons"]
+    assert summary["eligible_bundles"] == 0
+
+
+def test_bundle_memory_promotion_accepts_high_quality_strict_open_world_bundle() -> None:
+    status = _bundle_memory_promotion_status(
+        {
+            "promotion": {"eligible": True, "reasons": []},
+            "strict_open_world": {"class": "strict_open_world_positive", "counts_as_generalization": True},
+            "artifact_quality": {"band": "high", "oracle_clarity": "high", "topology_clarity": "high"},
+        }
+    )
+    summary = _memory_promotion_summary([{"slug": "cwe-unknown", "memory_promotion": status}])
+
+    assert status["eligible"] is True
+    assert status["reasons"] == []
+    assert summary["eligible_bundles"] == 1
+    assert summary["all_eligible"] is True
+
+
+def test_request_identity_summary_tracks_input_modes_and_resolution_classes() -> None:
+    summary = _request_identity_summary(
+        [
+            {
+                "request_identity": {
+                    "input_mode": "free_form_name",
+                    "match_class": "catalog_alias",
+                    "confidence": "high",
+                    "name_driven": True,
+                    "synthetic_resolution": False,
+                }
+            },
+            {
+                "request_identity": {
+                    "input_mode": "free_form_name",
+                    "match_class": "token_match",
+                    "confidence": "medium",
+                    "name_driven": True,
+                    "synthetic_resolution": False,
+                }
+            },
+            {
+                "request_identity": {
+                    "input_mode": "free_form_name",
+                    "match_class": "synthetic_name",
+                    "confidence": "low",
+                    "name_driven": True,
+                    "synthetic_resolution": True,
+                }
+            },
+        ]
+    )
+
+    assert summary["bundle_count"] == 3
+    assert summary["name_driven_bundles"] == 3
+    assert summary["synthetic_resolution_bundles"] == 1
+    assert summary["by_input_mode"] == {"free_form_name": 3}
+    assert summary["by_match_class"] == {"catalog_alias": 1, "token_match": 1, "synthetic_name": 1}
+    assert summary["by_confidence"] == {"high": 1, "medium": 1, "low": 1}
+
+
+def test_bundle_researcher_summary_does_not_count_skip_report_as_ran(tmp_path: Path) -> None:
+    (tmp_path / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "quality": "skipped",
+                "quality_reason": "researcher skipped: compiler/static supported path",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    summary = _bundle_researcher_summary(
+        requirement={"researcher": {"shadow_mode": False}, "policy": {"dynamic_eval": True}},
+        metadata_dir=tmp_path,
+    )
+
+    assert summary["report_present"] is True
+    assert summary["ran"] is False
+    assert summary["dynamic_eval_enabled"] is True
+    assert summary["quality"] == "skipped"
+
+
+def test_bundle_researcher_summary_surfaces_family_hypothesis_and_query_target_stats(tmp_path: Path) -> None:
+    (tmp_path / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "quality": "sufficient",
+                "query_plan": {
+                    "family_hypotheses": [{"family": "open_redirect", "confidence": "high", "basis": "request_label"}]
+                },
+                "evidence_type_summary": {
+                    "by_type": {"advisory": 2, "reference_impl": 1},
+                    "matched_target_count": 2,
+                    "hit_count": 4,
+                },
+                "family_hypothesis_summary": {
+                    "top_family": "open_redirect",
+                    "top_confidence": "high",
+                    "raw_top_confidence": "high",
+                    "contradiction_count": 1,
+                    "top_margin": 0.18,
+                    "ambiguous": True,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    summary = _bundle_researcher_summary(
+        requirement={"researcher": {"shadow_mode": False}, "policy": {"dynamic_eval": True}},
+        metadata_dir=tmp_path,
+    )
+
+    assert summary["query_plan_present"] is True
+    assert summary["query_plan_family_hypothesis_count"] == 1
+    assert summary["top_family_hypothesis"] == "open_redirect"
+    assert summary["top_family_hypothesis_confidence"] == "high"
+    assert summary["top_family_hypothesis_raw_confidence"] == "high"
+    assert summary["family_hypothesis_contradictions"] == 1
+    assert summary["top_family_hypothesis_margin"] == 0.18
+    assert summary["family_hypothesis_ambiguous"] is True
+    assert summary["evidence_types"] == {"advisory": 2, "reference_impl": 1}
+    assert summary["query_target_match_rate"] == 0.5
+
+
+def test_researcher_summary_rolls_up_top_family_and_contradictions() -> None:
+    summary = pack_mod._researcher_summary(
+        [
+            {
+                "researcher": {
+                    "report_present": True,
+                    "ran": True,
+                    "quality": "sufficient",
+                    "query_plan_present": True,
+                    "top_family_hypothesis": "open_redirect",
+                    "top_family_hypothesis_confidence": "high",
+                    "family_hypothesis_contradictions": 0,
+                    "family_hypothesis_ambiguous": False,
+                    "query_target_match_rate": 0.25,
+                }
+            },
+            {
+                "researcher": {
+                    "report_present": True,
+                    "ran": True,
+                    "quality": "insufficient",
+                    "query_plan_present": True,
+                    "top_family_hypothesis": "template_injection",
+                    "top_family_hypothesis_confidence": "low",
+                    "family_hypothesis_contradictions": 2,
+                    "family_hypothesis_ambiguous": True,
+                    "query_target_match_rate": 0.75,
+                }
+            },
+        ]
+    )
+
+    assert summary["query_plan_bundles"] == 2
+    assert summary["contradiction_bundles"] == 1
+    assert summary["ambiguous_family_hypothesis_bundles"] == 1
+    assert summary["by_top_family_hypothesis"] == {
+        "open_redirect": 1,
+        "template_injection": 1,
+    }
+    assert summary["by_top_family_confidence"] == {"high": 1, "low": 1}
+    assert summary["avg_query_target_match_rate"] == 0.5
+
+
+def test_template_dependence_summary_tracks_minimal_dynamic_materializers() -> None:
+    summary = pack_mod._template_dependence_summary(
+        [
+            {
+                "dynamicness": {"verdict": "deterministic fallback dependent"},
+                "provenance": {"materializer": "minimal_dynamic"},
+                "open_world": {"class": "semantic_guided_minimal_dynamic", "lower_bound_dependent": True},
+                "vuln_id": "NAME-OPEN-REDIRECT",
+            }
+        ]
+    )
+
+    assert summary["minimal_dynamic_bundles"] == 1
+    assert summary["by_open_world_class"]["semantic_guided_minimal_dynamic"] == 1
+
+
+def test_bundle_artifact_quality_uses_exploit_oracle_when_verification_is_missing(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "README.md").write_text(
+        "\n".join(
+            [
+                "# dynamic bundle",
+                "",
+                "docker build -t demo .",
+                "docker run -p 8000:8000 demo",
+                "python poc.py --base-url http://127.0.0.1:8000",
+                "",
+                "Verification markers",
+                "Success signature: `Exploit SUCCESS`",
+                "Flag token: `FLAG{PATH_TRAVERSAL_OK}`",
+                "Runtime expects a single-service HTTP container on port `8000`.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    quality = pack_mod._bundle_artifact_quality(
+        {
+            "paths": {"workspace": str(workspace_dir)},
+            "runtime_recipe": {"topology": "single_service", "service_port": 8000},
+            "provenance": {"generation_origin": "deterministic_fallback", "fallback_used": True},
+            "exploit_oracle": {
+                "success_signature": "Exploit SUCCESS",
+                "flag_token": "FLAG{PATH_TRAVERSAL_OK}",
+                "poc_cmd": "python poc.py --base-url {{base_url}}",
+            },
+        }
+    )
+
+    assert quality["oracle_clarity"] == "high"
+    assert any("deterministic fallback bundle" in note for note in quality["notes"])
+
+
+def test_bundle_dynamic_eval_summary_reads_status_file(tmp_path: Path) -> None:
+    (tmp_path / "dynamic_eval.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "attempted": True,
+                "status": "lower_bound_recovered",
+                "lower_bound_fallback_used": True,
+                "fallback_path": "compiler",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    summary = _bundle_dynamic_eval_summary(
+        requirement={"policy": {"dynamic_eval": True}},
+        metadata_dir=tmp_path,
+    )
+
+    assert summary["enabled"] is True
+    assert summary["attempted"] is True
+    assert summary["status"] == "lower_bound_recovered"
+    assert summary["lower_bound_fallback_used"] is True
+    assert summary["fallback_path"] == "compiler"
+
+
+def test_dynamic_eval_rollup_tracks_attempted_and_recovered_bundles() -> None:
+    summary = _dynamic_eval_summary(
+        [
+            {"dynamic_eval": {"enabled": True, "attempted": True, "status": "dynamic_failed"}},
+            {
+                "dynamic_eval": {
+                    "enabled": True,
+                    "attempted": True,
+                    "status": "lower_bound_recovered",
+                    "lower_bound_fallback_used": True,
+                    "fallback_path": "compiler",
+                }
+            },
+        ]
+    )
+
+    assert summary["enabled_bundles"] == 2
+    assert summary["attempted_bundles"] == 2
+    assert summary["lower_bound_recovered_bundles"] == 1
+    assert summary["by_status"] == {"dynamic_failed": 1, "lower_bound_recovered": 1}
+    assert summary["by_fallback_path"] == {"compiler": 1}
+
+
+def test_bundle_intent_satisfaction_marks_dynamic_degraded_success_as_partial() -> None:
+    payload = _bundle_intent_satisfaction(
+        {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+            "dynamic_eval": {"enabled": True, "status": "degraded_success"},
+            "provenance": {
+                "generation_origin": "deterministic_fallback",
+                "fallback_class": "semantic_guided",
+                "llm_stub_used": True,
+            },
+            "researcher": {"quality": "sufficient"},
+            "verification": {"independence": "independent", "trust": "high"},
+            "open_world": {"class": "semantic_guided_minimal_dynamic"},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
+        },
+        {"policy": {"name_only_mode": "dynamic"}},
+    )
+
+    assert payload["mode"] == "dynamic"
+    assert payload["status"] == "degraded_dynamic_success"
+    assert payload["meets_intent"] is False
+    assert payload["partial"] is True
+    assert payload["closure_source"] == "degraded_deterministic_fallback"
+    assert payload["llm_path"] == "stub"
+    assert payload["research_quality"] == "sufficient"
+
+
+def test_bundle_intent_satisfaction_preserves_generation_closure_source_when_executor_fails() -> None:
+    payload = _bundle_intent_satisfaction(
+        {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+            "dynamic_eval": {"enabled": True, "status": "degraded_success"},
+            "provenance": {
+                "generation_origin": "deterministic_fallback",
+                "fallback_class": "semantic_guided",
+                "llm_stub_used": True,
+            },
+            "open_world": {"class": "semantic_guided_minimal_dynamic"},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
+            "failure": {"stage": "EXECUTOR"},
+        },
+        {"policy": {"name_only_mode": "dynamic"}},
+    )
+
+    assert payload["status"] == "degraded_dynamic_success"
+    assert payload["closure_source"] == "degraded_deterministic_fallback"
+
+
+def test_bundle_intent_satisfaction_uses_dynamic_eval_mode_when_enabled_under_compatibility_default() -> None:
+    payload = _bundle_intent_satisfaction(
+        {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+            "dynamic_eval": {"enabled": True, "status": "degraded_success"},
+            "provenance": {"generation_origin": "deterministic_fallback"},
+            "open_world": {"class": "semantic_guided_minimal_dynamic"},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
+        },
+        {"policy": {"name_only_mode": "compatibility"}},
+    )
+
+    assert payload["mode"] == "dynamic_eval"
+    assert payload["status"] == "degraded_dynamic_success"
+    assert payload["required_contract"]["require_research"] is True
+    assert payload["required_contract"]["allow_degraded_fallback"] is True
+
+
+def test_bundle_intent_satisfaction_marks_strict_dynamic_failure() -> None:
+    payload = _bundle_intent_satisfaction(
+        {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+            "dynamic_eval": {"enabled": True, "status": "dynamic_failed"},
+            "open_world": {"class": "name_driven_dynamic_failed"},
+            "strict_open_world": {"class": "strict_dynamic_generation_failed"},
+            "failure": {"stage": "GENERATOR", "terminal_failure_class": "guard_semantic_mismatch"},
+        },
+        {"policy": {"name_only_mode": "strict_dynamic"}},
+    )
+
+    assert payload["mode"] == "strict_dynamic"
+    assert payload["status"] == "strict_dynamic_failed"
+    assert payload["meets_intent"] is False
+    assert payload["partial"] is False
+
+
+def test_intent_satisfaction_summary_counts_partial_and_failed_name_only_lanes() -> None:
+    summary = _intent_satisfaction_summary(
+        [
+            {
+                "intent_satisfaction": {
+                    "request_kind": "name_only",
+                    "mode": "dynamic",
+                    "status": "degraded_dynamic_success",
+                    "meets_intent": False,
+                    "partial": True,
+                }
+            },
+            {
+                "intent_satisfaction": {
+                    "request_kind": "name_only",
+                    "mode": "strict_dynamic",
+                    "status": "strict_dynamic_failed",
+                    "meets_intent": False,
+                    "partial": False,
+                }
+            },
+        ]
+    )
+
+    assert summary["name_only_bundles"] == 2
+    assert summary["meets_intent_bundles"] == 0
+    assert summary["partial_bundles"] == 1
+    assert summary["by_status"] == {
+        "degraded_dynamic_success": 1,
+        "strict_dynamic_failed": 1,
+    }
+
 
 
 def test_bundle_promotion_is_blocked_when_pipeline_artifacts_are_missing(tmp_path: Path) -> None:
@@ -689,6 +1680,60 @@ def test_write_manifest_records_failure_pipeline_result(tmp_path: Path, monkeypa
     assert manifest["pipeline_result"] == "failure"
 
 
+def test_write_manifest_flattens_top_level_failure_fields(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-failure-flatten"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "last_result": "failure",
+                "history": [
+                    {
+                        "stage": "PACK",
+                        "success": False,
+                        "reason": "strict open-world gate not satisfied",
+                        "fix_hint": "improve dynamic lane",
+                        "timestamp": "2026-03-11T00:00:00+00:00",
+                        "metadata": {
+                            "terminal_failure_class": "strict_open_world_not_satisfied",
+                            "retry_recommended": False,
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_id": "NAME-OPEN-REDIRECT"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["failure_stage"] == "PACK"
+    assert manifest["failure_reason"] == "strict open-world gate not satisfied"
+    assert manifest["terminal_failure_class"] == "strict_open_world_not_satisfied"
+    assert manifest["retry_recommended"] is False
+
+
 def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Path, monkeypatch) -> None:
     sid = "sid-pack-provenance"
     metadata_dir = tmp_path / "metadata" / sid
@@ -863,6 +1908,15 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
         "DB_HOST": "sqli-db",
     }
     assert manifest["service_env"] == {"APP_PORT": "5000", "DB_HOST": "sqli-db"}
+    assert manifest["runtime_recipe"]["service_env"] == {"APP_PORT": "5000", "DB_HOST": "sqli-db"}
+    assert manifest["runtime_recipe"]["topology"] == "single_service"
+    assert manifest["bundles"][0]["runtime_recipe"]["service_port"] == 5000
+    assert manifest["artifact_quality_summary"]["bundle_count"] == 1
+    assert manifest["artifact_quality"]["runtime_recipe_present"] is True
+    assert manifest["artifact_quality"]["generation_authenticity"] == "degraded_fallback"
+    assert manifest["artifact_quality"]["band"] == "low"
+    assert any("deterministic fallback bundle" in note for note in manifest["artifact_quality"]["notes"])
+    assert manifest["template_dependence_summary"]["lower_bound_dependent_bundles"] == 1
     assert manifest["bundles"][0]["lower_bound"]["effective_non_remote_available"] is True
     assert manifest["bundles"][0]["executor_feasibility"]["status"] == "not_required"
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "deterministic fallback dependent"

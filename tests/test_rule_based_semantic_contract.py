@@ -90,9 +90,98 @@ def test_unknown_rule_based_verifier_uses_resolved_contract_semantic_contract(
     assert result["semantic_consistency"]["supported"] is True
     assert result["semantic_consistency"]["semantic_match"] is True
     assert result["semantic_consistency"]["source"] == "resolved_contract.semantic_contract"
-    assert result["verification_rule_source"] == "generator_manifest_fallback"
+    assert result["verification_rule_source"] == "contract_oracle_fallback"
     assert result["verification_trust"] == "low"
-    assert result["verification_independence"] == "self_derived"
+    assert result["verification_independence"] == "contract_coupled"
+
+
+def test_unknown_rule_based_verifier_can_use_contract_oracle_json_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    metadata_dir = repo_root / "metadata" / "sid-oracle-json"
+    workspace_dir = repo_root / "workspaces" / "sid-oracle-json" / "app"
+    run_dir = repo_root / "artifacts" / "sid-oracle-json" / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, request\n"
+        "import sqlite3\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/users')\n"
+        "def users():\n"
+        "    user_id = request.args.get('id', '1')\n"
+        "    query = 'SELECT * FROM users WHERE id=' + user_id\n"
+        "    conn = sqlite3.connect('/tmp/app.db')\n"
+        "    conn.execute(query)\n"
+        "    return 'ok'\n"
+    )
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('{\"success\": true, \"flag\": \"FLAG{JSON_OK}\"}')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text('{"success": true, "flag": "FLAG{JSON_OK}"}\n', encoding="utf-8")
+
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('json')\n"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-oracle-json",
+            "slug": "cwe-9999",
+            "vuln_id": "CWE-9999",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "exploit_oracle": {
+                "success_signature": "",
+                "flag_token": "FLAG{JSON_OK}",
+                "output_mode": "json",
+                "json_success_key": "success",
+                "json_success_value": True,
+                "json_flag_key": "flag",
+                "source": "researcher_verification_spec",
+            },
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": ["user-controlled request parameter"],
+                    "sink": ["SQL query execution"],
+                    "exploit_precondition": ["input concatenated/interpolated into SQL sink"],
+                },
+                "semantic_signature_source": ["contract"],
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-9999",
+        run_dir / "run.log",
+        run_summary={"sid": "sid-oracle-json", "slug": "cwe-9999", "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is True
+    assert result["verification_rule_source"] == "contract_oracle_fallback"
+    assert result["verification_trust"] == "low"
+    assert result["verification_independence"] == "contract_coupled"
+    assert "resolved_contract oracle contract" in result["evidence"]
 
 
 def test_rule_based_verifier_fails_closed_when_unknown_contract_status_is_empty(
@@ -259,8 +348,9 @@ def test_rule_based_verifier_can_fail_closed_on_low_trust_unknown_policy(
     assert result["exploit_pass"] is True
     assert result["semantic_supported"] is True
     assert result["verify_pass"] is False
-    assert result["verification_rule_source"] == "generator_manifest_fallback"
+    assert result["verification_rule_source"] == "contract_oracle_fallback"
     assert result["verification_trust"] == "low"
+    assert result["verification_independence"] == "contract_coupled"
     assert result["verification_policy_blocked"] is True
     assert result["terminal_failure_class"] == "low_trust_verification"
     assert "low-trust verifier contract blocked by policy" in result["evidence"]

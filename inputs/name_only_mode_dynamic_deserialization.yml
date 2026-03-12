@@ -1,0 +1,7 @@
+requirement_id: EXAMPLE-NAME-ONLY-MODE-DYNAMIC-DESERIALIZATION-0001
+intent: "Name-only dynamic mode example for Insecure Deserialization"
+vuln_name: Insecure Deserialization
+seed: 4344
+generator_mode: synthesis
+policy:
+  name_only_mode: dynamic

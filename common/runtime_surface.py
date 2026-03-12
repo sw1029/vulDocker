@@ -1,7 +1,7 @@
 """Helpers for deriving runtime surface requirements from asset-backed specs."""
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from common.vuln_catalog import resolve_runtime_surface_spec
 
@@ -44,6 +44,14 @@ def _matching_sidecar(spec: Dict[str, Any], requirement: Optional[Dict[str, Any]
         return None
     entries = _sidecars(requirement)
     return entries[0] if entries else None
+
+
+def _rule_sources(rule: Dict[str, Any]) -> List[str]:
+    raw_sources = rule.get("sources")
+    if isinstance(raw_sources, list):
+        return [str(item).strip() for item in raw_sources if str(item).strip()]
+    source = str(rule.get("source") or "").strip()
+    return [source] if source else []
 
 
 def _resolve_source_value(
@@ -100,13 +108,40 @@ def derive_service_env(
     requirement: Optional[Dict[str, Any]],
     service_port: Optional[int] = None,
 ) -> Dict[str, str]:
+    return diagnose_runtime_surface(
+        compiler_strategy=compiler_strategy,
+        requirement=requirement,
+        service_port=service_port,
+    ).get("service_env", {})
+
+
+def diagnose_runtime_surface(
+    *,
+    compiler_strategy: str,
+    requirement: Optional[Dict[str, Any]],
+    service_port: Optional[int] = None,
+) -> Dict[str, Any]:
     spec = resolve_runtime_surface_spec(compiler_strategy, requirement)
     if not isinstance(spec, dict):
-        return {}
+        return {
+            "service_env": {},
+            "missing_sidecar_targets": [],
+            "defaulted_sidecar_keys": [],
+            "source_details": {},
+        }
     service_env = spec.get("service_env")
     if not isinstance(service_env, dict):
-        return {}
+        return {
+            "service_env": {},
+            "missing_sidecar_targets": [],
+            "defaulted_sidecar_keys": [],
+            "source_details": {},
+        }
     env: Dict[str, str] = {}
+    missing_targets: List[Dict[str, str]] = []
+    defaulted_sidecar_keys: List[str] = []
+    source_details: Dict[str, Dict[str, Any]] = {}
+    seen_missing_targets: set[tuple[str, str]] = set()
     for key, raw_rule in service_env.items():
         if not isinstance(key, str):
             continue
@@ -114,16 +149,28 @@ def derive_service_env(
         if not name:
             continue
         rule = raw_rule if isinstance(raw_rule, dict) else {}
+        sources = _rule_sources(rule)
+        sidecar_required = any(source.startswith("sidecar.") for source in sources)
+        target_type = str(rule.get("sidecar_type") or "").strip().lower()
+        target_name = str(rule.get("sidecar_name") or "").strip().lower()
+        matched_sidecar = _matching_sidecar(rule, requirement) if sidecar_required else None
+        if sidecar_required and not isinstance(matched_sidecar, dict):
+            missing_key = (target_type, target_name)
+            if missing_key not in seen_missing_targets:
+                seen_missing_targets.add(missing_key)
+                missing_targets.append(
+                    {
+                        "sidecar_type": target_type,
+                        "sidecar_name": target_name,
+                    }
+                )
         value = None
+        source_used = ""
+        used_default = False
         if "value" in rule and rule.get("value") not in (None, ""):
             value = str(rule.get("value"))
+            source_used = "value"
         else:
-            raw_sources = rule.get("sources")
-            if isinstance(raw_sources, list):
-                sources = [str(item).strip() for item in raw_sources if str(item).strip()]
-            else:
-                source = str(rule.get("source") or "").strip()
-                sources = [source] if source else []
             for source in sources:
                 value = _resolve_source_value(
                     source,
@@ -132,14 +179,38 @@ def derive_service_env(
                     service_port=service_port,
                 )
                 if value not in (None, ""):
+                    source_used = source
                     break
         if value in (None, ""):
             default = rule.get("default")
             if default not in (None, ""):
                 value = str(default)
+                used_default = True
         if value not in (None, ""):
             env[name] = str(value)
-    return env
+        if sidecar_required and used_default:
+            defaulted_sidecar_keys.append(name)
+        matched_name = ""
+        matched_type = ""
+        if isinstance(matched_sidecar, dict):
+            matched_name = str(matched_sidecar.get("name") or "").strip()
+            matched_type = str(matched_sidecar.get("type") or "").strip().lower()
+        source_details[name] = {
+            "sources": sources,
+            "source_used": source_used or None,
+            "used_default": used_default,
+            "sidecar_required": sidecar_required,
+            "sidecar_type": target_type or None,
+            "sidecar_name": target_name or None,
+            "matched_sidecar_name": matched_name or None,
+            "matched_sidecar_type": matched_type or None,
+        }
+    return {
+        "service_env": env,
+        "missing_sidecar_targets": missing_targets,
+        "defaulted_sidecar_keys": sorted(set(defaulted_sidecar_keys)),
+        "source_details": source_details,
+    }
 
 
-__all__ = ["derive_service_env"]
+__all__ = ["derive_service_env", "diagnose_runtime_surface"]

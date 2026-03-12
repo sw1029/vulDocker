@@ -41,6 +41,10 @@ _PASSTHROUGH_KEYS = (
     "candidate_templates",
     "resolved_contract_path",
     "evidence_relevance",
+    "query_plan",
+    "evidence_type_summary",
+    "family_hypothesis_summary",
+    "llm_execution",
 )
 
 
@@ -126,6 +130,9 @@ def extract_semantic_contract(report: Any) -> Dict[str, Any]:
     relevance = normalized.get("evidence_relevance")
     if isinstance(relevance, dict) and relevance:
         contract["evidence_relevance"] = deepcopy(relevance)
+    family_hypothesis_summary = normalized.get("family_hypothesis_summary")
+    if isinstance(family_hypothesis_summary, dict) and family_hypothesis_summary:
+        contract["family_hypothesis_summary"] = deepcopy(family_hypothesis_summary)
     return contract
 
 

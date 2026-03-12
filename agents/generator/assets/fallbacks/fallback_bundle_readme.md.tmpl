@@ -1,8 +1,22 @@
 <!-- Asset-backed fallback bundle README template. -->
 # __VULN_ID__ fallback bundle
 
+This bundle is an asset-backed deterministic fallback used when synthesis cannot emit a valid manifest.
+It preserves a runnable vulnerable service and a matching proof-of-concept for the requested semantics.
+
+## Quickstart
 ```bash
 docker build -t fallback-bundle .
 docker run -p __PORT__:__PORT__ fallback-bundle
 python poc.py --base-url http://127.0.0.1:__PORT__
 ```
+
+## Runtime
+- Runtime expects a single-service HTTP container on port `__PORT__`.
+- Service entry: `__SERVICE_PATH__`
+- Sidecars: none
+
+## Verification markers
+- Success signature: `__SUCCESS_SIGNATURE__`
+- Flag token: `__FLAG_TOKEN_OR_NONE__`
+- PoC must print the exact verification markers above on exploit success.

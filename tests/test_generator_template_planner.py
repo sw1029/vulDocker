@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from agents.generator.service import GeneratorContext, GeneratorService
+from common.contracts import write_generator_contract
 
 
 def _context(*, failure: str = "") -> GeneratorContext:
@@ -29,6 +31,18 @@ def test_template_planner_is_skipped_for_clean_template_runs() -> None:
     assert service._should_generate_template_plan(_context()) is False  # type: ignore[attr-defined]
 
 
+def test_dynamic_eval_status_for_outcome_marks_fallback_as_degraded_success() -> None:
+    outcome = SimpleNamespace(selected=SimpleNamespace(fallback_used=True))
+
+    assert GeneratorService._dynamic_eval_status_for_outcome(outcome) == "degraded_success"
+
+
+def test_dynamic_eval_status_for_outcome_marks_non_fallback_as_dynamic_success() -> None:
+    outcome = SimpleNamespace(selected=SimpleNamespace(fallback_used=False))
+
+    assert GeneratorService._dynamic_eval_status_for_outcome(outcome) == "dynamic_success"
+
+
 def test_template_planner_runs_when_failure_context_exists() -> None:
     service = GeneratorService.__new__(GeneratorService)
     service.requirement = {}  # type: ignore[attr-defined]
@@ -41,6 +55,62 @@ def test_template_planner_can_be_force_enabled_from_requirement() -> None:
     service.requirement = {"template_plan_enabled": True}  # type: ignore[attr-defined]
 
     assert service._should_generate_template_plan(_context()) is True  # type: ignore[attr-defined]
+
+
+def test_requirement_for_synthesis_injects_resolved_runtime_recipe(tmp_path: Path) -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {"vuln_id": "NAME-OPEN-REDIRECT", "language": "python", "framework": "flask"}  # type: ignore[attr-defined]
+    service.metadata_dir = tmp_path  # type: ignore[attr-defined]
+    write_generator_contract(
+        tmp_path,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-runtime-recipe",
+            "slug": "name-open-redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "runtime_recipe": {
+                "language": "python",
+                "framework": "fastapi",
+                "topology": "service_plus_sidecar",
+                "network_mode": "bridge",
+            },
+        },
+    )
+
+    enriched = service._requirement_for_synthesis()  # type: ignore[attr-defined]
+
+    assert enriched["runtime_recipe"]["framework"] == "fastapi"
+    assert "runtime_recipe" not in service.requirement  # type: ignore[operator]
+
+
+def test_researcher_report_for_prompt_preserves_family_hypothesis_summary(tmp_path: Path) -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.metadata_dir = tmp_path  # type: ignore[attr-defined]
+    service.requirement = {"vuln_id": "NAME-OPEN-REDIRECT"}  # type: ignore[attr-defined]
+    (tmp_path / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "intent": "name-only dynamic lane",
+                "tech_stack_candidates": [{"stack_id": "python/flask"}],
+                "family_hypothesis_summary": {
+                    "top_family": "open_redirect",
+                    "top_confidence": "low",
+                    "ambiguous": True,
+                    "contradiction_count": 2,
+                },
+                "evidence_relevance": {"score": 0.41, "confidence": "medium"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    trimmed = json.loads(service._researcher_report_for_prompt())  # type: ignore[attr-defined]
+
+    assert trimmed["family_hypothesis_summary"]["top_family"] == "open_redirect"
+    assert trimmed["family_hypothesis_summary"]["ambiguous"] is True
+    assert trimmed["evidence_relevance"]["confidence"] == "medium"
 
 
 def test_hybrid_template_fallback_requires_compatible_template() -> None:
@@ -105,7 +175,18 @@ def test_hybrid_template_fallback_respects_runtime_db_surface() -> None:
     service.requirement["executor"] = {  # type: ignore[index]
         "allow_network": True,
         "network_mode": "bridge",
-        "sidecars": [{"name": "mysql", "type": "mysql", "aliases": ["sqli-db"]}],
+        "sidecars": [
+            {
+                "name": "mysql",
+                "type": "mysql",
+                "aliases": ["sqli-db"],
+                "env": {
+                    "MYSQL_USER": "sqli",
+                    "MYSQL_PASSWORD": "sqli_pw",
+                    "MYSQL_DATABASE": "sqliapp",
+                },
+            }
+        ],
     }
 
     assert service._template_runtime_surface_matches(_Registry.templates[0]) is False  # type: ignore[attr-defined]
@@ -153,6 +234,119 @@ def test_hybrid_template_fallback_rejects_external_db_template_without_executor_
     assert service._has_compatible_template() is False  # type: ignore[attr-defined]
 
 
+def test_hybrid_template_fallback_rejects_external_db_template_with_wrong_sidecar_type() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {
+        "vuln_id": "CWE-89",
+        "pattern_id": "sqli-union-mysql",
+        "runtime": {"db": "mysql", "allow_external_db": True},
+        "executor": {
+            "allow_network": True,
+            "network_mode": "bridge",
+            "sidecars": [{"name": "postgres-main", "type": "postgres", "aliases": ["db-internal"]}],
+        },
+    }  # type: ignore[attr-defined]
+    service._allow_external_db = lambda: True  # type: ignore[attr-defined]
+    service._runtime_db = lambda: "mysql"  # type: ignore[attr-defined]
+
+    class _Template:
+        def __init__(self) -> None:
+            self.tags = ["cwe-89", "flask"]
+            self.pattern_id = "sqli-union-mysql"
+            self.db = "mysql"
+            self.requires_external_db = True
+            self.service_env = {
+                "DB_HOST": "sqli-db",
+                "DB_PORT": "3306",
+                "DB_USER": "sqli",
+                "DB_PASSWORD": "sqli_pw",
+                "DB_NAME": "sqliapp",
+                "APP_PORT": "5000",
+            }
+            self.metadata = {"ports": {"app": 5000}, "stack_id": "python/flask"}
+
+        @property
+        def stack_id(self) -> str:
+            return "python/flask"
+
+        @property
+        def language(self) -> str:
+            return "python"
+
+        @property
+        def framework(self) -> str:
+            return "flask"
+
+    template = _Template()
+
+    diagnostics = service._template_runtime_diagnostics(template)  # type: ignore[attr-defined]
+
+    assert diagnostics["matches"] is False
+    assert diagnostics["status"] == "executor_misconfigured"
+    assert service._template_runtime_surface_matches(template) is False  # type: ignore[attr-defined]
+
+
+def test_hybrid_template_fallback_rejects_template_when_sidecar_env_values_do_not_match() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {
+        "vuln_id": "CWE-89",
+        "pattern_id": "sqli-union-mysql",
+        "runtime": {"db": "mysql", "allow_external_db": True, "db_name": "runtime_db_custom"},
+        "executor": {
+            "allow_network": True,
+            "network_mode": "bridge",
+            "sidecars": [
+                {
+                    "name": "mysql-main",
+                    "type": "mysql",
+                    "aliases": ["db-internal"],
+                    "env": {
+                        "MYSQL_USER": "custom_user",
+                        "MYSQL_PASSWORD": "custom_pw",
+                        "MYSQL_DATABASE": "custom_db",
+                    },
+                }
+            ],
+        },
+    }  # type: ignore[attr-defined]
+    service._allow_external_db = lambda: True  # type: ignore[attr-defined]
+    service._runtime_db = lambda: "mysql"  # type: ignore[attr-defined]
+
+    class _Template:
+        def __init__(self) -> None:
+            self.tags = ["cwe-89", "flask"]
+            self.pattern_id = "sqli-union-mysql"
+            self.db = "mysql"
+            self.requires_external_db = True
+            self.service_env = {
+                "DB_HOST": "sqli-db",
+                "DB_PORT": "3306",
+                "DB_USER": "sqli",
+                "DB_PASSWORD": "sqli_pw",
+                "DB_NAME": "sqliapp",
+                "APP_PORT": "5000",
+            }
+            self.metadata = {"ports": {"app": 5000}, "stack_id": "python/flask"}
+
+        @property
+        def stack_id(self) -> str:
+            return "python/flask"
+
+        @property
+        def language(self) -> str:
+            return "python"
+
+        @property
+        def framework(self) -> str:
+            return "flask"
+
+    diagnostics = service._template_runtime_diagnostics(_Template())  # type: ignore[attr-defined]
+
+    assert diagnostics["matches"] is False
+    assert diagnostics["status"] == "env_value_mismatch"
+    assert diagnostics["env_value_mismatches"]["DB_HOST"]["expected"] == "db-internal"
+
+
 def test_hybrid_template_fallback_rejects_stack_mismatched_template() -> None:
     service = GeneratorService.__new__(GeneratorService)
     service.requirement = {
@@ -195,6 +389,43 @@ def test_hybrid_template_fallback_rejects_stack_mismatched_template() -> None:
     assert service._has_compatible_template() is False  # type: ignore[attr-defined]
 
 
+def test_viable_template_allows_internal_db_template_when_runtime_db_unspecified() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {"vuln_id": "CWE-89", "runtime": {}}  # type: ignore[attr-defined]
+    service._allow_external_db = lambda: False  # type: ignore[attr-defined]
+
+    class _Template:
+        def __init__(self, *, db: str, requires_external_db: bool) -> None:
+            self.tags = ["cwe-89", db]
+            self.pattern_id = f"sqli-{db}"
+            self.db = db
+            self.requires_external_db = requires_external_db
+            self.metadata = {"stack_id": "python/flask"}
+            self.service_env = {}
+
+        @property
+        def stack_id(self) -> str:
+            return "python/flask"
+
+        @property
+        def language(self) -> str:
+            return "python"
+
+        @property
+        def framework(self) -> str:
+            return "flask"
+
+    class _Registry:
+        templates = [
+            _Template(db="mysql", requires_external_db=True),
+            _Template(db="sqlite", requires_external_db=False),
+        ]
+
+    service._get_registry = lambda: _Registry()  # type: ignore[attr-defined]
+
+    assert service._has_viable_template() is True  # type: ignore[attr-defined]
+
+
 def test_template_mode_prefers_viable_template_over_compiler() -> None:
     service = GeneratorService.__new__(GeneratorService)
     service.generator_mode = "template"  # type: ignore[attr-defined]
@@ -235,3 +466,29 @@ def test_template_mode_without_viable_template_can_fallback_to_compiler() -> Non
     service.run()  # type: ignore[attr-defined]
 
     assert calls == [("compiler", "compiler path: sqli_string_concat")]
+
+
+def test_name_only_mode_dynamic_enables_dynamic_eval_for_name_driven_request() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "policy": {"name_only_mode": "dynamic"},
+        "request_identity": {"name_driven": True},
+    }
+
+    assert service._dynamic_eval_enabled() is True  # type: ignore[attr-defined]
+
+
+def test_name_only_mode_strict_dynamic_disables_lower_bound_fallback() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "policy": {
+            "name_only_mode": "strict_dynamic",
+            "dynamic_eval_allow_lower_bound_fallback": True,
+        },
+        "request_identity": {"name_driven": True},
+    }
+
+    assert service._dynamic_eval_enabled() is True  # type: ignore[attr-defined]
+    assert service._dynamic_eval_allow_lower_bound_fallback() is False  # type: ignore[attr-defined]

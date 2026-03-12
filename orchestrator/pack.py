@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.logging import get_logger
+from common.name_only import build_name_only_contract
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
 from common.contracts import (
@@ -43,6 +44,8 @@ def _verification_independence(rule_source: Any, trust: Any, explicit: Any = Non
         return "independent"
     if source == "compiler_runtime_rule":
         return "compiler_coupled"
+    if source == "contract_oracle_fallback":
+        return "contract_coupled"
     if source in {"runtime_rule_candidate", "generator_manifest_fallback", "verifier_runtime_rule_fallback"}:
         return "self_derived"
     if trust_level == "low":
@@ -86,6 +89,8 @@ def _independence_rank(value: Any) -> int:
         return 2
     if token == "compiler_coupled":
         return 1
+    if token == "contract_coupled":
+        return 0
     if token == "self_derived":
         return 0
     return -1
@@ -152,14 +157,23 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
     reports_dir = artifacts_dir / "reports"
     performance = _load_json(metadata_dir / "performance_summary.json")
     promotion = _promotion_summary(bundles)
+    memory_promotion = _memory_promotion_summary(bundles)
     generation_summary = _generation_summary(bundles)
+    dynamic_eval_summary = _dynamic_eval_summary(bundles)
     generalization_summary = _generalization_summary(bundles)
+    open_world_summary = _open_world_summary(bundles)
+    strict_open_world_summary = _strict_open_world_summary(bundles)
     compiler_contract_summary = _compiler_contract_summary(bundles)
     verification_summary = _verification_summary(bundles)
+    researcher_summary = _researcher_summary(bundles)
+    request_identity_summary = _request_identity_summary(bundles)
     name_resolution_summary = _name_resolution_summary(bundles)
     lower_bound_rollup = _lower_bound_rollup(bundles)
     executor_feasibility_rollup = _executor_feasibility_rollup(bundles)
+    artifact_quality_summary = _artifact_quality_summary(bundles)
+    template_dependence_summary = _template_dependence_summary(bundles)
     partial_progress_summary = _partial_progress_summary(bundles)
+    intent_satisfaction_summary = _intent_satisfaction_summary(bundles)
     pipeline_result = _pipeline_result(sid)
     manifest = {
         "sid": sid,
@@ -176,14 +190,23 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         "sid_inputs": plan.get("sid_inputs", {}),
         "bundles": bundles,
         "promotion": promotion,
+        "memory_promotion": memory_promotion,
         "generation_summary": generation_summary,
+        "dynamic_eval_summary": dynamic_eval_summary,
         "generalization_summary": generalization_summary,
+        "open_world_summary": open_world_summary,
+        "strict_open_world_summary": strict_open_world_summary,
         "compiler_contract_summary": compiler_contract_summary,
         "verification_summary": verification_summary,
+        "researcher_summary": researcher_summary,
+        "request_identity_summary": request_identity_summary,
         "name_resolution_summary": name_resolution_summary,
         "lower_bound_summary": lower_bound_rollup,
         "executor_feasibility_summary": executor_feasibility_rollup,
+        "artifact_quality_summary": artifact_quality_summary,
+        "template_dependence_summary": template_dependence_summary,
         "partial_progress_summary": partial_progress_summary,
+        "intent_satisfaction_summary": intent_satisfaction_summary,
         "performance": performance,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {
@@ -199,6 +222,18 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
     failure = _failure_summary(sid)
     if failure:
         manifest["failure"] = failure
+        for key, target in (
+            ("stage", "failure_stage"),
+            ("reason", "failure_reason"),
+            ("fix_hint", "failure_fix_hint"),
+            ("terminal_failure_class", "terminal_failure_class"),
+        ):
+            value = failure.get(key)
+            if isinstance(value, str) and value.strip():
+                manifest[target] = value.strip()
+        retry_recommended = failure.get("retry_recommended")
+        if isinstance(retry_recommended, bool):
+            manifest["retry_recommended"] = retry_recommended
     if len(bundles) == 1:
         provenance = bundles[0].get("provenance") or {}
         if isinstance(provenance.get("generation_origin"), str) and provenance.get("generation_origin", "").strip():
@@ -259,6 +294,30 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         basis = generalization.get("basis")
         if isinstance(basis, str) and basis.strip():
             manifest["generalization_basis"] = basis.strip()
+        open_world = bundles[0].get("open_world") or {}
+        class_name = open_world.get("class")
+        if isinstance(class_name, str) and class_name.strip():
+            manifest["open_world_class"] = class_name.strip()
+        if isinstance(open_world.get("counts_as_generalization"), bool):
+            manifest["counts_as_open_world_generalization"] = open_world["counts_as_generalization"]
+        reason = open_world.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            manifest["open_world_reason"] = reason.strip()
+        confidence = open_world.get("confidence")
+        if isinstance(confidence, str) and confidence.strip():
+            manifest["open_world_confidence"] = confidence.strip()
+        basis = open_world.get("basis")
+        if isinstance(basis, str) and basis.strip():
+            manifest["open_world_basis"] = basis.strip()
+        strict_open_world = bundles[0].get("strict_open_world") or {}
+        class_name = strict_open_world.get("class")
+        if isinstance(class_name, str) and class_name.strip():
+            manifest["strict_open_world_class"] = class_name.strip()
+        if isinstance(strict_open_world.get("counts_as_generalization"), bool):
+            manifest["counts_as_strict_open_world_generalization"] = strict_open_world["counts_as_generalization"]
+        reason = strict_open_world.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            manifest["strict_open_world_reason"] = reason.strip()
         lower_bound = bundles[0].get("lower_bound") or {}
         if isinstance(lower_bound, dict) and lower_bound:
             manifest["lower_bound"] = lower_bound
@@ -266,6 +325,41 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
                 value = lower_bound.get(key)
                 if isinstance(value, bool):
                     manifest[key] = value
+        runtime_recipe = bundles[0].get("runtime_recipe") or {}
+        if isinstance(runtime_recipe, dict) and runtime_recipe:
+            manifest["runtime_recipe"] = runtime_recipe
+        exploit_oracle = bundles[0].get("exploit_oracle") or {}
+        if isinstance(exploit_oracle, dict) and exploit_oracle:
+            manifest["exploit_oracle"] = exploit_oracle
+        name_only_generation_spec = bundles[0].get("name_only_generation_spec") or {}
+        if isinstance(name_only_generation_spec, dict) and name_only_generation_spec:
+            manifest["name_only_generation_spec"] = name_only_generation_spec
+        dynamic_eval = bundles[0].get("dynamic_eval") or {}
+        if isinstance(dynamic_eval, dict) and dynamic_eval:
+            manifest["dynamic_eval"] = dynamic_eval
+        artifact_quality = bundles[0].get("artifact_quality") or {}
+        if isinstance(artifact_quality, dict) and artifact_quality:
+            manifest["artifact_quality"] = artifact_quality
+        intent_satisfaction = bundles[0].get("intent_satisfaction") or {}
+        if isinstance(intent_satisfaction, dict) and intent_satisfaction:
+            manifest["intent_satisfaction"] = intent_satisfaction
+            status = intent_satisfaction.get("status")
+            if isinstance(status, str) and status.strip():
+                manifest["intent_satisfaction_status"] = status.strip()
+            meets_intent = intent_satisfaction.get("meets_intent")
+            if isinstance(meets_intent, bool):
+                manifest["meets_name_only_intent"] = meets_intent
+        researcher = bundles[0].get("researcher") or {}
+        if isinstance(researcher, dict) and researcher:
+            manifest["researcher"] = researcher
+        request_identity = bundles[0].get("request_identity") or {}
+        if isinstance(request_identity, dict) and request_identity:
+            manifest["request_identity"] = request_identity
+        memory_promotion_payload = bundles[0].get("memory_promotion") or {}
+        if isinstance(memory_promotion_payload, dict) and memory_promotion_payload:
+            manifest["memory_promotion"] = memory_promotion_payload
+            if isinstance(memory_promotion_payload.get("eligible"), bool):
+                manifest["memory_promotion_eligible"] = memory_promotion_payload["eligible"]
         executor_feasibility = bundles[0].get("executor_feasibility") or {}
         if isinstance(executor_feasibility, dict) and executor_feasibility:
             manifest["executor_feasibility"] = executor_feasibility
@@ -346,6 +440,31 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
         )
         lower_bound = _bundle_lower_bound(metadata_dir, bundle.vuln_id, requirement_view)
         executor_feasibility = _bundle_executor_feasibility(plan, bundle, requirement_view, metadata_dir)
+        contract = load_generator_contract(metadata_dir) or {}
+        runtime_recipe = _bundle_runtime_recipe(
+            contract=contract,
+            requirement=requirement_view,
+            compiler_contract=compiler_contract,
+            executor_feasibility=executor_feasibility,
+        )
+        exploit_oracle = (
+            dict(contract.get("exploit_oracle"))
+            if isinstance(contract.get("exploit_oracle"), dict)
+            else {}
+        )
+        name_only_generation_spec = (
+            dict(contract.get("name_only_generation_spec"))
+            if isinstance(contract.get("name_only_generation_spec"), dict)
+            else {}
+        )
+        dynamic_eval = _bundle_dynamic_eval_summary(
+            requirement=requirement_view,
+            metadata_dir=metadata_dir,
+        )
+        researcher = _bundle_researcher_summary(
+            requirement=requirement_view,
+            metadata_dir=metadata_dir,
+        )
         generalization = _bundle_generalization_verdict(
             bundle,
             pattern_id=pattern_id,
@@ -359,11 +478,53 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
                 else {}
             ),
         )
+        open_world = _bundle_open_world_verdict(
+            bundle,
+            pattern_id=pattern_id,
+            promotion=promotion,
+            dynamicness=dynamicness,
+            compiler_contract=compiler_contract,
+            provenance=provenance,
+            dynamic_eval=dynamic_eval,
+            failure=failure,
+            name_resolution=(
+                requirement_view.get("name_resolution")
+                if isinstance(requirement_view.get("name_resolution"), dict)
+                else {}
+            ),
+        )
+        strict_open_world = _bundle_strict_open_world_verdict(
+            bundle,
+            open_world=open_world,
+            dynamicness=dynamicness,
+            provenance=provenance,
+            lower_bound=lower_bound,
+            verification={
+                "rule_source": (eval_record or {}).get("verification_rule_source")
+                if isinstance(eval_record, dict)
+                else None,
+                "trust": (eval_record or {}).get("verification_trust") if isinstance(eval_record, dict) else None,
+                "independence": _verification_independence(
+                    (eval_record or {}).get("verification_rule_source") if isinstance(eval_record, dict) else None,
+                    (eval_record or {}).get("verification_trust") if isinstance(eval_record, dict) else None,
+                    (eval_record or {}).get("verification_independence") if isinstance(eval_record, dict) else None,
+                ),
+            },
+            researcher=researcher,
+            semantic=semantic_surface,
+            dynamic_eval=dynamic_eval,
+            failure=failure,
+        )
 
         bundle_entry = {
             "vuln_id": bundle.vuln_id,
             "slug": bundle.slug,
             "pattern_id": pattern_id,
+            "request_identity": (
+                dict(requirement_view.get("request_identity"))
+                if isinstance(requirement_view.get("request_identity"), dict)
+                else {}
+            ),
             "name_resolution": (
                 dict(requirement_view.get("name_resolution"))
                 if isinstance(requirement_view.get("name_resolution"), dict)
@@ -374,7 +535,14 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "provenance": provenance,
             "dynamicness": dynamicness,
             "generalization": generalization,
+            "open_world": open_world,
+            "strict_open_world": strict_open_world,
             "compiler_contract": compiler_contract,
+            "runtime_recipe": runtime_recipe,
+            "exploit_oracle": exploit_oracle,
+            "name_only_generation_spec": name_only_generation_spec,
+            "dynamic_eval": dynamic_eval,
+            "researcher": researcher,
             "semantic": semantic_surface,
             "lower_bound": lower_bound,
             "executor_feasibility": executor_feasibility,
@@ -413,6 +581,9 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "generator_template": _existing(generator_template),
             "reviewer_report": _existing(reviewer_report),
         }
+        bundle_entry["artifact_quality"] = _bundle_artifact_quality(bundle_entry)
+        bundle_entry["intent_satisfaction"] = _bundle_intent_satisfaction(bundle_entry, requirement_view)
+        bundle_entry["memory_promotion"] = _bundle_memory_promotion_status(bundle_entry)
         bundles.append(bundle_entry)
     return bundles
 
@@ -526,6 +697,37 @@ def _bundle_promotion_status(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
     }
 
 
+def _bundle_memory_promotion_status(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
+    promotion = bundle_entry.get("promotion") or {}
+    strict_open_world = bundle_entry.get("strict_open_world") or {}
+    artifact_quality = bundle_entry.get("artifact_quality") or {}
+    reasons: List[str] = []
+
+    if not bool((promotion or {}).get("eligible")):
+        reasons.append("base_promotion:ineligible")
+
+    strict_class = str((strict_open_world or {}).get("class") or "").strip() or "unknown"
+    if strict_open_world.get("counts_as_generalization") is not True:
+        reasons.append(f"strict_open_world:{strict_class}")
+
+    quality_band = str((artifact_quality or {}).get("band") or "").strip().lower() or "unknown"
+    if quality_band != "high":
+        reasons.append(f"artifact_quality:{quality_band}")
+
+    oracle_clarity = str((artifact_quality or {}).get("oracle_clarity") or "").strip().lower() or "missing"
+    if oracle_clarity != "high":
+        reasons.append(f"oracle_clarity:{oracle_clarity}")
+
+    topology_clarity = str((artifact_quality or {}).get("topology_clarity") or "").strip().lower() or "missing"
+    if topology_clarity not in {"high", "medium"}:
+        reasons.append(f"topology_clarity:{topology_clarity}")
+
+    return {
+        "eligible": not reasons,
+        "reasons": reasons,
+    }
+
+
 def _eval_result_failure_reasons(eval_result: Dict[str, Any]) -> List[str]:
     reasons: List[str] = []
     semantic = eval_result.get("semantic_consistency")
@@ -611,6 +813,26 @@ def _promotion_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _memory_promotion_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    reasons: List[str] = []
+    eligible_bundles = 0
+    for entry in bundles:
+        memory_promotion = entry.get("memory_promotion") or {}
+        if not isinstance(memory_promotion, dict):
+            continue
+        if memory_promotion.get("eligible") is True:
+            eligible_bundles += 1
+        bundle_reasons = memory_promotion.get("reasons") or []
+        for item in bundle_reasons:
+            if isinstance(item, str) and item.strip():
+                reasons.append(f"{entry.get('slug')}: {item.strip()}")
+    return {
+        "eligible_bundles": eligible_bundles,
+        "all_eligible": eligible_bundles == len(bundles) if bundles else False,
+        "reasons": reasons,
+    }
+
+
 def _bundle_generation_provenance(
     sid: str,
     bundle,
@@ -620,6 +842,14 @@ def _bundle_generation_provenance(
     bundle_failure: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     contract = load_generator_contract(metadata_dir) or {}
+    generator_manifest = _load_json(metadata_dir / "generator_manifest.json") or {}
+    generator_manifest_meta = (
+        (generator_manifest.get("manifest") or {}).get("metadata")
+        if isinstance((generator_manifest.get("manifest") or {}), dict)
+        else {}
+    )
+    if not isinstance(generator_manifest_meta, dict):
+        generator_manifest_meta = {}
     provenance = contract.get("provenance") if isinstance(contract, dict) else {}
     if not isinstance(provenance, dict):
         provenance = {}
@@ -632,6 +862,9 @@ def _bundle_generation_provenance(
             fallback = contract.get(key)
             if isinstance(fallback, str) and fallback.strip():
                 return fallback.strip()
+        fallback = generator_manifest_meta.get(key)
+        if isinstance(fallback, str) and fallback.strip():
+            return fallback.strip()
         if generator_template:
             fallback = generator_template.get(key)
             if isinstance(fallback, str) and fallback.strip():
@@ -639,7 +872,12 @@ def _bundle_generation_provenance(
         return None
 
     def _read_bool(key: str) -> Optional[bool]:
-        for source in (provenance, contract if isinstance(contract, dict) else {}, generator_template or {}):
+        for source in (
+            provenance,
+            contract if isinstance(contract, dict) else {},
+            generator_manifest_meta,
+            generator_template or {},
+        ):
             value = source.get(key)
             if isinstance(value, bool):
                 return value
@@ -652,7 +890,7 @@ def _bundle_generation_provenance(
         return None
 
     payload: Dict[str, Any] = {}
-    for key in ("generation_origin", "template_id", "source", "fallback_class"):
+    for key in ("generation_origin", "template_id", "source", "fallback_class", "materializer"):
         value = _read_str(key)
         if value:
             payload[key] = value
@@ -849,6 +1087,8 @@ def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     template_assisted_bundles = 0
     registry_compose_bundles = 0
     scaffolded_bundles = 0
+    dynamic_eval_attempted_bundles = 0
+    dynamic_eval_recovered_bundles = 0
     for entry in bundles:
         provenance = entry.get("provenance") or {}
         if not isinstance(provenance, dict):
@@ -869,6 +1109,12 @@ def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
             fallback_bundles += 1
         if provenance.get("family_override_applied") is True:
             family_override_bundles += 1
+        dynamic_eval = entry.get("dynamic_eval") or {}
+        if isinstance(dynamic_eval, dict):
+            if dynamic_eval.get("attempted") is True:
+                dynamic_eval_attempted_bundles += 1
+            if dynamic_eval.get("lower_bound_fallback_used") is True:
+                dynamic_eval_recovered_bundles += 1
         if origin in {"built_in_template", "runtime_template_clone"}:
             template_origin_bundles += 1
             template_assisted_bundles += 1
@@ -899,6 +1145,40 @@ def _generation_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "template_assisted_bundles": template_assisted_bundles,
         "registry_compose_bundles": registry_compose_bundles,
         "scaffolded_bundles": scaffolded_bundles,
+        "dynamic_eval_attempted_bundles": dynamic_eval_attempted_bundles,
+        "dynamic_eval_recovered_bundles": dynamic_eval_recovered_bundles,
+    }
+
+
+def _dynamic_eval_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    enabled_bundles = 0
+    attempted_bundles = 0
+    lower_bound_recovered_bundles = 0
+    by_status: Dict[str, int] = {}
+    by_fallback_path: Dict[str, int] = {}
+    for entry in bundles:
+        dynamic_eval = entry.get("dynamic_eval") or {}
+        if not isinstance(dynamic_eval, dict):
+            continue
+        if dynamic_eval.get("enabled") is True:
+            enabled_bundles += 1
+        if dynamic_eval.get("attempted") is True:
+            attempted_bundles += 1
+        if dynamic_eval.get("lower_bound_fallback_used") is True:
+            lower_bound_recovered_bundles += 1
+        status = str(dynamic_eval.get("status") or "").strip()
+        if status:
+            by_status[status] = by_status.get(status, 0) + 1
+        fallback_path = str(dynamic_eval.get("fallback_path") or "").strip()
+        if fallback_path:
+            by_fallback_path[fallback_path] = by_fallback_path.get(fallback_path, 0) + 1
+    return {
+        "bundle_count": len(bundles),
+        "enabled_bundles": enabled_bundles,
+        "attempted_bundles": attempted_bundles,
+        "lower_bound_recovered_bundles": lower_bound_recovered_bundles,
+        "by_status": by_status,
+        "by_fallback_path": by_fallback_path,
     }
 
 
@@ -946,6 +1226,33 @@ def _apply_multibundle_top_level_rollups(manifest: Dict[str, Any], bundles: List
     )
     if counts_as_generalization is not None:
         manifest["counts_as_generalization"] = counts_as_generalization
+    open_world_class = _rollup_multibundle_string_field(bundles, section="open_world", key="class")
+    if open_world_class:
+        manifest["open_world_class"] = open_world_class
+    for key, manifest_key in (
+        ("confidence", "open_world_confidence"),
+        ("basis", "open_world_basis"),
+    ):
+        value = _rollup_multibundle_string_field(bundles, section="open_world", key=key)
+        if value:
+            manifest[manifest_key] = value
+    counts_as_open_world_generalization = _rollup_multibundle_bool_field(
+        bundles,
+        section="open_world",
+        key="counts_as_generalization",
+    )
+    if counts_as_open_world_generalization is not None:
+        manifest["counts_as_open_world_generalization"] = counts_as_open_world_generalization
+    strict_open_world_class = _rollup_multibundle_string_field(bundles, section="strict_open_world", key="class")
+    if strict_open_world_class:
+        manifest["strict_open_world_class"] = strict_open_world_class
+    counts_as_strict_open_world_generalization = _rollup_multibundle_bool_field(
+        bundles,
+        section="strict_open_world",
+        key="counts_as_generalization",
+    )
+    if counts_as_strict_open_world_generalization is not None:
+        manifest["counts_as_strict_open_world_generalization"] = counts_as_strict_open_world_generalization
     for key in ("stack_scaffold_id", "stack_scaffold_version", "compose_mode"):
         value = _rollup_multibundle_string_field(bundles, section="compiler_contract", key=key)
         if value:
@@ -1017,6 +1324,7 @@ def _bundle_generalization_verdict(
     dynamicness_verdict = str((dynamicness or {}).get("verdict") or "").strip().lower()
     support_level = str((compiler_contract or {}).get("support_level") or "").strip().lower()
     fallback_class = str((provenance or {}).get("fallback_class") or "").strip().lower()
+    materializer = str((provenance or {}).get("materializer") or "").strip().lower()
     promotion_eligible = bool((promotion or {}).get("eligible"))
     generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
     resolution = name_resolution if isinstance(name_resolution, dict) else {}
@@ -1025,7 +1333,7 @@ def _bundle_generalization_verdict(
 
     if vuln_id == "CWE-9999":
         reason = "explicit synthetic unknown identifier remains a regression lane"
-        if pattern:
+        if pattern and pattern != "generic-web-vuln":
             reason = f"{reason}; inherited pattern_id={pattern}"
         return {
             "class": "synthetic_regression",
@@ -1089,6 +1397,340 @@ def _bundle_generalization_verdict(
     }
 
 
+def _bundle_open_world_verdict(
+    bundle,
+    *,
+    pattern_id: Optional[str],
+    promotion: Dict[str, Any],
+    dynamicness: Dict[str, Any],
+    compiler_contract: Dict[str, Any],
+    provenance: Dict[str, Any],
+    name_resolution: Optional[Dict[str, Any]] = None,
+    dynamic_eval: Optional[Dict[str, Any]] = None,
+    failure: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
+    pattern = str(pattern_id or "").strip()
+    dynamicness_verdict = str((dynamicness or {}).get("verdict") or "").strip().lower()
+    support_level = str((compiler_contract or {}).get("support_level") or "").strip().lower()
+    fallback_class = str((provenance or {}).get("fallback_class") or "").strip().lower()
+    materializer = str((provenance or {}).get("materializer") or "").strip().lower()
+    promotion_eligible = bool((promotion or {}).get("eligible"))
+    generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
+    resolution = name_resolution if isinstance(name_resolution, dict) else {}
+    resolution_confidence = str(resolution.get("confidence") or "").strip().lower()
+    resolution_basis = str(resolution.get("match_class") or "").strip().lower()
+    dynamic_eval_payload = dynamic_eval if isinstance(dynamic_eval, dict) else {}
+    dynamic_eval_status = str(dynamic_eval_payload.get("status") or "").strip().lower()
+    failure_payload = failure if isinstance(failure, dict) else {}
+    failure_stage = str(failure_payload.get("stage") or "").strip().upper()
+    failure_terminal_class = str(failure_payload.get("terminal_failure_class") or "").strip().lower()
+    lower_bound_available = (
+        support_level in {"builtin_supported", "compiler_supported"}
+        or bool((compiler_contract or {}).get("compiler_supported"))
+        or bool(load_static_rule(vuln_id))
+    )
+    template_dependent = dynamicness_verdict == "template-assisted"
+
+    if vuln_id == "CWE-9999":
+        reason = "explicit synthetic unknown identifier remains a regression lane"
+        if pattern and pattern != "generic-web-vuln":
+            reason = f"{reason}; inherited pattern_id={pattern}"
+        return {
+            "class": "synthetic_regression",
+            "counts_as_generalization": False,
+            "reason": reason,
+            "lower_bound_dependent": False,
+            "template_dependent": template_dependent,
+        }
+
+    if vuln_id.startswith("NAME-"):
+        if support_level == "unsupported" or generation_origin == "research_short_circuit":
+            return {
+                "class": "unsupported_free_form_negative",
+                "counts_as_generalization": False,
+                "reason": "free-form NAME-* family is unsupported and intentionally fail-closed",
+                "confidence": resolution_confidence or "low",
+                "basis": resolution_basis or "synthetic_name",
+                "lower_bound_dependent": False,
+                "template_dependent": template_dependent,
+            }
+        if failure_stage == "GENERATOR" and dynamic_eval_status == "dynamic_failed":
+            return {
+                "class": "name_driven_dynamic_failed",
+                "counts_as_generalization": False,
+                "reason": (
+                    "name-only lane attempted dynamic generation first, but generation failed before acceptable materialization"
+                    + (f" ({failure_terminal_class})" if failure_terminal_class else "")
+                ),
+                "confidence": resolution_confidence or "unknown",
+                "basis": resolution_basis or "unknown",
+                "lower_bound_dependent": False,
+                "template_dependent": False,
+            }
+        if (
+            promotion_eligible
+            and dynamicness_verdict == "trusted dynamic"
+            and not lower_bound_available
+            and fallback_class != "generic_unsupported_family"
+            and resolution_confidence == "high"
+            and resolution_basis in {"catalog_alias", "exact_identifier"}
+        ):
+            return {
+                "class": "open_world_positive",
+                "counts_as_generalization": True,
+                "reason": "name-only lane closed via trusted dynamic generation without an existing curated lower bound",
+                "confidence": resolution_confidence,
+                "basis": resolution_basis,
+                "lower_bound_dependent": False,
+                "template_dependent": template_dependent,
+            }
+        if generation_origin == "deterministic_fallback" and fallback_class == "semantic_guided":
+            return {
+                "class": "semantic_guided_minimal_dynamic"
+                if materializer == "minimal_dynamic"
+                else "semantic_guided_degraded",
+                "counts_as_generalization": False,
+                "reason": (
+                    "name-only lane closed by semantic-guided deterministic fallback using a minimal dynamic materializer; "
+                    "this reduces direct template dependence, but remains below open-world generation"
+                    if materializer == "minimal_dynamic"
+                    else "name-only lane closed by semantic-guided deterministic fallback using repo family assets; "
+                    "this is a useful degraded recovery path, but not open-world generation"
+                ),
+                "confidence": resolution_confidence or "unknown",
+                "basis": resolution_basis or "unknown",
+                "lower_bound_dependent": True,
+                "template_dependent": template_dependent,
+            }
+        if resolution_basis in {"catalog_alias", "exact_identifier", "token_match"}:
+            dependency = dynamicness_verdict or generation_origin or "lower-bound path"
+            class_name = (
+                "catalog_token_match_lower_bound"
+                if resolution_basis == "token_match"
+                else "catalog_resolved_lower_bound"
+            )
+            return {
+                "class": class_name,
+                "counts_as_generalization": False,
+                "reason": (
+                    f"name-only lane resolved via {resolution_basis} and closed by {dependency}; "
+                    "this remains curated lower-bound evidence, not open-world generation"
+                ),
+                "confidence": resolution_confidence or "unknown",
+                "basis": resolution_basis or "unknown",
+                "lower_bound_dependent": True,
+                "template_dependent": template_dependent,
+            }
+        return {
+            "class": "free_form_non_generalizing",
+            "counts_as_generalization": False,
+            "reason": "free-form NAME-* lane exists but resolution basis is not strong enough to count as open-world evidence",
+            "confidence": resolution_confidence or "unknown",
+            "basis": resolution_basis or "unknown",
+            "lower_bound_dependent": lower_bound_available,
+            "template_dependent": template_dependent,
+        }
+
+    if (
+        promotion_eligible
+        and dynamicness_verdict == "trusted dynamic"
+        and not lower_bound_available
+        and fallback_class != "generic_unsupported_family"
+    ):
+        return {
+            "class": "open_world_positive",
+            "counts_as_generalization": True,
+            "reason": "bundle succeeded through trusted dynamic generation without an existing curated lower bound",
+            "lower_bound_dependent": False,
+            "template_dependent": template_dependent,
+        }
+
+    if lower_bound_available:
+        return {
+            "class": "known_family_regression",
+            "counts_as_generalization": False,
+            "reason": "known family or curated lower-bound regression lane",
+            "lower_bound_dependent": True,
+            "template_dependent": template_dependent,
+        }
+
+    if not load_static_rule(vuln_id):
+        return {
+            "class": "unknown_regression",
+            "counts_as_generalization": False,
+            "reason": "unknown identifier without a static rule is treated as a regression lane",
+            "lower_bound_dependent": False,
+            "template_dependent": template_dependent,
+        }
+
+    return {
+        "class": "known_family_regression",
+        "counts_as_generalization": False,
+        "reason": "known/static-rule family regression lane",
+        "lower_bound_dependent": True,
+        "template_dependent": template_dependent,
+    }
+
+
+def _bundle_strict_open_world_verdict(
+    bundle,
+    *,
+    open_world: Dict[str, Any],
+    dynamicness: Dict[str, Any],
+    provenance: Dict[str, Any],
+    lower_bound: Dict[str, Any],
+    verification: Dict[str, Any],
+    researcher: Dict[str, Any],
+    semantic: Dict[str, Any],
+    dynamic_eval: Optional[Dict[str, Any]] = None,
+    failure: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
+    generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
+    dynamicness_verdict = str((dynamicness or {}).get("verdict") or "").strip().lower()
+    fallback_class = str((provenance or {}).get("fallback_class") or "").strip().lower()
+    materializer = str((provenance or {}).get("materializer") or "").strip().lower()
+    if isinstance(open_world, dict) and "lower_bound_dependent" in open_world:
+        lower_bound_dependent = bool((open_world or {}).get("lower_bound_dependent"))
+    else:
+        lower_bound_dependent = bool((lower_bound or {}).get("effective_non_remote_available"))
+    template_dependent = bool((open_world or {}).get("template_dependent")) or dynamicness_verdict == "template-assisted"
+    fixture_backed = (provenance or {}).get("llm_fixture_used") is True
+    stub_backed = (provenance or {}).get("llm_stub_used") is True
+    fallback_used = (provenance or {}).get("fallback_used") is True or generation_origin == "deterministic_fallback"
+    research_degraded = (researcher or {}).get("search_degraded") is True
+    researcher_quality = str((researcher or {}).get("quality") or "").strip().lower()
+    researcher_report_present = (researcher or {}).get("report_present") is True
+    dynamic_eval_payload = dynamic_eval if isinstance(dynamic_eval, dict) else {}
+    dynamic_eval_status = str(dynamic_eval_payload.get("status") or "").strip().lower()
+    failure_payload = failure if isinstance(failure, dict) else {}
+    failure_stage = str(failure_payload.get("stage") or "").strip().upper()
+    failure_terminal_class = str(failure_payload.get("terminal_failure_class") or "").strip().lower()
+    verification_trust = str((verification or {}).get("trust") or "").strip().lower()
+    verification_independence = str((verification or {}).get("independence") or "").strip().lower()
+    semantic_supported = (semantic or {}).get("supported")
+    semantic_status = str((semantic or {}).get("status") or "").strip().lower()
+    requires_research_contract = vuln_id.startswith("NAME-") or not bool(load_static_rule(vuln_id))
+
+    base_payload = {
+        "counts_as_generalization": False,
+        "lower_bound_dependent": lower_bound_dependent,
+        "template_dependent": template_dependent,
+        "fixture_backed": fixture_backed,
+        "stub_backed": stub_backed,
+        "research_degraded": research_degraded,
+        "verification_independence": verification_independence or "unknown",
+        "verification_trust": verification_trust or "unknown",
+    }
+
+    if generation_origin == "research_short_circuit" or dynamicness_verdict == "pre-generation fail-closed":
+        return {
+            **base_payload,
+            "class": "strict_fail_closed_negative",
+            "reason": "bundle stopped before generation, so it cannot count as strict open-world evidence",
+        }
+    if failure_stage == "GENERATOR" and dynamic_eval_status == "dynamic_failed":
+        return {
+            **base_payload,
+            "class": "strict_dynamic_generation_failed",
+            "reason": (
+                "name-only dynamic lane attempted generation first, but it failed before acceptable materialization"
+                + (f" ({failure_terminal_class})" if failure_terminal_class else "")
+            ),
+        }
+    if generation_origin == "deterministic_fallback" and fallback_class == "semantic_guided":
+        return {
+            **base_payload,
+            "class": "strict_minimal_dynamic_fallback"
+            if materializer == "minimal_dynamic"
+            else "strict_semantic_guided_fallback",
+            "reason": (
+                "bundle closed through a semantic-guided minimal dynamic materializer and remains below strict open-world acceptance"
+                if materializer == "minimal_dynamic"
+                else "bundle closed through semantic-guided deterministic fallback and remains below strict open-world acceptance"
+            ),
+        }
+    if template_dependent:
+        return {
+            **base_payload,
+            "class": "strict_template_dependent",
+            "reason": "bundle used a template-backed path and is excluded from strict open-world evidence",
+        }
+    if dynamicness_verdict != "trusted dynamic" or generation_origin != "llm_manifest":
+        if lower_bound_dependent:
+            return {
+                **base_payload,
+                "class": "strict_curated_lower_bound",
+                "reason": "bundle closed through an existing curated lower bound and is excluded from strict open-world evidence",
+            }
+        return {
+            **base_payload,
+            "class": "strict_non_dynamic_path",
+            "reason": "bundle did not close through a trusted-dynamic llm_manifest path",
+        }
+    if fallback_used:
+        return {
+            **base_payload,
+            "class": "strict_deterministic_fallback",
+            "reason": "bundle relied on deterministic fallback and is excluded from strict open-world evidence",
+        }
+    if fixture_backed:
+        return {
+            **base_payload,
+            "class": "strict_fixture_backed_dynamic",
+            "reason": "bundle used an LLM fixture and does not count as live strict open-world evidence",
+        }
+    if stub_backed:
+        return {
+            **base_payload,
+            "class": "strict_stub_backed_dynamic",
+            "reason": "bundle used the deterministic LLM stub and does not count as strict open-world evidence",
+        }
+    if lower_bound_dependent:
+        return {
+            **base_payload,
+            "class": "strict_curated_lower_bound",
+            "reason": "bundle closed through an existing curated lower bound and is excluded from strict open-world evidence",
+        }
+    if verification_trust != "high":
+        return {
+            **base_payload,
+            "class": "strict_low_trust_verification",
+            "reason": "verification trust is below high, so the bundle remains below strict open-world acceptance",
+        }
+    if verification_independence != "independent":
+        return {
+            **base_payload,
+            "class": "strict_verifier_coupled",
+            "reason": "verification is not independent from generation and is excluded from strict open-world evidence",
+        }
+    if semantic_supported is not True or semantic_status != "aligned":
+        return {
+            **base_payload,
+            "class": "strict_semantic_unresolved",
+            "reason": "semantic contract is not fully aligned, so the bundle cannot count as strict open-world evidence",
+        }
+    if research_degraded:
+        return {
+            **base_payload,
+            "class": "strict_research_degraded",
+            "reason": "research evidence degraded to fallback mode, so the bundle is excluded from strict open-world evidence",
+        }
+    if requires_research_contract and (not researcher_report_present or researcher_quality in {"skipped", "insufficient"}):
+        return {
+            **base_payload,
+            "class": "strict_research_contract_missing",
+            "reason": "strict open-world acceptance requires a non-skipped researcher contract for this lane",
+        }
+    return {
+        **base_payload,
+        "class": "strict_open_world_positive",
+        "counts_as_generalization": True,
+        "reason": "bundle closed through live trusted-dynamic generation without lower-bound/template dependence and with independent high-trust verification",
+    }
+
+
 def _bundle_lower_bound(
     metadata_dir: Path,
     vuln_id: str,
@@ -1140,6 +1782,354 @@ def _bundle_executor_feasibility(
         executor_policy if isinstance(executor_policy, dict) else {},
         requires_external_db=requires_external_db,
     )
+
+
+def _bundle_runtime_recipe(
+    *,
+    contract: Dict[str, Any],
+    requirement: Dict[str, Any],
+    compiler_contract: Dict[str, Any],
+    executor_feasibility: Dict[str, Any],
+) -> Dict[str, Any]:
+    direct = contract.get("runtime_recipe") if isinstance(contract.get("runtime_recipe"), dict) else None
+    if isinstance(direct, dict) and direct:
+        return direct
+
+    runtime = requirement.get("runtime") if isinstance(requirement.get("runtime"), dict) else {}
+    executor = requirement.get("executor") if isinstance(requirement.get("executor"), dict) else {}
+    sidecars = executor.get("sidecars") if isinstance(executor.get("sidecars"), list) else []
+    normalized_sidecars: List[Dict[str, Any]] = []
+    for item in sidecars:
+        if not isinstance(item, dict):
+            continue
+        entry: Dict[str, Any] = {}
+        for key in ("name", "type", "image"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                entry[key] = value.strip()
+        aliases = item.get("aliases")
+        if isinstance(aliases, list):
+            alias_values = [str(alias).strip() for alias in aliases if isinstance(alias, str) and str(alias).strip()]
+            if alias_values:
+                entry["aliases"] = alias_values
+        if entry:
+            normalized_sidecars.append(entry)
+
+    service_env = contract.get("service_env") if isinstance(contract.get("service_env"), dict) else {}
+    if not service_env and isinstance(compiler_contract.get("service_env"), dict):
+        service_env = compiler_contract.get("service_env") or {}
+    normalized_env = {
+        str(key): str(value)
+        for key, value in service_env.items()
+        if isinstance(key, str) and key.strip() and value not in (None, "")
+    }
+    db = str(runtime.get("db") or runtime.get("database") or requirement.get("db") or "").strip().lower() or None
+    service_port = contract.get("service_port")
+    recipe: Dict[str, Any] = {
+        "language": str(requirement.get("language") or "python").strip().lower() or "python",
+        "framework": str(requirement.get("framework") or "flask").strip().lower() or "flask",
+        "transport": "http",
+        "service_entry": str(contract.get("service_entry") or "app.py").strip() or "app.py",
+        "poc_entry": str(contract.get("poc_entry") or "poc.py").strip() or "poc.py",
+        "service_port": int(service_port or 5000),
+        "db": db,
+        "allow_external_db": bool(runtime.get("allow_external_db", False)),
+        "requires_external_db": bool(executor_feasibility.get("requires_external_db")),
+        "network_mode": str(executor_feasibility.get("network_mode") or "none").strip().lower() or "none",
+        "network_enabled": bool(executor_feasibility.get("network_enabled")),
+        "sidecars": normalized_sidecars,
+        "service_env": normalized_env,
+        "seed_files": [],
+        "topology": "service_plus_sidecar"
+        if normalized_sidecars or bool(executor_feasibility.get("requires_external_db"))
+        else "single_service",
+        "output_mode": str(contract.get("output_mode") or "auto").strip().lower() or "auto",
+    }
+    return recipe
+
+
+def _bundle_dynamic_eval_summary(
+    *,
+    requirement: Dict[str, Any],
+    metadata_dir: Path,
+) -> Dict[str, Any]:
+    policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+    request_identity = requirement.get("request_identity") if isinstance(requirement.get("request_identity"), dict) else {}
+    name_driven = bool((request_identity or {}).get("name_driven")) or str(requirement.get("vuln_id") or "").strip().upper().startswith("NAME-")
+    name_only_mode = str((policy or {}).get("name_only_mode") or "").strip().lower() if isinstance(policy, dict) else ""
+    enabled = bool(policy.get("dynamic_eval")) if isinstance(policy, dict) else False
+    if name_driven and name_only_mode in {"dynamic", "strict_dynamic"}:
+        enabled = True
+    payload = _load_json(metadata_dir / "dynamic_eval.json") or {}
+    summary: Dict[str, Any] = {"enabled": enabled}
+    if not isinstance(payload, dict):
+        summary["attempted"] = enabled
+        return summary
+    for key in ("status", "fallback_path"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            summary[key] = value.strip()
+    for key in ("attempted", "lower_bound_fallback_used"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            summary[key] = value
+    if "attempted" not in summary:
+        summary["attempted"] = enabled
+    return summary
+
+
+def _bundle_researcher_summary(
+    *,
+    requirement: Dict[str, Any],
+    metadata_dir: Path,
+) -> Dict[str, Any]:
+    researcher_cfg = requirement.get("researcher") if isinstance(requirement.get("researcher"), dict) else {}
+    policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+    report = _load_json(metadata_dir / "researcher_report.json") or {}
+    report_present = bool(report)
+    ambiguous = None
+    summary: Dict[str, Any] = {
+        "shadow_mode_enabled": bool((researcher_cfg or {}).get("shadow_mode")),
+        "force_run": bool((researcher_cfg or {}).get("force_run")) if isinstance(researcher_cfg, dict) else False,
+        "dynamic_eval_enabled": (
+            bool((policy or {}).get("dynamic_eval"))
+            or (
+                (
+                    bool(((requirement.get("request_identity") or {}).get("name_driven")))
+                    or str(requirement.get("vuln_id") or "").strip().upper().startswith("NAME-")
+                )
+                and str((policy or {}).get("name_only_mode") or "").strip().lower() in {"dynamic", "strict_dynamic"}
+            )
+        )
+        if isinstance(policy, dict)
+        else False,
+        "search_policy": (
+            str((researcher_cfg or {}).get("search_policy") or "").strip().lower()
+            if isinstance(researcher_cfg, dict)
+            else ""
+        )
+        or None,
+        "report_present": report_present,
+        "ran": False,
+    }
+    if not report_present:
+        return summary
+
+    quality = str(report.get("quality") or "").strip().lower()
+    summary["ran"] = quality not in {"", "skipped"}
+    for key in ("quality", "quality_reason", "search_health_path"):
+        value = report.get(key)
+        if isinstance(value, str) and value.strip():
+            summary[key] = value.strip()
+    for key in ("search_degraded", "guard_fallback", "retry_recommended"):
+        value = report.get(key)
+        if isinstance(value, bool):
+            summary[key] = value
+    semantic_signature_source = report.get("semantic_signature_source")
+    if isinstance(semantic_signature_source, str):
+        semantic_signature_source = [semantic_signature_source]
+    if isinstance(semantic_signature_source, list):
+        normalized_sources = [
+            str(item).strip()
+            for item in semantic_signature_source
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized_sources:
+            summary["semantic_signature_source"] = normalized_sources
+    evidence_relevance = report.get("evidence_relevance")
+    if isinstance(evidence_relevance, dict) and evidence_relevance:
+        score = evidence_relevance.get("score")
+        threshold = evidence_relevance.get("threshold")
+        confidence = evidence_relevance.get("confidence")
+        if score is not None:
+            summary["evidence_relevance_score"] = score
+        if threshold is not None:
+            summary["evidence_relevance_threshold"] = threshold
+        if isinstance(confidence, str) and confidence.strip():
+            summary["evidence_relevance_confidence"] = confidence.strip().lower()
+    candidate_rules = report.get("candidate_rules")
+    if isinstance(candidate_rules, list):
+        summary["candidate_rule_count"] = len(candidate_rules)
+    candidate_templates = report.get("candidate_templates")
+    if isinstance(candidate_templates, list):
+        summary["candidate_template_count"] = len(candidate_templates)
+    query_plan = report.get("query_plan")
+    if isinstance(query_plan, dict) and query_plan:
+        summary["query_plan_present"] = True
+        family_hypotheses = query_plan.get("family_hypotheses")
+        if isinstance(family_hypotheses, list):
+            summary["query_plan_family_hypothesis_count"] = len(family_hypotheses)
+    evidence_type_summary = report.get("evidence_type_summary")
+    if isinstance(evidence_type_summary, dict) and evidence_type_summary:
+        by_type = evidence_type_summary.get("by_type")
+        if isinstance(by_type, dict) and by_type:
+            summary["evidence_types"] = {
+                str(key): int(value)
+                for key, value in by_type.items()
+                if isinstance(key, str) and key.strip() and isinstance(value, (int, float))
+            }
+        matched_target_count = evidence_type_summary.get("matched_target_count")
+        hit_count = evidence_type_summary.get("hit_count")
+        if isinstance(matched_target_count, (int, float)) and isinstance(hit_count, (int, float)) and hit_count:
+            summary["query_target_match_rate"] = round(float(matched_target_count) / float(hit_count), 3)
+    family_hypothesis_summary = report.get("family_hypothesis_summary")
+    if isinstance(family_hypothesis_summary, dict) and family_hypothesis_summary:
+        top_family = family_hypothesis_summary.get("top_family")
+        top_confidence = family_hypothesis_summary.get("top_confidence")
+        raw_top_confidence = family_hypothesis_summary.get("raw_top_confidence")
+        contradiction_count = family_hypothesis_summary.get("contradiction_count")
+        top_margin = family_hypothesis_summary.get("top_margin")
+        ambiguous = family_hypothesis_summary.get("ambiguous")
+        if isinstance(top_family, str) and top_family.strip():
+            summary["top_family_hypothesis"] = top_family.strip()
+        if isinstance(top_confidence, str) and top_confidence.strip():
+            summary["top_family_hypothesis_confidence"] = top_confidence.strip().lower()
+        if isinstance(raw_top_confidence, str) and raw_top_confidence.strip():
+            summary["top_family_hypothesis_raw_confidence"] = raw_top_confidence.strip().lower()
+        if isinstance(contradiction_count, (int, float)):
+            summary["family_hypothesis_contradictions"] = int(contradiction_count)
+        if isinstance(top_margin, (int, float)):
+            summary["top_family_hypothesis_margin"] = round(float(top_margin), 3)
+    if isinstance(ambiguous, bool):
+        summary["family_hypothesis_ambiguous"] = ambiguous
+    llm_execution = report.get("llm_execution")
+    if isinstance(llm_execution, dict) and llm_execution:
+        for src_key, dst_key in (
+            ("provider_attempted", "llm_provider_attempted"),
+            ("provider_succeeded", "llm_provider_succeeded"),
+            ("stub_fallback", "llm_stub_used"),
+            ("fixture_used", "llm_fixture_used"),
+        ):
+            value = llm_execution.get(src_key)
+            if isinstance(value, bool):
+                summary[dst_key] = value
+        last_error_class = llm_execution.get("last_error_class")
+        if isinstance(last_error_class, str) and last_error_class.strip():
+            summary["llm_failure_class"] = last_error_class.strip()
+    return summary
+
+
+def _bundle_artifact_quality(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
+    paths = bundle_entry.get("paths") if isinstance(bundle_entry.get("paths"), dict) else {}
+    workspace_value = paths.get("workspace") if isinstance(paths, dict) else None
+    workspace_path = str(workspace_value).strip() if isinstance(workspace_value, str) and str(workspace_value).strip() else ""
+    readme_present = False
+    readme_substantive = False
+    readme_quickstart = False
+    readme_verification = False
+    readme_runtime = False
+    if workspace_path:
+        readme_path = Path(workspace_path) / "README.md"
+        if readme_path.exists():
+            readme_present = True
+            try:
+                text = readme_path.read_text(encoding="utf-8")
+            except Exception:
+                text = ""
+            lowered = text.lower()
+            nonempty_lines = [line for line in text.splitlines() if line.strip()]
+            readme_substantive = len(nonempty_lines) >= 6 and len(text) >= 180
+            readme_quickstart = any(token in lowered for token in ("docker build", "docker run", "python poc.py"))
+            readme_verification = any(
+                token in lowered for token in ("verification markers", "success signature", "flag token", "poc must print")
+            )
+            readme_runtime = any(
+                token in lowered for token in ("runtime expects", "sidecar", "db_host", "mysql", "postgres", "/health")
+            )
+
+    provenance = bundle_entry.get("provenance") if isinstance(bundle_entry.get("provenance"), dict) else {}
+    dynamicness = bundle_entry.get("dynamicness") if isinstance(bundle_entry.get("dynamicness"), dict) else {}
+    generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
+    dynamicness_verdict = str((dynamicness or {}).get("verdict") or "").strip().lower()
+    pre_generation_fail_closed = generation_origin == "research_short_circuit" or dynamicness_verdict == "pre-generation fail-closed"
+    degraded_fallback = bool((provenance or {}).get("fallback_used")) or generation_origin == "deterministic_fallback"
+
+    runtime_recipe = bundle_entry.get("runtime_recipe") if isinstance(bundle_entry.get("runtime_recipe"), dict) else {}
+    runtime_recipe_present = bool(runtime_recipe) and not pre_generation_fail_closed
+    topology = str(runtime_recipe.get("topology") or "").strip()
+    service_port = runtime_recipe.get("service_port")
+    sidecars = runtime_recipe.get("sidecars") if isinstance(runtime_recipe.get("sidecars"), list) else []
+    service_env = runtime_recipe.get("service_env") if isinstance(runtime_recipe.get("service_env"), dict) else {}
+    if pre_generation_fail_closed:
+        topology_clarity = "missing"
+    elif runtime_recipe_present and topology == "service_plus_sidecar" and sidecars and service_env:
+        topology_clarity = "high"
+    elif runtime_recipe_present and topology and service_port:
+        topology_clarity = "medium"
+    elif runtime_recipe_present:
+        topology_clarity = "low"
+    else:
+        topology_clarity = "missing"
+
+    verification = bundle_entry.get("verification") if isinstance(bundle_entry.get("verification"), dict) else {}
+    exploit_oracle = bundle_entry.get("exploit_oracle") if isinstance(bundle_entry.get("exploit_oracle"), dict) else {}
+    oracle_clarity = "missing"
+    rule_source = verification.get("rule_source")
+    trust = verification.get("trust")
+    has_rule_source = isinstance(rule_source, str) and rule_source.strip()
+    has_trust = isinstance(trust, str) and trust.strip()
+    has_oracle_contract = False
+    if isinstance(exploit_oracle, dict) and exploit_oracle:
+        if any(
+            key in exploit_oracle and exploit_oracle.get(key)
+            for key in ("success_signature", "flag_token", "assertion_program", "poc_cmd")
+        ):
+            has_oracle_contract = True
+    if has_rule_source and has_trust:
+        oracle_clarity = "high" if readme_verification else "medium"
+    elif has_rule_source:
+        oracle_clarity = "low"
+    elif has_oracle_contract:
+        oracle_clarity = "high" if readme_verification else "medium"
+
+    readme_score = sum(
+        1 for flag in (readme_present, readme_substantive, readme_quickstart, readme_verification, readme_runtime) if flag
+    )
+    topology_score = {"missing": 0, "low": 1, "medium": 2, "high": 3}.get(topology_clarity, 0)
+    oracle_score = {"missing": 0, "low": 1, "medium": 2, "high": 3}.get(oracle_clarity, 0)
+    total_score = readme_score + topology_score + oracle_score
+    generation_authenticity = "degraded_fallback" if degraded_fallback else "native"
+    if degraded_fallback:
+        # Keep deterministic recovery bundles runnable, but avoid scoring them
+        # as if they were native dynamic or template-quality artifacts.
+        total_score = min(total_score, 8)
+    if total_score >= 9:
+        band = "high"
+    elif total_score >= 6:
+        band = "medium"
+    else:
+        band = "low"
+
+    notes: List[str] = []
+    if not readme_present:
+        notes.append("README missing")
+    elif not readme_substantive:
+        notes.append("README is too thin for operator-facing use")
+    elif not readme_verification:
+        notes.append("README does not clearly surface verification/oracle contract")
+    if topology_clarity in {"missing", "low"}:
+        notes.append("runtime topology clarity is incomplete")
+    if oracle_clarity in {"missing", "low"}:
+        notes.append("exploit oracle clarity is limited")
+    if pre_generation_fail_closed:
+        notes.append("bundle stopped before code generation; runtime recipe remains planning-only")
+    elif degraded_fallback:
+        notes.append("deterministic fallback bundle: operator-facing quality is capped below native dynamic/template artifacts")
+
+    return {
+        "band": band,
+        "score": total_score,
+        "generation_authenticity": generation_authenticity,
+        "readme_present": readme_present,
+        "readme_substantive": readme_substantive,
+        "readme_quickstart": readme_quickstart,
+        "readme_verification": readme_verification,
+        "readme_runtime": readme_runtime,
+        "runtime_recipe_present": runtime_recipe_present,
+        "topology_clarity": topology_clarity,
+        "oracle_clarity": oracle_clarity,
+        "notes": notes,
+    }
 
 
 def _lower_bound_rollup(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1224,6 +2214,255 @@ def _generalization_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _artifact_quality_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_band: Dict[str, int] = {}
+    total_score = 0
+    bundle_count = 0
+    readme_present_bundles = 0
+    runtime_recipe_bundles = 0
+    for entry in bundles:
+        quality = entry.get("artifact_quality") or {}
+        if not isinstance(quality, dict):
+            continue
+        bundle_count += 1
+        band = str(quality.get("band") or "").strip()
+        if band:
+            by_band[band] = by_band.get(band, 0) + 1
+        total_score += int(quality.get("score") or 0)
+        if quality.get("readme_present") is True:
+            readme_present_bundles += 1
+        if quality.get("runtime_recipe_present") is True:
+            runtime_recipe_bundles += 1
+    average_score = round(total_score / bundle_count, 2) if bundle_count else 0.0
+    return {
+        "bundle_count": bundle_count,
+        "average_score": average_score,
+        "by_band": by_band,
+        "readme_present_bundles": readme_present_bundles,
+        "runtime_recipe_bundles": runtime_recipe_bundles,
+    }
+
+
+def _researcher_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_quality: Dict[str, int] = {}
+    by_top_family_hypothesis: Dict[str, int] = {}
+    by_top_family_confidence: Dict[str, int] = {}
+    shadow_mode_bundles = 0
+    report_present_bundles = 0
+    ran_bundles = 0
+    skipped_bundles = 0
+    degraded_bundles = 0
+    query_plan_bundles = 0
+    contradiction_bundles = 0
+    ambiguous_family_hypothesis_bundles = 0
+    query_target_match_rates: List[float] = []
+    for entry in bundles:
+        researcher = entry.get("researcher") or {}
+        if not isinstance(researcher, dict):
+            continue
+        if researcher.get("shadow_mode_enabled") is True:
+            shadow_mode_bundles += 1
+        if researcher.get("report_present") is True:
+            report_present_bundles += 1
+        if researcher.get("ran") is True:
+            ran_bundles += 1
+        quality = str(researcher.get("quality") or "").strip()
+        if quality:
+            by_quality[quality] = by_quality.get(quality, 0) + 1
+            if quality == "skipped":
+                skipped_bundles += 1
+        if researcher.get("search_degraded") is True:
+            degraded_bundles += 1
+        if researcher.get("query_plan_present") is True:
+            query_plan_bundles += 1
+        top_family = str(researcher.get("top_family_hypothesis") or "").strip()
+        if top_family:
+            by_top_family_hypothesis[top_family] = by_top_family_hypothesis.get(top_family, 0) + 1
+        top_confidence = str(researcher.get("top_family_hypothesis_confidence") or "").strip().lower()
+        if top_confidence:
+            by_top_family_confidence[top_confidence] = by_top_family_confidence.get(top_confidence, 0) + 1
+        contradictions = researcher.get("family_hypothesis_contradictions")
+        if isinstance(contradictions, (int, float)) and contradictions > 0:
+            contradiction_bundles += 1
+        if researcher.get("family_hypothesis_ambiguous") is True:
+            ambiguous_family_hypothesis_bundles += 1
+        match_rate = researcher.get("query_target_match_rate")
+        if isinstance(match_rate, (int, float)):
+            query_target_match_rates.append(float(match_rate))
+    return {
+        "bundle_count": len(bundles),
+        "shadow_mode_bundles": shadow_mode_bundles,
+        "report_present_bundles": report_present_bundles,
+        "ran_bundles": ran_bundles,
+        "skipped_bundles": skipped_bundles,
+        "degraded_bundles": degraded_bundles,
+        "query_plan_bundles": query_plan_bundles,
+        "contradiction_bundles": contradiction_bundles,
+        "ambiguous_family_hypothesis_bundles": ambiguous_family_hypothesis_bundles,
+        "by_quality": by_quality,
+        "by_top_family_hypothesis": by_top_family_hypothesis,
+        "by_top_family_confidence": by_top_family_confidence,
+        "avg_query_target_match_rate": round(sum(query_target_match_rates) / len(query_target_match_rates), 3)
+        if query_target_match_rates
+        else 0.0,
+    }
+
+
+def _request_identity_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_input_mode: Dict[str, int] = {}
+    by_match_class: Dict[str, int] = {}
+    by_confidence: Dict[str, int] = {}
+    name_driven_bundles = 0
+    synthetic_resolution_bundles = 0
+    for entry in bundles:
+        request_identity = entry.get("request_identity") or {}
+        if not isinstance(request_identity, dict):
+            continue
+        input_mode = str(request_identity.get("input_mode") or "").strip()
+        if input_mode:
+            by_input_mode[input_mode] = by_input_mode.get(input_mode, 0) + 1
+        match_class = str(request_identity.get("match_class") or "").strip()
+        if match_class:
+            by_match_class[match_class] = by_match_class.get(match_class, 0) + 1
+        confidence = str(request_identity.get("confidence") or "").strip()
+        if confidence:
+            by_confidence[confidence] = by_confidence.get(confidence, 0) + 1
+        if request_identity.get("name_driven") is True:
+            name_driven_bundles += 1
+        if request_identity.get("synthetic_resolution") is True:
+            synthetic_resolution_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "name_driven_bundles": name_driven_bundles,
+        "synthetic_resolution_bundles": synthetic_resolution_bundles,
+        "by_input_mode": by_input_mode,
+        "by_match_class": by_match_class,
+        "by_confidence": by_confidence,
+    }
+
+
+def _template_dependence_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    template_assisted_bundles = 0
+    template_dependent_bundles = 0
+    lower_bound_dependent_bundles = 0
+    name_only_lower_bound_bundles = 0
+    open_world_positive_bundles = 0
+    minimal_dynamic_bundles = 0
+    by_open_world_class: Dict[str, int] = {}
+    for entry in bundles:
+        dynamicness = entry.get("dynamicness") or {}
+        open_world = entry.get("open_world") or {}
+        provenance = entry.get("provenance") or {}
+        if str((dynamicness or {}).get("verdict") or "").strip().lower() == "template-assisted":
+            template_assisted_bundles += 1
+        if str((provenance or {}).get("materializer") or "").strip().lower() == "minimal_dynamic":
+            minimal_dynamic_bundles += 1
+        if isinstance(open_world, dict):
+            if open_world.get("template_dependent") is True:
+                template_dependent_bundles += 1
+            if open_world.get("lower_bound_dependent") is True:
+                lower_bound_dependent_bundles += 1
+            if open_world.get("counts_as_generalization") is True:
+                open_world_positive_bundles += 1
+            class_name = str(open_world.get("class") or "").strip()
+            if class_name:
+                by_open_world_class[class_name] = by_open_world_class.get(class_name, 0) + 1
+            vuln_id = str(entry.get("vuln_id") or "").strip().upper()
+            if vuln_id.startswith("NAME-") and open_world.get("lower_bound_dependent") is True:
+                name_only_lower_bound_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "template_assisted_bundles": template_assisted_bundles,
+        "template_dependent_bundles": template_dependent_bundles,
+        "lower_bound_dependent_bundles": lower_bound_dependent_bundles,
+        "name_only_lower_bound_bundles": name_only_lower_bound_bundles,
+        "open_world_positive_bundles": open_world_positive_bundles,
+        "minimal_dynamic_bundles": minimal_dynamic_bundles,
+        "by_open_world_class": by_open_world_class,
+    }
+
+
+def _open_world_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_class: Dict[str, int] = {}
+    by_confidence: Dict[str, int] = {}
+    by_basis: Dict[str, int] = {}
+    positive_open_world_bundles = 0
+    lower_bound_dependent_bundles = 0
+    template_dependent_bundles = 0
+    for entry in bundles:
+        open_world = entry.get("open_world") or {}
+        if not isinstance(open_world, dict):
+            continue
+        class_name = str(open_world.get("class") or "").strip()
+        if class_name:
+            by_class[class_name] = by_class.get(class_name, 0) + 1
+        confidence = str(open_world.get("confidence") or "").strip()
+        if confidence:
+            by_confidence[confidence] = by_confidence.get(confidence, 0) + 1
+        basis = str(open_world.get("basis") or "").strip()
+        if basis:
+            by_basis[basis] = by_basis.get(basis, 0) + 1
+        if open_world.get("counts_as_generalization") is True:
+            positive_open_world_bundles += 1
+        if open_world.get("lower_bound_dependent") is True:
+            lower_bound_dependent_bundles += 1
+        if open_world.get("template_dependent") is True:
+            template_dependent_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "positive_open_world_bundles": positive_open_world_bundles,
+        "lower_bound_dependent_bundles": lower_bound_dependent_bundles,
+        "template_dependent_bundles": template_dependent_bundles,
+        "by_class": by_class,
+        "by_confidence": by_confidence,
+        "by_basis": by_basis,
+    }
+
+
+def _strict_open_world_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_class: Dict[str, int] = {}
+    positive_strict_open_world_bundles = 0
+    lower_bound_dependent_bundles = 0
+    template_dependent_bundles = 0
+    fixture_backed_bundles = 0
+    stub_backed_bundles = 0
+    research_degraded_bundles = 0
+    verifier_coupled_bundles = 0
+    for entry in bundles:
+        strict_open_world = entry.get("strict_open_world") or {}
+        if not isinstance(strict_open_world, dict):
+            continue
+        class_name = str(strict_open_world.get("class") or "").strip()
+        if class_name:
+            by_class[class_name] = by_class.get(class_name, 0) + 1
+        if strict_open_world.get("counts_as_generalization") is True:
+            positive_strict_open_world_bundles += 1
+        if strict_open_world.get("lower_bound_dependent") is True:
+            lower_bound_dependent_bundles += 1
+        if strict_open_world.get("template_dependent") is True:
+            template_dependent_bundles += 1
+        if strict_open_world.get("fixture_backed") is True:
+            fixture_backed_bundles += 1
+        if strict_open_world.get("stub_backed") is True:
+            stub_backed_bundles += 1
+        if strict_open_world.get("research_degraded") is True:
+            research_degraded_bundles += 1
+        class_name_lower = class_name.lower()
+        if class_name_lower in {"strict_verifier_coupled", "strict_low_trust_verification"}:
+            verifier_coupled_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "positive_strict_open_world_bundles": positive_strict_open_world_bundles,
+        "lower_bound_dependent_bundles": lower_bound_dependent_bundles,
+        "template_dependent_bundles": template_dependent_bundles,
+        "fixture_backed_bundles": fixture_backed_bundles,
+        "stub_backed_bundles": stub_backed_bundles,
+        "research_degraded_bundles": research_degraded_bundles,
+        "verifier_coupled_bundles": verifier_coupled_bundles,
+        "by_class": by_class,
+    }
+
+
 def _partial_progress_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     successful_bundles = 0
     executed_bundles = 0
@@ -1256,6 +2495,191 @@ def _partial_progress_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "verified_bundles": verified_bundles,
         "research_blocked_bundles": research_blocked_bundles,
         "partial_success": successful_bundles > 0 and failed_bundles > 0,
+    }
+
+
+def _bundle_intent_satisfaction(bundle_entry: Dict[str, Any], requirement_view: Dict[str, Any]) -> Dict[str, Any]:
+    request_identity = bundle_entry.get("request_identity") if isinstance(bundle_entry.get("request_identity"), dict) else {}
+    vuln_id = str(bundle_entry.get("vuln_id") or "").strip().upper()
+    name_driven = bool((request_identity or {}).get("name_driven")) or vuln_id.startswith("NAME-")
+    if not name_driven:
+        return {
+            "request_kind": "other",
+            "mode": "not_applicable",
+            "status": "not_applicable",
+            "meets_intent": True,
+            "partial": False,
+            "reason": "bundle is not a name-only lane",
+        }
+
+    effective_requirement = dict(requirement_view) if isinstance(requirement_view, dict) else {}
+    if "request_identity" not in effective_requirement and isinstance(request_identity, dict):
+        effective_requirement["request_identity"] = request_identity
+    if "vuln_id" not in effective_requirement and vuln_id:
+        effective_requirement["vuln_id"] = vuln_id
+    policy = effective_requirement.get("policy") if isinstance(effective_requirement.get("policy"), dict) else {}
+    name_only_contract = build_name_only_contract(requirement=effective_requirement, policy=policy)
+    mode = str(name_only_contract.get("effective_mode") or "").strip().lower() or "compatibility"
+    dynamic_eval = bundle_entry.get("dynamic_eval") if isinstance(bundle_entry.get("dynamic_eval"), dict) else {}
+    dynamic_eval_enabled = bool((dynamic_eval or {}).get("enabled"))
+    if mode == "compatibility" and dynamic_eval_enabled:
+        mode = "dynamic_eval"
+        synthetic_policy = dict(policy) if isinstance(policy, dict) else {}
+        synthetic_policy["dynamic_eval"] = True
+        name_only_contract = build_name_only_contract(requirement=effective_requirement, policy=synthetic_policy)
+    open_world = bundle_entry.get("open_world") if isinstance(bundle_entry.get("open_world"), dict) else {}
+    strict_open_world = (
+        bundle_entry.get("strict_open_world") if isinstance(bundle_entry.get("strict_open_world"), dict) else {}
+    )
+    failure = bundle_entry.get("failure") if isinstance(bundle_entry.get("failure"), dict) else {}
+    provenance = bundle_entry.get("provenance") if isinstance(bundle_entry.get("provenance"), dict) else {}
+    verification = bundle_entry.get("verification") if isinstance(bundle_entry.get("verification"), dict) else {}
+    researcher = bundle_entry.get("researcher") if isinstance(bundle_entry.get("researcher"), dict) else {}
+    failure_stage = str((failure or {}).get("stage") or "").strip().upper()
+    dynamic_eval_status = str((dynamic_eval or {}).get("status") or "").strip().lower()
+    open_world_class = str((open_world or {}).get("class") or "").strip().lower()
+    strict_class = str((strict_open_world or {}).get("class") or "").strip().lower()
+    generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
+    fallback_class = str((provenance or {}).get("fallback_class") or "").strip().lower()
+    if (provenance or {}).get("llm_fixture_used") is True:
+        llm_path = "fixture"
+    elif (provenance or {}).get("llm_stub_used") is True:
+        llm_path = "stub"
+    elif generation_origin == "llm_manifest":
+        llm_path = "live"
+    else:
+        llm_path = "not_used"
+    if failure_stage in {"RESEARCH", "GENERATOR", "NAME_ONLY_GATE"}:
+        closure_source = "failed"
+    elif generation_origin == "compiler_generated":
+        closure_source = "curated_lower_bound"
+    elif generation_origin == "built_in_template":
+        closure_source = "template_assisted"
+    elif generation_origin == "deterministic_fallback":
+        closure_source = "degraded_deterministic_fallback"
+    elif generation_origin == "llm_manifest" and strict_open_world.get("counts_as_generalization") is True:
+        closure_source = "strict_open_world_positive"
+    elif generation_origin == "llm_manifest":
+        closure_source = "trusted_dynamic"
+    else:
+        closure_source = generation_origin or "unknown"
+
+    status = "compatibility_lower_bound"
+    meets_intent = False
+    partial = False
+    reason = ""
+
+    if mode == "compatibility":
+        if failure_stage:
+            status = "compatibility_failed"
+            reason = "compatibility lane failed before lower-bound completion"
+        else:
+            status = "compatibility_lower_bound"
+            meets_intent = True
+            reason = "compatibility mode allows curated lower-bound/template-backed closure"
+    elif mode in {"dynamic", "dynamic_eval"}:
+        if strict_open_world.get("counts_as_generalization") is True or open_world_class == "open_world_positive":
+            status = "dynamic_success"
+            meets_intent = True
+            reason = "name-only dynamic lane closed without relying on degraded lower-bound recovery"
+        elif dynamic_eval_status == "degraded_success" or open_world_class in {
+            "semantic_guided_minimal_dynamic",
+            "semantic_guided_degraded",
+        }:
+            status = "degraded_dynamic_success"
+            partial = True
+            reason = "dynamic lane remained runnable, but closure still relied on degraded deterministic fallback"
+        elif dynamic_eval_status == "lower_bound_recovered":
+            status = "lower_bound_recovered"
+            reason = "dynamic lane fell back to an existing curated lower-bound path"
+        else:
+            status = "dynamic_failed"
+            reason = "dynamic lane did not produce an acceptable runnable bundle"
+    else:  # strict_dynamic
+        if strict_open_world.get("counts_as_generalization") is True:
+            status = "strict_dynamic_success"
+            meets_intent = True
+            reason = "strict dynamic lane achieved strict open-world positive evidence"
+        elif strict_class == "strict_dynamic_generation_failed" or dynamic_eval_status == "dynamic_failed":
+            status = "strict_dynamic_failed"
+            reason = "strict dynamic lane failed before acceptable materialization"
+        elif dynamic_eval_status == "degraded_success" or strict_class in {
+            "strict_minimal_dynamic_fallback",
+            "strict_semantic_guided_fallback",
+        }:
+            status = "strict_dynamic_rejected_degraded"
+            reason = "strict dynamic lane produced only degraded deterministic fallback and does not meet intent"
+        else:
+            status = "strict_dynamic_not_satisfied"
+            reason = "strict dynamic lane did not reach strict open-world positive evidence"
+
+    return {
+        "request_kind": "name_only",
+        "mode": mode,
+        "status": status,
+        "meets_intent": meets_intent,
+        "partial": partial,
+        "reason": reason,
+        "closure_source": closure_source,
+        "generation_origin": generation_origin or "unknown",
+        "fallback_class": fallback_class or None,
+        "llm_path": llm_path,
+        "research_quality": str((researcher or {}).get("quality") or "").strip().lower() or "unknown",
+        "verification_independence": str((verification or {}).get("independence") or "").strip().lower() or "unknown",
+        "verification_trust": str((verification or {}).get("trust") or "").strip().lower() or "unknown",
+        "required_contract": {
+            "require_research": bool(name_only_contract.get("require_research")),
+            "require_remote_research": bool(name_only_contract.get("require_remote_research")),
+            "allow_degraded_fallback": bool(name_only_contract.get("allow_degraded_fallback")),
+            "allow_lower_bound_recovery": bool(name_only_contract.get("allow_lower_bound_recovery")),
+            "require_strict_open_world": bool(name_only_contract.get("require_strict_open_world")),
+            "require_independent_verifier": bool(name_only_contract.get("require_independent_verifier")),
+            "require_live_llm": bool(name_only_contract.get("require_live_llm")),
+        },
+    }
+
+
+def _intent_satisfaction_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    name_only_bundles = 0
+    meets_intent_bundles = 0
+    partial_bundles = 0
+    by_status: Dict[str, int] = {}
+    by_closure_source: Dict[str, int] = {}
+    by_llm_path: Dict[str, int] = {}
+    by_research_quality: Dict[str, int] = {}
+    for entry in bundles:
+        payload = entry.get("intent_satisfaction") or {}
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("request_kind") != "name_only":
+            continue
+        name_only_bundles += 1
+        if payload.get("meets_intent") is True:
+            meets_intent_bundles += 1
+        if payload.get("partial") is True:
+            partial_bundles += 1
+        status = str(payload.get("status") or "").strip()
+        if status:
+            by_status[status] = by_status.get(status, 0) + 1
+        closure_source = str(payload.get("closure_source") or "").strip()
+        if closure_source:
+            by_closure_source[closure_source] = by_closure_source.get(closure_source, 0) + 1
+        llm_path = str(payload.get("llm_path") or "").strip()
+        if llm_path:
+            by_llm_path[llm_path] = by_llm_path.get(llm_path, 0) + 1
+        research_quality = str(payload.get("research_quality") or "").strip()
+        if research_quality:
+            by_research_quality[research_quality] = by_research_quality.get(research_quality, 0) + 1
+    return {
+        "bundle_count": len(bundles),
+        "name_only_bundles": name_only_bundles,
+        "meets_intent_bundles": meets_intent_bundles,
+        "partial_bundles": partial_bundles,
+        "all_name_only_meet_intent": meets_intent_bundles == name_only_bundles if name_only_bundles else False,
+        "by_status": by_status,
+        "by_closure_source": by_closure_source,
+        "by_llm_path": by_llm_path,
+        "by_research_quality": by_research_quality,
     }
 
 

@@ -28,6 +28,8 @@ def _verification_independence(rule_source: str, trust: str) -> str:
         return "independent"
     if source == "compiler_runtime_rule":
         return "compiler_coupled"
+    if source == "contract_oracle_fallback":
+        return "contract_coupled"
     if source in {"runtime_rule_candidate", "generator_manifest_fallback", "verifier_runtime_rule_fallback"}:
         return "self_derived"
     if trust_level == "low":
@@ -65,18 +67,25 @@ def verify_with_rule(
     workspace_dirs = _workspace_candidates(log_path, run_summary or summary_data)
     generator_manifest = _load_generator_manifest(log_path, run_summary or summary_data)
     used_fallback_rule = False
+    used_contract_oracle_rule = False
     if not rule:
-        synthetic = _rule_from_generator_manifest(vuln_id, generator_manifest)
+        synthetic = _rule_from_contract_oracle(vuln_id, contract_meta)
         if synthetic:
             rule = synthetic
             used_fallback_rule = True
+            used_contract_oracle_rule = True
         else:
-            return {
-                "verify_pass": False,
-                "evidence": f"No rule file registered for {vuln_id}",
-                "log_path": str(log_path),
-                "status": "unsupported",
-            }
+            synthetic = _rule_from_generator_manifest(vuln_id, generator_manifest)
+            if synthetic:
+                rule = synthetic
+                used_fallback_rule = True
+            else:
+                return {
+                    "verify_pass": False,
+                    "evidence": f"No rule file registered for {vuln_id}",
+                    "log_path": str(log_path),
+                    "status": "unsupported",
+                }
 
     verification_rule_source = "declared_rule"
     verification_trust = "high"
@@ -87,12 +96,22 @@ def verify_with_rule(
     evidence: List[str] = []
     success = False
     if used_fallback_rule:
-        verification_rule_source = "generator_manifest_fallback"
-        verification_trust = "low"
-        verification_trust_reason = (
-            "verification contract was synthesized from generator_manifest.json because no static/runtime rule existed"
-        )
-        evidence.append("Using generator_manifest.json PoC contract as fallback rule")
+        if used_contract_oracle_rule:
+            verification_rule_source = "contract_oracle_fallback"
+            verification_trust = "low"
+            verification_trust_reason = (
+                "verification contract was synthesized from resolved_contract oracle fields because no static/runtime "
+                "rule existed"
+            )
+            evidence.append("Using resolved_contract oracle contract as fallback rule")
+        else:
+            verification_rule_source = "generator_manifest_fallback"
+            verification_trust = "low"
+            verification_trust_reason = (
+                "verification contract was synthesized from generator_manifest.json because no static/runtime rule "
+                "existed"
+            )
+            evidence.append("Using generator_manifest.json PoC contract as fallback rule")
     elif rule_origin == "runtime" and not load_static_rule(vuln_id):
         if compiler_supported is True and contract_generation_origin == "compiler_generated":
             verification_rule_source = "compiler_runtime_rule"
@@ -344,6 +363,46 @@ def _rule_from_generator_manifest(
         "flag_token": flag_token,
         "strict_flag": strict,
         "output": {"format": "auto"},
+    }
+
+
+def _rule_from_contract_oracle(
+    vuln_id: str,
+    contract_meta: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(contract_meta, dict):
+        return None
+    oracle = contract_meta.get("exploit_oracle") if isinstance(contract_meta.get("exploit_oracle"), dict) else {}
+    success_signature = str(oracle.get("success_signature") or contract_meta.get("success_signature") or "").strip()
+    flag_token = str(oracle.get("flag_token") or contract_meta.get("flag_token") or "").strip()
+    json_success_key = str(oracle.get("json_success_key") or "").strip()
+    json_flag_key = str(oracle.get("json_flag_key") or "").strip()
+    if not success_signature and not flag_token and not json_success_key and not json_flag_key:
+        return None
+    cwe = str(contract_meta.get("vuln_id") or vuln_id or "UNKNOWN").strip()
+    output_mode = str(oracle.get("output_mode") or contract_meta.get("output_mode") or "auto").strip().lower()
+    success_mode = str(oracle.get("success_mode") or "").strip().lower()
+    if success_mode == "json" and output_mode == "auto":
+        output_mode = "json"
+    if output_mode not in {"auto", "json", "text"}:
+        output_mode = "auto"
+    output: Dict[str, Any] = {"format": output_mode}
+    json_output: Dict[str, Any] = {}
+    if json_success_key:
+        json_output["success_key"] = json_success_key
+        if "json_success_value" in oracle:
+            json_output["success_value"] = oracle.get("json_success_value")
+    if json_flag_key:
+        json_output["flag_key"] = json_flag_key
+    if json_output:
+        output["json"] = json_output
+    strict = bool(flag_token)
+    return {
+        "cwe": cwe,
+        "success_signature": success_signature,
+        "flag_token": flag_token,
+        "strict_flag": strict,
+        "output": output,
     }
 
 

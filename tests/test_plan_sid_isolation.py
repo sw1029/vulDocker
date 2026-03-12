@@ -82,3 +82,42 @@ def test_sid_changes_when_framework_changes() -> None:
         plan_flask["sid_inputs"]["components"]["runtime_surface_digest"]
         != plan_fastapi["sid_inputs"]["components"]["runtime_surface_digest"]
     )
+
+
+def test_plan_promotes_dynamic_eval_policy_flags_to_top_level_policy() -> None:
+    requirement = _requirement("NAME-OPEN-REDIRECT")
+    requirement["policy"] = {
+        "dynamic_eval": True,
+        "dynamic_eval_allow_lower_bound_fallback": True,
+        "open_world_strict": True,
+    }
+
+    plan = build_plan(normalize_requirement(requirement))
+
+    assert plan["policy"]["dynamic_eval"] is True
+    assert plan["policy"]["dynamic_eval_allow_lower_bound_fallback"] is True
+    assert plan["policy"]["open_world_strict"] is True
+
+
+def test_sid_changes_when_dynamic_eval_policy_changes() -> None:
+    base = _requirement("NAME-OPEN-REDIRECT")
+    plan_default = build_plan(normalize_requirement(dict(base)))
+
+    dynamic_req = dict(base)
+    dynamic_req["policy"] = {"dynamic_eval": True}
+    plan_dynamic = build_plan(normalize_requirement(dynamic_req))
+
+    assert plan_default["sid"] != plan_dynamic["sid"]
+    assert plan_dynamic["sid_inputs"]["components"]["policy_eval_digest"]
+
+
+def test_sid_changes_when_name_only_mode_changes() -> None:
+    base = _requirement("NAME-OPEN-REDIRECT")
+    plan_default = build_plan(normalize_requirement(dict(base)))
+
+    dynamic_req = dict(base)
+    dynamic_req["policy"] = {"name_only_mode": "dynamic"}
+    plan_dynamic = build_plan(normalize_requirement(dynamic_req))
+
+    assert plan_default["sid"] != plan_dynamic["sid"]
+    assert plan_dynamic["sid_inputs"]["components"]["policy_eval_digest"]
