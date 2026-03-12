@@ -40,15 +40,15 @@ requires_external_db: false
 strict_flag: true
 
 patterns:
-  - type: file_contains
+  - type: file_regex_contains
     path: "{{service_entry}}"
-    contains: "ldap_filter = '(&(uid=' + user + ')(status=active))'"
-  - type: file_contains
+    pattern: "ldap_filter\\s*=\\s*['\\\"][^\\n]*\\(uid=\\s*['\\\"]\\s*\\+\\s*user"
+  - type: file_regex_contains
     path: "{{service_entry}}"
-    contains: "search_directory(ldap_filter)"
-  - type: file_contains
+    pattern: "search_directory\\(ldap_filter\\)"
+  - type: file_regex_contains
     path: "{{service_entry}}"
-    contains: "request.args.get('user'"
+    pattern: "request\\.args\\.get\\('user'|user\\s*:\\s*str\\s*=\\s*Query\\("
   - type: poc_contains
     path: "{{poc_entry}}"
     contains: "Exploit SUCCESS"

@@ -53,6 +53,7 @@ def bundle_requirement(requirement: Dict[str, Any], bundle: VulnBundle) -> Dict[
     scoped["vuln_ids"] = [bundle.vuln_id]
     raw_resolutions = requirement.get("vuln_id_resolutions")
     raw_request_identities = requirement.get("vuln_request_identities")
+    raw_request_irs = requirement.get("vuln_request_irs")
     if isinstance(raw_resolutions, list):
         matches = [
             dict(entry)
@@ -81,6 +82,15 @@ def bundle_requirement(requirement: Dict[str, Any], bundle: VulnBundle) -> Dict[
         if matches:
             scoped["vuln_request_identities"] = matches
             scoped["request_identity"] = matches[0]
+    if isinstance(raw_request_irs, list):
+        matches = [
+            dict(entry)
+            for entry in raw_request_irs
+            if isinstance(entry, dict) and str(entry.get("resolved_vuln_id") or "").strip() == bundle.vuln_id
+        ]
+        if matches:
+            scoped["vuln_request_irs"] = matches
+            scoped["request_ir"] = matches[0]
     return scoped
 
 

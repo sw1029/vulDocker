@@ -1,0 +1,42 @@
+cwe: CWE-94
+version: 2
+scenario_type: web-poc
+
+verification:
+  source: runtime
+  require_flag: false
+  flag_mode: none
+  exit_code: zero
+
+output:
+  mode: auto
+  format: auto
+
+llm:
+  assist_default: false
+  assertion_budget: 8
+
+runtime:
+  success_mode: text
+  success_text_markers:
+    - Exploit SUCCESS
+  assertion_program:
+    - op: contains
+      string: Exploit SUCCESS
+    - op: regex_contains
+      regex: "FLAG(?:\\{|-)"
+
+success_signature: Exploit SUCCESS
+requires_external_db: false
+strict_flag: false
+
+patterns:
+  - type: file_regex_contains
+    path: "{{service_entry}}"
+    pattern: "eval\\(|exec\\("
+  - type: file_regex_contains
+    path: "{{service_entry}}"
+    pattern: "request\\.args\\.get\\('(expr|code)'|(expr|code)\\s*:\\s*str\\s*=\\s*Query\\("
+  - type: poc_contains
+    path: "{{poc_entry}}"
+    contains: "Exploit SUCCESS"

@@ -1049,3 +1049,287 @@ def test_declared_rule_preempts_runtime_rule_for_supported_name_family(
     assert result["verification_trust"] == "high"
     assert result["verification_independence"] == "independent"
     assert "declared static/runtime rule contract" in result["verification_trust_reason"]
+
+
+def test_declared_rule_supports_cwe78_minimal_dynamic_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-cwe78-declared"
+    slug = "cwe-78"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / slug
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "import subprocess\n"
+        "from flask import Flask, jsonify, request\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/run')\n"
+        "def run():\n"
+        "    cmd = request.args.get('cmd', 'echo safe')\n"
+        "    output = subprocess.check_output('echo start && ' + cmd, shell=True, text=True)\n"
+        "    return jsonify({'success': True, 'output': output})\n"
+    )
+    poc_text = "print('Exploit SUCCESS')\nprint('FLAG-command-injection-demo-token')\n"
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG-command-injection-demo-token\n", encoding="utf-8")
+
+    manifest = {
+        "manifest": {
+            "files": [
+                {"path": "app.py", "role": "service_main", "content": app_text},
+                {"path": "poc.py", "role": "poc_entry", "content": poc_text},
+            ],
+            "poc": {"success_signature": "Exploit SUCCESS", "flag_token": "FLAG-command-injection-demo-token"},
+        },
+    }
+    (metadata_dir / "generator_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "CWE-78",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "success_signature": "Exploit SUCCESS",
+            "flag_token": "FLAG-command-injection-demo-token",
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-78",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is True
+    assert result["verification_rule_source"] == "declared_rule"
+    assert result["verification_trust"] == "high"
+    assert result["verification_independence"] == "independent"
+
+
+def test_declared_rule_supports_cwe94_minimal_dynamic_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-cwe94-declared"
+    slug = "cwe-94"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / slug
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, jsonify, request\n"
+        "app = Flask(__name__)\n"
+        "FLAG_TOKEN = 'FLAG-code-injection-demo-token'\n"
+        "@app.get('/eval')\n"
+        "def evaluate():\n"
+        "    expr = request.args.get('expr', '0')\n"
+        "    result = eval(expr, {'FLAG_TOKEN': FLAG_TOKEN})\n"
+        "    return jsonify({'success': True, 'result': str(result)})\n"
+    )
+    poc_text = "print('Exploit SUCCESS')\nprint('FLAG-code-injection-demo-token')\n"
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG-code-injection-demo-token\n", encoding="utf-8")
+
+    manifest = {
+        "manifest": {
+            "files": [
+                {"path": "app.py", "role": "service_main", "content": app_text},
+                {"path": "poc.py", "role": "poc_entry", "content": poc_text},
+            ],
+            "poc": {"success_signature": "Exploit SUCCESS", "flag_token": "FLAG-code-injection-demo-token"},
+        },
+    }
+    (metadata_dir / "generator_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "CWE-94",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "success_signature": "Exploit SUCCESS",
+            "flag_token": "FLAG-code-injection-demo-token",
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-94",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is True
+    assert result["verification_rule_source"] == "declared_rule"
+    assert result["verification_trust"] == "high"
+    assert result["verification_independence"] == "independent"
+
+
+def test_declared_rule_supports_cwe502_minimal_dynamic_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-cwe502-declared"
+    slug = "cwe-502"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / slug
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from pathlib import Path\n"
+        "import pickle\n"
+        "from flask import Flask, jsonify, request\n"
+        "app = Flask(__name__)\n"
+        "FLAG_PATH = Path('/tmp/deser-flag.txt')\n"
+        "FLAG_VALUE = 'FLAG{DESER_OK}'\n"
+        "@app.post('/deserialize')\n"
+        "def deserialize_payload():\n"
+        "    payload = request.get_data()\n"
+        "    result = pickle.loads(payload)\n"
+        "    return jsonify({'result': str(result)})\n"
+    )
+    poc_text = "print('Exploit SUCCESS')\nprint('FLAG{DESER_OK}')\n"
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{DESER_OK}\n", encoding="utf-8")
+
+    manifest = {
+        "manifest": {
+            "files": [
+                {"path": "app.py", "role": "service_main", "content": app_text},
+                {"path": "poc.py", "role": "poc_entry", "content": poc_text},
+            ],
+            "poc": {"success_signature": "Exploit SUCCESS", "flag_token": "FLAG{DESER_OK}"},
+        },
+    }
+    (metadata_dir / "generator_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "CWE-502",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "success_signature": "Exploit SUCCESS",
+            "flag_token": "FLAG{DESER_OK}",
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-502",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is True
+    assert result["verification_rule_source"] == "declared_rule"
+    assert result["verification_trust"] == "high"
+    assert result["verification_independence"] == "independent"
+
+
+def test_declared_rule_supports_name_xxe_fastapi_minimal_dynamic_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-name-xxe-declared"
+    slug = "name-xxe"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / slug
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from pathlib import Path\n"
+        "from lxml import etree\n"
+        "from fastapi import FastAPI, Request\n"
+        "app = FastAPI()\n"
+        "FLAG_TOKEN = 'FLAG{XXE_OK}'\n"
+        "SECRET_PATH = Path('/tmp/xxe-secret.txt')\n"
+        "SECRET_PATH.write_text(FLAG_TOKEN, encoding='utf-8')\n"
+        "@app.post('/parse')\n"
+        "async def parse(request: Request):\n"
+        "    xml_body = await request.body()\n"
+        "    parser = etree.XMLParser(load_dtd=True, resolve_entities=True)\n"
+        "    root = etree.fromstring(xml_body, parser=parser)\n"
+        "    return {'text': ''.join(root.itertext())}\n"
+    )
+    poc_text = "print('Exploit SUCCESS')\nprint('FLAG{XXE_OK}')\n"
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text(poc_text, encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nFLAG{XXE_OK}\n", encoding="utf-8")
+
+    manifest = {
+        "manifest": {
+            "files": [
+                {"path": "app.py", "role": "service_main", "content": app_text},
+                {"path": "poc.py", "role": "poc_entry", "content": poc_text},
+            ],
+            "poc": {"success_signature": "Exploit SUCCESS", "flag_token": "FLAG{XXE_OK}"},
+        },
+    }
+    (metadata_dir / "generator_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "NAME-XXE",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "success_signature": "Exploit SUCCESS",
+            "flag_token": "FLAG{XXE_OK}",
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "NAME-XXE",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is True
+    assert result["verification_rule_source"] == "declared_rule"
+    assert result["verification_trust"] == "high"
+    assert result["verification_independence"] == "independent"

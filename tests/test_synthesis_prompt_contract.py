@@ -46,6 +46,35 @@ def test_name_only_synthesis_prompt_prefers_open_world_posture_and_runtime_recip
     assert "CWE-89: include a real SQL injection path." not in prompt
 
 
+def test_name_only_synthesis_prompt_uses_request_ir_when_vuln_id_is_canonicalized() -> None:
+    messages = build_synthesis_prompt(
+        {
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "resolution_state": "token_match",
+            },
+            "runtime_recipe": {
+                "language": "python",
+                "framework": "flask",
+                "topology": "single_service",
+                "network_mode": "none",
+                "sidecars": [],
+                "db": "none",
+            },
+        },
+        rag_context="",
+        researcher_report='{"quality":"sufficient"}',
+    )
+
+    prompt = _user_prompt(messages)
+
+    assert "Treat this as name-driven/open-world synthesis" in prompt
+    assert "Treat this as a known-family regression lane" not in prompt
+
+
 def test_name_only_synthesis_prompt_surfaces_soft_stack_hypotheses_when_stack_is_not_locked() -> None:
     messages = build_synthesis_prompt(
         {
@@ -172,13 +201,34 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
             "name_only_generation_spec": {
                 "request_label": "Open Redirect",
                 "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "request_ir": {
+                    "resolution_state": "catalog_alias",
+                    "pattern_seed_state": "preserved",
+                },
                 "effective_mode": "dynamic",
                 "family_working_hypothesis": "open_redirect",
                 "family_hypothesis_source": "request_identity",
+                "family_candidate_summary": {
+                    "top_family": "open_redirect",
+                    "top_source": "catalog_resolution",
+                    "top_confidence": "high",
+                    "candidate_count": 1,
+                    "ambiguous": False,
+                },
                 "runtime_recipe_summary": {
                     "language": "python",
                     "framework": "flask",
                     "topology": "single_service",
+                },
+                "stack_candidate_summary": {
+                    "working_stack_id": "python/flask",
+                    "working_stack_source": "profile_prior",
+                    "working_stack_locked": False,
+                    "candidate_count": 2,
+                    "top_stack_id": "python/flask",
+                    "top_source": "profile_prior",
+                    "top_confidence": "low",
+                    "ambiguous": True,
                 },
                 "required_contract": {
                     "require_research": True,
@@ -195,7 +245,51 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
 
     assert "# Name-Only Generation Spec" in prompt
     assert "Original request label: `Open Redirect`." in prompt
+    assert "Request resolution state: `catalog_alias`." in prompt
+    assert "Pattern seed state: `preserved`." in prompt
     assert "Working family hypothesis: `open_redirect` (request_identity)." in prompt
-    assert "# Exploit Oracle" in prompt
-    assert "Oracle source: `researcher_verification_spec`." in prompt
-    assert "Preferred PoC command: `python poc.py --base-url {{base_url}}`." in prompt
+    assert "Family candidate preview: top=`open_redirect`, source=`catalog_resolution`, confidence=`high`, count=`1`." in prompt
+    assert "Stack candidate preview: working=`python/flask`, source=`profile_prior`, locked=`False`, count=`2`, top_confidence=`low`." in prompt
+    assert "Stack candidates remain ambiguous; stay within bounded repo-supported stacks unless stronger evidence is present." in prompt
+
+
+def test_name_only_prompt_surfaces_runtime_graph_preview() -> None:
+    messages = build_synthesis_prompt(
+        {
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "resolution_state": "token_match",
+            },
+            "name_only_generation_spec": {
+                "effective_mode": "dynamic",
+                "family_working_hypothesis": "xss",
+                "family_hypothesis_source": "researcher_family_hypothesis",
+                "runtime_graph_summary": {
+                    "topology": "single_service",
+                    "node_count": 1,
+                    "edge_count": 1,
+                    "sidecars": [],
+                    "network_mode": "none",
+                    "target_node": "service",
+                },
+            },
+            "runtime_recipe": {
+                "language": "python",
+                "framework": "flask",
+                "topology": "single_service",
+                "network_mode": "none",
+                "sidecars": [],
+                "db": "none",
+            },
+        },
+        rag_context="",
+        researcher_report='{"quality":"sufficient"}',
+    )
+
+    prompt = _user_prompt(messages)
+
+    assert "Runtime graph topology preview: `single_service`." in prompt
+    assert "Runtime graph preview: `1` node(s), `1` edge(s)." in prompt

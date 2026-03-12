@@ -7,6 +7,18 @@
     "pipeline_returncode": 1,
     "generation_origin": "research_short_circuit",
     "dynamicness_verdict": "pre-generation fail-closed",
+    "request_ir": {
+      "resolution_state": "explicit_identifier",
+      "name_driven": false,
+      "pattern_seed_state": "genericized_unknown"
+    },
+    "template_dependence_summary": {
+      "lower_bound_dependent_bundles": 0,
+      "open_world_positive_bundles": 0
+    },
+    "intent_satisfaction_summary": {
+      "name_only_bundles": 0
+    },
     "generalization_class": "synthetic_regression",
     "counts_as_generalization": false
   },
@@ -19,6 +31,9 @@
       "promotion_eligible": false,
       "generation_origin": "research_short_circuit",
       "dynamicness_verdict": "pre-generation fail-closed",
+      "request_ir": {
+        "resolution_state": "explicit_identifier"
+      },
       "generalization_class": "synthetic_regression",
       "counts_as_generalization": false,
       "failure_reason_contains": [

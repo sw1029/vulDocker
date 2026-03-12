@@ -307,3 +307,82 @@ def test_guard_engine_manifest_matches_template_injection_semantics() -> None:
     assert result.passed is True
     assert result.blocking is False
     assert result.violations == []
+
+
+def test_guard_engine_manifest_matches_code_injection_semantic_signature_aliases() -> None:
+    manifest = {
+        "files": [
+            {
+                "path": "app.py",
+                "role": "service_main",
+                "content": (
+                    "from flask import Flask, jsonify, request\n"
+                    "app = Flask(__name__)\n"
+                    "FLAG_TOKEN = 'FLAG-code-injection-demo-token'\n"
+                    "@app.get('/eval')\n"
+                    "def evaluate():\n"
+                    "    code = request.args.get('code', 'FLAG_TOKEN')\n"
+                    "    result = eval(code, {'FLAG_TOKEN': FLAG_TOKEN})\n"
+                    "    return jsonify({'success': True, 'result': str(result)})\n"
+                ),
+            }
+        ]
+    }
+    spec = build_guard_spec(
+        sid="sid-test",
+        vuln_id="CWE-94",
+        slug="cwe-94",
+        generator_assertions=[],
+        verifier_assertions=[],
+        semantic_signature={
+            "input_vector": ["request.args", "code parameter"],
+            "sink": ["eval(", "exec("],
+            "exploit_precondition": ["code injection", "user input reaches eval"],
+        },
+    )
+    engine = GuardEngine("CWE-94", spec.to_dict())
+    result = engine.evaluate_manifest(manifest)
+    assert result.passed is True
+    assert result.blocking is False
+    assert result.violations == []
+
+
+def test_guard_engine_workspace_matches_ldap_injection_semantic_signature_aliases(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        (
+            "from flask import Flask, jsonify, request\n"
+            "app = Flask(__name__)\n"
+            "DIRECTORY = [{'uid': 'guest'}, {'uid': 'admin', 'flag': 'FLAG{LDAPI_OK}'}]\n"
+            "def search_directory(ldap_filter: str):\n"
+            "    if '*' in ldap_filter or '|' in ldap_filter:\n"
+            "        return DIRECTORY\n"
+            "    return []\n"
+            "@app.get('/search')\n"
+            "def search():\n"
+            "    user = request.args.get('user', 'guest')\n"
+            "    ldap_filter = '(uid=' + user + ')'\n"
+            "    return jsonify({'results': search_directory(ldap_filter)})\n"
+        ),
+        encoding="utf-8",
+    )
+    spec = build_guard_spec(
+        sid="sid-test",
+        vuln_id="NAME-LDAP-INJECTION",
+        slug="name-ldap-injection",
+        generator_assertions=[],
+        verifier_assertions=[],
+        semantic_signature={
+            "input_vector": ["request.args", "ldap user parameter", "user-controlled directory lookup input"],
+            "sink": ["LDAP filter construction", "directory search", "search_directory("],
+            "exploit_precondition": [
+                "user input concatenated into LDAP filter",
+                "ldap injection",
+                "filter bypass via wildcard or OR clause",
+            ],
+        },
+    )
+    engine = GuardEngine("NAME-LDAP-INJECTION", spec.to_dict())
+    result = engine.evaluate_workspace([tmp_path])
+    assert result.passed is True
+    assert result.blocking is False
+    assert result.violations == []

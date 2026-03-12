@@ -210,6 +210,46 @@ def test_semantic_guard_accepts_cwe89_multiline_tainted_query_flow(tmp_path: Pat
     assert semantics.get("semantic_match") is True
 
 
+def test_semantic_guard_accepts_fastapi_cwe89_with_query_bound_flow(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-89")
+    manifest = {
+        "files": [
+            {
+                "path": "app.py",
+                "role": "service_main",
+                "content": (
+                    "import sqlite3\n"
+                    "from fastapi import FastAPI, Query\n"
+                    "app = FastAPI()\n"
+                    "@app.get('/login')\n"
+                    "def login(username: str = Query(default=''), password: str = Query(default='')):\n"
+                    "    query = \"SELECT id, username FROM users WHERE username = '\" + username + \"' AND password = '\" + password + \"'\"\n"
+                    "    conn = sqlite3.connect('/tmp/app.db')\n"
+                    "    conn.execute(query)\n"
+                    "    return {'ok': True}\n"
+                ),
+            },
+            {
+                "path": "poc.py",
+                "role": "poc_entry",
+                "content": "print('SQLi SUCCESS')\nprint('FLAG-sqli-demo-token')\n",
+            },
+        ],
+        "deps": ["fastapi==0.115.0", "uvicorn==0.30.6"],
+        "poc": {
+            "cmd": "python poc.py --base-url {{base_url}}",
+            "success_signature": "SQLi SUCCESS",
+            "flag_token": "FLAG-sqli-demo-token",
+        },
+        "pattern_tags": ["guard-test"],
+    }
+    errors, report = engine._guard_manifest(manifest)
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
 def test_family_aware_fallback_manifest_for_cwe89_passes_guard(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "CWE-89")
     manifest = engine._fallback_manifest()
@@ -268,6 +308,44 @@ def test_family_aware_fallback_manifest_for_cwe79_passes_guard(tmp_path: Path) -
     assert "<script>alert(1)</script>" in poc_entry["content"]
     semantics = (report or {}).get("semantics") or {}
     assert semantics.get("supported") is True
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_xss(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CWE-79")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "xss",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "query parameter", "user input"],
+            "sink": ["render_template_string", "template response"],
+            "exploit_precondition": ["<script>", "unescaped reflection", "cross-site scripting"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "xss"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "render_template_string" in service_main["content"]
+    assert "template = f'<html><body>{name}</body></html>'" in service_main["content"]
+    assert "request.args.get('name'" in service_main["content"]
+    assert "/echo?name=" in poc_entry["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
     assert semantics.get("semantic_match") is True
 
 
@@ -375,6 +453,42 @@ def test_name_only_family_fallback_is_disabled_by_default(tmp_path: Path) -> Non
     assert "Asset-backed generic unsupported fallback service template." in service_main["content"]
 
 
+def test_canonicalized_name_driven_family_fallback_is_disabled_by_default(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-79")
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "Reflected XSS",
+        "resolved_vuln_id": "CWE-79",
+        "resolution_state": "catalog_alias",
+        "resolution_confidence": "high",
+        "name_driven": True,
+    }
+
+    manifest = engine._fallback_manifest()
+
+    assert manifest["metadata"]["fallback_class"] == "generic_unsupported_family"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "Asset-backed generic unsupported fallback service template." in service_main["content"]
+    assert "Asset-backed family-aware fallback template for XSS." not in service_main["content"]
+
+
+def test_canonicalized_name_driven_family_fallback_can_be_enabled_explicitly(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "CWE-79")
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "Reflected XSS",
+        "resolved_vuln_id": "CWE-79",
+        "resolution_state": "catalog_alias",
+        "resolution_confidence": "high",
+        "name_driven": True,
+    }
+    engine._requirement["policy"] = {"allow_name_family_fallback": True}  # type: ignore[index]
+
+    manifest = engine._fallback_manifest()
+
+    assert manifest["metadata"]["fallback_class"] == "family_aware"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "Asset-backed family-aware fallback template for XSS." in service_main["content"]
+
+
 def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_open_redirect(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "NAME-CUSTOM-OPEN-REDIRECT")
     engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
@@ -445,6 +559,74 @@ def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_minimal_dynamic(
     assert "uvicorn==" in requirements["content"].lower()
 
 
+def test_dynamic_eval_semantic_guided_fallback_can_use_unambiguous_researcher_stack_candidate(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-OPEN-REDIRECT")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "open_redirect",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        },
+        "tech_stack_candidates": [
+            {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"}
+        ],
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "next parameter"],
+            "sink": ["redirect(", "location header"],
+            "exploit_precondition": ["open redirect", "external redirect"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "from fastapi import FastAPI" in service_main["content"]
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+
+
+def test_dynamic_eval_semantic_guided_fallback_ignores_ambiguous_researcher_stack_candidates(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-OPEN-REDIRECT")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["stack_hypotheses"] = [  # type: ignore[index]
+        {"language": "python", "framework": "flask", "stack_id": "python/flask", "source": "profile_prior", "confidence": "low"},
+        {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "source": "available_skeleton", "confidence": "low"},
+    ]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "open_redirect",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        },
+        "tech_stack_candidates": [
+            {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"},
+            {"language": "python", "framework": "flask", "stack_id": "python/flask", "confidence": "medium"},
+        ],
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "next parameter"],
+            "sink": ["redirect(", "location header"],
+            "exploit_precondition": ["open redirect", "external redirect"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "from flask import Flask" in service_main["content"]
+    assert "from fastapi import FastAPI" not in service_main["content"]
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+
+
 def test_dynamic_eval_semantic_guided_fallback_is_blocked_by_ambiguous_family_hypothesis(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "NAME-CUSTOM-OPEN-REDIRECT")
     engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
@@ -467,6 +649,36 @@ def test_dynamic_eval_semantic_guided_fallback_is_blocked_by_ambiguous_family_hy
     manifest = engine._fallback_manifest()
 
     assert manifest["metadata"]["fallback_class"] == "generic_unsupported_family"
+
+
+def test_dynamic_eval_semantic_guided_fallback_abstains_on_overlapping_family_matches_without_disambiguator(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-AMBIGUOUS")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "xss",
+            "top_confidence": "low",
+            "top_margin": 0.02,
+            "contradiction_count": 2,
+            "ambiguous": True,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "template payload"],
+            "sink": ["render_template_string"],
+            "exploit_precondition": ["cross-site scripting", "server-side template injection"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+
+    assert manifest["metadata"]["fallback_class"] == "generic_unsupported_family"
+    assert manifest["metadata"]["semantic_guided_abstain_reason"] == "ambiguous_semantic_family_match"
+    assert manifest["metadata"]["semantic_guided_candidate_families"] == ["template_injection", "xss"]
+    assert manifest["metadata"]["semantic_guided_ambiguous"] is True
 
 
 def test_dynamic_eval_semantic_guided_fallback_tolerates_minor_contradiction_with_clear_margin(tmp_path: Path) -> None:
@@ -537,6 +749,108 @@ def test_dynamic_eval_semantic_guided_fallback_can_use_request_identity_when_res
     assert manifest["metadata"]["fallback_class"] == "semantic_guided"
     assert manifest["metadata"]["semantic_guided_family"] == "open_redirect"
     assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_use_request_ir_when_ranked_family_support_is_high(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CWE-94")
+    engine._requirement["policy"] = {"name_only_mode": "dynamic"}  # type: ignore[index]
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "Code Injection",
+        "resolved_vuln_id": "CWE-94",
+        "resolution_state": "catalog_alias",
+        "resolution_confidence": "high",
+        "name_driven": True,
+        "family_candidates": [
+            {
+                "family": "code_injection",
+                "source": "catalog_resolution",
+                "confidence": "high",
+            }
+        ],
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "search_degraded": False,
+        "quality_reason": "sufficient evidence",
+        "evidence_relevance": {"confidence": "high"},
+        "family_hypothesis_summary": {
+            "top_family": "sqli",
+            "top_confidence": "low",
+            "top_margin": 0.07,
+            "ambiguous": True,
+            "contradiction_count": 2,
+            "ranked_families": [
+                {
+                    "family": "sqli",
+                    "confidence": "low",
+                },
+                {
+                    "family": "code_injection",
+                    "confidence": "high",
+                    "bases": [{"basis": "vuln_id", "confidence": "high"}],
+                },
+            ],
+        },
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "code parameter"],
+            "sink": ["eval(", "exec("],
+            "exploit_precondition": ["code injection", "user input reaches eval"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "code_injection"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_use_request_resolution_to_disambiguate_overlapping_matches(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-TEMPLATE-INJECTION")
+    engine._requirement["policy"] = {"name_only_mode": "dynamic"}  # type: ignore[index]
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "Template Injection",
+        "resolved_vuln_id": "NAME-TEMPLATE-INJECTION",
+        "resolution_state": "catalog_alias",
+        "resolution_match_class": "catalog_alias",
+        "resolution_confidence": "high",
+        "name_driven": True,
+        "family_candidates": [
+            {"family": "template_injection", "source": "catalog_resolution", "confidence": "high"}
+        ],
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "search_degraded": True,
+        "quality_reason": "guard fallback mode due to degraded retrieval",
+        "evidence_relevance": {"confidence": "low"},
+        "family_hypothesis_summary": {
+            "top_family": "xss",
+            "top_confidence": "low",
+            "top_margin": 0.01,
+            "ambiguous": True,
+            "contradiction_count": 2,
+        },
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "template payload"],
+            "sink": ["render_template_string"],
+            "exploit_precondition": ["cross-site scripting", "server-side template injection"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "template_injection"
+    assert manifest["metadata"]["semantic_guided_selection_source"] == "request_resolution"
+    assert manifest["metadata"]["semantic_guided_candidate_families"] == ["template_injection", "xss"]
+    assert manifest["metadata"]["semantic_guided_ambiguous"] is True
 
 
 def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_path_traversal(
@@ -691,6 +1005,166 @@ def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_ssrf_minimal_dyn
     assert "requests==" in requirements["content"].lower()
 
 
+def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_sqli(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-SQLI")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "sqli",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "user-controlled request parameter"],
+            "sink": ["sqlite3.execute", "sql query execution"],
+            "exploit_precondition": ["sql injection", "input concatenated into sql sink"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "sqli"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for SQLi." not in service_main["content"]
+    assert "sqlite3.connect(DB_PATH)" in service_main["content"]
+    assert "admin' OR '1'='1" in poc_entry["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_sqli_minimal_dynamic(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-SQLI")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["runtime_recipe"] = {  # type: ignore[index]
+        "language": "python",
+        "framework": "fastapi",
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "sqli",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        },
+        "tech_stack_candidates": [
+            {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"}
+        ],
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "user-controlled request parameter"],
+            "sink": ["sqlite3.execute", "sql query execution"],
+            "exploit_precondition": ["sql injection", "input concatenated into sql sink"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "uvicorn.run(app" in service_main["content"]
+    assert "fastapi==" in requirements["content"].lower()
+    assert "uvicorn==" in requirements["content"].lower()
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_csrf(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-CSRF")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "csrf",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["cross-site request", "cookie-authenticated session"],
+            "sink": ["state-changing endpoint (POST/PUT/DELETE/PATCH)"],
+            "exploit_precondition": ["missing csrf token validation"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "csrf"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for CSRF." not in service_main["content"]
+    assert "@app.post('/transfer')" in service_main["content"]
+    assert "method='POST'" in poc_entry["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_csrf_minimal_dynamic(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-CSRF")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["runtime_recipe"] = {  # type: ignore[index]
+        "language": "python",
+        "framework": "fastapi",
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "csrf",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        },
+        "tech_stack_candidates": [
+            {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"}
+        ],
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["cross-site request", "cookie-authenticated session"],
+            "sink": ["state-changing endpoint (POST/PUT/DELETE/PATCH)"],
+            "exploit_precondition": ["missing csrf token validation"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert "from fastapi import FastAPI" in service_main["content"]
+    assert "@app.post('/transfer')" in service_main["content"]
+    assert "fastapi==" in requirements["content"].lower()
+    assert "uvicorn==" in requirements["content"].lower()
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
 def test_family_aware_fallback_manifest_for_cwe502_passes_guard(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "CWE-502")
     manifest = engine._fallback_manifest()
@@ -784,6 +1258,346 @@ def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_deserialization_
     assert "uvicorn.run(app" in service_main["content"]
     assert "fastapi==" in requirements["content"].lower()
     assert "uvicorn==" in requirements["content"].lower()
+
+
+def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_template_injection(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-TEMPLATE-INJECTION")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "template_injection",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "query parameter", "user input"],
+            "sink": ["render_template_string"],
+            "exploit_precondition": ["server-side template injection", "template injection"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "template_injection"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "Asset-backed family-aware fallback template for Template Injection." not in service_main["content"]
+    assert "render_template_string(template)" in service_main["content"]
+    assert "{{7*7}}" in poc_entry["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_accepts_descriptive_template_injection_guard_spec(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-TEMPLATE-INJECTION")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "template_injection",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "user-controlled request parameter"],
+            "sink": ["render_template_string", "jinja2 template rendering from string"],
+            "exploit_precondition": [
+                "user input is embedded into template source string (concatenation/interpolation)",
+                "template string is rendered server-side without escaping/sandboxing",
+            ],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "template_injection"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_template_injection_minimal_dynamic(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-TEMPLATE-INJECTION")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["runtime_recipe"] = {  # type: ignore[index]
+        "language": "python",
+        "framework": "fastapi",
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "template_injection",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        },
+        "tech_stack_candidates": [
+            {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"}
+        ],
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "query parameter", "user input"],
+            "sink": ["render_template_string"],
+            "exploit_precondition": ["server-side template injection", "template injection"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "Template(template)" in service_main["content"]
+    assert "Jinja2==" in requirements["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_command_injection(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CWE-78")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "command_injection",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "command parameter"],
+            "sink": ["subprocess", "shell=True"],
+            "exploit_precondition": ["command injection", "user input in command"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "command_injection"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "subprocess.check_output" in service_main["content"]
+    assert "shell=True" in service_main["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_command_injection_minimal_dynamic(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CWE-78")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["runtime_recipe"] = {  # type: ignore[index]
+        "language": "python",
+        "framework": "fastapi",
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "command_injection",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        },
+        "tech_stack_candidates": [
+            {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"}
+        ],
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "command parameter"],
+            "sink": ["subprocess", "shell=True"],
+            "exploit_precondition": ["command injection", "user input in command"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "subprocess.check_output" in service_main["content"]
+    assert "fastapi==" in requirements["content"].lower()
+    assert "uvicorn==" in requirements["content"].lower()
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_code_injection(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CWE-94")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "code_injection",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "code parameter"],
+            "sink": ["eval(", "exec("],
+            "exploit_precondition": ["code injection", "user input reaches eval"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "code_injection"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "result = eval(code" in service_main["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_code_injection_minimal_dynamic(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CWE-94")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["runtime_recipe"] = {  # type: ignore[index]
+        "language": "python",
+        "framework": "fastapi",
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "code_injection",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        },
+        "tech_stack_candidates": [
+            {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"}
+        ],
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "code parameter"],
+            "sink": ["eval(", "exec("],
+            "exploit_precondition": ["code injection", "user input reaches eval"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "result = eval(code" in service_main["content"]
+    assert "fastapi==" in requirements["content"].lower()
+    assert "uvicorn==" in requirements["content"].lower()
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_ldap_injection(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-LDAP-INJECTION")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "ldap_injection",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "ldap user parameter"],
+            "sink": ["LDAP filter construction", "directory search", "search_directory("],
+            "exploit_precondition": ["ldap injection", "filter bypass via wildcard or OR clause"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "ldap_injection"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "search_directory(ldap_filter)" in service_main["content"]
+    assert "ldap_filter = '(uid=' + user + ')'" in service_main["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_xxe(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-XXE")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "xxe",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.data", "xml body", "attacker-controlled xml payload"],
+            "sink": ["etree.XMLParser(load_dtd=True, resolve_entities=True)", "etree.fromstring"],
+            "exploit_precondition": ["xml external entity", "xxe", "external entity resolution enabled"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "xxe"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
+    assert "etree.XMLParser(load_dtd=True, resolve_entities=True)" in service_main["content"]
+    assert "lxml==" in requirements["content"].lower()
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
 
 
 def test_run_can_recover_with_semantic_guided_minimal_dynamic_after_invalid_json_manifest(

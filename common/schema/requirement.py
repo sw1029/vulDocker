@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from common.contracts import can_resolve_without_remote_research_for_requirement
-from common.name_only import VALID_NAME_ONLY_MODES, build_name_only_contract
+from common.name_only import VALID_NAME_ONLY_MODES, build_name_only_contract, is_name_driven_requirement
 from common.vuln_catalog import (
     catalog_profile_defaults,
     mapped_vuln_id_with_source,
@@ -240,6 +240,198 @@ def _request_identity_from_resolution(
     }
 
 
+def _resolution_state_from_request_identity(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return "unknown"
+    source = str(payload.get("source") or "").strip().lower()
+    match_class = str(payload.get("match_class") or "").strip().lower()
+    if source == "synthetic_name":
+        return "synthetic_name"
+    if match_class == "catalog_alias":
+        return "catalog_alias"
+    if match_class == "token_match":
+        return "token_match"
+    if match_class == "exact_identifier":
+        return "explicit_identifier"
+    if source == "resolved_only":
+        return "resolved_only"
+    return "unknown"
+
+
+def _stack_candidates_for_request_ir(requirement: Dict[str, Any]) -> List[Dict[str, str]]:
+    candidates = _normalized_stack_hypotheses(requirement.get("stack_hypotheses"))
+    if candidates:
+        return candidates
+    language = str(requirement.get("language") or "").strip().lower()
+    framework = str(requirement.get("framework") or "").strip().lower()
+    if not language or not framework:
+        return []
+    return [
+        {
+            "language": language,
+            "framework": framework,
+            "stack_id": f"{language}/{framework}",
+            "source": "explicit_requirement",
+            "confidence": "high",
+        }
+    ]
+
+
+def _family_candidates_for_request_ir(
+    requirement: Dict[str, Any],
+    *,
+    resolved_vuln_id: str,
+    request_label: str,
+    resolution_state: str,
+    resolution_confidence: str,
+) -> List[Dict[str, str]]:
+    candidates: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add_candidate(family: Any, *, source: str, confidence: str) -> None:
+        token = str(family or "").strip().lower()
+        if not token or token in seen:
+            return
+        seen.add(token)
+        candidates.append(
+            {
+                "family": token,
+                "source": source,
+                "confidence": confidence or "unknown",
+            }
+        )
+
+    catalog_entry = resolve_vuln_catalog_entry(
+        vuln_id=resolved_vuln_id,
+        pattern_id=requirement.get("pattern_id"),
+        raw_label=request_label,
+    )
+    if isinstance(catalog_entry, dict):
+        add_candidate(
+            catalog_entry.get("family"),
+            source="catalog_resolution",
+            confidence=resolution_confidence or ("high" if resolution_state in {"catalog_alias", "explicit_identifier"} else "medium"),
+        )
+    return candidates
+
+
+def _pattern_seed_state(requirement: Dict[str, Any], primary_vuln: str, resolution_source: str) -> str:
+    pattern_id = str(requirement.get("pattern_id") or "").strip()
+    if not pattern_id:
+        return "absent"
+    if pattern_id != "generic-web-vuln":
+        return "preserved"
+    if (
+        not can_resolve_without_remote_research_for_requirement(primary_vuln, requirement)
+        and str(resolution_source or "").strip().lower() in {"explicit_identifier", "synthetic_name", "resolved_only"}
+    ):
+        return "genericized_unknown"
+    return "generic"
+
+
+def _build_request_ir(
+    requirement: Dict[str, Any],
+    *,
+    primary_vuln: str,
+    request_identity: Dict[str, Any],
+    name_resolution: Dict[str, Any],
+) -> Dict[str, Any]:
+    request_label = (
+        str((request_identity or {}).get("request_label") or "").strip()
+        or str((name_resolution or {}).get("input") or "").strip()
+        or _named_vuln_label(requirement)
+        or str(primary_vuln or "").strip()
+    )
+    normalized_request_label = normalize_vuln_label(request_label)
+    resolved_vuln_id = str(
+        (request_identity or {}).get("resolved_vuln_id")
+        or (name_resolution or {}).get("resolved_vuln_id")
+        or primary_vuln
+        or ""
+    ).strip()
+    resolution_source = str(
+        (request_identity or {}).get("source")
+        or (name_resolution or {}).get("source")
+        or ""
+    ).strip().lower()
+    resolution_match_class = str(
+        (request_identity or {}).get("match_class")
+        or (name_resolution or {}).get("match_class")
+        or ""
+    ).strip().lower()
+    resolution_confidence = str(
+        (request_identity or {}).get("confidence")
+        or (name_resolution or {}).get("confidence")
+        or ""
+    ).strip().lower()
+    name_driven = is_name_driven_requirement(
+        {
+            "vuln_id": resolved_vuln_id,
+            "request_identity": request_identity if isinstance(request_identity, dict) else {},
+        }
+    )
+    policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+    name_only_contract = (
+        dict(policy.get("name_only_contract"))
+        if isinstance(policy.get("name_only_contract"), dict)
+        else build_name_only_contract(requirement=requirement, policy=policy)
+    )
+    resolution_state = _resolution_state_from_request_identity(
+        {
+            "source": resolution_source,
+            "match_class": resolution_match_class,
+        }
+    )
+    payload: Dict[str, Any] = {
+        "request_label": request_label,
+        "normalized_request_label": normalized_request_label,
+        "resolved_vuln_id": resolved_vuln_id or None,
+        "input_mode": str((request_identity or {}).get("input_mode") or "").strip().lower() or "explicit_identifier",
+        "name_driven": name_driven,
+        "resolution_state": resolution_state,
+        "resolution_source": resolution_source or "unknown",
+        "resolution_match_class": resolution_match_class or "unknown",
+        "resolution_confidence": resolution_confidence or "unknown",
+        "catalog_backed": bool((request_identity or {}).get("catalog_backed_resolution")),
+        "token_match_backed": bool((request_identity or {}).get("token_match_resolution")),
+        "synthetic_resolution": bool((request_identity or {}).get("synthetic_resolution")),
+        "exact_identifier_resolution": bool((request_identity or {}).get("exact_identifier_resolution")),
+        "pattern_id": str(requirement.get("pattern_id") or "").strip() or None,
+        "pattern_seed_state": _pattern_seed_state(requirement, primary_vuln, resolution_source),
+        "stack_candidates": _stack_candidates_for_request_ir(requirement),
+        "family_candidates": _family_candidates_for_request_ir(
+            requirement,
+            resolved_vuln_id=resolved_vuln_id,
+            request_label=request_label,
+            resolution_state=resolution_state,
+            resolution_confidence=resolution_confidence,
+        ),
+        "name_only_mode": str(name_only_contract.get("mode") or "compatibility"),
+        "required_contract": {
+            key: deepcopy(name_only_contract.get(key))
+            for key in (
+                "effective_mode",
+                "require_research",
+                "require_remote_research",
+                "allow_degraded_fallback",
+                "allow_lower_bound_recovery",
+                "allow_curated_lower_bound_closure",
+                "allow_template_closure",
+                "require_strict_open_world",
+                "require_independent_verifier",
+                "require_live_llm",
+                "allow_stub_llm",
+                "allow_fixture_llm",
+                "allowed_closure_sources",
+                "allowed_llm_paths",
+                "intent_success_rule",
+            )
+            if key in name_only_contract
+        },
+    }
+    return payload
+
+
 def _name_resolution(requirement: Dict[str, Any], primary_vuln: str) -> Dict[str, Any]:
     for key in ("vuln_name", "vulnerability_name", "weakness_name", "cwe_name"):
         raw = requirement.get(key)
@@ -393,6 +585,42 @@ def normalize_requirement(
     _normalize_unknown_pattern_seed(normalized_req, effective, warnings)
     _normalize_research_policy(normalized_req, effective, warnings)
     _normalize_pipeline_policy(normalized_req, effective, warnings)
+    request_identity = normalized_req.get("request_identity") if isinstance(normalized_req.get("request_identity"), dict) else {}
+    name_resolution = normalized_req.get("name_resolution") if isinstance(normalized_req.get("name_resolution"), dict) else {}
+    normalized_req["request_ir"] = _build_request_ir(
+        normalized_req,
+        primary_vuln=effective[0],
+        request_identity=request_identity,
+        name_resolution=name_resolution,
+    )
+    raw_resolutions = normalized_req.get("vuln_id_resolutions")
+    raw_request_identities = normalized_req.get("vuln_request_identities")
+    if isinstance(raw_resolutions, list) and isinstance(raw_request_identities, list):
+        request_irs: List[Dict[str, Any]] = []
+        for resolution in raw_resolutions:
+            if not isinstance(resolution, dict):
+                continue
+            resolved_vuln_id = str(resolution.get("resolved_vuln_id") or "").strip()
+            if not resolved_vuln_id:
+                continue
+            request_identity_match = next(
+                (
+                    dict(entry)
+                    for entry in raw_request_identities
+                    if isinstance(entry, dict) and str(entry.get("resolved_vuln_id") or "").strip() == resolved_vuln_id
+                ),
+                {},
+            )
+            request_irs.append(
+                _build_request_ir(
+                    normalized_req,
+                    primary_vuln=resolved_vuln_id,
+                    request_identity=request_identity_match,
+                    name_resolution=dict(resolution),
+                )
+            )
+        if request_irs:
+            normalized_req["vuln_request_irs"] = request_irs
 
     serialized = "\n".join(sorted(effective))
     effective_vuln_ids_digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -755,7 +983,7 @@ def _normalize_research_policy(
     )
     policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
     name_only_mode = str(policy.get("name_only_mode") or "").strip().lower() if isinstance(policy, dict) else ""
-    name_driven = any(str(vuln_id or "").strip().upper().startswith("NAME-") for vuln_id in effective_vuln_ids)
+    name_driven = is_name_driven_requirement(requirement)
     if name_driven and name_only_mode == "strict_dynamic":
         remote_required = True
     default_policy = "remote_required" if remote_required else "remote_prefer"
@@ -832,7 +1060,7 @@ def _normalize_pipeline_policy(
         not can_resolve_without_remote_research_for_requirement(vuln_id, requirement)
         for vuln_id in effective_vuln_ids
     )
-    name_driven = any(str(vuln_id or "").strip().upper().startswith("NAME-") for vuln_id in effective_vuln_ids)
+    name_driven = is_name_driven_requirement(requirement)
     policy["allow_runtime_rule_override_static"] = _as_bool(
         policy.get("allow_runtime_rule_override_static", False)
     )

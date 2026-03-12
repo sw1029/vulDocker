@@ -8,6 +8,17 @@
     "generation_origin": "llm_manifest",
     "llm_fixture_used": true,
     "dynamicness_verdict": "trusted dynamic",
+    "request_ir": {
+      "resolution_state": "catalog_alias",
+      "name_driven": false
+    },
+    "template_dependence_summary": {
+      "lower_bound_dependent_bundles": 1,
+      "open_world_positive_bundles": 0
+    },
+    "intent_satisfaction_summary": {
+      "name_only_bundles": 0
+    },
     "generalization_class": "known_family_regression",
     "counts_as_generalization": false
   },
@@ -28,6 +39,9 @@
       "verification_rule_source": "declared_rule",
       "verification_trust": "high",
       "verification_independence": "independent",
+      "request_ir": {
+        "resolution_state": "catalog_alias"
+      },
       "generalization_class": "known_family_regression",
       "counts_as_generalization": false
     }

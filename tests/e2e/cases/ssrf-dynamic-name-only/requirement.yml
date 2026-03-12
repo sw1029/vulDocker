@@ -1,0 +1,11 @@
+vuln_name: ssrf
+seed: 5563
+generator_mode: synthesis
+
+policy:
+  name_only_mode: dynamic
+
+options:
+  env:
+    VUL_FORCE_LLM_STUB: "1"
+    VUL_FORCE_LLM_STUB_REASON: "provider_disabled"

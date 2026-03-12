@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from common.guardrails import SUPPORTED_GENERATOR_ASSERTION_OPS
+from common.name_only import is_name_driven_requirement
 from common.rules import load_rule
 
 
@@ -118,8 +119,7 @@ def _semantic_contract(requirement: Dict[str, object]) -> str:
 
 
 def _is_name_only_requirement(requirement: Dict[str, object]) -> bool:
-    vuln = str((requirement or {}).get("vuln_id") or "").strip().upper()
-    return vuln.startswith("NAME-")
+    return is_name_driven_requirement(requirement if isinstance(requirement, dict) else {})
 
 
 def _has_researcher_report_payload(researcher_report: str) -> bool:
@@ -309,6 +309,14 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
     resolved_vuln_id = str(spec.get("resolved_vuln_id") or "").strip()
     if resolved_vuln_id:
         lines.append(f"- Resolved vuln id: `{resolved_vuln_id}`.")
+    request_ir = spec.get("request_ir") if isinstance(spec.get("request_ir"), dict) else {}
+    if isinstance(request_ir, dict) and request_ir:
+        resolution_state = str(request_ir.get("resolution_state") or "").strip()
+        if resolution_state:
+            lines.append(f"- Request resolution state: `{resolution_state}`.")
+        pattern_seed_state = str(request_ir.get("pattern_seed_state") or "").strip()
+        if pattern_seed_state:
+            lines.append(f"- Pattern seed state: `{pattern_seed_state}`.")
     effective_mode = str(spec.get("effective_mode") or "").strip()
     if effective_mode:
         lines.append(f"- Name-only effective mode: `{effective_mode}`.")
@@ -317,6 +325,27 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
     if working_family:
         source_text = f" ({working_family_source})" if working_family_source else ""
         lines.append(f"- Working family hypothesis: `{working_family}`{source_text}.")
+    family_candidate_summary = (
+        spec.get("family_candidate_summary")
+        if isinstance(spec.get("family_candidate_summary"), dict)
+        else {}
+    )
+    if isinstance(family_candidate_summary, dict) and family_candidate_summary:
+        top_family = str(family_candidate_summary.get("top_family") or "").strip()
+        top_source = str(family_candidate_summary.get("top_source") or "").strip()
+        top_confidence = str(family_candidate_summary.get("top_confidence") or "").strip()
+        candidate_count = family_candidate_summary.get("candidate_count")
+        if top_family:
+            detail = [f"top=`{top_family}`"]
+            if top_source:
+                detail.append(f"source=`{top_source}`")
+            if top_confidence:
+                detail.append(f"confidence=`{top_confidence}`")
+            if isinstance(candidate_count, int):
+                detail.append(f"count=`{candidate_count}`")
+            lines.append("- Family candidate preview: " + ", ".join(detail) + ".")
+        if family_candidate_summary.get("ambiguous") is True:
+            lines.append("- Family candidate set is ambiguous; avoid overcommitting beyond supported family evidence.")
     runtime_recipe_summary = (
         spec.get("runtime_recipe_summary")
         if isinstance(spec.get("runtime_recipe_summary"), dict)
@@ -330,6 +359,54 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
             lines.append(f"- Runtime working stack: `{language}/{framework}`.")
         if topology:
             lines.append(f"- Runtime working topology: `{topology}`.")
+    stack_candidate_summary = (
+        spec.get("stack_candidate_summary")
+        if isinstance(spec.get("stack_candidate_summary"), dict)
+        else {}
+    )
+    if isinstance(stack_candidate_summary, dict) and stack_candidate_summary:
+        working_stack_id = str(stack_candidate_summary.get("working_stack_id") or "").strip()
+        working_stack_source = str(stack_candidate_summary.get("working_stack_source") or "").strip()
+        working_stack_locked = stack_candidate_summary.get("working_stack_locked")
+        candidate_count = stack_candidate_summary.get("candidate_count")
+        top_stack_id = str(stack_candidate_summary.get("top_stack_id") or "").strip()
+        top_source = str(stack_candidate_summary.get("top_source") or "").strip()
+        top_confidence = str(stack_candidate_summary.get("top_confidence") or "").strip()
+        detail: List[str] = []
+        if working_stack_id:
+            detail.append(f"working=`{working_stack_id}`")
+        if working_stack_source:
+            detail.append(f"source=`{working_stack_source}`")
+        if isinstance(working_stack_locked, bool):
+            detail.append(f"locked=`{working_stack_locked}`")
+        if isinstance(candidate_count, int):
+            detail.append(f"count=`{candidate_count}`")
+        if top_stack_id and top_stack_id != working_stack_id:
+            detail.append(f"top_candidate=`{top_stack_id}`")
+        if top_source and top_source != working_stack_source:
+            detail.append(f"top_source=`{top_source}`")
+        if top_confidence:
+            detail.append(f"top_confidence=`{top_confidence}`")
+        if detail:
+            lines.append("- Stack candidate preview: " + ", ".join(detail) + ".")
+        if stack_candidate_summary.get("ambiguous") is True:
+            lines.append("- Stack candidates remain ambiguous; stay within bounded repo-supported stacks unless stronger evidence is present.")
+    runtime_graph_summary = (
+        spec.get("runtime_graph_summary")
+        if isinstance(spec.get("runtime_graph_summary"), dict)
+        else {}
+    )
+    if isinstance(runtime_graph_summary, dict) and runtime_graph_summary:
+        topology = str(runtime_graph_summary.get("topology") or "").strip()
+        node_count = runtime_graph_summary.get("node_count")
+        edge_count = runtime_graph_summary.get("edge_count")
+        sidecars = runtime_graph_summary.get("sidecars") if isinstance(runtime_graph_summary.get("sidecars"), list) else []
+        if topology:
+            lines.append(f"- Runtime graph topology preview: `{topology}`.")
+        if isinstance(node_count, int) and isinstance(edge_count, int):
+            lines.append(f"- Runtime graph preview: `{node_count}` node(s), `{edge_count}` edge(s).")
+        if sidecars:
+            lines.append("- Runtime graph sidecars: `" + "`, `".join(str(item) for item in sidecars) + "`.")
     required_contract = spec.get("required_contract") if isinstance(spec.get("required_contract"), dict) else {}
     if isinstance(required_contract, dict) and required_contract:
         required_bits: List[str] = []

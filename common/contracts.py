@@ -23,7 +23,7 @@ from common.researcher_report import (
     extract_verification_spec,
     normalize_researcher_report_payload,
 )
-from common.name_only import build_name_only_contract
+from common.name_only import build_name_only_contract, is_name_driven_requirement
 from common.runtime_surface import derive_service_env
 from common.rules import load_rule, load_rulespec, load_static_rule
 from common.vuln_catalog import (
@@ -97,6 +97,12 @@ def requires_semantic_support(vuln_id: str) -> bool:
     if token.startswith("NAME-"):
         return True
     return not bool(load_static_rule(vuln_id))
+
+
+def requires_semantic_support_for_requirement(vuln_id: str, requirement: Optional[Dict[str, Any]] = None) -> bool:
+    if isinstance(requirement, dict) and is_name_driven_requirement(requirement):
+        return True
+    return requires_semantic_support(vuln_id)
 
 
 def compiler_support_summary(vuln_id: str, requirement: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -345,7 +351,12 @@ def build_generator_contract(
     )
     guard_spec = _load_json(metadata_dir / "guard_spec.json") or {}
     proposal = _normalize_proposed_verification_contract(report)
-    semantic_contract = _resolve_semantic_contract(vuln_id, report, guard_spec)
+    semantic_contract = _resolve_semantic_contract(
+        vuln_id,
+        report,
+        guard_spec,
+        requirement if isinstance(requirement, dict) else {},
+    )
 
     sources: Dict[str, str] = {}
 
@@ -475,6 +486,22 @@ def build_generator_contract(
         researcher_report=report,
     )
 
+    resolved_payload = {
+        "service_entry": service_entry,
+        "poc_entry": poc_entry,
+        "service_port": service_port,
+        "base_url": base_url,
+        "service_env": deepcopy(service_env),
+        "poc_cmd": poc_cmd,
+        "output_mode": output_mode,
+        "success_signature": success_signature,
+        "flag_token": flag_token,
+    }
+    runtime_graph = _build_runtime_graph(
+        runtime_recipe=runtime_recipe,
+        resolved=resolved_payload,
+    )
+
     payload: Dict[str, Any] = {
         "schema_version": RESOLVED_CONTRACT_SCHEMA_VERSION,
         "sid": sid,
@@ -482,21 +509,13 @@ def build_generator_contract(
         "vuln_id": vuln_id,
         "generator_mode": generator_mode,
         "contract_stage": generator_mode or ("generator" if workspace_dir else "seed"),
-        "resolved": {
-            "success_signature": success_signature,
-            "flag_token": flag_token,
-            "service_entry": service_entry,
-            "poc_entry": poc_entry,
-            "service_port": service_port,
-            "base_url": base_url,
-            "service_env": deepcopy(service_env),
-            "poc_cmd": poc_cmd,
-            "output_mode": output_mode,
-        },
+        "resolved": resolved_payload,
         "sources": sources,
     }
     if runtime_recipe:
         payload["runtime_recipe"] = runtime_recipe
+    if runtime_graph:
+        payload["runtime_graph"] = runtime_graph
     exploit_oracle = _build_exploit_oracle(
         resolved=payload["resolved"],
         proposal=proposal or {},
@@ -508,6 +527,7 @@ def build_generator_contract(
         requirement=requirement or {},
         report=report,
         runtime_recipe=runtime_recipe,
+        runtime_graph=runtime_graph,
         exploit_oracle=exploit_oracle,
     )
     if name_only_generation_spec:
@@ -576,6 +596,8 @@ def build_generator_contract(
         payload["service_env"] = deepcopy(service_env)
     if runtime_recipe:
         payload["runtime_recipe"] = deepcopy(runtime_recipe)
+    if runtime_graph:
+        payload["runtime_graph"] = deepcopy(runtime_graph)
     if exploit_oracle:
         payload["exploit_oracle"] = deepcopy(exploit_oracle)
     if name_only_generation_spec:
@@ -699,7 +721,7 @@ def _build_semantic_profile(
         "semantic_signature": semantic_signature,
         "verification_contract": verification_contract,
         "derived_assertions": {
-            "semantic_gate_required": requires_semantic_support(vuln_id),
+            "semantic_gate_required": requires_semantic_support_for_requirement(vuln_id, requirement),
             "semantic_status": _string_or_none(semantic_contract.get("status")) or "unsupported",
             "rule_source": _string_or_none(rule_resolution.get("selected_source")) or "none",
             "service_entry": _string_or_none(resolved.get("service_entry")) or "app.py",
@@ -745,6 +767,11 @@ def _default_profile_semantic_signature(
 
 def _requested_name(requirement: Dict[str, Any], vuln_id: str) -> str:
     if isinstance(requirement, dict):
+        request_ir = requirement.get("request_ir")
+        if isinstance(request_ir, dict):
+            value = _string_or_none(request_ir.get("request_label"))
+            if value:
+                return value
         for key in ("vuln_name", "requested_name", "name"):
             value = _string_or_none(requirement.get(key))
             if value:
@@ -818,6 +845,31 @@ def _researcher_stack_candidates(report: Dict[str, Any]) -> list[Dict[str, str]]
     return candidates
 
 
+def _stack_confidence_rank(value: str) -> int:
+    token = str(value or "").strip().lower()
+    if token == "high":
+        return 3
+    if token == "medium":
+        return 2
+    if token == "low":
+        return 1
+    return 0
+
+
+def _single_confident_stack_candidate(candidates: list[Dict[str, str]]) -> Dict[str, str]:
+    if not isinstance(candidates, list) or not candidates:
+        return {}
+    if len(candidates) != 1:
+        return {}
+    top = candidates[0]
+    if not isinstance(top, dict):
+        return {}
+    confidence = str(top.get("confidence") or "").strip().lower()
+    if _stack_confidence_rank(confidence) < _stack_confidence_rank("medium"):
+        return {}
+    return top
+
+
 def _merge_stack_candidates(*groups: list[Dict[str, str]]) -> list[Dict[str, str]]:
     merged: list[Dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -852,17 +904,24 @@ def _stack_profile(requirement: Dict[str, Any], report: Dict[str, Any] | None = 
     explicit_framework = _string_or_none(requirement.get("framework") if isinstance(requirement, dict) else None)
     requirement_hypotheses = _stack_hypotheses(requirement if isinstance(requirement, dict) else {})
     researcher_hypotheses = _researcher_stack_candidates(report or {})
+    confident_researcher_hypothesis = _single_confident_stack_candidate(researcher_hypotheses)
     hypotheses = _merge_stack_candidates(researcher_hypotheses, requirement_hypotheses)
     if explicit_language and explicit_framework:
         language = explicit_language.lower()
         framework = explicit_framework.lower()
         stack_source = "explicit_requirement"
         stack_locked = True
-    elif researcher_hypotheses:
-        top = researcher_hypotheses[0]
+    elif confident_researcher_hypothesis:
+        top = confident_researcher_hypothesis
         language = _string_or_none(top.get("language")) or "python"
         framework = _string_or_none(top.get("framework")) or "flask"
         stack_source = "researcher_candidate"
+        stack_locked = False
+    elif requirement_hypotheses:
+        top = requirement_hypotheses[0]
+        language = _string_or_none(top.get("language")) or "python"
+        framework = _string_or_none(top.get("framework")) or "flask"
+        stack_source = _string_or_none(top.get("source")) or "stack_hypothesis"
         stack_locked = False
     elif hypotheses:
         top = hypotheses[0]
@@ -1120,13 +1179,24 @@ def _normalize_proposed_verification_contract(report: Dict[str, Any]) -> Optiona
     return normalized if len(normalized) > 2 else None
 
 
-def _resolve_semantic_contract(vuln_id: str, report: Dict[str, Any], guard_spec: Dict[str, Any]) -> Dict[str, Any]:
+def _resolve_semantic_contract(
+    vuln_id: str,
+    report: Dict[str, Any],
+    guard_spec: Dict[str, Any],
+    requirement: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     contract = extract_semantic_contract(report)
-    is_free_form_name = str(vuln_id or "").strip().upper().startswith("NAME-")
+    requirement_view = requirement if isinstance(requirement, dict) else {}
+    synthetic_requirement = dict(requirement_view) if isinstance(requirement_view, dict) else {}
+    synthetic_requirement.setdefault("vuln_id", vuln_id)
+    is_free_form_name = is_name_driven_requirement(synthetic_requirement)
     report_signature = contract.get("semantic_signature") if isinstance(contract, dict) else None
     guard_signature = guard_spec.get("semantic_signature") if isinstance(guard_spec, dict) else None
     baseline_signature = _normalize_semantic_buckets(baseline_semantic_signature(vuln_id))
-    fragment_signature, _ = _default_profile_semantic_signature(vuln_id=vuln_id, requirement={"vuln_id": vuln_id})
+    fragment_signature, _ = _default_profile_semantic_signature(
+        vuln_id=vuln_id,
+        requirement=requirement_view or {"vuln_id": vuln_id},
+    )
     fragment_signature_present = _semantic_signature_present(fragment_signature)
     has_baseline = any(baseline_signature.get(bucket) for bucket in baseline_signature)
     resolved_signature = _normalize_semantic_buckets(contract.get("semantic_signature") if isinstance(contract, dict) else {})
@@ -1434,6 +1504,140 @@ def _build_runtime_recipe(
     return recipe
 
 
+def _build_runtime_graph(
+    *,
+    runtime_recipe: Dict[str, Any],
+    resolved: Dict[str, Any],
+) -> Dict[str, Any]:
+    recipe = runtime_recipe if isinstance(runtime_recipe, dict) else {}
+    if not recipe:
+        return {}
+    service_port = resolved.get("service_port")
+    if not isinstance(service_port, int):
+        service_port = recipe.get("service_port")
+    if not isinstance(service_port, int):
+        service_port = DEFAULT_APP_PORT
+    nodes: list[Dict[str, Any]] = [
+        {
+            "id": "service",
+            "kind": "service",
+            "role": "primary",
+            "language": _string_or_none(recipe.get("language")) or "python",
+            "framework": _string_or_none(recipe.get("framework")) or "flask",
+            "entry": _string_or_none(recipe.get("service_entry")) or "app.py",
+            "transport": _string_or_none(recipe.get("transport")) or "http",
+            "port": service_port,
+        }
+    ]
+    edges: list[Dict[str, Any]] = [
+        {
+            "from": "poc",
+            "to": "service",
+            "kind": "exploit_http",
+            "transport": _string_or_none(recipe.get("transport")) or "http",
+            "target_port": service_port,
+        }
+    ]
+    raw_sidecars = recipe.get("sidecars") if isinstance(recipe.get("sidecars"), list) else []
+    for sidecar in raw_sidecars:
+        if not isinstance(sidecar, dict):
+            continue
+        name = _string_or_none(sidecar.get("name"))
+        if not name:
+            continue
+        node_id = f"sidecar:{name}"
+        nodes.append(
+            {
+                "id": node_id,
+                "kind": "sidecar",
+                "role": "dependency",
+                "sidecar_type": _string_or_none(sidecar.get("type")) or "unknown",
+                "image": _string_or_none(sidecar.get("image")),
+                "aliases": deepcopy(sidecar.get("aliases")) if isinstance(sidecar.get("aliases"), list) else [],
+            }
+        )
+        edges.append(
+            {
+                "from": "service",
+                "to": node_id,
+                "kind": "runtime_dependency",
+                "dependency_type": _string_or_none(sidecar.get("type")) or "unknown",
+                "network_mode": _string_or_none(recipe.get("network_mode")) or "none",
+            }
+        )
+    env_contract = [
+        {"scope": "service", "name": str(key), "value": str(value)}
+        for key, value in (recipe.get("service_env") or {}).items()
+        if isinstance(key, str) and key.strip() and value not in (None, "")
+    ]
+    healthchecks: list[Dict[str, Any]] = []
+    health_path = _string_or_none(recipe.get("health_path"))
+    if health_path:
+        healthchecks.append(
+            {
+                "node": "service",
+                "path": health_path,
+                "port": service_port,
+                "transport": _string_or_none(recipe.get("transport")) or "http",
+            }
+        )
+    graph: Dict[str, Any] = {
+        "schema_version": "runtime_graph@0.1",
+        "source": "derived_from_runtime_recipe",
+        "topology": _string_or_none(recipe.get("topology")) or "single_service",
+        "network": {
+            "mode": _string_or_none(recipe.get("network_mode")) or "none",
+            "enabled": bool(recipe.get("network_enabled")),
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "healthchecks": healthchecks,
+        "env_contract": env_contract,
+        "exploit_path": {
+            "entrypoint": _string_or_none(recipe.get("poc_entry")) or "poc.py",
+            "target_node": "service",
+            "service_entry": _string_or_none(recipe.get("service_entry")) or "app.py",
+            "transport": _string_or_none(recipe.get("transport")) or "http",
+            "port": service_port,
+            "base_url": _string_or_none(resolved.get("base_url")),
+            "success_signal": _string_or_none(resolved.get("success_signature")),
+            "flag_token": _string_or_none(resolved.get("flag_token")),
+        },
+    }
+    seed_files = deepcopy(recipe.get("seed_files")) if isinstance(recipe.get("seed_files"), list) else []
+    if seed_files:
+        graph["seed_files"] = seed_files
+    db = _string_or_none(recipe.get("db"))
+    if db:
+        graph["db"] = db
+    return graph
+
+
+def _runtime_graph_summary(runtime_graph: Dict[str, Any]) -> Dict[str, Any]:
+    graph = runtime_graph if isinstance(runtime_graph, dict) else {}
+    if not graph:
+        return {}
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    network = graph.get("network") if isinstance(graph.get("network"), dict) else {}
+    exploit = graph.get("exploit_path") if isinstance(graph.get("exploit_path"), dict) else {}
+    sidecars = []
+    for item in nodes:
+        if not isinstance(item, dict) or str(item.get("kind") or "").strip() != "sidecar":
+            continue
+        name = str(item.get("id") or "").replace("sidecar:", "").strip()
+        sidecar_type = str(item.get("sidecar_type") or "").strip()
+        sidecars.append(f"{name}:{sidecar_type}" if sidecar_type else name)
+    return {
+        "topology": _string_or_none(graph.get("topology")) or "single_service",
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "sidecars": sidecars,
+        "network_mode": _string_or_none(network.get("mode")) or "none",
+        "target_node": _string_or_none(exploit.get("target_node")) or "service",
+    }
+
+
 def _build_exploit_oracle(
     *,
     resolved: Dict[str, Any],
@@ -1454,11 +1658,16 @@ def _build_exploit_oracle(
         "service_port": resolved.get("service_port"),
         "poc_cmd": _string_or_none(resolved.get("poc_cmd")),
     }
-    if isinstance(proposal.get("assertion_program"), list) and proposal.get("assertion_program"):
-        payload["assertion_program"] = deepcopy(proposal.get("assertion_program"))
+    assertions = deepcopy(proposal.get("assertion_program")) if isinstance(proposal.get("assertion_program"), list) else []
     for key in ("success_mode", "json_success_key", "json_success_value", "json_flag_key"):
         if key in proposal:
             payload[key] = deepcopy(proposal.get(key))
+    if success_signature and not _oracle_assertion_contains(assertions, success_signature):
+        assertions.append({"op": "contains", "string": success_signature})
+    if flag_token and not _oracle_assertion_contains(assertions, flag_token):
+        assertions.append({"op": "contains", "string": flag_token})
+    if assertions:
+        payload["assertion_program"] = assertions
     if proposal:
         payload["source"] = "researcher_verification_spec"
     else:
@@ -1476,16 +1685,38 @@ def _build_exploit_oracle(
     return payload
 
 
+def _oracle_assertion_contains(assertions: list[Any], needle: str) -> bool:
+    target = str(needle or "").strip()
+    if not target:
+        return False
+    for item in assertions:
+        if not isinstance(item, dict):
+            continue
+        op = str(item.get("op") or "").strip().lower()
+        if op not in {"contains", "stdout_contains"}:
+            continue
+        candidate = str(item.get("string") or item.get("contains") or item.get("needle") or "").strip()
+        if candidate == target:
+            return True
+    return False
+
+
 def _build_name_only_generation_spec(
     *,
     requirement: Dict[str, Any],
     report: Dict[str, Any],
     runtime_recipe: Dict[str, Any],
+    runtime_graph: Dict[str, Any],
     exploit_oracle: Dict[str, Any],
 ) -> Dict[str, Any]:
     name_only_contract = build_name_only_contract(requirement=requirement)
     if name_only_contract.get("enabled") is not True:
         return {}
+    request_ir = (
+        deepcopy(requirement.get("request_ir"))
+        if isinstance(requirement.get("request_ir"), dict)
+        else {}
+    )
     request_identity = (
         deepcopy(requirement.get("request_identity"))
         if isinstance(requirement.get("request_identity"), dict)
@@ -1496,9 +1727,15 @@ def _build_name_only_generation_spec(
         if isinstance(requirement.get("name_resolution"), dict)
         else {}
     )
-    request_label = str((request_identity or {}).get("request_label") or requirement.get("vuln_name") or "").strip()
+    request_label = str(
+        (request_ir or {}).get("request_label")
+        or (request_identity or {}).get("request_label")
+        or requirement.get("vuln_name")
+        or ""
+    ).strip()
     resolved_vuln_id = str(
-        (request_identity or {}).get("resolved_vuln_id")
+        (request_ir or {}).get("resolved_vuln_id")
+        or (request_identity or {}).get("resolved_vuln_id")
         or (name_resolution or {}).get("resolved_vuln_id")
         or requirement.get("vuln_id")
         or ""
@@ -1510,8 +1747,18 @@ def _build_name_only_generation_spec(
     )
     researcher_family = str((family_summary or {}).get("top_family") or "").strip().lower()
     researcher_confidence = str((family_summary or {}).get("top_confidence") or "").strip().lower()
-    resolution_basis = str((request_identity or {}).get("match_class") or (name_resolution or {}).get("match_class") or "").strip().lower()
-    resolution_confidence = str((request_identity or {}).get("confidence") or (name_resolution or {}).get("confidence") or "").strip().lower()
+    resolution_basis = str(
+        (request_ir or {}).get("resolution_match_class")
+        or (request_identity or {}).get("match_class")
+        or (name_resolution or {}).get("match_class")
+        or ""
+    ).strip().lower()
+    resolution_confidence = str(
+        (request_ir or {}).get("resolution_confidence")
+        or (request_identity or {}).get("confidence")
+        or (name_resolution or {}).get("confidence")
+        or ""
+    ).strip().lower()
     request_identity_family = ""
     if resolution_basis in {"catalog_alias", "exact_identifier"} and resolution_confidence == "high":
         entry = resolve_vuln_catalog_entry(vuln_id=resolved_vuln_id, raw_label=request_label)
@@ -1521,7 +1768,7 @@ def _build_name_only_generation_spec(
     working_family_source = "researcher_family_hypothesis" if working_family else ""
     if not working_family and request_identity_family:
         working_family = request_identity_family
-        working_family_source = "request_identity"
+        working_family_source = "request_ir" if request_ir else "request_identity"
     elif (
         request_identity_family
         and working_family
@@ -1529,12 +1776,90 @@ def _build_name_only_generation_spec(
         and researcher_confidence in {"", "low"}
     ):
         working_family = request_identity_family
-        working_family_source = "request_identity_fallback"
+        working_family_source = "request_ir_fallback" if request_ir else "request_identity_fallback"
     stack_hypotheses = runtime_recipe.get("stack_hypotheses") if isinstance(runtime_recipe.get("stack_hypotheses"), list) else []
+    family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
+    family_candidate_summary: Dict[str, Any] = {
+        "candidate_count": 0,
+        "working_family": working_family or None,
+        "working_family_source": working_family_source or None,
+        "ambiguous": bool((family_summary or {}).get("ambiguous")),
+    }
+    if isinstance(family_candidates, list) and family_candidates:
+        unique_families = []
+        seen_families: set[str] = set()
+        for entry in family_candidates:
+            if not isinstance(entry, dict):
+                continue
+            family = str(entry.get("family") or "").strip().lower()
+            if not family or family in seen_families:
+                continue
+            seen_families.add(family)
+            unique_families.append(entry)
+        if unique_families:
+            top_family = unique_families[0]
+            family_candidate_summary.update(
+                {
+                    "candidate_count": len(unique_families),
+                    "top_family": str(top_family.get("family") or "").strip().lower() or None,
+                    "top_source": str(top_family.get("source") or "").strip().lower() or None,
+                    "top_confidence": str(top_family.get("confidence") or "").strip().lower() or None,
+                    "ambiguous": family_candidate_summary["ambiguous"] or len(unique_families) > 1,
+                }
+            )
+    elif request_identity_family:
+        family_candidate_summary.update(
+            {
+                "candidate_count": 1,
+                "top_family": request_identity_family,
+                "top_source": "request_resolution",
+                "top_confidence": resolution_confidence or None,
+            }
+        )
+    working_stack_id = None
+    language = str(runtime_recipe.get("language") or "").strip().lower()
+    framework = str(runtime_recipe.get("framework") or "").strip().lower()
+    if language and framework:
+        working_stack_id = f"{language}/{framework}"
+    stack_candidate_summary: Dict[str, Any] = {
+        "candidate_count": 0,
+        "working_stack_id": working_stack_id or None,
+        "working_stack_source": str(runtime_recipe.get("stack_source") or "").strip().lower() or None,
+        "working_stack_locked": bool(runtime_recipe.get("stack_locked")),
+        "ambiguous": False,
+    }
+    if isinstance(stack_hypotheses, list) and stack_hypotheses:
+        unique_stacks = []
+        seen_stacks: set[str] = set()
+        for entry in stack_hypotheses:
+            if not isinstance(entry, dict):
+                continue
+            stack_id = str(entry.get("stack_id") or "").strip().lower()
+            if not stack_id:
+                cand_language = str(entry.get("language") or "").strip().lower()
+                cand_framework = str(entry.get("framework") or "").strip().lower()
+                if cand_language and cand_framework:
+                    stack_id = f"{cand_language}/{cand_framework}"
+            if not stack_id or stack_id in seen_stacks:
+                continue
+            seen_stacks.add(stack_id)
+            unique_stacks.append((stack_id, entry))
+        if unique_stacks:
+            top_stack_id, top_stack = unique_stacks[0]
+            stack_candidate_summary.update(
+                {
+                    "candidate_count": len(unique_stacks),
+                    "top_stack_id": top_stack_id or None,
+                    "top_source": str(top_stack.get("source") or "").strip().lower() or None,
+                    "top_confidence": str(top_stack.get("confidence") or "").strip().lower() or None,
+                    "ambiguous": len(unique_stacks) > 1,
+                }
+            )
     payload: Dict[str, Any] = {
         "schema_version": "name_only_generation_spec@0.1",
         "request_label": request_label or None,
         "resolved_vuln_id": resolved_vuln_id or None,
+        "request_ir": request_ir,
         "request_identity": request_identity,
         "name_resolution": name_resolution,
         "effective_mode": str(name_only_contract.get("effective_mode") or "compatibility"),
@@ -1544,6 +1869,7 @@ def _build_name_only_generation_spec(
         "researcher_family_hypothesis": researcher_family or None,
         "request_identity_family": request_identity_family or None,
         "family_hypothesis_summary": family_summary,
+        "family_candidate_summary": family_candidate_summary,
         "runtime_recipe_summary": {
             key: deepcopy(runtime_recipe.get(key))
             for key in (
@@ -1558,17 +1884,21 @@ def _build_name_only_generation_spec(
             )
             if key in runtime_recipe
         },
+        "runtime_graph_summary": _runtime_graph_summary(runtime_graph),
         "stack_hypotheses": deepcopy(stack_hypotheses),
+        "stack_candidate_summary": stack_candidate_summary,
         "exploit_oracle_summary": {
             key: deepcopy(exploit_oracle.get(key))
             for key in (
                 "success_signature",
                 "flag_token",
+                "poc_cmd",
                 "output_mode",
                 "source",
                 "success_mode",
                 "json_success_key",
                 "json_flag_key",
+                "assertion_program",
             )
             if key in exploit_oracle
         },

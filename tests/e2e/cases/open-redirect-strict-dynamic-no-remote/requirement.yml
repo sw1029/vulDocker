@@ -1,0 +1,13 @@
+vuln_name: Open Redirect
+seed: 5564
+generator_mode: synthesis
+
+policy:
+  name_only_mode: strict_dynamic
+
+options:
+  env:
+    OPENAI_API_KEY: "sk-test"
+    VUL_WEB_SEARCH_PROVIDER: "none"
+    VUL_WEB_SEARCH_ENDPOINT: ""
+    VUL_WEB_SEARCH_API_KEY: ""

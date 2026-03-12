@@ -140,6 +140,7 @@ class LLMClient:
                 response = litellm_completion(**retry_payload)
             else:
                 if not self._fallback_on_error:
+                    self._record_error(exc)
                     raise
                 LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
                 self._record_error(exc)
@@ -153,6 +154,7 @@ class LLMClient:
             return response["choices"][0]["message"]["content"]
         except Exception as exc:  # pragma: no cover - network failure fallback
             if not self._fallback_on_error:
+                self._record_error(exc)
                 raise
             LOGGER.warning("LLM call failed (%s); falling back to stub output", exc)
             self._record_error(exc)

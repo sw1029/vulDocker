@@ -172,6 +172,8 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
     executor_feasibility_rollup = _executor_feasibility_rollup(bundles)
     artifact_quality_summary = _artifact_quality_summary(bundles)
     template_dependence_summary = _template_dependence_summary(bundles)
+    stack_dependence_summary = _stack_dependence_summary(bundles)
+    family_dependence_summary = _family_dependence_summary(bundles)
     partial_progress_summary = _partial_progress_summary(bundles)
     intent_satisfaction_summary = _intent_satisfaction_summary(bundles)
     pipeline_result = _pipeline_result(sid)
@@ -205,6 +207,8 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         "executor_feasibility_summary": executor_feasibility_rollup,
         "artifact_quality_summary": artifact_quality_summary,
         "template_dependence_summary": template_dependence_summary,
+        "stack_dependence_summary": stack_dependence_summary,
+        "family_dependence_summary": family_dependence_summary,
         "partial_progress_summary": partial_progress_summary,
         "intent_satisfaction_summary": intent_satisfaction_summary,
         "performance": performance,
@@ -216,6 +220,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
     }
     requirement = plan.get("requirement") if isinstance(plan, dict) else {}
     if isinstance(requirement, dict):
+        request_ir = requirement.get("request_ir")
+        if isinstance(request_ir, dict) and request_ir:
+            manifest["request_ir"] = request_ir
         name_resolution = requirement.get("name_resolution")
         if isinstance(name_resolution, dict) and name_resolution:
             manifest["name_resolution"] = name_resolution
@@ -242,6 +249,13 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
             value = provenance.get(key)
             if isinstance(value, bool):
                 manifest[key] = value
+        for key in ("semantic_guided_selection_source", "semantic_guided_abstain_reason"):
+            value = provenance.get(key)
+            if isinstance(value, str) and value.strip():
+                manifest[key] = value.strip()
+        semantic_guided_ambiguous = provenance.get("semantic_guided_ambiguous")
+        if isinstance(semantic_guided_ambiguous, bool):
+            manifest["semantic_guided_ambiguous"] = semantic_guided_ambiguous
         dynamicness = bundles[0].get("dynamicness") or {}
         if isinstance(dynamicness.get("verdict"), str) and dynamicness.get("verdict", "").strip():
             manifest["dynamicness_verdict"] = dynamicness["verdict"].strip()
@@ -328,6 +342,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         runtime_recipe = bundles[0].get("runtime_recipe") or {}
         if isinstance(runtime_recipe, dict) and runtime_recipe:
             manifest["runtime_recipe"] = runtime_recipe
+        runtime_graph = bundles[0].get("runtime_graph") or {}
+        if isinstance(runtime_graph, dict) and runtime_graph:
+            manifest["runtime_graph"] = runtime_graph
         exploit_oracle = bundles[0].get("exploit_oracle") or {}
         if isinstance(exploit_oracle, dict) and exploit_oracle:
             manifest["exploit_oracle"] = exploit_oracle
@@ -340,6 +357,12 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         artifact_quality = bundles[0].get("artifact_quality") or {}
         if isinstance(artifact_quality, dict) and artifact_quality:
             manifest["artifact_quality"] = artifact_quality
+        stack_dependence = bundles[0].get("stack_dependence") or {}
+        if isinstance(stack_dependence, dict) and stack_dependence:
+            manifest["stack_dependence"] = stack_dependence
+        family_dependence = bundles[0].get("family_dependence") or {}
+        if isinstance(family_dependence, dict) and family_dependence:
+            manifest["family_dependence"] = family_dependence
         intent_satisfaction = bundles[0].get("intent_satisfaction") or {}
         if isinstance(intent_satisfaction, dict) and intent_satisfaction:
             manifest["intent_satisfaction"] = intent_satisfaction
@@ -355,6 +378,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str = "manifest.json") -> 
         request_identity = bundles[0].get("request_identity") or {}
         if isinstance(request_identity, dict) and request_identity:
             manifest["request_identity"] = request_identity
+        request_ir = bundles[0].get("request_ir") or {}
+        if isinstance(request_ir, dict) and request_ir:
+            manifest["request_ir"] = request_ir
         memory_promotion_payload = bundles[0].get("memory_promotion") or {}
         if isinstance(memory_promotion_payload, dict) and memory_promotion_payload:
             manifest["memory_promotion"] = memory_promotion_payload
@@ -447,6 +473,10 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             compiler_contract=compiler_contract,
             executor_feasibility=executor_feasibility,
         )
+        runtime_graph = _bundle_runtime_graph(
+            contract=contract,
+            runtime_recipe=runtime_recipe,
+        )
         exploit_oracle = (
             dict(contract.get("exploit_oracle"))
             if isinstance(contract.get("exploit_oracle"), dict)
@@ -472,6 +502,21 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             dynamicness=dynamicness,
             compiler_contract=compiler_contract,
             provenance=provenance,
+            policy=(
+                requirement_view.get("policy")
+                if isinstance(requirement_view.get("policy"), dict)
+                else {}
+            ),
+            request_identity=(
+                requirement_view.get("request_identity")
+                if isinstance(requirement_view.get("request_identity"), dict)
+                else {}
+            ),
+            request_ir=(
+                requirement_view.get("request_ir")
+                if isinstance(requirement_view.get("request_ir"), dict)
+                else {}
+            ),
             name_resolution=(
                 requirement_view.get("name_resolution")
                 if isinstance(requirement_view.get("name_resolution"), dict)
@@ -485,6 +530,16 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             dynamicness=dynamicness,
             compiler_contract=compiler_contract,
             provenance=provenance,
+            request_identity=(
+                requirement_view.get("request_identity")
+                if isinstance(requirement_view.get("request_identity"), dict)
+                else {}
+            ),
+            request_ir=(
+                requirement_view.get("request_ir")
+                if isinstance(requirement_view.get("request_ir"), dict)
+                else {}
+            ),
             dynamic_eval=dynamic_eval,
             failure=failure,
             name_resolution=(
@@ -512,6 +567,16 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             },
             researcher=researcher,
             semantic=semantic_surface,
+            request_identity=(
+                requirement_view.get("request_identity")
+                if isinstance(requirement_view.get("request_identity"), dict)
+                else {}
+            ),
+            request_ir=(
+                requirement_view.get("request_ir")
+                if isinstance(requirement_view.get("request_ir"), dict)
+                else {}
+            ),
             dynamic_eval=dynamic_eval,
             failure=failure,
         )
@@ -523,6 +588,11 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "request_identity": (
                 dict(requirement_view.get("request_identity"))
                 if isinstance(requirement_view.get("request_identity"), dict)
+                else {}
+            ),
+            "request_ir": (
+                dict(requirement_view.get("request_ir"))
+                if isinstance(requirement_view.get("request_ir"), dict)
                 else {}
             ),
             "name_resolution": (
@@ -539,6 +609,7 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "strict_open_world": strict_open_world,
             "compiler_contract": compiler_contract,
             "runtime_recipe": runtime_recipe,
+            "runtime_graph": runtime_graph,
             "exploit_oracle": exploit_oracle,
             "name_only_generation_spec": name_only_generation_spec,
             "dynamic_eval": dynamic_eval,
@@ -581,6 +652,8 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "generator_template": _existing(generator_template),
             "reviewer_report": _existing(reviewer_report),
         }
+        bundle_entry["stack_dependence"] = _bundle_stack_dependence(bundle_entry)
+        bundle_entry["family_dependence"] = _bundle_family_dependence(bundle_entry)
         bundle_entry["artifact_quality"] = _bundle_artifact_quality(bundle_entry)
         bundle_entry["intent_satisfaction"] = _bundle_intent_satisfaction(bundle_entry, requirement_view)
         bundle_entry["memory_promotion"] = _bundle_memory_promotion_status(bundle_entry)
@@ -890,7 +963,15 @@ def _bundle_generation_provenance(
         return None
 
     payload: Dict[str, Any] = {}
-    for key in ("generation_origin", "template_id", "source", "fallback_class", "materializer"):
+    for key in (
+        "generation_origin",
+        "template_id",
+        "source",
+        "fallback_class",
+        "materializer",
+        "semantic_guided_selection_source",
+        "semantic_guided_abstain_reason",
+    ):
         value = _read_str(key)
         if value:
             payload[key] = value
@@ -898,6 +979,9 @@ def _bundle_generation_provenance(
         value = _read_bool(key)
         if value is not None:
             payload[key] = value
+    semantic_guided_ambiguous = _read_bool("semantic_guided_ambiguous")
+    if semantic_guided_ambiguous is not None:
+        payload["semantic_guided_ambiguous"] = semantic_guided_ambiguous
     if not payload:
         failure_payload = _latest_failure_provenance(metadata_dir)
         if failure_payload:
@@ -1070,6 +1154,29 @@ def _loop_failure_provenance(
             "source": "loop_state",
             "failure_class": terminal_failure_class,
             "fallback_used": False,
+        }
+    if stage == "CAPABILITY_CHECK" and terminal_failure_class in {
+        "strict_dynamic_live_llm_unavailable",
+        "strict_dynamic_remote_research_unavailable",
+    }:
+        metadata = failure.get("metadata") if isinstance(failure.get("metadata"), dict) else {}
+        return {
+            "generation_origin": "capability_gate_rejected",
+            "source": "loop_state",
+            "failure_class": terminal_failure_class,
+            "fallback_used": False,
+            "llm_stub_used": metadata.get("llm_stub_used") is True,
+            "llm_fixture_used": metadata.get("llm_fixture_used") is True,
+        }
+    if stage == "NAME_ONLY_GATE" and terminal_failure_class == "strict_dynamic_disallowed_llm_path":
+        metadata = failure.get("metadata") if isinstance(failure.get("metadata"), dict) else {}
+        return {
+            "generation_origin": "name_only_gate_rejected",
+            "source": "loop_state",
+            "failure_class": terminal_failure_class,
+            "fallback_used": False,
+            "llm_stub_used": metadata.get("llm_stub_used") is True,
+            "llm_fixture_used": metadata.get("llm_fixture_used") is True,
         }
     return {}
 
@@ -1317,6 +1424,9 @@ def _bundle_generalization_verdict(
     dynamicness: Dict[str, Any],
     compiler_contract: Dict[str, Any],
     provenance: Dict[str, Any],
+    policy: Optional[Dict[str, Any]] = None,
+    request_identity: Optional[Dict[str, Any]] = None,
+    request_ir: Optional[Dict[str, Any]] = None,
     name_resolution: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
@@ -1327,9 +1437,21 @@ def _bundle_generalization_verdict(
     materializer = str((provenance or {}).get("materializer") or "").strip().lower()
     promotion_eligible = bool((promotion or {}).get("eligible"))
     generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
-    resolution = name_resolution if isinstance(name_resolution, dict) else {}
-    resolution_confidence = str(resolution.get("confidence") or "").strip().lower()
-    resolution_basis = str(resolution.get("match_class") or "").strip().lower()
+    name_driven = _is_name_driven_request(vuln_id=vuln_id, request_identity=request_identity, request_ir=request_ir)
+    resolution_context = _name_resolution_context(
+        vuln_id=vuln_id,
+        request_identity=request_identity,
+        request_ir=request_ir,
+        name_resolution=name_resolution,
+    )
+    resolution_confidence = resolution_context["confidence"]
+    resolution_basis = resolution_context["basis"]
+    effective_mode = _effective_name_only_mode(
+        vuln_id=vuln_id,
+        policy=policy,
+        request_identity=request_identity,
+        request_ir=request_ir,
+    )
 
     if vuln_id == "CWE-9999":
         reason = "explicit synthetic unknown identifier remains a regression lane"
@@ -1341,12 +1463,28 @@ def _bundle_generalization_verdict(
             "reason": reason,
         }
 
-    if vuln_id.startswith("NAME-"):
+    if vuln_id.startswith("NAME-") or (name_driven and effective_mode in {"dynamic", "dynamic_eval", "strict_dynamic"}):
+        if generation_origin == "capability_gate_rejected":
+            return {
+                "class": "real_free_form_precondition_failed",
+                "counts_as_generalization": False,
+                "reason": "name-only lane failed before generation because strict open-world preconditions were unavailable",
+                "confidence": resolution_confidence or "unknown",
+                "basis": resolution_basis or "unknown",
+            }
+        if generation_origin == "name_only_gate_rejected":
+            return {
+                "class": "real_free_form_precondition_failed",
+                "counts_as_generalization": False,
+                "reason": "name-only lane failed before generation because strict live-LLM conditions were not satisfied",
+                "confidence": resolution_confidence or "unknown",
+                "basis": resolution_basis or "unknown",
+            }
         if support_level == "unsupported" or generation_origin == "research_short_circuit":
             return {
                 "class": "unsupported_free_form_negative",
                 "counts_as_generalization": False,
-                "reason": "free-form NAME-* family is unsupported and intentionally fail-closed",
+                "reason": "name-only dynamic family is unsupported and intentionally fail-closed",
                 "confidence": resolution_confidence or "low",
                 "basis": resolution_basis or "synthetic_name",
             }
@@ -1360,7 +1498,7 @@ def _bundle_generalization_verdict(
             return {
                 "class": "real_free_form_positive",
                 "counts_as_generalization": True,
-                "reason": f"free-form vuln_name lane closed via {dynamicness_verdict} without generic fallback",
+                "reason": f"name-only dynamic lane closed via {dynamicness_verdict} without generic fallback",
                 "confidence": resolution_confidence or "unknown",
                 "basis": resolution_basis or "unknown",
             }
@@ -1368,9 +1506,9 @@ def _bundle_generalization_verdict(
             "class": "real_free_form_non_generalizing",
             "counts_as_generalization": False,
             "reason": (
-                "free-form NAME-* lane exists but is not yet strong enough to count as generalization evidence"
+                "name-only dynamic lane exists but is not yet strong enough to count as generalization evidence"
                 if not resolution_confidence
-                else f"free-form NAME-* lane closed but name resolution confidence/basis is {resolution_confidence}/{resolution_basis or 'unknown'}"
+                else f"name-only dynamic lane closed but resolution confidence/basis is {resolution_confidence}/{resolution_basis or 'unknown'}"
             ),
             "confidence": resolution_confidence or "unknown",
             "basis": resolution_basis or "unknown",
@@ -1397,6 +1535,73 @@ def _bundle_generalization_verdict(
     }
 
 
+def _is_name_driven_request(
+    *,
+    vuln_id: str,
+    request_identity: Optional[Dict[str, Any]] = None,
+    request_ir: Optional[Dict[str, Any]] = None,
+) -> bool:
+    identity = request_identity if isinstance(request_identity, dict) else {}
+    ir = request_ir if isinstance(request_ir, dict) else {}
+    return bool((ir or {}).get("name_driven")) or bool((identity or {}).get("name_driven")) or vuln_id.startswith("NAME-")
+
+
+def _name_resolution_context(
+    *,
+    vuln_id: str,
+    request_identity: Optional[Dict[str, Any]] = None,
+    request_ir: Optional[Dict[str, Any]] = None,
+    name_resolution: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    identity = request_identity if isinstance(request_identity, dict) else {}
+    ir = request_ir if isinstance(request_ir, dict) else {}
+    resolution = name_resolution if isinstance(name_resolution, dict) else {}
+    return {
+        "confidence": str(
+            (ir or {}).get("resolution_confidence")
+            or (identity or {}).get("confidence")
+            or (resolution or {}).get("confidence")
+            or ""
+        ).strip().lower(),
+        "basis": str(
+            (ir or {}).get("resolution_match_class")
+            or (identity or {}).get("match_class")
+            or (resolution or {}).get("match_class")
+            or ""
+        ).strip().lower(),
+        "resolved_vuln_id": str(
+            (ir or {}).get("resolved_vuln_id")
+            or (identity or {}).get("resolved_vuln_id")
+            or (resolution or {}).get("resolved_vuln_id")
+            or vuln_id
+            or ""
+        ).strip().upper(),
+    }
+
+
+def _effective_name_only_mode(
+    *,
+    vuln_id: str,
+    policy: Optional[Dict[str, Any]] = None,
+    request_identity: Optional[Dict[str, Any]] = None,
+    request_ir: Optional[Dict[str, Any]] = None,
+) -> str:
+    synthetic_requirement: Dict[str, Any] = {}
+    if vuln_id:
+        synthetic_requirement["vuln_id"] = vuln_id
+    if isinstance(policy, dict):
+        synthetic_requirement["policy"] = dict(policy)
+    if isinstance(request_identity, dict) and request_identity:
+        synthetic_requirement["request_identity"] = dict(request_identity)
+    if isinstance(request_ir, dict) and request_ir:
+        synthetic_requirement["request_ir"] = dict(request_ir)
+    contract = build_name_only_contract(
+        requirement=synthetic_requirement,
+        policy=policy if isinstance(policy, dict) else {},
+    )
+    return str(contract.get("effective_mode") or "").strip().lower()
+
+
 def _bundle_open_world_verdict(
     bundle,
     *,
@@ -1405,6 +1610,8 @@ def _bundle_open_world_verdict(
     dynamicness: Dict[str, Any],
     compiler_contract: Dict[str, Any],
     provenance: Dict[str, Any],
+    request_identity: Optional[Dict[str, Any]] = None,
+    request_ir: Optional[Dict[str, Any]] = None,
     name_resolution: Optional[Dict[str, Any]] = None,
     dynamic_eval: Optional[Dict[str, Any]] = None,
     failure: Optional[Dict[str, Any]] = None,
@@ -1417,9 +1624,16 @@ def _bundle_open_world_verdict(
     materializer = str((provenance or {}).get("materializer") or "").strip().lower()
     promotion_eligible = bool((promotion or {}).get("eligible"))
     generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
-    resolution = name_resolution if isinstance(name_resolution, dict) else {}
-    resolution_confidence = str(resolution.get("confidence") or "").strip().lower()
-    resolution_basis = str(resolution.get("match_class") or "").strip().lower()
+    name_driven = _is_name_driven_request(vuln_id=vuln_id, request_identity=request_identity, request_ir=request_ir)
+    resolution_context = _name_resolution_context(
+        vuln_id=vuln_id,
+        request_identity=request_identity,
+        request_ir=request_ir,
+        name_resolution=name_resolution,
+    )
+    resolution_confidence = resolution_context["confidence"]
+    resolution_basis = resolution_context["basis"]
+    resolved_vuln_id = resolution_context["resolved_vuln_id"]
     dynamic_eval_payload = dynamic_eval if isinstance(dynamic_eval, dict) else {}
     dynamic_eval_status = str(dynamic_eval_payload.get("status") or "").strip().lower()
     failure_payload = failure if isinstance(failure, dict) else {}
@@ -1428,7 +1642,7 @@ def _bundle_open_world_verdict(
     lower_bound_available = (
         support_level in {"builtin_supported", "compiler_supported"}
         or bool((compiler_contract or {}).get("compiler_supported"))
-        or bool(load_static_rule(vuln_id))
+        or bool(load_static_rule(resolved_vuln_id or vuln_id))
     )
     template_dependent = dynamicness_verdict == "template-assisted"
 
@@ -1444,7 +1658,33 @@ def _bundle_open_world_verdict(
             "template_dependent": template_dependent,
         }
 
-    if vuln_id.startswith("NAME-"):
+    if name_driven:
+        if failure_stage == "CAPABILITY_CHECK" and failure_terminal_class in {
+            "strict_dynamic_live_llm_unavailable",
+            "strict_dynamic_remote_research_unavailable",
+        }:
+            return {
+                "class": "name_driven_capability_gate_failed",
+                "counts_as_generalization": False,
+                "reason": (
+                    "strict_dynamic rejected the name-only lane before RESEARCH because required live-LLM or "
+                    "remote-research capability was unavailable"
+                ),
+                "confidence": resolution_confidence or "unknown",
+                "basis": resolution_basis or "unknown",
+                "lower_bound_dependent": False,
+                "template_dependent": False,
+            }
+        if failure_stage == "NAME_ONLY_GATE" and failure_terminal_class == "strict_dynamic_disallowed_llm_path":
+            return {
+                "class": "name_driven_live_llm_gate_failed",
+                "counts_as_generalization": False,
+                "reason": "strict_dynamic rejected the name-only lane before generation because a live LLM path was unavailable or disallowed",
+                "confidence": resolution_confidence or "unknown",
+                "basis": resolution_basis or "unknown",
+                "lower_bound_dependent": False,
+                "template_dependent": False,
+            }
         if support_level == "unsupported" or generation_origin == "research_short_circuit":
             return {
                 "class": "unsupported_free_form_negative",
@@ -1583,6 +1823,8 @@ def _bundle_strict_open_world_verdict(
     verification: Dict[str, Any],
     researcher: Dict[str, Any],
     semantic: Dict[str, Any],
+    request_identity: Optional[Dict[str, Any]] = None,
+    request_ir: Optional[Dict[str, Any]] = None,
     dynamic_eval: Optional[Dict[str, Any]] = None,
     failure: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -1611,7 +1853,13 @@ def _bundle_strict_open_world_verdict(
     verification_independence = str((verification or {}).get("independence") or "").strip().lower()
     semantic_supported = (semantic or {}).get("supported")
     semantic_status = str((semantic or {}).get("status") or "").strip().lower()
-    requires_research_contract = vuln_id.startswith("NAME-") or not bool(load_static_rule(vuln_id))
+    name_driven = _is_name_driven_request(vuln_id=vuln_id, request_identity=request_identity, request_ir=request_ir)
+    resolution_context = _name_resolution_context(
+        vuln_id=vuln_id,
+        request_identity=request_identity,
+        request_ir=request_ir,
+    )
+    requires_research_contract = name_driven or not bool(load_static_rule(resolution_context["resolved_vuln_id"] or vuln_id))
 
     base_payload = {
         "counts_as_generalization": False,
@@ -1624,6 +1872,24 @@ def _bundle_strict_open_world_verdict(
         "verification_trust": verification_trust or "unknown",
     }
 
+    if failure_stage == "CAPABILITY_CHECK" and failure_terminal_class in {
+        "strict_dynamic_live_llm_unavailable",
+        "strict_dynamic_remote_research_unavailable",
+    }:
+        return {
+            **base_payload,
+            "class": "strict_dynamic_capability_unavailable",
+            "reason": (
+                "strict_dynamic requires live LLM and remote-research preconditions, but capability precheck "
+                "failed before RESEARCH"
+            ),
+        }
+    if failure_stage == "NAME_ONLY_GATE" and failure_terminal_class == "strict_dynamic_disallowed_llm_path":
+        return {
+            **base_payload,
+            "class": "strict_dynamic_live_llm_required",
+            "reason": "strict_dynamic requires a live LLM path, but RESEARCH already closed via a disallowed stub/fixture/degraded provider path",
+        }
     if generation_origin == "research_short_circuit" or dynamicness_verdict == "pre-generation fail-closed":
         return {
             **base_payload,
@@ -1848,6 +2114,110 @@ def _bundle_runtime_recipe(
     return recipe
 
 
+def _bundle_runtime_graph(
+    *,
+    contract: Dict[str, Any],
+    runtime_recipe: Dict[str, Any],
+) -> Dict[str, Any]:
+    direct = contract.get("runtime_graph") if isinstance(contract.get("runtime_graph"), dict) else None
+    if isinstance(direct, dict) and direct:
+        return direct
+    recipe = runtime_recipe if isinstance(runtime_recipe, dict) else {}
+    if not recipe:
+        return {}
+    service_port = recipe.get("service_port")
+    if not isinstance(service_port, int):
+        service_port = 5000
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": "service",
+            "kind": "service",
+            "role": "primary",
+            "language": str(recipe.get("language") or "python").strip().lower() or "python",
+            "framework": str(recipe.get("framework") or "flask").strip().lower() or "flask",
+            "entry": str(recipe.get("service_entry") or "app.py").strip() or "app.py",
+            "transport": str(recipe.get("transport") or "http").strip().lower() or "http",
+            "port": service_port,
+        }
+    ]
+    edges: List[Dict[str, Any]] = [
+        {
+            "from": "poc",
+            "to": "service",
+            "kind": "exploit_http",
+            "transport": str(recipe.get("transport") or "http").strip().lower() or "http",
+            "target_port": service_port,
+        }
+    ]
+    raw_sidecars = recipe.get("sidecars") if isinstance(recipe.get("sidecars"), list) else []
+    for sidecar in raw_sidecars:
+        if not isinstance(sidecar, dict):
+            continue
+        name = str(sidecar.get("name") or "").strip()
+        if not name:
+            continue
+        node_id = f"sidecar:{name}"
+        nodes.append(
+            {
+                "id": node_id,
+                "kind": "sidecar",
+                "role": "dependency",
+                "sidecar_type": str(sidecar.get("type") or "").strip() or "unknown",
+                "image": str(sidecar.get("image") or "").strip() or None,
+                "aliases": [str(alias).strip() for alias in sidecar.get("aliases") or [] if str(alias).strip()],
+            }
+        )
+        edges.append(
+            {
+                "from": "service",
+                "to": node_id,
+                "kind": "runtime_dependency",
+                "dependency_type": str(sidecar.get("type") or "").strip() or "unknown",
+                "network_mode": str(recipe.get("network_mode") or "none").strip().lower() or "none",
+            }
+        )
+    graph: Dict[str, Any] = {
+        "schema_version": "runtime_graph@0.1",
+        "source": "derived_from_runtime_recipe",
+        "topology": str(recipe.get("topology") or "single_service").strip() or "single_service",
+        "network": {
+            "mode": str(recipe.get("network_mode") or "none").strip().lower() or "none",
+            "enabled": bool(recipe.get("network_enabled")),
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "healthchecks": [],
+        "env_contract": [
+            {"scope": "service", "name": str(key), "value": str(value)}
+            for key, value in (recipe.get("service_env") or {}).items()
+            if isinstance(key, str) and key.strip() and value not in (None, "")
+        ],
+        "exploit_path": {
+            "entrypoint": str(recipe.get("poc_entry") or "poc.py").strip() or "poc.py",
+            "target_node": "service",
+            "service_entry": str(recipe.get("service_entry") or "app.py").strip() or "app.py",
+            "transport": str(recipe.get("transport") or "http").strip().lower() or "http",
+            "port": service_port,
+        },
+    }
+    health_path = str(recipe.get("health_path") or "").strip()
+    if health_path:
+        graph["healthchecks"] = [
+            {
+                "node": "service",
+                "path": health_path,
+                "port": service_port,
+                "transport": str(recipe.get("transport") or "http").strip().lower() or "http",
+            }
+        ]
+    if isinstance(recipe.get("seed_files"), list) and recipe.get("seed_files"):
+        graph["seed_files"] = list(recipe.get("seed_files") or [])
+    db = str(recipe.get("db") or "").strip().lower()
+    if db:
+        graph["db"] = db
+    return graph
+
+
 def _bundle_dynamic_eval_summary(
     *,
     requirement: Dict[str, Any],
@@ -1855,7 +2225,12 @@ def _bundle_dynamic_eval_summary(
 ) -> Dict[str, Any]:
     policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
     request_identity = requirement.get("request_identity") if isinstance(requirement.get("request_identity"), dict) else {}
-    name_driven = bool((request_identity or {}).get("name_driven")) or str(requirement.get("vuln_id") or "").strip().upper().startswith("NAME-")
+    request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+    name_driven = _is_name_driven_request(
+        vuln_id=str(requirement.get("vuln_id") or "").strip().upper(),
+        request_identity=request_identity,
+        request_ir=request_ir,
+    )
     name_only_mode = str((policy or {}).get("name_only_mode") or "").strip().lower() if isinstance(policy, dict) else ""
     enabled = bool(policy.get("dynamic_eval")) if isinstance(policy, dict) else False
     if name_driven and name_only_mode in {"dynamic", "strict_dynamic"}:
@@ -1885,6 +2260,13 @@ def _bundle_researcher_summary(
 ) -> Dict[str, Any]:
     researcher_cfg = requirement.get("researcher") if isinstance(requirement.get("researcher"), dict) else {}
     policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+    request_identity = requirement.get("request_identity") if isinstance(requirement.get("request_identity"), dict) else {}
+    request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+    name_driven = _is_name_driven_request(
+        vuln_id=str(requirement.get("vuln_id") or "").strip().upper(),
+        request_identity=request_identity,
+        request_ir=request_ir,
+    )
     report = _load_json(metadata_dir / "researcher_report.json") or {}
     report_present = bool(report)
     ambiguous = None
@@ -1893,13 +2275,7 @@ def _bundle_researcher_summary(
         "force_run": bool((researcher_cfg or {}).get("force_run")) if isinstance(researcher_cfg, dict) else False,
         "dynamic_eval_enabled": (
             bool((policy or {}).get("dynamic_eval"))
-            or (
-                (
-                    bool(((requirement.get("request_identity") or {}).get("name_driven")))
-                    or str(requirement.get("vuln_id") or "").strip().upper().startswith("NAME-")
-                )
-                and str((policy or {}).get("name_only_mode") or "").strip().lower() in {"dynamic", "strict_dynamic"}
-            )
+            or (name_driven and str((policy or {}).get("name_only_mode") or "").strip().lower() in {"dynamic", "strict_dynamic"})
         )
         if isinstance(policy, dict)
         else False,
@@ -2316,20 +2692,35 @@ def _request_identity_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     synthetic_resolution_bundles = 0
     for entry in bundles:
         request_identity = entry.get("request_identity") or {}
-        if not isinstance(request_identity, dict):
+        request_ir = entry.get("request_ir") or {}
+        identity = request_identity if isinstance(request_identity, dict) and request_identity else {}
+        ir = request_ir if isinstance(request_ir, dict) and request_ir else {}
+        if not identity and not ir:
             continue
-        input_mode = str(request_identity.get("input_mode") or "").strip()
+        input_mode = str((identity or {}).get("input_mode") or (ir or {}).get("input_mode") or "").strip()
         if input_mode:
             by_input_mode[input_mode] = by_input_mode.get(input_mode, 0) + 1
-        match_class = str(request_identity.get("match_class") or "").strip()
+        match_class = str(
+            (identity or {}).get("match_class")
+            or (ir or {}).get("resolution_match_class")
+            or ""
+        ).strip()
         if match_class:
             by_match_class[match_class] = by_match_class.get(match_class, 0) + 1
-        confidence = str(request_identity.get("confidence") or "").strip()
+        confidence = str(
+            (identity or {}).get("confidence")
+            or (ir or {}).get("resolution_confidence")
+            or ""
+        ).strip()
         if confidence:
             by_confidence[confidence] = by_confidence.get(confidence, 0) + 1
-        if request_identity.get("name_driven") is True:
+        if _is_name_driven_request(
+            vuln_id=str(entry.get("vuln_id") or "").strip().upper(),
+            request_identity=identity,
+            request_ir=ir,
+        ):
             name_driven_bundles += 1
-        if request_identity.get("synthetic_resolution") is True:
+        if (identity or {}).get("synthetic_resolution") is True or (ir or {}).get("synthetic_resolution") is True:
             synthetic_resolution_bundles += 1
     return {
         "bundle_count": len(bundles),
@@ -2367,8 +2758,11 @@ def _template_dependence_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any
             class_name = str(open_world.get("class") or "").strip()
             if class_name:
                 by_open_world_class[class_name] = by_open_world_class.get(class_name, 0) + 1
-            vuln_id = str(entry.get("vuln_id") or "").strip().upper()
-            if vuln_id.startswith("NAME-") and open_world.get("lower_bound_dependent") is True:
+            if _is_name_driven_request(
+                vuln_id=str(entry.get("vuln_id") or "").strip().upper(),
+                request_identity=entry.get("request_identity") if isinstance(entry.get("request_identity"), dict) else {},
+                request_ir=entry.get("request_ir") if isinstance(entry.get("request_ir"), dict) else {},
+            ) and open_world.get("lower_bound_dependent") is True:
                 name_only_lower_bound_bundles += 1
     return {
         "bundle_count": len(bundles),
@@ -2379,6 +2773,239 @@ def _template_dependence_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any
         "open_world_positive_bundles": open_world_positive_bundles,
         "minimal_dynamic_bundles": minimal_dynamic_bundles,
         "by_open_world_class": by_open_world_class,
+    }
+
+
+def _bundle_stack_dependence(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
+    runtime_recipe = bundle_entry.get("runtime_recipe") if isinstance(bundle_entry.get("runtime_recipe"), dict) else {}
+    request_ir = bundle_entry.get("request_ir") if isinstance(bundle_entry.get("request_ir"), dict) else {}
+    raw_hypotheses = (
+        runtime_recipe.get("stack_hypotheses")
+        if isinstance(runtime_recipe.get("stack_hypotheses"), list)
+        else request_ir.get("stack_candidates")
+        if isinstance(request_ir.get("stack_candidates"), list)
+        else []
+    )
+    unique_stack_ids: List[str] = []
+    top_source = ""
+    top_confidence = ""
+    for entry in raw_hypotheses if isinstance(raw_hypotheses, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        stack_id = str(entry.get("stack_id") or "").strip().lower()
+        if not stack_id:
+            language = str(entry.get("language") or "").strip().lower()
+            framework = str(entry.get("framework") or "").strip().lower()
+            if language and framework:
+                stack_id = f"{language}/{framework}"
+        if not stack_id:
+            continue
+        if not unique_stack_ids:
+            top_source = str(entry.get("source") or "").strip().lower()
+            top_confidence = str(entry.get("confidence") or "").strip().lower()
+        if stack_id not in unique_stack_ids:
+            unique_stack_ids.append(stack_id)
+
+    language = str(runtime_recipe.get("language") or "").strip().lower()
+    framework = str(runtime_recipe.get("framework") or "").strip().lower()
+    working_stack_id = f"{language}/{framework}" if language and framework else (unique_stack_ids[0] if unique_stack_ids else "")
+    stack_source = str(runtime_recipe.get("stack_source") or "").strip().lower() or top_source or "unknown"
+    stack_locked = bool(runtime_recipe.get("stack_locked"))
+    ambiguous = len(unique_stack_ids) > 1
+    repo_bounded_sources = {"profile_prior", "available_skeleton", "default_stack_profile", "stack_hypothesis"}
+    repo_prior_bounded = stack_source in repo_bounded_sources
+    researcher_inferred = stack_source == "researcher_candidate"
+    if stack_locked and stack_source == "explicit_requirement":
+        class_name = "explicit_requirement_locked"
+    elif researcher_inferred:
+        class_name = "researcher_inferred"
+    elif repo_prior_bounded:
+        class_name = "repo_prior_bounded"
+    elif stack_source == "explicit_requirement":
+        class_name = "explicit_requirement"
+    else:
+        class_name = "other"
+    return {
+        "class": class_name,
+        "working_stack_id": working_stack_id or None,
+        "stack_source": stack_source,
+        "stack_locked": stack_locked,
+        "candidate_count": len(unique_stack_ids),
+        "ambiguous": ambiguous,
+        "repo_prior_bounded": repo_prior_bounded,
+        "researcher_inferred": researcher_inferred,
+        "top_confidence": top_confidence or None,
+    }
+
+
+def _stack_dependence_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_class: Dict[str, int] = {}
+    by_stack_source: Dict[str, int] = {}
+    repo_prior_bounded_bundles = 0
+    researcher_inferred_bundles = 0
+    ambiguous_bundles = 0
+    locked_bundles = 0
+    for entry in bundles:
+        dependence = entry.get("stack_dependence") if isinstance(entry.get("stack_dependence"), dict) else {}
+        if not dependence:
+            continue
+        class_name = str(dependence.get("class") or "").strip()
+        if class_name:
+            by_class[class_name] = by_class.get(class_name, 0) + 1
+        stack_source = str(dependence.get("stack_source") or "").strip()
+        if stack_source:
+            by_stack_source[stack_source] = by_stack_source.get(stack_source, 0) + 1
+        if dependence.get("repo_prior_bounded") is True:
+            repo_prior_bounded_bundles += 1
+        if dependence.get("researcher_inferred") is True:
+            researcher_inferred_bundles += 1
+        if dependence.get("ambiguous") is True:
+            ambiguous_bundles += 1
+        if dependence.get("stack_locked") is True:
+            locked_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "repo_prior_bounded_bundles": repo_prior_bounded_bundles,
+        "researcher_inferred_bundles": researcher_inferred_bundles,
+        "ambiguous_bundles": ambiguous_bundles,
+        "locked_bundles": locked_bundles,
+        "by_class": by_class,
+        "by_stack_source": by_stack_source,
+    }
+
+
+def _bundle_family_dependence(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
+    request_identity = bundle_entry.get("request_identity") if isinstance(bundle_entry.get("request_identity"), dict) else {}
+    request_ir = bundle_entry.get("request_ir") if isinstance(bundle_entry.get("request_ir"), dict) else {}
+    provenance = bundle_entry.get("provenance") if isinstance(bundle_entry.get("provenance"), dict) else {}
+    generation_origin = str((provenance or {}).get("generation_origin") or "").strip().lower()
+    fallback_class = str((provenance or {}).get("fallback_class") or "").strip().lower()
+    semantic_guided_selection_source = str((provenance or {}).get("semantic_guided_selection_source") or "").strip().lower()
+    semantic_guided_abstain_reason = str((provenance or {}).get("semantic_guided_abstain_reason") or "").strip().lower()
+    semantic_guided_ambiguous = (provenance or {}).get("semantic_guided_ambiguous") is True
+    name_only_spec = (
+        bundle_entry.get("name_only_generation_spec")
+        if isinstance(bundle_entry.get("name_only_generation_spec"), dict)
+        else {}
+    )
+    required_contract = (
+        name_only_spec.get("required_contract")
+        if isinstance(name_only_spec, dict) and isinstance(name_only_spec.get("required_contract"), dict)
+        else {}
+    )
+    family_candidate_summary = (
+        name_only_spec.get("family_candidate_summary")
+        if isinstance(name_only_spec, dict) and isinstance(name_only_spec.get("family_candidate_summary"), dict)
+        else {}
+    )
+    family_hypothesis_source = str((name_only_spec or {}).get("family_hypothesis_source") or "").strip().lower()
+    name_driven = _is_name_driven_request(
+        vuln_id=str(bundle_entry.get("vuln_id") or "").strip().upper(),
+        request_identity=request_identity,
+        request_ir=request_ir,
+    )
+
+    candidate_count = 0
+    if isinstance(family_candidate_summary, dict):
+        raw_candidate_count = family_candidate_summary.get("candidate_count")
+        if isinstance(raw_candidate_count, int):
+            candidate_count = raw_candidate_count
+
+    if not name_driven:
+        return {
+            "class": "not_name_only",
+            "name_only": False,
+            "family_bounded": False,
+            "ambiguous": False,
+            "candidate_count": candidate_count,
+            "selection_source": None,
+            "abstain_reason": None,
+        }
+
+    class_name = "other"
+    family_bounded = False
+    selection_source = None
+    abstain_reason = None
+
+    if generation_origin in {"capability_gate_rejected", "name_only_gate_rejected", "research_short_circuit"}:
+        class_name = "precondition_failed"
+    elif generation_origin == "deterministic_fallback" and fallback_class == "semantic_guided":
+        family_bounded = True
+        selection_source = semantic_guided_selection_source or None
+        if semantic_guided_selection_source == "request_resolution":
+            class_name = "request_resolution_bounded"
+        elif semantic_guided_selection_source in {"researcher_top_family", "researcher_ranked_family", "family_hypothesis_gate"}:
+            class_name = "researcher_family_bounded"
+        elif semantic_guided_selection_source == "semantic_signature":
+            class_name = "semantic_signature_bounded"
+        else:
+            class_name = "semantic_guided_bounded"
+    elif generation_origin == "deterministic_fallback" and fallback_class == "family_aware":
+        class_name = "curated_family_asset"
+        family_bounded = True
+    elif generation_origin == "deterministic_fallback" and fallback_class == "generic_unsupported_family":
+        class_name = "family_unresolved_generic_fallback"
+        abstain_reason = semantic_guided_abstain_reason or None
+    elif generation_origin in {"compiler_generated", "built_in_template", "runtime_template_clone"}:
+        class_name = "curated_family_asset"
+        family_bounded = True
+    elif generation_origin == "llm_manifest":
+        family_bounded = True
+        selection_source = family_hypothesis_source or None
+        if family_hypothesis_source in {"request_ir", "request_ir_fallback", "request_identity", "request_identity_fallback"}:
+            class_name = "request_resolution_prompt_bounded"
+        elif family_hypothesis_source == "researcher_family_hypothesis":
+            class_name = "researcher_family_prompt_bounded"
+        else:
+            class_name = "llm_manifest_family_bounded"
+    elif required_contract:
+        class_name = "name_only_unresolved"
+
+    return {
+        "class": class_name,
+        "name_only": True,
+        "family_bounded": family_bounded,
+        "ambiguous": semantic_guided_ambiguous or (candidate_count > 1),
+        "candidate_count": candidate_count,
+        "selection_source": selection_source,
+        "abstain_reason": abstain_reason,
+    }
+
+
+def _family_dependence_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_class: Dict[str, int] = {}
+    by_selection_source: Dict[str, int] = {}
+    by_abstain_reason: Dict[str, int] = {}
+    family_bounded_bundles = 0
+    ambiguous_bundles = 0
+    name_only_bundles = 0
+    for entry in bundles:
+        dependence = entry.get("family_dependence") if isinstance(entry.get("family_dependence"), dict) else {}
+        if not dependence:
+            continue
+        if dependence.get("name_only") is True:
+            name_only_bundles += 1
+        if dependence.get("family_bounded") is True:
+            family_bounded_bundles += 1
+        if dependence.get("ambiguous") is True:
+            ambiguous_bundles += 1
+        class_name = str(dependence.get("class") or "").strip()
+        if class_name:
+            by_class[class_name] = by_class.get(class_name, 0) + 1
+        selection_source = str(dependence.get("selection_source") or "").strip()
+        if selection_source:
+            by_selection_source[selection_source] = by_selection_source.get(selection_source, 0) + 1
+        abstain_reason = str(dependence.get("abstain_reason") or "").strip()
+        if abstain_reason:
+            by_abstain_reason[abstain_reason] = by_abstain_reason.get(abstain_reason, 0) + 1
+    return {
+        "bundle_count": len(bundles),
+        "name_only_bundles": name_only_bundles,
+        "family_bounded_bundles": family_bounded_bundles,
+        "ambiguous_bundles": ambiguous_bundles,
+        "by_class": by_class,
+        "by_selection_source": by_selection_source,
+        "by_abstain_reason": by_abstain_reason,
     }
 
 
@@ -2500,8 +3127,13 @@ def _partial_progress_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _bundle_intent_satisfaction(bundle_entry: Dict[str, Any], requirement_view: Dict[str, Any]) -> Dict[str, Any]:
     request_identity = bundle_entry.get("request_identity") if isinstance(bundle_entry.get("request_identity"), dict) else {}
+    request_ir = bundle_entry.get("request_ir") if isinstance(bundle_entry.get("request_ir"), dict) else {}
     vuln_id = str(bundle_entry.get("vuln_id") or "").strip().upper()
-    name_driven = bool((request_identity or {}).get("name_driven")) or vuln_id.startswith("NAME-")
+    name_driven = _is_name_driven_request(
+        vuln_id=vuln_id,
+        request_identity=request_identity,
+        request_ir=request_ir,
+    )
     if not name_driven:
         return {
             "request_kind": "other",
@@ -2515,6 +3147,8 @@ def _bundle_intent_satisfaction(bundle_entry: Dict[str, Any], requirement_view: 
     effective_requirement = dict(requirement_view) if isinstance(requirement_view, dict) else {}
     if "request_identity" not in effective_requirement and isinstance(request_identity, dict):
         effective_requirement["request_identity"] = request_identity
+    if "request_ir" not in effective_requirement and isinstance(request_ir, dict):
+        effective_requirement["request_ir"] = request_ir
     if "vuln_id" not in effective_requirement and vuln_id:
         effective_requirement["vuln_id"] = vuln_id
     policy = effective_requirement.get("policy") if isinstance(effective_requirement.get("policy"), dict) else {}
@@ -2549,7 +3183,7 @@ def _bundle_intent_satisfaction(bundle_entry: Dict[str, Any], requirement_view: 
         llm_path = "live"
     else:
         llm_path = "not_used"
-    if failure_stage in {"RESEARCH", "GENERATOR", "NAME_ONLY_GATE"}:
+    if failure_stage in {"CAPABILITY_CHECK", "RESEARCH", "GENERATOR", "NAME_ONLY_GATE"}:
         closure_source = "failed"
     elif generation_origin == "compiler_generated":
         closure_source = "curated_lower_bound"
@@ -2600,7 +3234,11 @@ def _bundle_intent_satisfaction(bundle_entry: Dict[str, Any], requirement_view: 
             status = "strict_dynamic_success"
             meets_intent = True
             reason = "strict dynamic lane achieved strict open-world positive evidence"
-        elif strict_class == "strict_dynamic_generation_failed" or dynamic_eval_status == "dynamic_failed":
+        elif strict_class in {
+            "strict_dynamic_generation_failed",
+            "strict_dynamic_live_llm_required",
+            "strict_dynamic_capability_unavailable",
+        } or dynamic_eval_status == "dynamic_failed":
             status = "strict_dynamic_failed"
             reason = "strict dynamic lane failed before acceptable materialization"
         elif dynamic_eval_status == "degraded_success" or strict_class in {
@@ -2635,6 +3273,9 @@ def _bundle_intent_satisfaction(bundle_entry: Dict[str, Any], requirement_view: 
             "require_strict_open_world": bool(name_only_contract.get("require_strict_open_world")),
             "require_independent_verifier": bool(name_only_contract.get("require_independent_verifier")),
             "require_live_llm": bool(name_only_contract.get("require_live_llm")),
+            "allowed_closure_sources": list(name_only_contract.get("allowed_closure_sources") or []),
+            "allowed_llm_paths": list(name_only_contract.get("allowed_llm_paths") or []),
+            "intent_success_rule": str(name_only_contract.get("intent_success_rule") or "").strip() or None,
         },
     }
 
@@ -2921,17 +3562,26 @@ def _bundle_dynamicness_verdict(provenance: Dict[str, Any]) -> Dict[str, Any]:
             "trusted": False,
             "reason": "deterministic fallback generation path was used",
         }
-    if origin == "research_short_circuit":
+    if origin in {"research_short_circuit", "capability_gate_rejected", "name_only_gate_rejected"}:
         failure_class = str(provenance.get("failure_class") or "").strip().lower()
-        reason = "generation was skipped after research precheck"
-        if failure_class == "semantic_support_missing":
-            reason = "generation was skipped after semantic support precheck"
-        elif failure_class in {"remote_provider_unavailable", "remote_evidence_missing"}:
-            reason = "generation was skipped after remote evidence precheck"
-        elif failure_class == "evidence_low_relevance":
-            reason = "generation was skipped after evidence relevance precheck"
-        elif failure_class == "provider_degraded":
-            reason = "generation was skipped after provider health precheck"
+        if origin == "capability_gate_rejected":
+            reason = "generation was skipped after strict capability precheck"
+            if failure_class == "strict_dynamic_live_llm_unavailable":
+                reason = "generation was skipped after strict live-LLM capability precheck"
+            elif failure_class == "strict_dynamic_remote_research_unavailable":
+                reason = "generation was skipped after strict remote-research capability precheck"
+        elif origin == "name_only_gate_rejected":
+            reason = "generation was skipped after strict live-LLM gate"
+        else:
+            reason = "generation was skipped after research precheck"
+            if failure_class == "semantic_support_missing":
+                reason = "generation was skipped after semantic support precheck"
+            elif failure_class in {"remote_provider_unavailable", "remote_evidence_missing"}:
+                reason = "generation was skipped after remote evidence precheck"
+            elif failure_class == "evidence_low_relevance":
+                reason = "generation was skipped after evidence relevance precheck"
+            elif failure_class == "provider_degraded":
+                reason = "generation was skipped after provider health precheck"
         return {
             "verdict": "pre-generation fail-closed",
             "trusted": False,

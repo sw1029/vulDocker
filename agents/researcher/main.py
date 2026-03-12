@@ -14,9 +14,10 @@ from agents.researcher import ResearcherService
 from common.contracts import (
     can_resolve_without_remote_research_for_requirement,
     load_semantic_profile,
-    requires_semantic_support,
+    requires_semantic_support_for_requirement,
 )
 from common.logging import get_logger
+from common.name_only import is_name_driven_requirement, name_only_mode
 from common.paths import ensure_dir, get_metadata_dir
 from common.plan import load_plan
 from common.run_matrix import bundle_requirement, load_vuln_bundles
@@ -24,20 +25,19 @@ from common.run_matrix import bundle_requirement, load_vuln_bundles
 LOGGER = get_logger(__name__)
 
 
-def _name_only_mode(policy: dict[str, object] | object) -> str:
-    if not isinstance(policy, dict):
-        return "compatibility"
-    token = str(policy.get("name_only_mode") or "").strip().lower()
-    if token in {"dynamic", "strict_dynamic"}:
-        return token
-    return "compatibility"
-
-
-def _preseeded_semantic_fail_closed_reason(bundle, profile: dict[str, object]) -> tuple[str, str] | None:
+def _preseeded_semantic_fail_closed_reason(
+    bundle,
+    profile: dict[str, object],
+    requirement_view: dict[str, object] | None = None,
+) -> tuple[str, str] | None:
     vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip()
-    if not vuln_id or not vuln_id.upper().startswith("NAME-"):
+    if not vuln_id:
         return None
-    if not requires_semantic_support(vuln_id):
+    requirement_payload = dict(requirement_view or {})
+    requirement_payload.setdefault("vuln_id", vuln_id)
+    if not is_name_driven_requirement(requirement_payload):
+        return None
+    if not requires_semantic_support_for_requirement(vuln_id, requirement_payload):
         return None
     support_level = str(profile.get("support_level") or "").strip().lower()
     compiler_supported = profile.get("compiler_supported")
@@ -74,13 +74,12 @@ def _should_skip_bundle_research(
     plan_policy = plan.get("policy") if isinstance(plan, dict) else {}
     bundle_policy = requirement_view.get("policy") if isinstance(requirement_view.get("policy"), dict) else {}
     effective_policy = bundle_policy if isinstance(bundle_policy, dict) and bundle_policy else plan_policy
-    request_identity = (
-        requirement_view.get("request_identity")
-        if isinstance(requirement_view.get("request_identity"), dict)
-        else {}
-    )
-    name_driven = bool((request_identity or {}).get("name_driven")) or str(getattr(bundle, "vuln_id", "") or "").upper().startswith("NAME-")
-    mode = _name_only_mode(effective_policy)
+    requirement_for_mode = dict(requirement_view) if isinstance(requirement_view, dict) else {}
+    requirement_for_mode.setdefault("vuln_id", str(getattr(bundle, "vuln_id", "") or "").strip())
+    if isinstance(effective_policy, dict) and effective_policy:
+        requirement_for_mode["policy"] = dict(effective_policy)
+    name_driven = is_name_driven_requirement(requirement_for_mode)
+    mode = name_only_mode(requirement_for_mode)
     dynamic_eval = bool(effective_policy.get("dynamic_eval")) if isinstance(effective_policy, dict) else False
     open_world_strict = bool(effective_policy.get("open_world_strict")) if isinstance(effective_policy, dict) else False
     if name_driven and mode in {"dynamic", "strict_dynamic"}:
@@ -114,7 +113,7 @@ def main() -> None:
         requirement_view = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
         semantic_profile = load_semantic_profile(service.metadata_dir) or {}
         fail_closed = (
-            _preseeded_semantic_fail_closed_reason(bundle, semantic_profile)
+            _preseeded_semantic_fail_closed_reason(bundle, semantic_profile, requirement_view)
             if isinstance(semantic_profile, dict)
             else None
         )

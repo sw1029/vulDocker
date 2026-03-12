@@ -234,8 +234,12 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "compose_mode": compiler_contract.get("compose_mode"),
                 "service_env": compiler_contract.get("service_env"),
                 "request_identity": bundle.get("request_identity") or {},
+                "request_ir": bundle.get("request_ir") or {},
                 "name_resolution": bundle.get("name_resolution") or {},
                 "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
+                "semantic_guided_selection_source": (bundle.get("provenance") or {}).get("semantic_guided_selection_source"),
+                "semantic_guided_abstain_reason": (bundle.get("provenance") or {}).get("semantic_guided_abstain_reason"),
+                "semantic_guided_ambiguous": (bundle.get("provenance") or {}).get("semantic_guided_ambiguous"),
                 "llm_fixture_used": (bundle.get("provenance") or {}).get("llm_fixture_used"),
                 "dynamicness_verdict": (bundle.get("dynamicness") or {}).get("verdict"),
                 "dynamicness_reason": (bundle.get("dynamicness") or {}).get("reason"),
@@ -261,6 +265,13 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "researcher_quality": (bundle.get("researcher") or {}).get("quality"),
                 "researcher_shadow_mode": (bundle.get("researcher") or {}).get("shadow_mode_enabled"),
                 "researcher_report_present": (bundle.get("researcher") or {}).get("report_present"),
+                "runtime_recipe": bundle.get("runtime_recipe") or {},
+                "runtime_graph": bundle.get("runtime_graph") or {},
+                "dynamic_eval": bundle.get("dynamic_eval") or {},
+                "artifact_quality": bundle.get("artifact_quality") or {},
+                "stack_dependence": bundle.get("stack_dependence") or {},
+                "family_dependence": bundle.get("family_dependence") or {},
+                "intent_satisfaction": bundle.get("intent_satisfaction") or {},
                 "failure_reason": (bundle.get("failure") or {}).get("reason"),
                 "terminal_failure_class": (bundle.get("failure") or {}).get("terminal_failure_class"),
             }
@@ -282,6 +293,12 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "generalization_summary": manifest.get("generalization_summary") or {},
         "open_world_summary": manifest.get("open_world_summary") or {},
         "strict_open_world_summary": manifest.get("strict_open_world_summary") or {},
+        "dynamic_eval_summary": manifest.get("dynamic_eval_summary") or {},
+        "artifact_quality_summary": manifest.get("artifact_quality_summary") or {},
+        "template_dependence_summary": manifest.get("template_dependence_summary") or {},
+        "stack_dependence_summary": manifest.get("stack_dependence_summary") or {},
+        "family_dependence_summary": manifest.get("family_dependence_summary") or {},
+        "intent_satisfaction_summary": manifest.get("intent_satisfaction_summary") or {},
         "partial_progress_summary": manifest.get("partial_progress_summary") or {},
         "compiler_supported": manifest.get("compiler_supported"),
         "compiler_strategy": manifest.get("compiler_strategy"),
@@ -293,8 +310,12 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "compose_mode": manifest.get("compose_mode"),
         "service_env": manifest.get("service_env"),
         "request_identity": manifest.get("request_identity") or {},
+        "request_ir": manifest.get("request_ir") or {},
         "name_resolution": manifest.get("name_resolution") or {},
         "generation_origin": manifest.get("generation_origin"),
+        "semantic_guided_selection_source": manifest.get("semantic_guided_selection_source"),
+        "semantic_guided_abstain_reason": manifest.get("semantic_guided_abstain_reason"),
+        "semantic_guided_ambiguous": manifest.get("semantic_guided_ambiguous"),
         "verification_rule_source": manifest.get("verification_rule_source"),
         "verification_trust": manifest.get("verification_trust"),
         "verification_independence": manifest.get("verification_independence"),
@@ -327,6 +348,13 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "strict_open_world_class": manifest.get("strict_open_world_class"),
         "counts_as_strict_open_world_generalization": manifest.get("counts_as_strict_open_world_generalization"),
         "strict_open_world_reason": manifest.get("strict_open_world_reason"),
+        "runtime_recipe": manifest.get("runtime_recipe") or {},
+        "runtime_graph": manifest.get("runtime_graph") or {},
+        "dynamic_eval": manifest.get("dynamic_eval") or {},
+        "artifact_quality": manifest.get("artifact_quality") or {},
+        "stack_dependence": manifest.get("stack_dependence") or {},
+        "family_dependence": manifest.get("family_dependence") or {},
+        "intent_satisfaction": manifest.get("intent_satisfaction") or {},
         "researcher": manifest.get("researcher") or {},
         "pipeline_returncode": pipeline_returncode,
         "failure": manifest.get("failure") or {},
@@ -483,6 +511,15 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
                 errors.append(
                     f"name_resolution.{key} expected {expected!r} but observed {actual.get(key)!r}"
                 )
+    for key in ("request_ir", "runtime_recipe", "runtime_graph", "dynamic_eval", "artifact_quality", "stack_dependence", "family_dependence", "intent_satisfaction"):
+        expected_payload = manifest_expect.get(key)
+        if isinstance(expected_payload, dict):
+            _validate_partial_mapping(
+                summary.get(key) or {},
+                expected_payload,
+                prefix=key,
+                errors=errors,
+            )
     for key in ("compiler_family", "stack_scaffold_id", "stack_scaffold_version", "fragment_id", "compose_mode"):
         if key not in manifest_expect:
             continue
@@ -523,6 +560,20 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             prefix="verification_summary",
             errors=errors,
         )
+    for key in (
+        "dynamic_eval_summary",
+        "artifact_quality_summary",
+        "template_dependence_summary",
+        "intent_satisfaction_summary",
+    ):
+        expected_payload = manifest_expect.get(key)
+        if isinstance(expected_payload, dict):
+            _validate_partial_mapping(
+                summary.get(key) or {},
+                expected_payload,
+                prefix=key,
+                errors=errors,
+            )
     partial_progress_expect = manifest_expect.get("partial_progress_summary")
     if isinstance(partial_progress_expect, dict):
         _validate_partial_mapping(
@@ -614,6 +665,15 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: semantic_source expected {entry['semantic_source']!r} but was {bundle.get('semantic_source')!r}"
             )
+        for key in ("request_ir", "runtime_recipe", "runtime_graph", "dynamic_eval", "artifact_quality", "stack_dependence", "family_dependence", "intent_satisfaction"):
+            expected_payload = entry.get(key)
+            if isinstance(expected_payload, dict):
+                _validate_partial_mapping(
+                    bundle.get(key) or {},
+                    expected_payload,
+                    prefix=f"bundle[{bundle['slug']}].{key}",
+                    errors=errors,
+                )
         if "verification_rule_source" in entry and str(bundle.get("verification_rule_source") or "") != str(entry["verification_rule_source"]):
             errors.append(
                 f"bundle {bundle['slug']}: verification_rule_source expected {entry['verification_rule_source']!r} but was {bundle.get('verification_rule_source')!r}"

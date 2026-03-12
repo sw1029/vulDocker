@@ -143,6 +143,25 @@ def test_name_only_mode_is_normalized_and_preserved() -> None:
     assert (policy.get("name_only_contract") or {}).get("allow_stub_llm") is False
 
 
+def test_canonicalized_request_ir_name_driven_strict_dynamic_still_requires_researcher_evidence() -> None:
+    requirement = _base_requirement("CWE-79")
+    requirement["request_ir"] = {
+        "request_label": "Reflected XSS",
+        "resolved_vuln_id": "CWE-79",
+        "name_driven": True,
+        "resolution_state": "token_match",
+    }
+    requirement["policy"] = {"name_only_mode": "strict_dynamic"}
+
+    normalized = normalize_requirement(requirement)
+    policy = normalized.requirement.get("policy") or {}
+    researcher = normalized.requirement.get("researcher") or {}
+
+    assert policy.get("require_researcher_evidence") is True
+    assert researcher.get("search_policy") == "remote_required"
+    assert (policy.get("name_only_contract") or {}).get("require_live_llm") is True
+
+
 def test_name_only_dynamic_mode_defers_hard_stack_defaults_into_stack_hypotheses() -> None:
     normalized = normalize_requirement(
         {
@@ -166,6 +185,13 @@ def test_name_only_dynamic_mode_defers_hard_stack_defaults_into_stack_hypotheses
     assert stack_hypotheses[0]["source"] == "profile_prior"
     assert any(item["stack_id"] == "python/fastapi" for item in stack_hypotheses)
     assert any("Deferred hard stack defaults" in warning for warning in normalized.warnings)
+    request_ir = requirement.get("request_ir") or {}
+    assert request_ir["request_label"] == "Open Redirect"
+    assert request_ir["resolution_state"] == "catalog_alias"
+    assert request_ir["name_driven"] is True
+    assert request_ir["pattern_seed_state"] == "preserved"
+    assert request_ir["family_candidates"][0]["family"] == "open_redirect"
+    assert request_ir["required_contract"]["effective_mode"] == "dynamic"
 
 
 def test_name_only_dynamic_eval_defers_hard_stack_defaults_into_stack_hypotheses() -> None:
@@ -191,6 +217,24 @@ def test_name_only_dynamic_eval_defers_hard_stack_defaults_into_stack_hypotheses
     assert any(item["stack_id"] == "python/fastapi" for item in stack_hypotheses)
     assert any("Deferred hard stack defaults" in warning for warning in normalized.warnings)
     assert ((requirement.get("policy") or {}).get("name_only_contract") or {}).get("effective_mode") == "dynamic_eval"
+
+
+def test_request_ir_marks_genericized_unknown_pattern_seed_for_synthetic_name() -> None:
+    normalized = normalize_requirement(
+        {
+            "vuln_name": "Foobar",
+            "pattern_id": "open-redirect",
+        }
+    )
+
+    request_ir = normalized.requirement.get("request_ir") or {}
+
+    assert request_ir["resolved_vuln_id"] == "NAME-FOOBAR"
+    assert request_ir["resolution_state"] == "synthetic_name"
+    assert request_ir["pattern_id"] == "generic-web-vuln"
+    assert request_ir["pattern_seed_state"] == "genericized_unknown"
+    assert request_ir["family_candidates"] == []
+    assert request_ir["required_contract"]["require_remote_research"] is True
 
 
 def test_researcher_search_filters_are_normalized() -> None:
@@ -510,12 +554,16 @@ def test_bundle_requirement_uses_bundle_specific_name_resolution_for_multi_vuln_
     assert template_req.get("vuln_name") == "Injection in Jinja template"
     assert (template_req.get("request_identity") or {}).get("request_label") == "Injection in Jinja template"
     assert (template_req.get("request_identity") or {}).get("match_class") == "token_match"
+    assert (template_req.get("request_ir") or {}).get("request_label") == "Injection in Jinja template"
+    assert (template_req.get("request_ir") or {}).get("resolution_state") == "token_match"
     assert (redirect_req.get("name_resolution") or {}).get("resolved_vuln_id") == "NAME-OPEN-REDIRECT"
     assert (redirect_req.get("name_resolution") or {}).get("confidence") == "high"
     assert redirect_req.get("vuln_label") == "Open Redirect"
     assert redirect_req.get("vuln_name") == "Open Redirect"
     assert (redirect_req.get("request_identity") or {}).get("request_label") == "Open Redirect"
     assert (redirect_req.get("request_identity") or {}).get("match_class") == "catalog_alias"
+    assert (redirect_req.get("request_ir") or {}).get("request_label") == "Open Redirect"
+    assert (redirect_req.get("request_ir") or {}).get("resolution_state") == "catalog_alias"
 
 
 def test_explicit_plaintext_vuln_id_is_promoted_to_synthetic_name() -> None:

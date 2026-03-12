@@ -28,11 +28,14 @@ from common.contracts import (
     load_semantic_profile,
     lower_bound_summary,
     requires_semantic_support,
+    requires_semantic_support_for_requirement,
     write_generator_contract,
 )
 from common.bundle_state import collect_bundle_research_blockers
+from common.config import get_openai_api_key
+from common.llm.provider import litellm_completion
 from common.logging import get_logger
-from common.name_only import build_name_only_contract
+from common.name_only import build_name_only_contract, is_name_driven_requirement, name_only_mode
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
 from common.runtime_assets import (
@@ -46,6 +49,7 @@ from common.runtime_assets import (
 from common.run_matrix import bundle_requirement, load_vuln_bundles, metadata_dir_for_bundle
 from orchestrator.loop_controller import LoopController
 from agents.researcher.service import ResearcherService
+from rag.tools import WebSearchTool
 
 LOGGER = get_logger(__name__)
 
@@ -404,6 +408,12 @@ def _subprocess_env_for_sid(sid: str = "") -> Dict[str, str] | None:
     failure_class = _pipeline_llm_failure_class(sid)
     if failure_class not in {"quota_exhausted", "auth_failure"}:
         return None
+    try:
+        plan = load_plan(sid)
+    except Exception:
+        plan = {}
+    if _strict_name_only_live_llm_required(plan if isinstance(plan, dict) else {}):
+        return None
     env = dict(os.environ)
     env["VUL_FORCE_LLM_STUB"] = "1"
     env["VUL_FORCE_LLM_STUB_REASON"] = failure_class
@@ -464,13 +474,7 @@ def _name_only_contract(plan: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _name_only_mode(plan: Dict[str, Any]) -> str:
-    policy = plan.get("policy") or {}
-    if not isinstance(policy, dict):
-        return "compatibility"
-    token = str(policy.get("name_only_mode") or "").strip().lower()
-    if token in {"dynamic", "strict_dynamic"}:
-        return token
-    return "compatibility"
+    return name_only_mode(plan if isinstance(plan, dict) else {})
 
 
 def _open_world_strict_mode(plan: Dict[str, Any]) -> bool:
@@ -496,11 +500,9 @@ def _dynamic_eval_mode(plan: Dict[str, Any]) -> bool:
 def _bundle_is_name_driven(plan: Dict[str, Any], bundle) -> bool:
     requirement = plan.get("requirement") or {}
     requirement_view = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
-    request_identity = requirement_view.get("request_identity") if isinstance(requirement_view, dict) else {}
-    if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
-        return True
-    vuln_id = str(getattr(bundle, "vuln_id", "") or "").strip().upper()
-    return vuln_id.startswith("NAME-")
+    synthesized = dict(requirement_view) if isinstance(requirement_view, dict) else {}
+    synthesized.setdefault("vuln_id", str(getattr(bundle, "vuln_id", "") or "").strip())
+    return is_name_driven_requirement(synthesized)
 
 
 def _strict_name_only_gate_required(plan: Dict[str, Any]) -> bool:
@@ -510,6 +512,143 @@ def _strict_name_only_gate_required(plan: Dict[str, Any]) -> bool:
     if not bundles:
         return False
     return any(_bundle_is_name_driven(plan, bundle) for bundle in bundles)
+
+
+def _strict_name_only_live_llm_required(plan: Dict[str, Any]) -> bool:
+    if not _strict_name_only_gate_required(plan):
+        return False
+    contract = _name_only_contract(plan)
+    return bool(contract.get("require_live_llm"))
+
+
+def _strict_name_only_remote_research_required(plan: Dict[str, Any]) -> bool:
+    if not _strict_name_only_gate_required(plan):
+        return False
+    contract = _name_only_contract(plan)
+    return bool(contract.get("require_remote_research"))
+
+
+def _strict_name_only_capability_gate_failure(plan: Dict[str, Any]) -> Dict[str, Any]:
+    if not _strict_name_only_gate_required(plan):
+        return {}
+    if _strict_name_only_live_llm_required(plan):
+        reasons: List[str] = []
+        metadata: Dict[str, Any] = {
+            "terminal_failure_class": "strict_dynamic_live_llm_unavailable",
+            "retry_recommended": False,
+            "required_gate": "strict_dynamic",
+        }
+        if os.environ.get("VUL_FORCE_LLM_STUB"):
+            reasons.append("forced_stub_env")
+        fixture_keys = [
+            key
+            for key in ("VUL_LLM_FIXTURE_GENERATOR_MANIFEST",)
+            if str(os.environ.get(key) or "").strip()
+        ]
+        if fixture_keys:
+            reasons.append("fixture_env")
+            metadata["fixture_env_keys"] = fixture_keys
+        api_key = (
+            get_openai_api_key()
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("VUL_LLM_API_KEY")
+        )
+        if not str(api_key or "").strip():
+            reasons.append("missing_api_key")
+        if litellm_completion is None:
+            reasons.append("litellm_unavailable")
+        if reasons:
+            metadata["capability_reasons"] = reasons
+            reason = (
+                "strict_dynamic requires a live LLM path, but capability precheck failed before RESEARCH: "
+                + ", ".join(reasons)
+            )
+            fix_hint = (
+                "Provide a live OpenAI-compatible LLM path (remove forced stub/fixture, ensure API key is configured, "
+                "and ensure litellm is available) or relax policy.name_only_mode to dynamic/compatibility."
+            )
+            return {
+                "reason": reason,
+                "fix_hint": fix_hint,
+                "metadata": metadata,
+            }
+
+    if not _strict_name_only_remote_research_required(plan):
+        return {}
+    remote_capability = WebSearchTool().remote_capability()
+    if remote_capability.configured:
+        return {}
+    provider = str(remote_capability.provider or "none").strip() or "none"
+    reason_parts = [f"provider={provider}"]
+    if remote_capability.error:
+        reason_parts.append(str(remote_capability.error))
+    reason = (
+        "strict_dynamic requires remote researcher evidence, but capability precheck failed before RESEARCH: "
+        + "; ".join(reason_parts)
+    )
+    fix_hint = (
+        "Configure a remote search provider (for example Tavily via VUL_WEB_SEARCH_PROVIDER/VUL_WEB_SEARCH_API_KEY "
+        "or a custom endpoint via VUL_WEB_SEARCH_ENDPOINT) or relax policy.name_only_mode / researcher.search_policy."
+    )
+    metadata = {
+        "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+        "retry_recommended": False,
+        "required_gate": "strict_dynamic",
+        "search_provider": provider,
+        "search_configured": False,
+        "search_error": str(remote_capability.error or "").strip() or None,
+        "search_endpoint_or_base_url": remote_capability.endpoint_or_base_url,
+        "search_auth_present": remote_capability.auth_present,
+        "require_remote_research": True,
+    }
+    return {
+        "reason": reason,
+        "fix_hint": fix_hint,
+        "metadata": metadata,
+    }
+
+
+def _strict_name_only_live_llm_gate_failure(plan: Dict[str, Any], sid: str) -> Dict[str, Any]:
+    if not _strict_name_only_live_llm_required(plan):
+        return {}
+    llm_stub_used = _pipeline_llm_stub_used(sid)
+    llm_fixture_used = _pipeline_llm_fixture_used(sid)
+    llm_failure_class = str(_pipeline_llm_failure_class(sid) or "").strip().lower()
+    if not llm_stub_used and not llm_fixture_used and llm_failure_class not in {
+        "quota_exhausted",
+        "auth_failure",
+        "llm_unavailable",
+        "provider_disabled",
+    }:
+        return {}
+    reasons: List[str] = []
+    if llm_stub_used:
+        reasons.append("llm_stub_used")
+    if llm_fixture_used:
+        reasons.append("llm_fixture_used")
+    if llm_failure_class:
+        reasons.append(f"llm_failure_class={llm_failure_class}")
+    reason = (
+        "strict_dynamic requires a live LLM path before GENERATOR, but RESEARCH already established "
+        "a disallowed LLM path: "
+        + ", ".join(reasons)
+    )
+    fix_hint = (
+        "Restore live LLM availability (disable stub/fixture, resolve quota/auth/provider issues) "
+        "or relax policy.name_only_mode to dynamic/compatibility."
+    )
+    return {
+        "reason": reason,
+        "fix_hint": fix_hint,
+        "metadata": {
+            "terminal_failure_class": "strict_dynamic_disallowed_llm_path",
+            "retry_recommended": False,
+            "required_gate": "strict_dynamic",
+            "llm_stub_used": llm_stub_used,
+            "llm_fixture_used": llm_fixture_used,
+            "llm_failure_class": llm_failure_class or None,
+        },
+    }
 
 
 def _bundle_generator_posture(plan: Dict[str, Any], bundle) -> Dict[str, Any]:
@@ -646,11 +785,7 @@ def _strict_name_only_generator_gate_failure(plan: Dict[str, Any]) -> Dict[str, 
 def _manifest_bundle_is_name_driven(bundle_payload: Dict[str, Any]) -> bool:
     if not isinstance(bundle_payload, dict):
         return False
-    request_identity = bundle_payload.get("request_identity")
-    if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
-        return True
-    vuln_id = str(bundle_payload.get("vuln_id") or "").strip().upper()
-    return vuln_id.startswith("NAME-")
+    return is_name_driven_requirement(bundle_payload)
 
 
 def _strict_name_only_gate_failure(plan: Dict[str, Any], sid: str) -> Dict[str, Any]:
@@ -895,11 +1030,13 @@ def _terminal_executor_precheck(plan: Dict[str, Any]) -> Dict[str, Any]:
 def _terminal_research_failure_from_semantic_profile(plan: Dict[str, Any]) -> Dict[str, Any]:
     relevant_bundles = []
     unsupported_findings = []
+    requirement = plan.get("requirement") or {}
     for bundle in load_vuln_bundles(plan):
         vuln_id = str(bundle.vuln_id or "").strip()
-        if not vuln_id.upper().startswith("NAME-"):
+        requirement_view = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+        if not _bundle_is_name_driven(plan, bundle):
             continue
-        if not requires_semantic_support(vuln_id):
+        if not requires_semantic_support_for_requirement(vuln_id, requirement_view):
             continue
         relevant_bundles.append(bundle)
         profile = load_semantic_profile(metadata_dir_for_bundle(plan, bundle)) or {}
@@ -1039,6 +1176,8 @@ def _provider_health_state(sid: str) -> str:
     llm_fixture_used = _pipeline_llm_fixture_used(sid)
     compiler_contracts = _compiler_contract_snapshot(sid)
     terminal_failure_class = _provider_failure_state_from_loop_state(sid)
+    if terminal_failure_class == "strict_dynamic_disallowed_llm_path":
+        return terminal_failure_class
     if search_degraded and llm_stub_used:
         return "search_and_llm_degraded"
     if llm_stub_used:
@@ -1092,6 +1231,9 @@ def _provider_failure_state_from_loop_state(sid: str) -> str:
     if not isinstance(history, list):
         return ""
     priorities = (
+        "strict_dynamic_live_llm_unavailable",
+        "strict_dynamic_remote_research_unavailable",
+        "strict_dynamic_disallowed_llm_path",
         "provider_degraded",
         "remote_provider_unavailable",
         "remote_evidence_missing",
@@ -1704,6 +1846,50 @@ def main() -> None:
     if controller.current_loop == 0:
         controller.start_loop()
     _seed_generator_contracts(plan)
+    capability_gate = _strict_name_only_capability_gate_failure(plan)
+    if capability_gate:
+        _record_perf_event(
+            sid,
+            perf_events,
+            loop=controller.current_loop,
+            stage="CAPABILITY_CHECK",
+            duration_s=0.0,
+            returncode=1,
+            note="strict_dynamic capability precheck rejected before research",
+        )
+        controller.record_failure(
+            stage="CAPABILITY_CHECK",
+            reason=str(capability_gate.get("reason") or "strict_dynamic capability precheck failed"),
+            fix_hint=str(
+                capability_gate.get("fix_hint")
+                or "Provide a live LLM path or relax policy.name_only_mode."
+            ),
+            blocking=True,
+            metadata=capability_gate.get("metadata") or {},
+        )
+        LOGGER.info(
+            "Stopping before RESEARCH for %s: strict_dynamic capability precheck rejected the run",
+            sid,
+        )
+        if not args.skip_pack:
+            allow_intentional = bool((plan.get("policy") or {}).get("allow_intentional_vuln"))
+            pack_cmd = _python_cmd("orchestrator/pack.py", "--sid", sid)
+            if allow_intentional:
+                pack_cmd.append("--allow-intentional-vuln")
+            rc, duration = _run_step_timed(pack_cmd, sid=sid)
+            _record_perf_event(
+                sid,
+                perf_events,
+                loop=controller.current_loop,
+                stage="PACK",
+                duration_s=duration,
+                returncode=rc,
+            )
+            if rc != 0:
+                _write_failure_summary_manifest(sid, plan)
+            else:
+                _refresh_manifest_after_pack(sid, plan)
+        raise SystemExit(1)
 
     researcher_ran = False
     researcher_refresh_requested = False
@@ -1849,6 +2035,35 @@ def main() -> None:
                 controller.record_success(stage="RESEARCH", note=research_note)
                 researcher_ran = True
                 researcher_refresh_requested = False
+                strict_live_llm_gate = _strict_name_only_live_llm_gate_failure(plan, sid)
+                if strict_live_llm_gate:
+                    _record_perf_event(
+                        sid,
+                        perf_events,
+                        loop=controller.current_loop,
+                        stage="NAME_ONLY_GATE",
+                        duration_s=0.0,
+                        returncode=1,
+                        note="strict_dynamic live LLM gate rejected before generator",
+                    )
+                    controller.record_failure(
+                        stage="NAME_ONLY_GATE",
+                        reason=str(
+                            strict_live_llm_gate.get("reason")
+                            or "strict_dynamic requires a live LLM path before generation"
+                        ),
+                        fix_hint=str(
+                            strict_live_llm_gate.get("fix_hint")
+                            or "Restore live LLM availability or relax policy.name_only_mode."
+                        ),
+                        blocking=True,
+                        metadata=strict_live_llm_gate.get("metadata") or {},
+                    )
+                    LOGGER.info(
+                        "Stopping before GENERATOR for %s: strict_dynamic live LLM gate rejected the run",
+                        sid,
+                    )
+                    break
 
         rc, duration = _run_step_timed(
             _python_cmd("agents/generator/main.py", "--sid", sid, "--mode", args.mode, "--single-attempt"),

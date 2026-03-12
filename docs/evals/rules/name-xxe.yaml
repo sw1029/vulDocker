@@ -46,9 +46,9 @@ patterns:
   - type: file_contains
     path: "{{service_entry}}"
     contains: "etree.fromstring"
-  - type: file_contains
+  - type: file_regex_contains
     path: "{{service_entry}}"
-    contains: "request.get_data"
+    regex: "(request\\.get_data\\(|await request\\.body\\()"
   - type: poc_contains
     path: "{{poc_entry}}"
     contains: "Exploit SUCCESS"

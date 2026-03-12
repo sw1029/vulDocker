@@ -1,0 +1,47 @@
+cwe: CWE-502
+version: 2
+scenario_type: web-poc
+
+verification:
+  source: runtime
+  require_flag: true
+  flag_mode: strict
+  exit_code: zero
+
+output:
+  mode: auto
+  format: auto
+
+llm:
+  assist_default: false
+  assertion_budget: 8
+
+runtime:
+  success_mode: text
+  success_text_markers:
+    - Exploit SUCCESS
+  flag_token: FLAG{DESER_OK}
+  assertion_program:
+    - op: contains
+      string: Exploit SUCCESS
+    - op: contains
+      string: FLAG{DESER_OK}
+
+success_signature: Exploit SUCCESS
+flag_token: FLAG{DESER_OK}
+requires_external_db: false
+strict_flag: true
+
+patterns:
+  - type: file_regex_contains
+    path: "{{service_entry}}"
+    pattern: "pickle\\.loads"
+  - type: file_regex_contains
+    path: "{{service_entry}}"
+    pattern: "(request\\.get_data\\(|await request\\.body\\()"
+  - type: poc_contains
+    path: "{{poc_entry}}"
+    contains: "Exploit SUCCESS"
+  - type: poc_contains
+    path: "{{poc_entry}}"
+    contains: "FLAG{DESER_OK}"

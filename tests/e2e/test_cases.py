@@ -41,6 +41,27 @@ def _live_gate_required() -> bool:
     return bool(os.environ.get("VULD_E2E_REQUIRE_TAVILY"))
 
 
+def _run_case_dir(tmp_path: Path, case_name: str) -> dict:
+    case_dir = REPO_ROOT / "tests/e2e/cases" / case_name
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tests/e2e/run_case.py"),
+        "--case",
+        str(case_dir),
+        "--mode",
+        "deterministic",
+        "--no-snapshot",
+        "--output-dir",
+        str(tmp_path),
+    ]
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        pytest.fail(f"run_case failed\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+    summary_path = tmp_path / "summary.json"
+    assert summary_path.exists(), "summary.json was not created"
+    return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
 @pytest.mark.e2e
 def test_cwe89_basic_case(tmp_path: Path) -> None:
     reason = _skip_reason()
@@ -843,6 +864,259 @@ def test_code_injection_alias_name_only_case(tmp_path: Path) -> None:
         for bundle in summary["bundles"]
     )
     assert summary["reviewer"]["blocking_bundles"] == []
+
+
+@pytest.mark.e2e
+def test_sqli_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "sqli-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+
+
+@pytest.mark.e2e
+def test_open_redirect_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "open-redirect-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_open_redirect_strict_dynamic_stub_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "open-redirect-strict-dynamic-stub")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "failure"
+    assert summary["manifest_file"] == "failure_manifest.json"
+    assert summary["provider_health_state"] == "strict_dynamic_live_llm_unavailable"
+    assert summary["failure"]["stage"] == "CAPABILITY_CHECK"
+    assert summary["failure"]["terminal_failure_class"] == "strict_dynamic_live_llm_unavailable"
+    assert summary["open_world_class"] == "name_driven_capability_gate_failed"
+    assert summary["strict_open_world_class"] == "strict_dynamic_capability_unavailable"
+    assert summary["intent_satisfaction"]["status"] == "strict_dynamic_failed"
+    assert summary["request_ir"]["name_driven"] is True
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-open-redirect")
+    assert bundle["terminal_failure_class"] == "strict_dynamic_live_llm_unavailable"
+    assert "capability precheck" in str(bundle.get("failure_reason") or "")
+
+
+@pytest.mark.e2e
+def test_open_redirect_strict_dynamic_no_remote_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "open-redirect-strict-dynamic-no-remote")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "failure"
+    assert summary["manifest_file"] == "failure_manifest.json"
+    assert summary["provider_health_state"] == "strict_dynamic_remote_research_unavailable"
+    assert summary["failure"]["stage"] == "CAPABILITY_CHECK"
+    assert summary["failure"]["terminal_failure_class"] == "strict_dynamic_remote_research_unavailable"
+    assert summary["open_world_class"] == "name_driven_capability_gate_failed"
+    assert summary["strict_open_world_class"] == "strict_dynamic_capability_unavailable"
+    assert summary["intent_satisfaction"]["status"] == "strict_dynamic_failed"
+    assert summary["request_ir"]["name_driven"] is True
+    bundle = next(bundle for bundle in summary["bundles"] if bundle["slug"] == "name-open-redirect")
+    assert bundle["terminal_failure_class"] == "strict_dynamic_remote_research_unavailable"
+    assert "remote researcher evidence" in str(bundle.get("failure_reason") or "")
+
+
+@pytest.mark.e2e
+def test_xss_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "xss-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_path_traversal_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "path-traversal-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_ssrf_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "ssrf-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_csrf_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "csrf-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_deserialization_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "deserialization-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_command_injection_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "command-injection-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_xxe_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "xxe-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+
+
+@pytest.mark.e2e
+def test_code_injection_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "code-injection-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_ldap_injection_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "ldap-injection-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
+
+
+@pytest.mark.e2e
+def test_template_injection_dynamic_name_only_case(tmp_path: Path) -> None:
+    reason = _skip_reason()
+    if reason:
+        pytest.skip(reason)
+
+    summary = _run_case_dir(tmp_path, "template-injection-dynamic-name-only")
+    assert summary["sid"].startswith("sid-"), "SID was not recorded"
+    assert summary["pipeline_result"] == "success"
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["dynamicness_verdict"] == "deterministic fallback dependent"
+    assert summary["open_world_class"] == "semantic_guided_minimal_dynamic"
+    assert summary["generalization_class"] == "real_free_form_non_generalizing"
+    assert summary["verification_rule_source"] == "declared_rule"
+    assert summary["verification_trust"] == "high"
+    assert summary["verification_independence"] == "independent"
 
 
 @pytest.mark.e2e

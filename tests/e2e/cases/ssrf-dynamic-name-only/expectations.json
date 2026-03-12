@@ -1,0 +1,70 @@
+{
+  "manifest": {
+    "overall_pass": true,
+    "pipeline_result": "success",
+    "manifest_file": "manifest.json",
+    "pipeline_returncode": 0,
+    "generation_origin": "deterministic_fallback",
+    "dynamicness_verdict": "deterministic fallback dependent",
+    "verification_rule_source": "declared_rule",
+    "verification_trust": "high",
+    "verification_independence": "independent",
+    "request_ir": {
+      "request_label": "ssrf",
+      "resolution_state": "catalog_alias",
+      "name_driven": true,
+      "pattern_seed_state": "preserved"
+    },
+    "template_dependence_summary": {
+      "lower_bound_dependent_bundles": 1,
+      "name_only_lower_bound_bundles": 1,
+      "minimal_dynamic_bundles": 1,
+      "open_world_positive_bundles": 0,
+      "by_open_world_class": {
+        "semantic_guided_minimal_dynamic": 1
+      }
+    },
+    "intent_satisfaction_summary": {
+      "name_only_bundles": 1,
+      "meets_intent_bundles": 0,
+      "partial_bundles": 1,
+      "by_status": {
+        "degraded_dynamic_success": 1
+      }
+    },
+    "open_world_class": "semantic_guided_minimal_dynamic",
+    "strict_open_world_class": "strict_minimal_dynamic_fallback",
+    "generalization_class": "real_free_form_non_generalizing",
+    "counts_as_generalization": false
+  },
+  "evals": [
+    {
+      "slug": "cwe-918",
+      "verify_pass": true,
+      "run_passed": true,
+      "exit_code": 0,
+      "generation_origin": "deterministic_fallback",
+      "dynamicness_verdict": "deterministic fallback dependent",
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "verification_independence": "independent",
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "request_ir": {
+        "resolution_state": "catalog_alias"
+      },
+      "open_world_class": "semantic_guided_minimal_dynamic",
+      "strict_open_world_class": "strict_minimal_dynamic_fallback",
+      "intent_satisfaction": {
+        "mode": "dynamic",
+        "status": "degraded_dynamic_success",
+        "meets_intent": false
+      },
+      "generalization_class": "real_free_form_non_generalizing",
+      "counts_as_generalization": false
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

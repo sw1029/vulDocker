@@ -82,6 +82,36 @@ def test_bundle_generation_provenance_reads_materializer_from_generator_manifest
     assert provenance["materializer"] == "minimal_dynamic"
 
 
+def test_bundle_generation_provenance_surfaces_semantic_guided_selection_metadata(tmp_path: Path) -> None:
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "metadata": {
+                        "generation_origin": "deterministic_fallback",
+                        "fallback_class": "semantic_guided",
+                        "semantic_guided_selection_source": "request_resolution",
+                        "semantic_guided_abstain_reason": "ambiguous_semantic_family_match",
+                        "semantic_guided_ambiguous": True,
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    provenance = _bundle_generation_provenance(
+        "sid-pack",
+        VulnBundle(vuln_id="NAME-TEMPLATE-INJECTION", slug="name-template-injection", workspace_subdir="app"),
+        tmp_path,
+    )
+
+    assert provenance["semantic_guided_selection_source"] == "request_resolution"
+    assert provenance["semantic_guided_abstain_reason"] == "ambiguous_semantic_family_match"
+    assert provenance["semantic_guided_ambiguous"] is True
+
+
 def test_bundle_promotion_is_blocked_by_medium_confidence_unknown_noise(tmp_path: Path) -> None:
     plan = {"paths": {"metadata": str(tmp_path)}, "features": {"multi_vuln": False}}
     bundle = VulnBundle(vuln_id="CWE-9999", slug="cwe-9999", workspace_subdir="app")
@@ -518,8 +548,37 @@ def test_bundle_generalization_surfaces_medium_confidence_token_match_for_free_f
     assert verdict["class"] == "real_free_form_non_generalizing"
     assert verdict["counts_as_generalization"] is False
     assert verdict["confidence"] == "medium"
-    assert verdict["basis"] == "token_match"
-    assert "medium/token_match" in verdict["reason"]
+
+
+def test_bundle_generalization_uses_request_ir_for_alias_resolved_dynamic_name_only_lane() -> None:
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+
+    verdict = _bundle_generalization_verdict(
+        bundle,
+        pattern_id="sqli-string-concat",
+        promotion={"eligible": True},
+        dynamicness={"verdict": "deterministic fallback dependent"},
+        compiler_contract={"support_level": "builtin_supported", "compiler_supported": True},
+        provenance={
+            "generation_origin": "deterministic_fallback",
+            "fallback_class": "semantic_guided",
+            "materializer": "minimal_dynamic",
+        },
+        policy={"name_only_mode": "dynamic"},
+        request_ir={
+            "name_driven": True,
+            "resolved_vuln_id": "CWE-89",
+            "resolution_confidence": "high",
+            "resolution_match_class": "catalog_alias",
+        },
+        name_resolution={"confidence": "high", "match_class": "catalog_alias"},
+    )
+
+    assert verdict["class"] == "real_free_form_non_generalizing"
+    assert verdict["counts_as_generalization"] is False
+    assert verdict["confidence"] == "high"
+    assert verdict["basis"] == "catalog_alias"
+    assert "high/catalog_alias" in verdict["reason"]
 
 
 def test_bundle_open_world_marks_catalog_resolved_name_only_lane_as_lower_bound_dependent() -> None:
@@ -600,6 +659,35 @@ def test_bundle_open_world_separates_minimal_dynamic_name_only_lane() -> None:
     assert verdict["counts_as_generalization"] is False
     assert verdict["lower_bound_dependent"] is True
     assert summary["by_class"]["semantic_guided_minimal_dynamic"] == 1
+
+
+def test_bundle_open_world_uses_request_ir_for_alias_resolved_name_only_minimal_dynamic() -> None:
+    bundle = VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")
+
+    verdict = _bundle_open_world_verdict(
+        bundle,
+        pattern_id="sqli-string-concat",
+        promotion={"eligible": True},
+        dynamicness={"verdict": "deterministic fallback dependent"},
+        compiler_contract={"support_level": "builtin_supported", "compiler_supported": True},
+        provenance={
+            "generation_origin": "deterministic_fallback",
+            "fallback_class": "semantic_guided",
+            "materializer": "minimal_dynamic",
+        },
+        request_ir={
+            "name_driven": True,
+            "resolved_vuln_id": "CWE-89",
+            "resolution_confidence": "high",
+            "resolution_match_class": "catalog_alias",
+        },
+        name_resolution={"confidence": "high", "match_class": "catalog_alias"},
+    )
+
+    assert verdict["class"] == "semantic_guided_minimal_dynamic"
+    assert verdict["counts_as_generalization"] is False
+    assert verdict["lower_bound_dependent"] is True
+    assert verdict["basis"] == "catalog_alias"
 
 
 def test_bundle_open_world_marks_dynamic_name_only_generator_failure_as_attempt_failure() -> None:
@@ -1071,6 +1159,33 @@ def test_request_identity_summary_tracks_input_modes_and_resolution_classes() ->
     assert summary["by_confidence"] == {"high": 1, "medium": 1, "low": 1}
 
 
+def test_bundle_intent_satisfaction_surfaces_extended_name_only_contract() -> None:
+    payload = _bundle_intent_satisfaction(
+        {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+            "request_ir": {"name_driven": True},
+            "dynamic_eval": {"enabled": True, "status": "degraded_success"},
+            "open_world": {"class": "semantic_guided_minimal_dynamic"},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
+            "provenance": {
+                "generation_origin": "deterministic_fallback",
+                "fallback_class": "semantic_guided",
+                "llm_stub_used": True,
+            },
+            "verification": {"independence": "independent", "trust": "high"},
+            "researcher": {"quality": "sufficient"},
+        },
+        {"policy": {"name_only_mode": "dynamic"}, "request_identity": {"name_driven": True}},
+    )
+
+    assert payload["mode"] == "dynamic"
+    assert payload["status"] == "degraded_dynamic_success"
+    assert payload["required_contract"]["allowed_closure_sources"] == ["trusted_dynamic", "strict_open_world_positive"]
+    assert payload["required_contract"]["allowed_llm_paths"] == ["live", "fixture", "stub"]
+    assert payload["required_contract"]["intent_success_rule"] == "open_world_positive_only"
+
+
 def test_bundle_researcher_summary_does_not_count_skip_report_as_ran(tmp_path: Path) -> None:
     (tmp_path / "researcher_report.json").write_text(
         json.dumps(
@@ -1092,6 +1207,33 @@ def test_bundle_researcher_summary_does_not_count_skip_report_as_ran(tmp_path: P
     assert summary["ran"] is False
     assert summary["dynamic_eval_enabled"] is True
     assert summary["quality"] == "skipped"
+
+
+def test_bundle_researcher_summary_uses_request_ir_for_alias_resolved_name_only_mode(tmp_path: Path) -> None:
+    (tmp_path / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "quality": "skipped",
+                "quality_reason": "researcher skipped: compiler/static supported path",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    summary = _bundle_researcher_summary(
+        requirement={
+            "vuln_id": "CWE-89",
+            "request_ir": {"name_driven": True},
+            "policy": {"name_only_mode": "dynamic"},
+            "researcher": {"shadow_mode": False},
+        },
+        metadata_dir=tmp_path,
+    )
+
+    assert summary["report_present"] is True
+    assert summary["dynamic_eval_enabled"] is True
+    assert summary["ran"] is False
 
 
 def test_bundle_researcher_summary_surfaces_family_hypothesis_and_query_target_stats(tmp_path: Path) -> None:
@@ -1197,6 +1339,93 @@ def test_template_dependence_summary_tracks_minimal_dynamic_materializers() -> N
     assert summary["by_open_world_class"]["semantic_guided_minimal_dynamic"] == 1
 
 
+def test_template_dependence_summary_counts_request_ir_name_only_lower_bound_bundles() -> None:
+    summary = pack_mod._template_dependence_summary(
+        [
+            {
+                "dynamicness": {"verdict": "deterministic fallback dependent"},
+                "provenance": {"materializer": "minimal_dynamic"},
+                "open_world": {"class": "semantic_guided_minimal_dynamic", "lower_bound_dependent": True},
+                "vuln_id": "CWE-89",
+                "request_ir": {"name_driven": True},
+            }
+        ]
+    )
+
+    assert summary["name_only_lower_bound_bundles"] == 1
+    assert summary["minimal_dynamic_bundles"] == 1
+
+
+def test_stack_dependence_summary_tracks_repo_prior_and_researcher_sources() -> None:
+    summary = pack_mod._stack_dependence_summary(
+        [
+            {
+                "stack_dependence": {
+                    "class": "repo_prior_bounded",
+                    "stack_source": "profile_prior",
+                    "repo_prior_bounded": True,
+                    "researcher_inferred": False,
+                    "ambiguous": True,
+                    "stack_locked": False,
+                }
+            },
+            {
+                "stack_dependence": {
+                    "class": "researcher_inferred",
+                    "stack_source": "researcher_candidate",
+                    "repo_prior_bounded": False,
+                    "researcher_inferred": True,
+                    "ambiguous": False,
+                    "stack_locked": False,
+                }
+            },
+        ]
+    )
+
+    assert summary["repo_prior_bounded_bundles"] == 1
+    assert summary["researcher_inferred_bundles"] == 1
+    assert summary["ambiguous_bundles"] == 1
+    assert summary["by_class"] == {"repo_prior_bounded": 1, "researcher_inferred": 1}
+    assert summary["by_stack_source"] == {"profile_prior": 1, "researcher_candidate": 1}
+
+
+def test_family_dependence_summary_tracks_semantic_signature_and_unresolved_fallbacks() -> None:
+    summary = pack_mod._family_dependence_summary(
+        [
+            {
+                "family_dependence": {
+                    "class": "semantic_signature_bounded",
+                    "name_only": True,
+                    "family_bounded": True,
+                    "ambiguous": False,
+                    "selection_source": "semantic_signature",
+                    "abstain_reason": None,
+                }
+            },
+            {
+                "family_dependence": {
+                    "class": "family_unresolved_generic_fallback",
+                    "name_only": True,
+                    "family_bounded": False,
+                    "ambiguous": True,
+                    "selection_source": None,
+                    "abstain_reason": "ambiguous_semantic_family_match",
+                }
+            },
+        ]
+    )
+
+    assert summary["name_only_bundles"] == 2
+    assert summary["family_bounded_bundles"] == 1
+    assert summary["ambiguous_bundles"] == 1
+    assert summary["by_class"] == {
+        "semantic_signature_bounded": 1,
+        "family_unresolved_generic_fallback": 1,
+    }
+    assert summary["by_selection_source"] == {"semantic_signature": 1}
+    assert summary["by_abstain_reason"] == {"ambiguous_semantic_family_match": 1}
+
+
 def test_bundle_artifact_quality_uses_exploit_oracle_when_verification_is_missing(tmp_path: Path) -> None:
     workspace_dir = tmp_path / "workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -1260,6 +1489,20 @@ def test_bundle_dynamic_eval_summary_reads_status_file(tmp_path: Path) -> None:
     assert summary["status"] == "lower_bound_recovered"
     assert summary["lower_bound_fallback_used"] is True
     assert summary["fallback_path"] == "compiler"
+
+
+def test_bundle_dynamic_eval_summary_uses_request_ir_for_alias_resolved_name_only_mode(tmp_path: Path) -> None:
+    summary = _bundle_dynamic_eval_summary(
+        requirement={
+            "vuln_id": "CWE-89",
+            "policy": {"name_only_mode": "dynamic"},
+            "request_ir": {"name_driven": True},
+        },
+        metadata_dir=tmp_path,
+    )
+
+    assert summary["enabled"] is True
+    assert summary["attempted"] is True
 
 
 def test_dynamic_eval_rollup_tracks_attempted_and_recovered_bundles() -> None:
@@ -1371,6 +1614,45 @@ def test_bundle_intent_satisfaction_marks_strict_dynamic_failure() -> None:
     assert payload["status"] == "strict_dynamic_failed"
     assert payload["meets_intent"] is False
     assert payload["partial"] is False
+
+
+def test_bundle_intent_satisfaction_uses_request_ir_for_canonicalized_name_driven_lane() -> None:
+    payload = _bundle_intent_satisfaction(
+        {
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "name_driven": True,
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "resolution_state": "token_match",
+            },
+            "dynamic_eval": {"enabled": True, "status": "degraded_success"},
+            "open_world": {"class": "semantic_guided_minimal_dynamic"},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
+            "provenance": {
+                "generation_origin": "deterministic_fallback",
+                "fallback_class": "semantic_guided",
+                "llm_stub_used": True,
+            },
+            "verification": {"independence": "independent", "trust": "high"},
+            "researcher": {"quality": "sufficient"},
+        },
+        {
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "name_driven": True,
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "resolution_state": "token_match",
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+    )
+
+    assert payload["request_kind"] == "name_only"
+    assert payload["mode"] == "dynamic"
+    assert payload["status"] == "degraded_dynamic_success"
+    assert payload["meets_intent"] is False
 
 
 def test_intent_satisfaction_summary_counts_partial_and_failed_name_only_lanes() -> None:
@@ -1910,6 +2192,8 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
     assert manifest["service_env"] == {"APP_PORT": "5000", "DB_HOST": "sqli-db"}
     assert manifest["runtime_recipe"]["service_env"] == {"APP_PORT": "5000", "DB_HOST": "sqli-db"}
     assert manifest["runtime_recipe"]["topology"] == "single_service"
+    assert manifest["runtime_graph"]["topology"] == "single_service"
+    assert manifest["bundles"][0]["runtime_graph"]["exploit_path"]["target_node"] == "service"
     assert manifest["bundles"][0]["runtime_recipe"]["service_port"] == 5000
     assert manifest["artifact_quality_summary"]["bundle_count"] == 1
     assert manifest["artifact_quality"]["runtime_recipe_present"] is True
@@ -2084,7 +2368,26 @@ def test_write_manifest_classifies_compiler_generated_as_compiler_first(tmp_path
             "artifacts": str(artifacts_dir),
             "workspace": str(workspace_dir),
         },
-        "requirement": {"vuln_id": "NAME-OPEN-REDIRECT"},
+        "requirement": {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "input_mode": "free_form_name",
+                "source": "alias",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+                "name_driven": True,
+            },
+            "request_ir": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "input_mode": "free_form_name",
+                "name_driven": True,
+                "resolution_state": "catalog_alias",
+                "pattern_seed_state": "preserved",
+            },
+        },
         "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]},
         "features": {"multi_vuln": False},
     }
@@ -2093,6 +2396,10 @@ def test_write_manifest_classifies_compiler_generated_as_compiler_first(tmp_path
 
     manifest_path = pack_mod.write_manifest(sid, plan)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["request_ir"]["resolution_state"] == "catalog_alias"
+    assert manifest["request_ir"]["pattern_seed_state"] == "preserved"
+    assert manifest["bundles"][0]["request_ir"]["request_label"] == "Open Redirect"
 
     assert manifest["compiler_supported"] is True
     assert manifest["compiler_strategy"] == "open_redirect_reflect"

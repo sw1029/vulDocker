@@ -18,6 +18,23 @@
     "semantic_supported": true,
     "semantic_status": "aligned",
     "semantic_source": "generator_manifest",
+    "request_ir": {
+      "request_label": "Open Redirect",
+      "resolution_state": "catalog_alias",
+      "name_driven": true,
+      "pattern_seed_state": "preserved"
+    },
+    "template_dependence_summary": {
+      "lower_bound_dependent_bundles": 1,
+      "open_world_positive_bundles": 0
+    },
+    "intent_satisfaction_summary": {
+      "name_only_bundles": 1,
+      "meets_intent_bundles": 1,
+      "by_status": {
+        "compatibility_lower_bound": 1
+      }
+    },
     "generalization_class": "real_free_form_positive",
     "counts_as_generalization": true
   },
@@ -42,6 +59,14 @@
       "verification_independence": "independent",
       "semantic_supported": true,
       "semantic_status": "aligned",
+      "request_ir": {
+        "resolution_state": "catalog_alias"
+      },
+      "intent_satisfaction": {
+        "mode": "compatibility",
+        "status": "compatibility_lower_bound",
+        "meets_intent": true
+      },
       "generalization_class": "real_free_form_positive",
       "counts_as_generalization": true
     }

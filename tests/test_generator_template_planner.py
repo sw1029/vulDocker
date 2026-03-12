@@ -479,6 +479,22 @@ def test_name_only_mode_dynamic_enables_dynamic_eval_for_name_driven_request() -
     assert service._dynamic_eval_enabled() is True  # type: ignore[attr-defined]
 
 
+def test_name_only_mode_dynamic_enables_dynamic_eval_from_request_ir_only() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-79",
+        "policy": {"name_only_mode": "dynamic"},
+        "request_ir": {
+            "request_label": "Reflected XSS",
+            "resolved_vuln_id": "CWE-79",
+            "name_driven": True,
+            "resolution_state": "token_match",
+        },
+    }
+
+    assert service._dynamic_eval_enabled() is True  # type: ignore[attr-defined]
+
+
 def test_name_only_mode_strict_dynamic_disables_lower_bound_fallback() -> None:
     service = GeneratorService.__new__(GeneratorService)
     service.requirement = {  # type: ignore[attr-defined]
@@ -488,6 +504,26 @@ def test_name_only_mode_strict_dynamic_disables_lower_bound_fallback() -> None:
             "dynamic_eval_allow_lower_bound_fallback": True,
         },
         "request_identity": {"name_driven": True},
+    }
+
+    assert service._dynamic_eval_enabled() is True  # type: ignore[attr-defined]
+    assert service._dynamic_eval_allow_lower_bound_fallback() is False  # type: ignore[attr-defined]
+
+
+def test_name_only_mode_strict_dynamic_disables_lower_bound_fallback_from_request_ir_only() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-79",
+        "policy": {
+            "name_only_mode": "strict_dynamic",
+            "dynamic_eval_allow_lower_bound_fallback": True,
+        },
+        "request_ir": {
+            "request_label": "Reflected XSS",
+            "resolved_vuln_id": "CWE-79",
+            "name_driven": True,
+            "resolution_state": "token_match",
+        },
     }
 
     assert service._dynamic_eval_enabled() is True  # type: ignore[attr-defined]

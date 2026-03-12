@@ -26,6 +26,7 @@ from common.guardrails import (
 from common.hints import normalize_hint_payload
 from common.llm import LLMClient
 from common.logging import get_logger
+from common.name_only import is_name_driven_requirement, name_only_mode
 from common.contracts import (
     build_generator_contract,
     executor_feasibility_summary,
@@ -443,22 +444,10 @@ class GeneratorService:
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _name_only_mode(self) -> str:
-        policy = self.requirement.get("policy") if isinstance(self.requirement, dict) else {}
-        if not isinstance(policy, dict):
-            return "compatibility"
-        token = str(policy.get("name_only_mode") or "").strip().lower()
-        if token in {"dynamic", "strict_dynamic"}:
-            return token
-        return "compatibility"
+        return name_only_mode(self.requirement if isinstance(self.requirement, dict) else {})
 
     def _is_name_driven_request(self) -> bool:
-        if not isinstance(self.requirement, dict):
-            return False
-        request_identity = self.requirement.get("request_identity")
-        if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
-            return True
-        vuln_id = str(self.requirement.get("vuln_id") or "").strip().upper()
-        return vuln_id.startswith("NAME-")
+        return is_name_driven_requirement(self.requirement if isinstance(self.requirement, dict) else {})
 
     def _dynamic_eval_enabled(self) -> bool:
         policy = self.requirement.get("policy") if isinstance(self.requirement, dict) else {}

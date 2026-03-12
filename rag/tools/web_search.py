@@ -12,6 +12,7 @@ from common.paths import get_repo_root
 
 from .providers import (
     CustomSearchProvider,
+    DEFAULT_TAVILY_BASE_URL,
     SearchExecution,
     SearchProvider,
     SearchRequest,
@@ -119,6 +120,53 @@ class WebSearchTool:
 
     def last_execution(self) -> Optional[SearchExecution]:
         return self._last_execution
+
+    def remote_capability(self) -> SearchExecution:
+        """Return local remote-search capability status without issuing a network request."""
+
+        provider_name = self.provider_name or ("custom" if self.endpoint else "none")
+        endpoint_or_base_url = self.endpoint or self.base_url or None
+        auth_present = bool(self.api_key) if provider_name == "tavily" else None
+
+        if provider_name == "tavily":
+            endpoint_or_base_url = self.base_url or DEFAULT_TAVILY_BASE_URL
+            if not self.api_key:
+                return SearchExecution(
+                    provider=provider_name,
+                    configured=False,
+                    error=self._remote_provider_error(provider_name),
+                    endpoint_or_base_url=endpoint_or_base_url,
+                    auth_present=False,
+                    request={},
+                )
+        elif provider_name == "custom" and not self.endpoint:
+            return SearchExecution(
+                provider=provider_name,
+                configured=False,
+                error=self._remote_provider_error(provider_name),
+                endpoint_or_base_url=None,
+                auth_present=None,
+                request={},
+            )
+
+        provider = self._build_remote_provider()
+        if provider is None:
+            return SearchExecution(
+                provider=provider_name,
+                configured=False,
+                error=self._remote_provider_error(provider_name),
+                endpoint_or_base_url=endpoint_or_base_url,
+                auth_present=auth_present,
+                request={},
+            )
+
+        return SearchExecution(
+            provider=getattr(provider, "name", "") or provider_name,
+            configured=True,
+            endpoint_or_base_url=endpoint_or_base_url,
+            auth_present=auth_present,
+            request={},
+        )
 
     @staticmethod
     def _annotate_hits(hits: List[SearchResult], query: str) -> List[SearchResult]:

@@ -830,7 +830,8 @@ class SynthesisEngine:
     ) -> CandidateReport | None:
         if not self._dynamic_eval_enabled():
             return None
-        family = self._semantic_guided_fallback_family()
+        resolution = self._semantic_guided_fallback_resolution()
+        family = str(resolution.get("family") or "").strip().lower()
         if not family:
             return None
         vuln_id = self._requirement.get("vuln_id", "CWE-UNKNOWN")
@@ -853,9 +854,13 @@ class SynthesisEngine:
             notes=notes,
             success_signature=success_signature,
             flag_token=flag_token,
+            selection_source=str(resolution.get("selection_source") or "").strip().lower(),
+            candidate_families=resolution.get("candidate_families") if isinstance(resolution.get("candidate_families"), list) else [],
+            ambiguous=resolution.get("ambiguous") is True,
         )
         if not manifest:
             return None
+        manifest = self._annotate_semantic_guided_resolution(manifest, resolution)
         manifest = self._apply_poc_template(manifest, poc_template)
         manifest = self._ensure_fallback_poc(manifest, poc_template)
         before_family_override = json.dumps(manifest, sort_keys=True, ensure_ascii=False)
@@ -926,7 +931,8 @@ class SynthesisEngine:
             flag_token = ""
 
         port = 8000
-        semantic_guided_family = self._semantic_guided_fallback_family()
+        semantic_guided_resolution = self._semantic_guided_fallback_resolution()
+        semantic_guided_family = str(semantic_guided_resolution.get("family") or "").strip().lower()
         if self._dynamic_eval_enabled() and semantic_guided_family:
             semantic_manifest = self._semantic_guided_fallback_manifest(
                 family=semantic_guided_family,
@@ -937,12 +943,22 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
+                selection_source=str(semantic_guided_resolution.get("selection_source") or "").strip().lower(),
+                candidate_families=(
+                    semantic_guided_resolution.get("candidate_families")
+                    if isinstance(semantic_guided_resolution.get("candidate_families"), list)
+                    else []
+                ),
+                ambiguous=semantic_guided_resolution.get("ambiguous") is True,
             )
             if semantic_manifest:
-                return semantic_manifest
+                return self._annotate_semantic_guided_resolution(semantic_manifest, semantic_guided_resolution)
         allow_family_aware_fallback = self._allow_family_aware_fallback()
-        if allow_family_aware_fallback and self._is_sqli_family():
-            return self._fallback_manifest_sqli(
+        name_driven_family_override = self._name_driven_family_for_explicit_family_fallback() if allow_family_aware_fallback else ""
+        if self._is_name_driven_requirement():
+            allow_family_aware_fallback = bool(allow_family_aware_fallback and name_driven_family_override)
+        if allow_family_aware_fallback and (name_driven_family_override == "sqli" or (not name_driven_family_override and self._is_sqli_family())):
+            return self._annotate_semantic_guided_resolution(self._fallback_manifest_sqli(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -950,9 +966,9 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
-            )
-        if allow_family_aware_fallback and self._is_csrf_family():
-            return self._fallback_manifest_csrf(
+            ), semantic_guided_resolution)
+        if allow_family_aware_fallback and (name_driven_family_override == "csrf" or (not name_driven_family_override and self._is_csrf_family())):
+            return self._annotate_semantic_guided_resolution(self._fallback_manifest_csrf(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -960,9 +976,9 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
-            )
-        if allow_family_aware_fallback and self._is_ssrf_family():
-            return self._fallback_manifest_ssrf(
+            ), semantic_guided_resolution)
+        if allow_family_aware_fallback and (name_driven_family_override == "ssrf" or (not name_driven_family_override and self._is_ssrf_family())):
+            return self._annotate_semantic_guided_resolution(self._fallback_manifest_ssrf(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -970,9 +986,9 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
-            )
-        if allow_family_aware_fallback and self._is_xss_family():
-            return self._fallback_manifest_xss(
+            ), semantic_guided_resolution)
+        if allow_family_aware_fallback and (name_driven_family_override == "xss" or (not name_driven_family_override and self._is_xss_family())):
+            return self._annotate_semantic_guided_resolution(self._fallback_manifest_xss(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -980,9 +996,9 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
-            )
-        if allow_family_aware_fallback and self._is_deserialization_family():
-            return self._fallback_manifest_deserialization(
+            ), semantic_guided_resolution)
+        if allow_family_aware_fallback and (name_driven_family_override == "deserialization" or (not name_driven_family_override and self._is_deserialization_family())):
+            return self._annotate_semantic_guided_resolution(self._fallback_manifest_deserialization(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -990,9 +1006,9 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
-            )
-        if allow_family_aware_fallback and self._is_template_injection_family():
-            return self._fallback_manifest_template_injection(
+            ), semantic_guided_resolution)
+        if allow_family_aware_fallback and (name_driven_family_override == "template_injection" or (not name_driven_family_override and self._is_template_injection_family())):
+            return self._annotate_semantic_guided_resolution(self._fallback_manifest_template_injection(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -1000,9 +1016,9 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
-            )
-        if allow_family_aware_fallback and self._is_open_redirect_family():
-            return self._fallback_manifest_open_redirect(
+            ), semantic_guided_resolution)
+        if allow_family_aware_fallback and (name_driven_family_override == "open_redirect" or (not name_driven_family_override and self._is_open_redirect_family())):
+            return self._annotate_semantic_guided_resolution(self._fallback_manifest_open_redirect(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -1010,9 +1026,9 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
-            )
-        if allow_family_aware_fallback and self._is_path_traversal_family():
-            return self._fallback_manifest_path_traversal(
+            ), semantic_guided_resolution)
+        if allow_family_aware_fallback and (name_driven_family_override == "path_traversal" or (not name_driven_family_override and self._is_path_traversal_family())):
+            return self._annotate_semantic_guided_resolution(self._fallback_manifest_path_traversal(
                 vuln_id=str(vuln_id),
                 normalized_vuln=normalized_vuln,
                 stack=str(stack),
@@ -1020,7 +1036,7 @@ class SynthesisEngine:
                 notes=notes,
                 success_signature=success_signature,
                 flag_token=flag_token,
-            )
+            ), semantic_guided_resolution)
 
         reflect_path = "/reflect"
         default_payload = "<script>alert(1)</script>"
@@ -1069,7 +1085,7 @@ class SynthesisEngine:
             ),
         )
 
-        return {
+        return self._annotate_semantic_guided_resolution({
             "intent": f"{vuln_id} fallback synthesis",
             "pattern_tags": self._fallback_pattern_tags(vuln_id),
             "files": [
@@ -1116,7 +1132,7 @@ class SynthesisEngine:
                 "generation_origin": "deterministic_fallback",
                 "fallback_class": "generic_unsupported_family",
             },
-        }
+        }, semantic_guided_resolution)
 
     def _dynamic_eval_enabled(self) -> bool:
         requirement = self._requirement if isinstance(self._requirement, dict) else {}
@@ -1139,6 +1155,9 @@ class SynthesisEngine:
 
     def _is_name_driven_requirement(self) -> bool:
         requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+        if isinstance(request_ir, dict) and request_ir.get("name_driven") is True:
+            return True
         request_identity = requirement.get("request_identity") if isinstance(requirement.get("request_identity"), dict) else {}
         if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
             return True
@@ -1161,19 +1180,60 @@ class SynthesisEngine:
         summary = payload.get("family_hypothesis_summary") if isinstance(payload.get("family_hypothesis_summary"), dict) else {}
         return summary if isinstance(summary, dict) else {}
 
+    def _family_hypothesis_ranked_entry(self, family: str) -> Dict[str, Any]:
+        target = str(family or "").strip().lower()
+        if not target:
+            return {}
+        summary = self._family_hypothesis_summary()
+        ranked = summary.get("ranked_families") if isinstance(summary.get("ranked_families"), list) else []
+        for entry in ranked:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("family") or "").strip().lower() == target:
+                return entry
+        return {}
+
     def _request_identity_guided_family(self) -> str:
         requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
         request_identity = requirement.get("request_identity") if isinstance(requirement.get("request_identity"), dict) else {}
         name_resolution = requirement.get("name_resolution") if isinstance(requirement.get("name_resolution"), dict) else {}
+        family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
+        resolution_state = str((request_ir or {}).get("resolution_state") or "").strip().lower()
+        resolution_confidence = str((request_ir or {}).get("resolution_confidence") or "").strip().lower()
+        if resolution_state in {"catalog_alias", "explicit_identifier"} and resolution_confidence == "high":
+            for entry in family_candidates:
+                if not isinstance(entry, dict):
+                    continue
+                family = str(entry.get("family") or "").strip().lower()
+                if family:
+                    return family
         resolved_vuln_id = str(
+            (request_ir or {}).get("resolved_vuln_id")
+            or
             (request_identity or {}).get("resolved_vuln_id")
             or (name_resolution or {}).get("resolved_vuln_id")
             or requirement.get("vuln_id")
             or ""
         ).strip()
-        request_label = str((request_identity or {}).get("request_label") or requirement.get("vuln_name") or "").strip()
-        match_class = str((request_identity or {}).get("match_class") or (name_resolution or {}).get("match_class") or "").strip().lower()
-        confidence = str((request_identity or {}).get("confidence") or (name_resolution or {}).get("confidence") or "").strip().lower()
+        request_label = str(
+            (request_ir or {}).get("request_label")
+            or (request_identity or {}).get("request_label")
+            or requirement.get("vuln_name")
+            or ""
+        ).strip()
+        match_class = str(
+            (request_ir or {}).get("resolution_match_class")
+            or (request_identity or {}).get("match_class")
+            or (name_resolution or {}).get("match_class")
+            or ""
+        ).strip().lower()
+        confidence = str(
+            (request_ir or {}).get("resolution_confidence")
+            or (request_identity or {}).get("confidence")
+            or (name_resolution or {}).get("confidence")
+            or ""
+        ).strip().lower()
         if match_class not in {"catalog_alias", "exact_identifier"} or confidence != "high":
             return ""
         entry = resolve_vuln_catalog_entry(
@@ -1183,6 +1243,34 @@ class SynthesisEngine:
         if not isinstance(entry, dict):
             return ""
         return str(entry.get("family") or "").strip().lower()
+
+    def _name_driven_family_for_explicit_family_fallback(self) -> str:
+        if not self._is_name_driven_requirement():
+            return ""
+        request_family = self._request_identity_guided_family()
+        if request_family:
+            return request_family
+        requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+        vuln_id = str(requirement.get("vuln_id") or "").strip()
+        raw_label = str(
+            (request_ir or {}).get("request_label")
+            or requirement.get("vuln_name")
+            or requirement.get("vuln_label")
+            or ""
+        ).strip()
+        resolved_vuln_id = str((request_ir or {}).get("resolved_vuln_id") or vuln_id or "").strip()
+        resolution_state = str((request_ir or {}).get("resolution_state") or "").strip().lower()
+        resolution_confidence = str((request_ir or {}).get("resolution_confidence") or "").strip().lower()
+        if resolution_state in {"catalog_alias", "explicit_identifier"} and resolution_confidence == "high":
+            entry = resolve_vuln_catalog_entry(vuln_id=resolved_vuln_id or vuln_id, raw_label=raw_label)
+            if isinstance(entry, dict):
+                return str(entry.get("family") or "").strip().lower()
+        if vuln_id.upper().startswith("NAME-"):
+            entry = resolve_vuln_catalog_entry(vuln_id=vuln_id, raw_label=raw_label or vuln_id)
+            if isinstance(entry, dict):
+                return str(entry.get("family") or "").strip().lower()
+        return ""
 
     def _can_use_request_identity_guided_family(self, family: str) -> bool:
         if not family:
@@ -1203,6 +1291,18 @@ class SynthesisEngine:
         request_family = self._request_identity_guided_family()
         if request_family != family:
             return False
+        ranked_entry = self._family_hypothesis_ranked_entry(family)
+        ranked_confidence = str(ranked_entry.get("confidence") or "").strip().lower()
+        ranked_bases = ranked_entry.get("bases") if isinstance(ranked_entry.get("bases"), list) else []
+        if ranked_confidence == "high":
+            return True
+        if any(
+            isinstance(item, dict)
+            and str(item.get("basis") or "").strip().lower() == "vuln_id"
+            and str(item.get("confidence") or "").strip().lower() == "high"
+            for item in ranked_bases
+        ):
+            return True
         # Only allow this recovery when retrieval is clearly degraded/noisy.
         if not search_degraded and "guard fallback mode" not in quality_reason and relevance_confidence not in {"low", ""}:
             return False
@@ -1285,49 +1385,175 @@ class SynthesisEngine:
             ]
         return normalized
 
-    def _semantic_guided_fallback_family(self) -> str:
+    def _semantic_guided_family_candidates(self) -> List[str]:
         signature = self._semantic_guided_signature()
         if not signature:
-            return ""
+            return []
         sink_terms = set(signature.get("sink") or [])
         precondition_terms = set(signature.get("exploit_precondition") or [])
         input_terms = set(signature.get("input_vector") or [])
-        if (
+        candidates: List[str] = []
+
+        def add_candidate(family: str) -> None:
+            token = str(family or "").strip().lower()
+            if token and token not in candidates:
+                candidates.append(token)
+
+        template_sink_observed = (
             "render_template_string" in sink_terms
-            and any("template injection" in term or "server-side template injection" in term for term in precondition_terms)
-        ):
-            family = "template_injection"
-            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+            or "jinja2 template rendering from string" in sink_terms
+            or "template.render" in sink_terms
+            or "htmlresponse" in sink_terms
+        )
+        template_precondition_observed = any(
+            "template injection" in term
+            or "server-side template injection" in term
+            or "template source string" in term
+            or "embedded into template source" in term
+            or "without escaping" in term
+            or "without escaping/sandboxing" in term
+            for term in precondition_terms
+        )
+        if template_sink_observed and template_precondition_observed:
+            add_candidate("template_injection")
         if any("cross-site scripting" in term or "unescaped reflection" in term or "<script>" in term for term in precondition_terms):
-            family = "xss"
-            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+            add_candidate("xss")
         if "redirect(" in sink_terms or any("open redirect" in term or "external redirect" in term for term in precondition_terms):
-            family = "open_redirect"
-            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+            add_candidate("open_redirect")
         if any(term in sink_terms for term in {"open(", "send_file", "send_from_directory"}) or any(
             "path traversal" in term or "../" in term for term in precondition_terms
         ):
-            family = "path_traversal"
-            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+            add_candidate("path_traversal")
         if any(term in sink_terms for term in {"requests.get", "urllib.request", "http client request"}) or any(
             "server-side request forgery" in term for term in precondition_terms
         ):
-            family = "ssrf"
-            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+            add_candidate("ssrf")
         if any(term in sink_terms for term in {"pickle.loads", "yaml.load", "jsonpickle.decode"}) or any(
             "untrusted deserialization" in term or "serialized input" in term for term in precondition_terms
         ):
-            family = "deserialization"
-            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+            add_candidate("deserialization")
+        if any(term in sink_terms for term in {"subprocess", "os.system", "shell=true", "command execution sink"}) or any(
+            "command injection" in term or "user input in command" in term for term in precondition_terms
+        ):
+            add_candidate("command_injection")
+        if any(term in sink_terms for term in {"eval(", "exec(", "code execution sink"}) or any(
+            "code injection" in term or "user input reaches eval" in term for term in precondition_terms
+        ):
+            add_candidate("code_injection")
+        if any(
+            term in sink_terms for term in {"directory search", "search_directory(", "ldap filter construction"}
+        ) or any("ldap injection" in term or "filter bypass" in term for term in precondition_terms):
+            add_candidate("ldap_injection")
+        if any("etree.xmlparser" in term or "etree.fromstring" in term for term in sink_terms) or any(
+            "xml external entity" in term or term == "xxe" or "external entity resolution" in term
+            for term in precondition_terms
+        ):
+            add_candidate("xxe")
         if any("missing csrf token validation" in term for term in precondition_terms) or "cross-site request" in input_terms:
-            family = "csrf"
-            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
+            add_candidate("csrf")
         if any(term in sink_terms for term in {"sql query execution", "sqlite3.execute", "cur.execute"}) or any(
             "sql injection" in term for term in precondition_terms
         ):
-            family = "sqli"
-            return family if self._family_hypothesis_allows_semantic_guided_family(family) else ""
-        return ""
+            add_candidate("sqli")
+        return candidates
+
+    def _semantic_guided_fallback_resolution(self) -> Dict[str, Any]:
+        candidates = self._semantic_guided_family_candidates()
+        resolution: Dict[str, Any] = {
+            "family": "",
+            "selection_source": "",
+            "candidate_families": list(candidates),
+            "ambiguous": len(candidates) > 1,
+            "abstain_reason": "",
+        }
+        if not candidates:
+            resolution["abstain_reason"] = "no_semantic_family_match"
+            return resolution
+        if len(candidates) == 1:
+            family = candidates[0]
+            if self._family_hypothesis_allows_semantic_guided_family(family):
+                resolution["family"] = family
+                resolution["selection_source"] = "semantic_signature"
+                return resolution
+            resolution["abstain_reason"] = "family_hypothesis_rejected"
+            return resolution
+
+        request_family = self._request_identity_guided_family()
+        if request_family in candidates and self._family_hypothesis_allows_semantic_guided_family(request_family):
+            resolution["family"] = request_family
+            resolution["selection_source"] = "request_resolution"
+            return resolution
+
+        summary = self._family_hypothesis_summary()
+        top_family = str(summary.get("top_family") or "").strip().lower()
+        top_confidence = str(summary.get("top_confidence") or "").strip().lower()
+        try:
+            top_margin = float(summary.get("top_margin") or 0.0)
+        except Exception:
+            top_margin = 0.0
+        ambiguous = summary.get("ambiguous") is True
+        if (
+            top_family in candidates
+            and top_confidence == "high"
+            and not ambiguous
+            and top_margin >= 0.30
+            and self._family_hypothesis_allows_semantic_guided_family(top_family)
+        ):
+            resolution["family"] = top_family
+            resolution["selection_source"] = "researcher_top_family"
+            return resolution
+
+        ranked = summary.get("ranked_families") if isinstance(summary.get("ranked_families"), list) else []
+        high_ranked: List[str] = []
+        for entry in ranked:
+            if not isinstance(entry, dict):
+                continue
+            family = str(entry.get("family") or "").strip().lower()
+            confidence = str(entry.get("confidence") or "").strip().lower()
+            if family in candidates and confidence == "high" and family not in high_ranked:
+                high_ranked.append(family)
+        if len(high_ranked) == 1 and self._family_hypothesis_allows_semantic_guided_family(high_ranked[0]):
+            resolution["family"] = high_ranked[0]
+            resolution["selection_source"] = "researcher_ranked_family"
+            return resolution
+
+        allowed = [family for family in candidates if self._family_hypothesis_allows_semantic_guided_family(family)]
+        if len(allowed) == 1:
+            resolution["family"] = allowed[0]
+            resolution["selection_source"] = "family_hypothesis_gate"
+            return resolution
+        resolution["abstain_reason"] = "ambiguous_semantic_family_match"
+        return resolution
+
+    def _semantic_guided_fallback_family(self) -> str:
+        return str(self._semantic_guided_fallback_resolution().get("family") or "").strip().lower()
+
+    def _annotate_semantic_guided_resolution(
+        self,
+        manifest: Dict[str, Any],
+        resolution: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not isinstance(manifest, dict):
+            return manifest
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        candidate_families = resolution.get("candidate_families") if isinstance(resolution.get("candidate_families"), list) else []
+        if candidate_families:
+            metadata["semantic_guided_candidate_families"] = [
+                str(item).strip().lower()
+                for item in candidate_families
+                if isinstance(item, str) and str(item).strip()
+            ]
+        selection_source = str(resolution.get("selection_source") or "").strip().lower()
+        if selection_source:
+            metadata["semantic_guided_selection_source"] = selection_source
+        abstain_reason = str(resolution.get("abstain_reason") or "").strip().lower()
+        if abstain_reason:
+            metadata["semantic_guided_abstain_reason"] = abstain_reason
+        metadata["semantic_guided_ambiguous"] = resolution.get("ambiguous") is True
+        manifest["metadata"] = metadata
+        return manifest
 
     def _semantic_guided_fallback_manifest(
         self,
@@ -1340,6 +1566,9 @@ class SynthesisEngine:
         notes: str,
         success_signature: str,
         flag_token: str,
+        selection_source: str = "",
+        candidate_families: Optional[List[str]] = None,
+        ambiguous: bool = False,
     ) -> Dict[str, Any] | None:
         builders = {
             "open_redirect": self._minimal_dynamic_manifest_open_redirect,
@@ -1347,9 +1576,13 @@ class SynthesisEngine:
             "path_traversal": self._minimal_dynamic_manifest_path_traversal,
             "ssrf": self._minimal_dynamic_manifest_ssrf,
             "deserialization": self._minimal_dynamic_manifest_deserialization,
-            "sqli": self._fallback_manifest_sqli,
-            "csrf": self._fallback_manifest_csrf,
-            "template_injection": self._fallback_manifest_template_injection,
+            "command_injection": self._minimal_dynamic_manifest_command_injection,
+            "code_injection": self._minimal_dynamic_manifest_code_injection,
+            "ldap_injection": self._minimal_dynamic_manifest_ldap_injection,
+            "xxe": self._minimal_dynamic_manifest_xxe,
+            "sqli": self._minimal_dynamic_manifest_sqli,
+            "csrf": self._minimal_dynamic_manifest_csrf,
+            "template_injection": self._minimal_dynamic_manifest_template_injection,
         }
         builder = builders.get(family)
         if builder is None:
@@ -1366,6 +1599,15 @@ class SynthesisEngine:
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["fallback_class"] = "semantic_guided"
         metadata["semantic_guided_family"] = family
+        if selection_source:
+            metadata["semantic_guided_selection_source"] = selection_source
+        if isinstance(candidate_families, list) and candidate_families:
+            metadata["semantic_guided_candidate_families"] = [
+                str(item).strip().lower()
+                for item in candidate_families
+                if isinstance(item, str) and str(item).strip()
+            ]
+        metadata["semantic_guided_ambiguous"] = bool(ambiguous)
         metadata.setdefault("materializer", "asset_template")
         manifest["metadata"] = metadata
         return manifest
@@ -1528,7 +1770,7 @@ class SynthesisEngine:
         else:
             app_content = "\n".join(
                 [
-                    "from flask import Flask, request, Response, jsonify",
+                    "from flask import Flask, request, jsonify, render_template_string",
                     "",
                     "app = Flask(__name__)",
                     "",
@@ -1538,8 +1780,9 @@ class SynthesisEngine:
                     "",
                     "@app.get('/echo')",
                     "def echo():",
-                    "    payload = request.args.get('q', '')",
-                    "    return Response(f'<html><body>{payload}</body></html>', mimetype='text/html')",
+                    "    name = request.args.get('name', '')",
+                    "    template = f'<html><body>{name}</body></html>'",
+                    "    return render_template_string(template)",
                     "",
                     "if __name__ == '__main__':",
                     f"    app.run(host='0.0.0.0', port={port})",
@@ -1561,7 +1804,7 @@ class SynthesisEngine:
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
                 "    args = parser.parse_args()",
-                "    url = args.base_url.rstrip('/') + '/echo?q=' + PAYLOAD",
+                "    url = args.base_url.rstrip('/') + '/echo?name=' + PAYLOAD",
                 "    request = Request(url, method='GET')",
                 "    with urlopen(request, timeout=5) as response:",
                 "        body = response.read().decode('utf-8', errors='ignore')",
@@ -2015,6 +2258,845 @@ class SynthesisEngine:
         manifest["metadata"] = metadata
         return manifest
 
+    def _minimal_dynamic_manifest_sqli(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG-sqli-demo-token"
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "from pathlib import Path",
+                    "import sqlite3",
+                    "",
+                    "from fastapi import FastAPI, Query",
+                    "",
+                    "app = FastAPI()",
+                    "DB_PATH = Path('/tmp/sqli-demo.db')",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "SCHEMA_SQL = '''",
+                    "CREATE TABLE IF NOT EXISTS users (",
+                    "    id INTEGER PRIMARY KEY AUTOINCREMENT,",
+                    "    username TEXT,",
+                    "    password TEXT",
+                    ");",
+                    "DELETE FROM users;",
+                    "INSERT INTO users (username, password) VALUES ('admin', 'secret');",
+                    "INSERT INTO users (username, password) VALUES ('guest', 'guest');",
+                    "'''",
+                    "",
+                    "def init_db() -> None:",
+                    "    conn = sqlite3.connect(DB_PATH)",
+                    "    conn.executescript(SCHEMA_SQL)",
+                    "    conn.commit()",
+                    "    conn.close()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/login')",
+                    "def login(",
+                    "    username: str = Query(default=''),",
+                    "    password: str = Query(default=''),",
+                    "):",
+                    "    query = \"SELECT id, username FROM users WHERE username = '\" + username + \"' AND password = '\" + password + \"'\"",
+                    "    conn = sqlite3.connect(DB_PATH)",
+                    "    conn.row_factory = sqlite3.Row",
+                    "    rows = conn.execute(query).fetchall()",
+                    "    conn.close()",
+                    "    return {'success': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': FLAG_TOKEN}",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    "    init_db()",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "from pathlib import Path",
+                    "import sqlite3",
+                    "",
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    "DB_PATH = Path('/tmp/sqli-demo.db')",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "SCHEMA_SQL = '''",
+                    "CREATE TABLE IF NOT EXISTS users (",
+                    "    id INTEGER PRIMARY KEY AUTOINCREMENT,",
+                    "    username TEXT,",
+                    "    password TEXT",
+                    ");",
+                    "DELETE FROM users;",
+                    "INSERT INTO users (username, password) VALUES ('admin', 'secret');",
+                    "INSERT INTO users (username, password) VALUES ('guest', 'guest');",
+                    "'''",
+                    "",
+                    "def init_db() -> None:",
+                    "    conn = sqlite3.connect(DB_PATH)",
+                    "    conn.executescript(SCHEMA_SQL)",
+                    "    conn.commit()",
+                    "    conn.close()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/login')",
+                    "def login():",
+                    "    username = request.args.get('username', '')",
+                    "    password = request.args.get('password', '')",
+                    "    query = \"SELECT id, username FROM users WHERE username = '\" + username + \"' AND password = '\" + password + \"'\"",
+                    "    conn = sqlite3.connect(DB_PATH)",
+                    "    conn.row_factory = sqlite3.Row",
+                    "    rows = conn.execute(query).fetchall()",
+                    "    conn.close()",
+                    "    return jsonify({'success': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': FLAG_TOKEN})",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    init_db()",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "from urllib.parse import urlencode",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "DEFAULT_PARAMS = {'username': \"admin' OR '1'='1\", 'password': 'irrelevant'}",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/login?' + urlencode(DEFAULT_PARAMS)",
+                "    request = Request(url, method='GET')",
+                "    with urlopen(request, timeout=5) as response:",
+                "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
+                "    rows = payload.get('rows') or []",
+                "    if str(payload.get('flag')) == FLAG_TOKEN and any(isinstance(row, dict) and row.get('username') == 'admin' for row in rows):",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('SQL injection payload did not reach the vulnerable query path')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_command_injection(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG-command-injection-demo-token"
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "import subprocess",
+                    "",
+                    "from fastapi import FastAPI, Query",
+                    "",
+                    "app = FastAPI()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/run')",
+                    "def run(cmd: str = Query(default='echo safe')):",
+                    "    output = subprocess.check_output('echo start && ' + cmd, shell=True, text=True, stderr=subprocess.STDOUT)",
+                    "    return {'success': True, 'output': output}",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "import subprocess",
+                    "",
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/run')",
+                    "def run():",
+                    "    cmd = request.args.get('cmd', 'echo safe')",
+                    "    output = subprocess.check_output('echo start && ' + cmd, shell=True, text=True, stderr=subprocess.STDOUT)",
+                    "    return jsonify({'success': True, 'output': output})",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "from urllib.parse import urlencode",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "DEFAULT_PARAMS = {'cmd': 'echo ' + FLAG_TOKEN}",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/run?' + urlencode(DEFAULT_PARAMS)",
+                "    request = Request(url, method='GET')",
+                "    with urlopen(request, timeout=5) as response:",
+                "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
+                "    if str(payload.get('success')) == 'True' and FLAG_TOKEN in str(payload.get('output', '')):",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('Command injection payload did not reach the shell sink')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_code_injection(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG-code-injection-demo-token"
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "from fastapi import FastAPI, Query",
+                    "",
+                    "app = FastAPI()",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/eval')",
+                    "def evaluate(code: str = Query(default='0')):",
+                    "    result = eval(code, {'FLAG_TOKEN': FLAG_TOKEN})",
+                    "    return {'success': True, 'result': str(result)}",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/eval')",
+                    "def evaluate():",
+                    "    code = request.args.get('code', '0')",
+                    "    result = eval(code, {'FLAG_TOKEN': FLAG_TOKEN})",
+                    "    return jsonify({'success': True, 'result': str(result)})",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "from urllib.parse import urlencode",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "DEFAULT_PARAMS = {'code': 'FLAG_TOKEN'}",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/eval?' + urlencode(DEFAULT_PARAMS)",
+                "    request = Request(url, method='GET')",
+                "    with urlopen(request, timeout=5) as response:",
+                "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
+                "    if str(payload.get('success')) == 'True' and str(payload.get('result')) == FLAG_TOKEN:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('Code injection payload did not reach eval sink')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_ldap_injection(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG-ldap-injection-demo-token"
+        shared_lines = [
+            f"FLAG_TOKEN = {effective_flag!r}",
+            "DIRECTORY = [",
+            "    {'uid': 'guest', 'role': 'user'},",
+            "    {'uid': 'admin', 'role': 'admin', 'flag': FLAG_TOKEN},",
+            "]",
+            "",
+            "def search_directory(ldap_filter: str):",
+            "    if '*' in ldap_filter or '|' in ldap_filter:",
+            "        return DIRECTORY",
+            "    needle = ldap_filter.replace('(uid=', '').replace(')', '')",
+            "    return [entry for entry in DIRECTORY if entry.get('uid') == needle]",
+            "",
+        ]
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "from fastapi import FastAPI, Query",
+                    "",
+                    "app = FastAPI()",
+                    *shared_lines,
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/search')",
+                    "def search(user: str = Query(default='guest')):",
+                    "    ldap_filter = '(uid=' + user + ')'",
+                    "    return {'results': search_directory(ldap_filter)}",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    *shared_lines,
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/search')",
+                    "def search():",
+                    "    user = request.args.get('user', 'guest')",
+                    "    ldap_filter = '(uid=' + user + ')'",
+                    "    return jsonify({'results': search_directory(ldap_filter)})",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "from urllib.parse import urlencode",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "DEFAULT_PARAMS = {'user': '*)(uid=*)'}",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/search?' + urlencode(DEFAULT_PARAMS)",
+                "    request = Request(url, method='GET')",
+                "    with urlopen(request, timeout=5) as response:",
+                "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
+                "    results = payload.get('results') or []",
+                "    if any(isinstance(entry, dict) and str(entry.get('flag')) == FLAG_TOKEN for entry in results):",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('LDAP injection payload did not bypass the directory filter')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_xxe(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG-xxe-demo-token"
+        shared_lines = [
+            "from pathlib import Path",
+            "from lxml import etree",
+            "",
+            f"FLAG_TOKEN = {effective_flag!r}",
+            "SECRET_PATH = Path('/tmp/xxe-secret.txt')",
+            "SECRET_PATH.write_text(FLAG_TOKEN, encoding='utf-8')",
+            "",
+        ]
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    *shared_lines,
+                    "from fastapi import FastAPI, Request",
+                    "",
+                    "app = FastAPI()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.post('/parse')",
+                    "async def parse(request: Request):",
+                    "    xml_body = await request.body()",
+                    "    parser = etree.XMLParser(load_dtd=True, resolve_entities=True)",
+                    "    root = etree.fromstring(xml_body, parser=parser)",
+                    "    return {'text': ''.join(root.itertext())}",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\nlxml==5.2.2\n"
+        else:
+            app_content = "\n".join(
+                [
+                    *shared_lines,
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.post('/parse')",
+                    "def parse():",
+                    "    xml_body = request.get_data()",
+                    "    parser = etree.XMLParser(load_dtd=True, resolve_entities=True)",
+                    "    root = etree.fromstring(xml_body, parser=parser)",
+                    "    return jsonify({'text': ''.join(root.itertext())})",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\nlxml==5.2.2\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "PAYLOAD = \"\"\"<!DOCTYPE root [<!ENTITY xxe SYSTEM 'file:///tmp/xxe-secret.txt'>]><root>&xxe;</root>\"\"\"",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    request = Request(args.base_url.rstrip('/') + '/parse', data=PAYLOAD.encode('utf-8'), method='POST')",
+                "    request.add_header('Content-Type', 'application/xml')",
+                "    with urlopen(request, timeout=5) as response:",
+                "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
+                "    if FLAG_TOKEN in str(payload.get('text', '')):",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('XXE payload did not resolve external entity')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_csrf(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG-csrf-demo-token"
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "from fastapi import FastAPI",
+                    "",
+                    "app = FastAPI()",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "app.state.balance = 1000",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.post('/transfer')",
+                    "def transfer(amount: int = 100):",
+                    "    app.state.balance -= amount",
+                    "    return {'success': True, 'balance': app.state.balance, 'flag': FLAG_TOKEN}",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "BALANCE = {'value': 1000}",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.post('/transfer')",
+                    "def transfer():",
+                    "    amount = int(request.args.get('amount', '100'))",
+                    "    BALANCE['value'] -= amount",
+                    "    return jsonify({'success': True, 'balance': BALANCE['value'], 'flag': FLAG_TOKEN})",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "import json",
+                "from urllib.parse import quote",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/transfer?amount=' + quote('100')",
+                "    request = Request(url, method='POST')",
+                "    with urlopen(request, timeout=5) as response:",
+                "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
+                "    if payload.get('success') is True and str(payload.get('flag')) == FLAG_TOKEN:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('CSRF flow did not mutate state as expected')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
+    def _minimal_dynamic_manifest_template_injection(
+        self,
+        *,
+        vuln_id: str,
+        normalized_vuln: str,
+        stack: str,
+        port: int,
+        notes: str,
+        success_signature: str,
+        flag_token: str,
+    ) -> Dict[str, Any]:
+        effective_flag = flag_token or "FLAG{SSTI_OK}"
+        if self._fastapi_stack(stack):
+            app_content = "\n".join(
+                [
+                    "from fastapi import FastAPI, Query",
+                    "from fastapi.responses import HTMLResponse",
+                    "from jinja2 import Template",
+                    "",
+                    "app = FastAPI()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/render', response_class=HTMLResponse)",
+                    "def render(name: str = Query(default='')):",
+                    "    template = '<h1>Hello ' + name + '</h1>'",
+                    "    template = Template(template)",
+                    "    rendered = template.render()",
+                    "    return HTMLResponse(rendered)",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\nJinja2==3.1.4\n"
+        else:
+            app_content = "\n".join(
+                [
+                    "from flask import Flask, jsonify, request, render_template_string",
+                    "",
+                    "app = Flask(__name__)",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/render')",
+                    "def render():",
+                    "    name = request.args.get('name', '')",
+                    "    template = '<h1>Hello ' + name + '</h1>'",
+                    "    return render_template_string(template)",
+                    "",
+                    "if __name__ == '__main__':",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\n"
+        poc_content = "\n".join(
+            [
+                "import argparse",
+                "from urllib.parse import quote",
+                "from urllib.request import Request, urlopen",
+                "",
+                f"SUCCESS_SIGNATURE = {success_signature!r}",
+                f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "PAYLOAD = '{{7*7}}'",
+                "",
+                "def main() -> int:",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    args = parser.parse_args()",
+                "    url = args.base_url.rstrip('/') + '/render?name=' + quote(PAYLOAD)",
+                "    request = Request(url, method='GET')",
+                "    with urlopen(request, timeout=5) as response:",
+                "        body = response.read().decode('utf-8', errors='ignore')",
+                "    if '49' in body:",
+                "        print(SUCCESS_SIGNATURE)",
+                "        print(FLAG_TOKEN)",
+                "        return 0",
+                "    print('Template payload did not evaluate server-side')",
+                "    return 1",
+                "",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+                "",
+            ]
+        )
+        manifest = self._fallback_manifest_from_parts(
+            vuln_id=normalized_vuln or vuln_id,
+            stack=stack,
+            port=port,
+            notes=notes,
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            requirements_content=requirements_content,
+            app_content=app_content,
+            poc_content=poc_content,
+        )
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        metadata["materializer"] = "minimal_dynamic"
+        manifest["metadata"] = metadata
+        return manifest
+
     def _fallback_stack_id(self) -> str:
         requirement = self._requirement if isinstance(self._requirement, dict) else {}
         runtime_recipe = requirement.get("runtime_recipe") if isinstance(requirement.get("runtime_recipe"), dict) else {}
@@ -2022,19 +3104,19 @@ class SynthesisEngine:
         framework = str(runtime_recipe.get("framework") or requirement.get("framework") or "").strip().lower()
         if language and framework:
             return f"{language}/{framework}"
+        request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+        stack_candidates = request_ir.get("stack_candidates") if isinstance(request_ir.get("stack_candidates"), list) else []
+        request_ir_stack = self._single_confident_stack_candidate_id(stack_candidates)
+        if request_ir_stack:
+            return request_ir_stack
         tech_stack_candidates = (
             self._researcher_report_payload.get("tech_stack_candidates")
             if isinstance(self._researcher_report_payload, dict)
             else []
         )
-        if isinstance(tech_stack_candidates, list):
-            for entry in tech_stack_candidates:
-                if not isinstance(entry, dict):
-                    continue
-                cand_language = str(entry.get("language") or "").strip().lower()
-                cand_framework = str(entry.get("framework") or "").strip().lower()
-                if cand_language and cand_framework:
-                    return f"{cand_language}/{cand_framework}"
+        researcher_stack = self._single_confident_stack_candidate_id(tech_stack_candidates)
+        if researcher_stack:
+            return researcher_stack
         stack_hypotheses = requirement.get("stack_hypotheses") if isinstance(requirement.get("stack_hypotheses"), list) else []
         if isinstance(stack_hypotheses, list):
             for entry in stack_hypotheses:
@@ -2047,6 +3129,36 @@ class SynthesisEngine:
         return "python/flask"
 
     @staticmethod
+    def _stack_confidence_rank(value: str) -> int:
+        token = str(value or "").strip().lower()
+        if token == "high":
+            return 3
+        if token == "medium":
+            return 2
+        if token == "low":
+            return 1
+        return 0
+
+    @classmethod
+    def _single_confident_stack_candidate_id(cls, entries: Any) -> str:
+        if not isinstance(entries, list) or len(entries) != 1:
+            return ""
+        entry = entries[0]
+        if not isinstance(entry, dict):
+            return ""
+        confidence = str(entry.get("confidence") or "").strip().lower()
+        if cls._stack_confidence_rank(confidence) < cls._stack_confidence_rank("medium"):
+            return ""
+        stack_id = str(entry.get("stack_id") or "").strip().lower()
+        if stack_id:
+            return stack_id
+        cand_language = str(entry.get("language") or "").strip().lower()
+        cand_framework = str(entry.get("framework") or "").strip().lower()
+        if cand_language and cand_framework:
+            return f"{cand_language}/{cand_framework}"
+        return ""
+
+    @staticmethod
     def _fastapi_stack(stack: str) -> bool:
         return str(stack or "").strip().lower().endswith("/fastapi")
 
@@ -2057,7 +3169,7 @@ class SynthesisEngine:
             return False
         if self._is_name_driven_requirement() and self._name_only_mode() == "strict_dynamic":
             return False
-        if vuln_id.upper().startswith("NAME-"):
+        if self._is_name_driven_requirement():
             policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
             if not bool(policy.get("allow_name_family_fallback")):
                 return False

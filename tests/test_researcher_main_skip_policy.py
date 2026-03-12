@@ -33,3 +33,23 @@ def test_researcher_main_skip_helper_respects_open_world_strict_for_name_driven_
     )
 
     assert should_skip is False
+
+
+def test_researcher_main_skip_helper_uses_request_ir_for_canonicalized_name_driven_lane() -> None:
+    bundle = SimpleNamespace(vuln_id="CWE-79")
+    should_skip = _should_skip_bundle_research(
+        plan={"policy": {"name_only_mode": "dynamic"}},
+        requirement_view={
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "resolution_state": "token_match",
+            },
+        },
+        bundle=bundle,
+        force_run=False,
+    )
+
+    assert should_skip is False

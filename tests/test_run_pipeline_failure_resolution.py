@@ -445,6 +445,130 @@ def test_subprocess_env_for_sid_disables_remote_llm_after_quota_failure(tmp_path
     assert env["VUL_FORCE_LLM_STUB_REASON"] == "quota_exhausted"
 
 
+def test_subprocess_env_for_sid_preserves_live_llm_requirement_for_strict_dynamic(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-quota-strict-dynamic"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "quality": "sufficient",
+                "llm_execution": {
+                    "provider_attempted": True,
+                    "stub_fallback": True,
+                    "last_error_class": "quota_exhausted",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(
+        run_pipeline,
+        "load_plan",
+        lambda incoming_sid: {
+            "sid": incoming_sid,
+            "policy": {
+                "name_only_mode": "strict_dynamic",
+                "name_only_contract": {
+                    "enabled": True,
+                    "mode": "strict_dynamic",
+                    "effective_mode": "strict_dynamic",
+                    "require_live_llm": True,
+                },
+            },
+            "requirement": {
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "request_identity": {"name_driven": True},
+            },
+            "run_matrix": {
+                "vuln_bundles": [
+                    {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}
+                ]
+            },
+        },
+    )
+
+    env = run_pipeline._subprocess_env_for_sid(sid)
+
+    assert env is None
+
+
+def test_strict_name_only_capability_gate_failure_rejects_forced_stub_env(monkeypatch) -> None:
+    monkeypatch.setenv("VUL_FORCE_LLM_STUB", "1")
+    monkeypatch.setenv("VUL_FORCE_LLM_STUB_REASON", "provider_disabled")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(run_pipeline, "litellm_completion", object())
+    plan = {
+        "policy": {
+            "name_only_mode": "strict_dynamic",
+            "name_only_contract": {
+                "enabled": True,
+                "mode": "strict_dynamic",
+                "effective_mode": "strict_dynamic",
+                "require_live_llm": True,
+            },
+        },
+        "requirement": {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+        },
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}
+            ]
+        },
+    }
+
+    failure = run_pipeline._strict_name_only_capability_gate_failure(plan)
+
+    assert failure["metadata"]["terminal_failure_class"] == "strict_dynamic_live_llm_unavailable"
+    assert "forced_stub_env" in failure["reason"]
+
+
+def test_strict_name_only_capability_gate_failure_rejects_missing_remote_provider(monkeypatch) -> None:
+    monkeypatch.delenv("VUL_FORCE_LLM_STUB", raising=False)
+    monkeypatch.delenv("VUL_FORCE_LLM_STUB_REASON", raising=False)
+    monkeypatch.delenv("VUL_LLM_FIXTURE_GENERATOR_MANIFEST", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("VUL_WEB_SEARCH_PROVIDER", "none")
+    monkeypatch.setenv("VUL_WEB_SEARCH_ENDPOINT", "")
+    monkeypatch.setenv("VUL_WEB_SEARCH_API_KEY", "")
+    monkeypatch.setattr(run_pipeline, "litellm_completion", object())
+    plan = {
+        "policy": {
+            "name_only_mode": "strict_dynamic",
+            "name_only_contract": {
+                "enabled": True,
+                "mode": "strict_dynamic",
+                "effective_mode": "strict_dynamic",
+                "require_live_llm": True,
+                "require_remote_research": True,
+            },
+        },
+        "requirement": {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+            "researcher": {"search_policy": "remote_required"},
+        },
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}
+            ]
+        },
+    }
+
+    failure = run_pipeline._strict_name_only_capability_gate_failure(plan)
+
+    assert failure["metadata"]["terminal_failure_class"] == "strict_dynamic_remote_research_unavailable"
+    assert failure["metadata"]["search_provider"] == "none"
+    assert failure["metadata"]["require_remote_research"] is True
+    assert "remote researcher evidence" in failure["reason"]
+
+
 def test_name_only_mode_helper_defaults_to_compatibility() -> None:
     assert run_pipeline._name_only_mode({}) == "compatibility"
 
@@ -463,6 +587,65 @@ def test_strict_name_only_gate_required_only_for_name_only_strict_dynamic() -> N
             "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
         }
     ) is False
+
+
+def test_strict_name_only_gate_required_uses_request_ir_for_canonicalized_bundle() -> None:
+    assert run_pipeline._strict_name_only_gate_required(
+        {
+            "policy": {"name_only_mode": "strict_dynamic"},
+            "requirement": {
+                "vuln_id": "CWE-79",
+                "request_ir": {
+                    "request_label": "Reflected XSS",
+                    "resolved_vuln_id": "CWE-79",
+                    "name_driven": True,
+                    "resolution_state": "token_match",
+                },
+            },
+            "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-79", "slug": "cwe-79", "workspace_subdir": "app"}]},
+        }
+    ) is True
+
+
+def test_terminal_research_failure_from_semantic_profile_uses_request_ir_name_driven_signal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-semantic-profile-name-driven"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "semantic_profile.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "semantic_profile@1.0",
+                "sid": sid,
+                "slug": "cwe-79",
+                "support_level": "unsupported",
+                "compiler_supported": False,
+                "compiler_reason": "semantic family unsupported for compiler-backed generation",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "metadata_dir_for_bundle", lambda plan, bundle: metadata_root)
+    plan = {
+        "requirement": {
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "resolution_state": "token_match",
+            },
+        },
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-79", "slug": "cwe-79", "workspace_subdir": "app"}]},
+    }
+
+    failure = run_pipeline._terminal_research_failure_from_semantic_profile(plan)
+
+    assert failure["terminal"] is True
+    assert failure["bundles"][0]["slug"] == "cwe-79"
 
 
 def test_strict_name_only_gate_failure_reports_degraded_success_bundle(tmp_path: Path, monkeypatch) -> None:
@@ -600,6 +783,57 @@ def test_strict_name_only_gate_failure_is_empty_for_positive_bundle(tmp_path: Pa
     assert run_pipeline._strict_name_only_gate_failure(plan, sid) == {}
 
 
+def test_strict_name_only_live_llm_gate_failure_rejects_stub_backed_research_path(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-strict-live-llm-gate"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "quality": "sufficient",
+                "llm_execution": {
+                    "provider_attempted": True,
+                    "stub_fallback": True,
+                    "last_error_class": "provider_disabled",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    plan = {
+        "sid": sid,
+        "policy": {
+            "name_only_mode": "strict_dynamic",
+            "name_only_contract": {
+                "enabled": True,
+                "mode": "strict_dynamic",
+                "effective_mode": "strict_dynamic",
+                "require_live_llm": True,
+            },
+        },
+        "requirement": {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "request_identity": {"name_driven": True},
+        },
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}
+            ]
+        },
+    }
+
+    failure = run_pipeline._strict_name_only_live_llm_gate_failure(plan, sid)
+
+    assert failure["metadata"]["terminal_failure_class"] == "strict_dynamic_disallowed_llm_path"
+    assert failure["metadata"]["required_gate"] == "strict_dynamic"
+    assert failure["metadata"]["llm_stub_used"] is True
+    assert "llm_stub_used" in failure["reason"]
+
+
 def test_can_skip_researcher_is_disabled_for_name_only_dynamic_mode() -> None:
     plan = {
         "requirement": {
@@ -657,6 +891,28 @@ def test_can_skip_researcher_is_disabled_when_dynamic_eval_is_enabled() -> None:
         "policy": {"require_researcher_evidence": False, "dynamic_eval": True},
         "run_matrix": {
             "vuln_bundles": [{"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}]
+        },
+    }
+
+    assert run_pipeline._can_skip_researcher(plan, refresh_requested=False) is False
+
+
+def test_can_skip_researcher_is_disabled_for_request_ir_name_driven_dynamic_mode() -> None:
+    plan = {
+        "requirement": {
+            "vuln_name": "Reflected XSS",
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "resolution_state": "token_match",
+            },
+            "researcher": {},
+        },
+        "policy": {"require_researcher_evidence": False, "name_only_mode": "dynamic"},
+        "run_matrix": {
+            "vuln_bundles": [{"vuln_id": "CWE-79", "slug": "cwe-79", "workspace_subdir": "app"}]
         },
     }
 
@@ -1202,6 +1458,136 @@ def test_write_perf_summary_surfaces_remote_provider_unavailable_failure_class(t
 
     payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
     assert payload["provider_health_state"] == "remote_provider_unavailable"
+
+
+def test_write_perf_summary_surfaces_strict_dynamic_llm_gate_failure_class(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-perf-strict-dynamic-llm-gate"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "quality": "sufficient",
+                "llm_execution": {
+                    "provider_attempted": True,
+                    "stub_fallback": True,
+                    "last_error_class": "provider_disabled",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (metadata_root / "loop_state.json").write_text(
+        json.dumps(
+            {
+                "history": [
+                    {
+                        "stage": "NAME_ONLY_GATE",
+                        "reason": "strict dynamic live llm gate failed",
+                        "success": False,
+                        "timestamp": "2026-03-13T01:00:00+00:00",
+                        "metadata": {
+                            "terminal_failure_class": "strict_dynamic_disallowed_llm_path",
+                            "retry_recommended": False,
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "RESEARCH", "duration_s": 1.0, "returncode": 0, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "NAME_ONLY_GATE", "duration_s": 0.0, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 1, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["provider_health_state"] == "strict_dynamic_disallowed_llm_path"
+
+
+def test_write_perf_summary_surfaces_strict_dynamic_capability_gate_failure_class(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-perf-strict-dynamic-capability-gate"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "loop_state.json").write_text(
+        json.dumps(
+            {
+                "history": [
+                    {
+                        "stage": "CAPABILITY_CHECK",
+                        "reason": "strict dynamic capability precheck failed",
+                        "success": False,
+                        "timestamp": "2026-03-13T02:00:00+00:00",
+                        "metadata": {
+                            "terminal_failure_class": "strict_dynamic_live_llm_unavailable",
+                            "retry_recommended": False,
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "CAPABILITY_CHECK", "duration_s": 0.0, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 1, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["provider_health_state"] == "strict_dynamic_live_llm_unavailable"
+
+
+def test_write_perf_summary_surfaces_strict_dynamic_remote_capability_gate_failure_class(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-perf-strict-dynamic-remote-capability-gate"
+    metadata_root = tmp_path / "metadata" / sid
+    metadata_root.mkdir(parents=True, exist_ok=True)
+    (metadata_root / "loop_state.json").write_text(
+        json.dumps(
+            {
+                "history": [
+                    {
+                        "stage": "CAPABILITY_CHECK",
+                        "reason": "strict dynamic remote capability precheck failed",
+                        "success": False,
+                        "timestamp": "2026-03-13T03:00:00+00:00",
+                        "metadata": {
+                            "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                            "retry_recommended": False,
+                            "search_provider": "none",
+                            "search_configured": False,
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_pipeline, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    events = [
+        {"loop": 1, "stage": "CAPABILITY_CHECK", "duration_s": 0.0, "returncode": 1, "skipped": False, "note": ""},
+        {"loop": 1, "stage": "PACK", "duration_s": 0.1, "returncode": 1, "skipped": False, "note": ""},
+    ]
+
+    run_pipeline._write_perf_summary(sid, events)
+
+    payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
+    assert payload["provider_health_state"] == "strict_dynamic_remote_research_unavailable"
 
 
 def test_write_perf_summary_uses_bundle_scoped_research_failure_classes_for_provider_state(

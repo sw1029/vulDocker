@@ -124,6 +124,63 @@ def test_reviewer_surfaces_low_confidence_unknown_issue_without_blocking(tmp_pat
     assert any("confidence is low" in issue.get("issue", "").lower() for issue in summary["issues_sample"])
 
 
+def test_reviewer_surfaces_low_confidence_issue_for_request_ir_name_driven_canonicalized_lane(tmp_path: Path) -> None:
+    bundle = VulnBundle(vuln_id="CWE-79", slug="cwe-79", workspace_subdir="app")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "resolved_contract.json").write_text(
+        json.dumps(
+            {
+                "semantic_contract": {
+                    "evidence_relevance": {
+                        "confidence": "low",
+                        "negative_hit_ratio": 0.10,
+                    }
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    service = ReviewerService.__new__(ReviewerService)
+    service.sid = "sid-review"
+    service.plan = {  # type: ignore[attr-defined]
+        "requirement": {
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "resolution_state": "token_match",
+            },
+        },
+        "paths": {"metadata": str(tmp_path)},
+        "policy": {"guard": {"low_confidence_unknown_policy": "warn"}},
+    }
+    service.metadata_root = tmp_path  # type: ignore[attr-defined]
+    service.loop_controller = _LoopStub()  # type: ignore[attr-defined]
+    service.llm = _LLMStub()  # type: ignore[attr-defined]
+    service.bundles = [bundle]  # type: ignore[attr-defined]
+    service._evaluate_bundle = lambda incoming_bundle: ReviewerContext(  # type: ignore[attr-defined]
+        sid="sid-review",
+        bundle=incoming_bundle,
+        log_path=tmp_path / "run.log",
+        log_excerpt="ok",
+        success=True,
+        issues=[],
+        blocking=False,
+        reason="",
+        fix_hint="",
+    )
+    service._scan_workspace = lambda incoming_bundle, exploit_success=False: []  # type: ignore[attr-defined]
+
+    service.run()
+
+    summary = json.loads((tmp_path / "reviewer_report.json").read_text(encoding="utf-8"))
+    assert summary["blocking_bundles"] == []
+    assert any("confidence is low" in issue.get("issue", "").lower() for issue in summary["issues_sample"])
+
+
 def test_reviewer_surfaces_low_verifier_trust_issue_without_blocking(tmp_path: Path, monkeypatch) -> None:
     metadata_dir = tmp_path / "metadata"
     artifacts_dir = tmp_path / "artifacts"

@@ -562,7 +562,8 @@ def _evaluate_cwe_352(service_text: str, combined_text: str) -> Dict[str, Any]:
 
 def _evaluate_cwe_89(combined_text: str) -> Dict[str, Any]:
     has_sql_sink = bool(_SQL_EXEC_RE.search(combined_text) and _SQL_KEYWORD_RE.search(combined_text))
-    has_input_source = bool(_INPUT_SOURCE_RE.search(combined_text))
+    input_vars = _request_bound_vars(combined_text)
+    has_input_source = bool(_INPUT_SOURCE_RE.search(combined_text) or input_vars)
     has_unsafe_query_build = any(pattern.search(combined_text) for pattern in _UNSAFE_SQL_BUILD_PATTERNS)
     has_variable_flow = _has_input_variable_to_execute_flow(combined_text)
     has_input_to_sql_path = has_sql_sink and has_input_source and (has_unsafe_query_build or has_variable_flow)
@@ -633,7 +634,8 @@ def _evaluate_cwe_918(combined_text: str) -> Dict[str, Any]:
 def _evaluate_cwe_78(combined_text: str) -> Dict[str, Any]:
     has_command_sink = bool(_COMMAND_SINK_RE.search(combined_text))
     has_shell_execution = bool(_COMMAND_EXEC_RE.search(combined_text))
-    has_command_input = bool(_COMMAND_INPUT_RE.search(combined_text))
+    input_vars = _request_bound_vars(combined_text)
+    has_command_input = bool(_COMMAND_INPUT_RE.search(combined_text) or input_vars)
     has_input_to_sink_flow = _has_command_input_flow(combined_text)
     errors: List[str] = []
     if not has_command_sink:
@@ -681,7 +683,8 @@ def _evaluate_cwe_79(combined_text: str) -> Dict[str, Any]:
 
 def _evaluate_cwe_94(combined_text: str) -> Dict[str, Any]:
     has_code_exec = bool(_CODE_EXEC_RE.search(combined_text))
-    has_code_input = bool(_CODE_INPUT_RE.search(combined_text))
+    input_vars = _request_bound_vars(combined_text)
+    has_code_input = bool(_CODE_INPUT_RE.search(combined_text) or input_vars)
     has_input_to_exec_flow = _has_code_input_flow(combined_text)
     errors: List[str] = []
     if not has_code_exec:
@@ -771,7 +774,8 @@ def _evaluate_name_template_injection(combined_text: str) -> Dict[str, Any]:
 
 def _evaluate_name_ldap_injection(combined_text: str) -> Dict[str, Any]:
     has_search_sink = bool(_LDAP_SEARCH_SINK_RE.search(combined_text))
-    has_input_source = bool(_LDAP_INPUT_RE.search(combined_text))
+    input_vars = _request_bound_vars(combined_text)
+    has_input_source = bool(_LDAP_INPUT_RE.search(combined_text) or input_vars)
     has_filter_builder = bool(_LDAP_FILTER_HINT_RE.search(combined_text))
     has_input_to_sink_flow = _has_ldap_input_flow(combined_text)
     errors: List[str] = []
@@ -819,7 +823,7 @@ def _evaluate_name_xxe(combined_text: str) -> Dict[str, Any]:
 
 def _has_input_variable_to_execute_flow(text: str) -> bool:
     assignment_re = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^\n]+)", re.IGNORECASE)
-    tainted_vars: set[str] = set()
+    tainted_vars: set[str] = set(_request_bound_vars(text))
     query_vars: set[str] = set()
 
     def _references_var(expr: str, var: str) -> bool:
@@ -1113,14 +1117,14 @@ def _has_ldap_input_flow(text: str) -> bool:
 
 def _has_code_input_flow(text: str) -> bool:
     if re.search(
-        r"(eval|exec)\s*\(\s*request\.(?:args|form|values|get_json|json)",
+        r"(eval|exec)\s*\(\s*request\.(?:args|form|values|get_json|json)\b",
         text,
         flags=re.IGNORECASE,
     ):
         return True
     for variable in _request_bound_vars(text):
         if re.search(
-            rf"(eval|exec)\s*\(\s*{re.escape(variable)}\s*\)",
+            rf"(eval|exec)\s*\(\s*{re.escape(variable)}\b",
             text,
             flags=re.IGNORECASE,
         ):

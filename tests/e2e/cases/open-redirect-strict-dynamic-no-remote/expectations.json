@@ -1,0 +1,71 @@
+{
+  "manifest": {
+    "overall_pass": null,
+    "pipeline_result": "failure",
+    "manifest_file": "failure_manifest.json",
+    "pipeline_returncode": 1,
+    "provider_health_state": "strict_dynamic_remote_research_unavailable",
+    "request_ir": {
+      "request_label": "Open Redirect",
+      "resolution_state": "catalog_alias",
+      "name_driven": true,
+      "pattern_seed_state": "preserved"
+    },
+    "template_dependence_summary": {
+      "lower_bound_dependent_bundles": 0,
+      "minimal_dynamic_bundles": 0,
+      "by_open_world_class": {
+        "name_driven_capability_gate_failed": 1
+      }
+    },
+    "intent_satisfaction_summary": {
+      "name_only_bundles": 1,
+      "meets_intent_bundles": 0,
+      "partial_bundles": 0,
+      "by_status": {
+        "strict_dynamic_failed": 1
+      }
+    },
+    "failure": {
+      "stage": "CAPABILITY_CHECK",
+      "terminal_failure_class": "strict_dynamic_remote_research_unavailable"
+    },
+    "open_world_class": "name_driven_capability_gate_failed",
+    "strict_open_world_class": "strict_dynamic_capability_unavailable",
+    "generalization_class": "real_free_form_precondition_failed",
+    "counts_as_generalization": false,
+    "intent_satisfaction": {
+      "mode": "strict_dynamic",
+      "status": "strict_dynamic_failed",
+      "meets_intent": false
+    }
+  },
+  "evals": [
+    {
+      "slug": "name-open-redirect",
+      "verify_pass": null,
+      "run_passed": null,
+      "exit_code": null,
+      "promotion_eligible": false,
+      "request_ir": {
+        "resolution_state": "catalog_alias"
+      },
+      "open_world_class": "name_driven_capability_gate_failed",
+      "strict_open_world_class": "strict_dynamic_capability_unavailable",
+      "intent_satisfaction": {
+        "mode": "strict_dynamic",
+        "status": "strict_dynamic_failed",
+        "meets_intent": false
+      },
+      "generalization_class": "real_free_form_precondition_failed",
+      "counts_as_generalization": false,
+      "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+      "failure_reason_contains": [
+        "remote researcher evidence"
+      ]
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": []
+  }
+}

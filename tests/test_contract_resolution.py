@@ -14,6 +14,7 @@ from common.contracts import (
     build_generator_contract,
     load_generator_contract,
     requires_semantic_support,
+    requires_semantic_support_for_requirement,
     write_generator_contract,
 )
 
@@ -78,6 +79,12 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
         requirement={
             "vuln_id": "NAME-OPEN-REDIRECT",
             "vuln_name": "Open Redirect",
+            "request_ir": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "resolution_state": "catalog_alias",
+                "pattern_seed_state": "preserved",
+            },
             "request_identity": {
                 "request_label": "Open Redirect",
                 "resolved_vuln_id": "NAME-OPEN-REDIRECT",
@@ -120,12 +127,27 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
     assert oracle["success_signature"] == "Exploit SUCCESS"
     assert oracle["flag_token"] == "FLAG{OPEN_REDIRECT_OK}"
     assert oracle["source"] == "researcher_verification_spec"
+    assert oracle["assertion_program"] == [
+        {"op": "contains", "string": "Exploit SUCCESS"},
+        {"op": "contains", "string": "FLAG{OPEN_REDIRECT_OK}"},
+    ]
     assert spec["request_label"] == "Open Redirect"
+    assert spec["request_ir"]["resolution_state"] == "catalog_alias"
     assert spec["family_working_hypothesis"] == "open_redirect"
     assert spec["family_hypothesis_source"] == "researcher_family_hypothesis"
     assert spec["request_identity_family"] == "open_redirect"
+    assert spec["family_candidate_summary"]["top_family"] == "open_redirect"
+    assert spec["family_candidate_summary"]["candidate_count"] == 1
+    assert spec["stack_candidate_summary"]["working_stack_id"] == "python/flask"
+    assert spec["stack_candidate_summary"]["candidate_count"] == 2
+    assert spec["stack_candidate_summary"]["ambiguous"] is True
     assert spec["required_contract"]["require_research"] is True
+    assert spec["required_contract"]["intent_success_rule"] == "open_world_positive_only"
     assert spec["exploit_oracle_summary"]["success_signature"] == "Exploit SUCCESS"
+    assert spec["exploit_oracle_summary"]["assertion_program"] == [
+        {"op": "contains", "string": "Exploit SUCCESS"},
+        {"op": "contains", "string": "FLAG{OPEN_REDIRECT_OK}"},
+    ]
 
 
 def test_contract_name_only_generation_spec_can_fall_back_to_request_identity_family(tmp_path: Path) -> None:
@@ -171,6 +193,86 @@ def test_contract_name_only_generation_spec_can_fall_back_to_request_identity_fa
     assert spec["request_identity_family"] == "open_redirect"
     assert spec["family_working_hypothesis"] == "open_redirect"
     assert spec["family_hypothesis_source"] == "request_identity_fallback"
+
+
+def test_contract_name_only_generation_spec_prefers_request_ir_source_label(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-79",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="cwe-79",
+        requirement={
+            "vuln_id": "CWE-79",
+            "vuln_name": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "resolution_state": "token_match",
+                "resolution_match_class": "token_match",
+                "resolution_confidence": "medium",
+                "name_driven": True,
+                "pattern_seed_state": "preserved",
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "xss",
+                "top_confidence": "high",
+                "contradiction_count": 0,
+                "contradictory_families": [],
+            },
+        },
+    )
+
+    spec = payload["name_only_generation_spec"]
+    profile = payload["semantic_profile"]
+
+    assert spec["request_label"] == "Reflected XSS"
+    assert spec["request_ir"]["name_driven"] is True
+    assert profile["requested_name"] == "Reflected XSS"
+
+
+def test_contract_name_only_generation_spec_uses_request_ir_fallback_source(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-79",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="cwe-79",
+        requirement={
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "resolution_state": "catalog_alias",
+                "resolution_match_class": "catalog_alias",
+                "resolution_confidence": "high",
+                "name_driven": True,
+                "family_candidates": [{"family": "xss", "confidence": "high"}],
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "sqli",
+                "top_confidence": "low",
+                "contradiction_count": 0,
+                "contradictory_families": [],
+            },
+        },
+    )
+
+    spec = payload["name_only_generation_spec"]
+
+    assert spec["request_identity_family"] == "xss"
+    assert spec["family_working_hypothesis"] == "xss"
+    assert spec["family_hypothesis_source"] == "request_ir_fallback"
 
 
 def test_contract_uses_mysql_compiler_strategy_for_external_db_runtime(tmp_path: Path) -> None:
@@ -295,6 +397,14 @@ def test_contract_surfaces_runtime_recipe_for_sidecar_backed_lane(tmp_path: Path
         }
     ]
     assert recipe["service_env"]["DB_HOST"] == "db-internal"
+    graph = payload["runtime_graph"]
+    assert graph["topology"] == "service_plus_sidecar"
+    assert graph["network"]["mode"] == "bridge"
+    assert any(node["id"] == "service" and node["kind"] == "service" for node in graph["nodes"])
+    assert any(node["id"] == "sidecar:mysql-main" and node["kind"] == "sidecar" for node in graph["nodes"])
+    assert any(edge["from"] == "service" and edge["to"] == "sidecar:mysql-main" for edge in graph["edges"])
+    assert graph["env_contract"][0]["scope"] == "service"
+    assert graph["exploit_path"]["target_node"] == "service"
 
 
 def test_contract_runtime_recipe_surfaces_soft_stack_hypotheses_for_name_only_lane(tmp_path: Path) -> None:
@@ -322,9 +432,13 @@ def test_contract_runtime_recipe_surfaces_soft_stack_hypotheses_for_name_only_la
     assert recipe["stack_source"] == "profile_prior"
     assert recipe["stack_hypotheses"][0]["stack_id"] == "python/flask"
     assert recipe["stack_hypotheses"][1]["stack_id"] == "python/fastapi"
+    graph = payload["runtime_graph"]
+    assert graph["topology"] == "single_service"
+    assert graph["network"]["mode"] == "none"
+    assert graph["exploit_path"]["entrypoint"] == "poc.py"
 
 
-def test_contract_runtime_recipe_prefers_researcher_top_stack_candidate_when_unlocked(tmp_path: Path) -> None:
+def test_contract_runtime_recipe_prefers_unambiguous_researcher_stack_candidate_when_unlocked(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
         vuln_id="NAME-OPEN-REDIRECT",
@@ -335,7 +449,6 @@ def test_contract_runtime_recipe_prefers_researcher_top_stack_candidate_when_unl
         researcher_report={
             "tech_stack_candidates": [
                 {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"},
-                {"language": "python", "framework": "flask", "stack_id": "python/flask", "confidence": "low"},
             ]
         },
         requirement={
@@ -351,6 +464,36 @@ def test_contract_runtime_recipe_prefers_researcher_top_stack_candidate_when_unl
     recipe = payload["runtime_recipe"]
     assert recipe["framework"] == "fastapi"
     assert recipe["stack_source"] == "researcher_candidate"
+    assert recipe["stack_locked"] is False
+
+
+def test_contract_runtime_recipe_ignores_ambiguous_researcher_stack_candidates(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        researcher_report={
+            "tech_stack_candidates": [
+                {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"},
+                {"language": "python", "framework": "flask", "stack_id": "python/flask", "confidence": "medium"},
+            ]
+        },
+        requirement={
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "stack_hypotheses": [
+                {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
+                {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
+            ],
+        },
+    )
+
+    recipe = payload["runtime_recipe"]
+    assert recipe["framework"] == "flask"
+    assert recipe["stack_source"] == "profile_prior"
     assert recipe["stack_locked"] is False
 
 
@@ -464,6 +607,10 @@ def test_contract_uses_researcher_proposal_when_rule_is_missing(tmp_path: Path) 
     assert payload["semantic_contract"]["semantic_signature_source"] == ["heuristic"]
     assert payload["semantic_contract"]["quality"] == "sufficient"
     assert payload["contract_stage"] == "research_seed"
+    assert payload["exploit_oracle"]["assertion_program"] == [
+        {"op": "contains", "string": "UNKNOWN SUCCESS"},
+        {"op": "contains", "string": "FLAG-unknown"},
+    ]
 
 
 def test_contract_marks_insufficient_unknown_semantics_as_empty(tmp_path: Path) -> None:
@@ -667,6 +814,50 @@ def test_contract_backfills_fragment_signature_for_supported_freeform_family(tmp
         "location header",
         "http redirect sink",
     ]
+
+
+def test_contract_uses_fragment_signature_for_canonicalized_name_driven_family(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-79",
+        metadata_dir=tmp_path,
+        workspace_dir=None,
+        generator_mode="research_seed",
+        bundle_slug="cwe-79",
+        requirement={
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "resolution_state": "token_match",
+            },
+        },
+    )
+
+    assert payload["semantic_contract"]["status"] == "aligned"
+    assert payload["semantic_contract"]["contradictions"] == []
+    assert payload["semantic_contract"]["semantic_signature_source"] == ["fragment_registry"]
+    assert payload["semantic_contract"]["semantic_signature"]["sink"] == [
+        "render_template_string",
+        "template response",
+    ]
+
+
+def test_requires_semantic_support_for_requirement_uses_request_ir_name_driven_signal() -> None:
+    assert requires_semantic_support("CWE-79") is False
+    assert requires_semantic_support_for_requirement(
+        "CWE-79",
+        {
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "resolution_state": "token_match",
+            },
+        },
+    ) is True
 
 
 def test_contract_surfaces_semantic_profile_and_compiler_verdict(tmp_path: Path) -> None:

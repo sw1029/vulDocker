@@ -529,8 +529,19 @@ def _semantic_token_alias_present(text: str, token: str) -> bool:
             "popen(",
         ]
         return any(alias in text for alias in aliases)
+    if token in {"code parameter"}:
+        aliases = [
+            "request.args.get('code'",
+            'request.args.get("code"',
+            "code = request.args.get(",
+            "code: str = query(",
+            "code:str=query(",
+        ]
+        return any(alias in text for alias in aliases)
     if token in {"eval(", "exec("} or "code injection" in token:
         return any(alias in text for alias in ["eval(", "exec(", "compile("])
+    if "user input reaches eval" in token:
+        return _looks_like_code_exec_flow(text)
     if token in {"render_template_string", "template response", "innerhtml"} or "cross-site scripting" in token:
         aliases = [
             "render_template_string",
@@ -580,7 +591,61 @@ def _semantic_token_alias_present(text: str, token: str) -> bool:
             "deserialize",
         ]
         return any(alias in text for alias in aliases)
+    if token in {"ldap user parameter", "user-controlled directory lookup input"}:
+        aliases = [
+            "request.args.get('user'",
+            'request.args.get("user"',
+            "user = request.args.get(",
+            "user: str = query(",
+            "user:str=query(",
+        ]
+        return any(alias in text for alias in aliases)
+    if token in {"ldap filter construction"}:
+        return "ldap_filter" in text or _looks_like_ldap_filter_composition(text)
+    if token in {"directory search"}:
+        return any(alias in text for alias in ["search_directory(", "ldap_search(", "conn.search("])
+    if "user input concatenated into ldap filter" in token:
+        return _looks_like_ldap_filter_composition(text)
+    if "ldap injection" in token:
+        return _looks_like_ldap_filter_composition(text) and any(
+            alias in text for alias in ["search_directory(", "ldap_search(", "conn.search("]
+        )
+    if "filter bypass via wildcard or or clause" in token:
+        aliases = [
+            "'*' in ldap_filter",
+            "\"*\" in ldap_filter",
+            "'|' in ldap_filter",
+            "\"|\" in ldap_filter",
+            "uid=*)",
+            ")(|",
+        ]
+        return any(alias in text for alias in aliases)
     return False
+
+
+def _looks_like_code_exec_flow(text: str) -> bool:
+    has_code_input = any(
+        alias in text
+        for alias in [
+            "request.args.get('code'",
+            'request.args.get("code"',
+            "code = request.args.get(",
+            "code: str = query(",
+            "code:str=query(",
+        ]
+    )
+    has_exec_sink = bool(re.search(r"(eval|exec)\s*\(\s*code\b", text, flags=re.IGNORECASE))
+    return has_code_input and has_exec_sink
+
+
+def _looks_like_ldap_filter_composition(text: str) -> bool:
+    return bool(
+        re.search(
+            r"ldap_filter\s*=\s*[^\n]*(?:\+\s*user\b|\buser\b\s*\+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _looks_like_sql_string_composition(text: str) -> bool:

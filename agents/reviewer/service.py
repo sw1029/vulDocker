@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from common.guardrails import GuardEngine, load_guard_spec
 from common.llm import LLMClient
 from common.logging import get_logger
+from common.name_only import is_name_driven_requirement
 from common.bundle_state import bundle_research_blocker
 from common.paths import ensure_dir
 from common.plan import load_plan
@@ -417,6 +418,10 @@ class ReviewerService:
         return issues
 
     def _bundle_requires_semantic_support(self, bundle: VulnBundle) -> bool:
+        requirement = self.plan.get("requirement") if isinstance(self.plan, dict) else {}
+        requirement_view = bundle_requirement(requirement, bundle) if isinstance(requirement, dict) else {}
+        if is_name_driven_requirement(requirement_view):
+            return True
         vuln_id = str(bundle.vuln_id or "").strip().upper()
         if vuln_id.startswith("NAME-"):
             return True
@@ -444,7 +449,7 @@ class ReviewerService:
         return self.llm.generate(build_reviewer_prompt(run_summary))
 
     def _confidence_issues(self, bundle: VulnBundle) -> List[Dict[str, Any]]:
-        if load_static_rule(bundle.vuln_id):
+        if not self._bundle_requires_semantic_support(bundle):
             return []
         meta_dir = metadata_dir_for_bundle(self.plan, bundle)
         contract = load_generator_contract(meta_dir)
