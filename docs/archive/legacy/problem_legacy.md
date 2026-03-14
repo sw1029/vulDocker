@@ -1,10 +1,12 @@
-# vulDocker 문제 정의 (Legacy → Plan, MoSCoW TODO)
+# vulDocker 문제 정의 (Legacy Reference)
 
-> 문서 목적: 구버전 분석 문서(`docs/problem_legacy.md`)를 “하드코딩/분기/기본값/커버리지” 관점의 **계획 문서(TODO checklist)** 로 재구성한다.
+> Archived reference. 이 문서는 historical snapshot이며 active source가 아니다.
 >
-> 아키텍처(PLAN → GENERATE → EXECUTE → VERIFY → REVIEW → PACK)는 유지한다.
->
-> 최신 단일 소스: `docs/problem.md`, `docs/final_solution.md` (본 문서는 “레거시 관찰 → 실행 가능한 TODO” 보조 인덱스).
+> 현재 canonical 문서:
+> - 문제 정의: `docs/problem.md`
+> - 현재 상태: `docs/current_state_gap_analysis.md`
+> - 제약조건: `docs/constraints.md`
+> - 구현 로드맵: `docs/final_solution.md`
 
 ## MoSCoW TODO Checklist
 

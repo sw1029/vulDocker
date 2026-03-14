@@ -465,10 +465,45 @@ class GeneratorService:
             return False
         return _as_bool(policy.get("dynamic_eval_allow_lower_bound_fallback", False))
 
+    def _resolved_contract_for_synthesis(self) -> Dict[str, Any]:
+        contract = load_generator_contract(self.metadata_dir) or {}
+        if not self._is_name_driven_request():
+            return contract if isinstance(contract, dict) else {}
+        vuln_id = str(self.requirement.get("vuln_id") or "").strip() or "UNKNOWN"
+        bundle_slug = self.bundle.slug if getattr(self, "bundle", None) else ""
+        sid = str(getattr(self, "sid", "") or vuln_id or "sid-preflight")
+        generator_mode = str(getattr(self, "generator_mode", "") or "synthesis_preflight")
+        preflight = build_generator_contract(
+            sid=sid,
+            vuln_id=vuln_id,
+            metadata_dir=self.metadata_dir,
+            workspace_dir=self.workspace if isinstance(getattr(self, "workspace", None), Path) else None,
+            generator_mode=generator_mode,
+            bundle_slug=bundle_slug,
+            requirement=self.requirement,
+        )
+        if not isinstance(contract, dict) or not contract:
+            return preflight if isinstance(preflight, dict) else {}
+        merged = deepcopy(contract)
+        for key in ("request_ir", "runtime_recipe", "exploit_oracle", "name_only_generation_spec", "executor_plan"):
+            existing = merged.get(key)
+            candidate = preflight.get(key) if isinstance(preflight, dict) else None
+            if isinstance(existing, dict) and existing:
+                if key == "request_ir" and isinstance(candidate, dict):
+                    combined = deepcopy(existing)
+                    for nested_key, nested_value in candidate.items():
+                        if nested_key not in combined:
+                            combined[nested_key] = deepcopy(nested_value)
+                    merged[key] = combined
+                continue
+            if isinstance(candidate, dict) and candidate:
+                merged[key] = deepcopy(candidate)
+        return merged
+
     def _requirement_for_synthesis(self) -> Dict[str, Any]:
         requirement = deepcopy(self.requirement) if isinstance(self.requirement, dict) else {}
-        contract = load_generator_contract(self.metadata_dir) or {}
-        for key in ("runtime_recipe", "exploit_oracle", "name_only_generation_spec"):
+        contract = self._resolved_contract_for_synthesis()
+        for key in ("request_ir", "runtime_recipe", "exploit_oracle", "name_only_generation_spec", "executor_plan"):
             payload = contract.get(key) if isinstance(contract.get(key), dict) else {}
             if payload:
                 requirement[key] = deepcopy(payload)

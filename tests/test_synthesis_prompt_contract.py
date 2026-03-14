@@ -209,6 +209,23 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                 "request_ir": {
                     "resolution_state": "catalog_alias",
                     "pattern_seed_state": "preserved",
+                    "selection_decision": {
+                        "family": {
+                            "selected": True,
+                            "selected_family": "open_redirect",
+                            "support_count": 2,
+                            "support_by_source_authority": {"high": 1, "medium": 1},
+                        },
+                        "stack": {
+                            "selected": True,
+                            "selected_stack_id": "python/flask",
+                            "basis": "researcher_top_candidate",
+                            "margin": 0.35,
+                            "support_count": 1,
+                            "support_by_source_authority": {"medium": 1},
+                        },
+                        "ready_for_materialization": True,
+                    },
                 },
                 "effective_mode": "dynamic",
                 "family_working_hypothesis": "open_redirect",
@@ -221,6 +238,7 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                     "material_candidate_count": 1,
                     "deprioritized_candidate_count": 2,
                     "ambiguous": False,
+                    "selection_support_count": 2,
                 },
                 "negative_hypotheses": [
                     {"family": "xss", "source": "researcher_contradiction"},
@@ -229,18 +247,29 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                     "language": "python",
                     "framework": "flask",
                     "topology": "single_service",
-                    "stack_defaulted": True,
+                    "stack_defaulted": False,
+                    "stack_selection": {
+                        "resolved": True,
+                        "selected_stack_id": "python/flask",
+                        "confidence": "medium",
+                        "margin": 0.35,
+                        "basis": "researcher_top_candidate",
+                    },
                 },
                 "stack_candidate_summary": {
                     "working_stack_id": "python/flask",
-                    "working_stack_source": "profile_prior",
+                    "working_stack_source": "researcher_candidate",
                     "working_stack_locked": False,
-                    "working_stack_defaulted": True,
+                    "working_stack_defaulted": False,
                     "candidate_count": 2,
                     "top_stack_id": "python/flask",
-                    "top_source": "profile_prior",
-                    "top_confidence": "low",
+                    "top_source": "researcher_candidate",
+                    "top_confidence": "medium",
                     "ambiguous": True,
+                    "selection_resolved": True,
+                    "selection_basis": "researcher_top_candidate",
+                    "selection_margin": 0.35,
+                    "selection_support_count": 1,
                 },
                 "evidence_graph_summary": {
                     "node_count": 5,
@@ -254,18 +283,20 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                     "require_live_llm": False,
                 },
                 "planning_focus_summary": {
-                    "primary_focus": "stack_or_runtime_design",
-                    "focuses": ["stack_or_runtime_design", "evidence_authority"],
+                    "primary_focus": "open_world_generation",
+                    "focuses": ["open_world_generation"],
                     "by_focus": {
-                        "stack_or_runtime_design": ["stack_defaulted", "stack_ambiguous"],
-                        "evidence_authority": ["family_candidate_evidence_missing"],
+                        "open_world_generation": ["bounded_dynamic_generation"],
                     },
                     "reason_tokens": [
-                        "stack_defaulted",
-                        "stack_ambiguous",
-                        "family_candidate_evidence_missing",
+                        "bounded_dynamic_generation",
                     ],
                 },
+            },
+            "executor_plan": {
+                "service_port": 8000,
+                "health_path": "/health",
+                "topology": "single_service",
             },
         },
         rag_context="",
@@ -278,10 +309,18 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
     assert "Original request label: `Open Redirect`." in prompt
     assert "Request resolution state: `catalog_alias`." in prompt
     assert "Pattern seed state: `preserved`." in prompt
+    assert (
+        "Request IR selected family: family=`open_redirect`, support_count=`2`, support_authority=`high:1,medium:1`."
+        in prompt
+    )
+    assert (
+        "Request IR selected stack: stack=`python/flask`, basis=`researcher_top_candidate`, margin=`0.35`, "
+        "support_count=`1`, support_authority=`medium:1`."
+    ) in prompt
     assert "Working family hypothesis: `open_redirect` (request_identity)." in prompt
     assert (
         "Family candidate preview: top=`open_redirect`, source=`catalog_resolution`, confidence=`high`, "
-        "count=`3`, material_count=`1`."
+        "count=`3`, material_count=`1`, selected_support_count=`2`."
     ) in prompt
     assert "Low-confidence/background family candidates were deprioritized: `2`." in prompt
     assert "Negative markers (must stay absent on success): `Exploit FAILED`." in prompt
@@ -289,14 +328,16 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
     assert "Negative control cases: `1`." in prompt
     assert "Metamorphic oracle context: total=`1`, passed=`1`, rationale=`same-origin redirect stays non-exploit`." in prompt
     assert "Negative family hypotheses: `xss`." in prompt
-    assert "Runtime stack remains repo-prior/defaulted and is not evidence-backed yet." in prompt
-    assert "Stack candidate preview: working=`python/flask`, source=`profile_prior`, locked=`False`, defaulted=`True`, count=`2`, top_confidence=`low`." in prompt
+    assert "Runtime stack remains repo-prior/defaulted and is not evidence-backed yet." not in prompt
+    assert "Runtime stack selection: selected=`python/flask`, confidence=`medium`, margin=`0.35`, basis=`researcher_top_candidate`." in prompt
+    assert "Stack candidate preview: working=`python/flask`, source=`researcher_candidate`, locked=`False`, defaulted=`False`, count=`2`, top_confidence=`medium`." in prompt
+    assert "Selected stack support count: `1`." in prompt
     assert "Stack candidates remain ambiguous; stay within bounded repo-supported stacks unless stronger evidence is present." in prompt
+    assert "Executor plan preview: service_port=`8000`, health_path=`/health`, topology=`single_service`." in prompt
     assert "Evidence graph preview: `5` node(s), `4` edge(s), source=`researcher_derived`." in prompt
-    assert "Planning primary focus: `stack_or_runtime_design`." in prompt
+    assert "Planning primary focus: `open_world_generation`." in prompt
     assert (
-        "Planning focus breakdown: `stack_or_runtime_design=[stack_defaulted, stack_ambiguous]`, "
-        "`evidence_authority=[family_candidate_evidence_missing]`."
+        "Planning focus breakdown: `open_world_generation=[bounded_dynamic_generation]`."
     ) in prompt
 
 

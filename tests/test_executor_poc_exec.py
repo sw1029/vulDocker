@@ -70,6 +70,19 @@ def test_resolve_service_env_prefers_resolved_contract(tmp_path: Path) -> None:
     assert env == {"DB_HOST": "sqli-db", "DB_NAME": "sqliapp", "APP_PORT": "5000"}
 
 
+def test_resolve_health_path_prefers_executor_plan(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "metadata"
+    metadata_dir.mkdir()
+    (metadata_dir / "resolved_contract.json").write_text(
+        '{"executor_plan":{"health_path":"/healthz"},"runtime_recipe":{"health_path":"/health"}}',
+        encoding="utf-8",
+    )
+
+    path = docker_local._resolve_health_path(metadata_dir)
+
+    assert path == "/healthz"
+
+
 def test_skipped_bundle_summary_marks_bundle_unexecuted(tmp_path: Path) -> None:
     bundle = VulnBundle(vuln_id="NAME-CUSTOM-WEIRD-VULN", slug="name-custom-weird-vuln", workspace_subdir="app/name-custom-weird-vuln")
     plan = {

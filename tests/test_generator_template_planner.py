@@ -59,6 +59,10 @@ def test_template_planner_can_be_force_enabled_from_requirement() -> None:
 
 def test_requirement_for_synthesis_injects_resolved_runtime_recipe(tmp_path: Path) -> None:
     service = GeneratorService.__new__(GeneratorService)
+    service.sid = "sid-runtime-recipe"  # type: ignore[attr-defined]
+    service.generator_mode = "synthesis"  # type: ignore[attr-defined]
+    service.bundle = None  # type: ignore[attr-defined]
+    service.workspace = tmp_path / "workspace"  # type: ignore[attr-defined]
     service.requirement = {"vuln_id": "NAME-OPEN-REDIRECT", "language": "python", "framework": "flask"}  # type: ignore[attr-defined]
     service.metadata_dir = tmp_path  # type: ignore[attr-defined]
     write_generator_contract(
@@ -74,13 +78,107 @@ def test_requirement_for_synthesis_injects_resolved_runtime_recipe(tmp_path: Pat
                 "topology": "service_plus_sidecar",
                 "network_mode": "bridge",
             },
+            "executor_plan": {
+                "schema_version": "executor_plan@0.1",
+                "service_port": 8000,
+                "health_path": "/health",
+                "topology": "service_plus_sidecar",
+            },
         },
     )
 
     enriched = service._requirement_for_synthesis()  # type: ignore[attr-defined]
 
     assert enriched["runtime_recipe"]["framework"] == "fastapi"
+    assert enriched["executor_plan"]["health_path"] == "/health"
     assert "runtime_recipe" not in service.requirement  # type: ignore[operator]
+
+
+def test_requirement_for_synthesis_builds_preflight_contract_for_name_only_when_missing(tmp_path: Path) -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.sid = "sid-preflight"  # type: ignore[attr-defined]
+    service.generator_mode = "synthesis"  # type: ignore[attr-defined]
+    service.bundle = None  # type: ignore[attr-defined]
+    service.workspace = tmp_path / "workspace"  # type: ignore[attr-defined]
+    service.metadata_dir = tmp_path  # type: ignore[attr-defined]
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "vuln_name": "Open Redirect",
+        "policy": {"name_only_mode": "dynamic"},
+        "request_ir": {
+            "request_label": "Open Redirect",
+            "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+            "resolution_state": "catalog_alias",
+            "resolution_match_class": "catalog_alias",
+            "resolution_confidence": "high",
+            "name_driven": True,
+            "family_candidates": [
+                {"family": "open_redirect", "source": "catalog_resolution", "confidence": "high"},
+            ],
+        },
+        "request_identity": {
+            "request_label": "Open Redirect",
+            "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+            "match_class": "catalog_alias",
+            "confidence": "high",
+            "name_driven": True,
+        },
+        "name_resolution": {
+            "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+            "match_class": "catalog_alias",
+            "confidence": "high",
+        },
+        "stack_hypotheses": [
+            {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
+            {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
+        ],
+    }
+    (tmp_path / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "quality": "sufficient",
+                "tech_stack_candidates": [
+                    {
+                        "language": "python",
+                        "framework": "flask",
+                        "stack_id": "python/flask",
+                        "confidence": "high",
+                        "score": 0.9,
+                        "sources": ["search_hit_text", "stack_anchor_query"],
+                    },
+                    {
+                        "language": "python",
+                        "framework": "fastapi",
+                        "stack_id": "python/fastapi",
+                        "confidence": "low",
+                        "score": 0.2,
+                        "sources": ["stack_anchor_query"],
+                    },
+                ],
+                "family_hypothesis_summary": {
+                    "top_family": "open_redirect",
+                    "top_confidence": "high",
+                    "contradiction_count": 0,
+                    "contradictory_families": [],
+                },
+                "verification_spec": {
+                    "success_mode": "text",
+                    "success_text_markers": ["Exploit SUCCESS"],
+                    "negative_controls": [{"name": "benign-next", "expect_success": False}],
+                    "metamorphic": {"total": 1, "passed": 1},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    enriched = service._requirement_for_synthesis()  # type: ignore[attr-defined]
+
+    assert enriched["request_ir"]["selection_decision"]["stack"]["selected"] is True
+    assert enriched["request_ir"]["selection_decision"]["ready_for_materialization"] is True
+    assert "name_only_generation_spec" in enriched
+    assert "executor_plan" in enriched
 
 
 def test_researcher_report_for_prompt_preserves_family_hypothesis_summary(tmp_path: Path) -> None:

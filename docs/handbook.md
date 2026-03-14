@@ -1,102 +1,78 @@
-# 프로젝트 핸드북(통합 문서)
+# vulDocker 핸드북
 
-본 문서는 `docs/`에 흩어져 있던 개별 문서의 핵심을 한 곳으로 통합한 단일 가이드입니다. 설계·운영·평가·실행 방법을 일관된 맥락으로 제공합니다. 규칙/스키마/세부 명세는 필수 내용만 요약하며, 예시는 간결히 유지합니다.
+Status: support
+Audience: operator
+Source of truth for: quickstart, command map, artifact locations, troubleshooting entrypoints
+Not the source of truth for: current-state assessment, constraints, roadmap
+Last validated against: repository commands and representative reruns on 2026-03-14
 
-## 문서 원칙(요약)
-- 비-TODO 기록(설계, 결정사항, 위험·완화, 실험 요약, 운영 정책)은 문서로 남깁니다.
-- 코드 리뷰에는 구현 세부를, 문서에는 배경/선택 근거/대안/재현 절차를 기록합니다.
-- 경로는 상대 경로를 사용하고, 식별자(SID/TraceId)는 그대로 기입합니다.
+이 문서는 운영/온보딩용 가이드입니다. 개념 정의와 현재 제약은 요약하지 않고, 어떤 문서를 어디서 읽어야 하는지와 실제 실행 절차만 제공합니다.
 
-## 빠른 시작(실행 가이드)
-1) PLAN: `python orchestrator/plan.py --input inputs/mvp_sqli.yml`
-   - 산출: `metadata/<SID>/plan.json` (+ 기본 디렉토리)
-   - (권장) E2E 루프 실행: `python orchestrator/run_pipeline.py --sid <SID> --mode deterministic`
-2) (권장) RESEARCH: `python agents/researcher/main.py --sid <SID> --mode deterministic`
-   - 산출: `metadata/<SID>/researcher_report.json`, `metadata/<SID>/runtime_rules/`, `metadata/<SID>/runtime_templates/`
-   - 참고: `docs/evals/rules/`에 룰이 없는 CWE를 입력했거나, 검증 기준/포트를 동적으로 맞추고 싶다면 선행 권장
-3) GENERATE: `python agents/generator/main.py --sid <SID> --mode deterministic`
-   - 산출(공통): `workspaces/<SID>/...`, `metadata/<SID>/generator_runs.json`
-   - 산출(템플릿 경로): `metadata/<SID>/generator_llm_plan.md` (+ 템플릿 보강)
-   - 산출(합성 경로): `metadata/<SID>/generator_manifest.json`, `metadata/<SID>/generator_candidates.json` (실패 시 `generator_failures.jsonl`)
-4) BUILD: `python executor/runtime/docker_local.py --sid <SID> --build`
-   - Docker build + SBOM(`artifacts/<SID>/build/`)
-5) RUN: `python executor/runtime/docker_local.py --sid <SID> --run`
-   - 컨테이너 내부 `poc.cmd`(없으면 `python <poc_entry>`) 실행(`artifacts/<SID>/run/run.log`)
-6) VERIFY: `python evals/poc_verifier/main.py --sid <SID>`
-   - `docs/evals/rules/*.yaml`에 정의된 성공 시그니처/FLAG 토큰을 기준으로 자동 평가 → `artifacts/<SID>/reports/evals.json`
-7) PACK: `python orchestrator/pack.py --sid <SID>`
-   - 스냅샷/메타(`metadata/<SID>/manifest.json`)
+canonical 관계:
+- 왜 이 프로젝트를 하는가: [docs/problem.md](problem.md)
+- 현재 진단은 어디에 적는가: [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
+- 무엇을 주장하면 안 되는가: [docs/constraints.md](constraints.md)
+- 무엇을 먼저 구현할 것인가: [docs/final_solution.md](final_solution.md)
 
-LLM API 키, Docker(rootless 권장), Syft(SBOM)는 환경에 맞춰 설정합니다.
+## Read Order
 
-## 요구/출력/성공 기준
-- 입력 스펙: 취약군(CWE), 스택, 변이키(temperature/top-p/k), RAG 스냅샷, 정책.
-- 출력물: workspace, 이미지/SBOM, 로그/트레이스, 평가 결과, 패키징 메타.
-- 성공 기준: `docs/evals/rules/*.yaml`(정적) 및 `metadata/<SID>/runtime_rules/*.yaml`(런타임)에서 정의된 성공 시그니처/FLAG 토큰 검출, 보안 위반 0, 재현율 목표 충족.
+1. 문제와 목표: [docs/problem.md](problem.md)
+2. 현재 truth: [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
+3. 현재 제약: [docs/constraints.md](constraints.md)
+4. 구현 계획: [docs/final_solution.md](final_solution.md)
+5. 코드 탐색: [docs/code/README.md](code/README.md)
 
-## 아키텍처(상태·에이전트·메타스토어)
-- 상태 전이: PLAN → PACK, 단계별 Span(`plan`, `draft.generator`, `build.executor`, `run.executor`, `verify.pipeline`, `review.reviewer`, `pack.orchestrator`).
-- 에이전트 계약: Researcher(검색/RAG 보고서) → Generator(합성/템플릿 보강) → Reviewer(증거/로그 기반 지시) → Executor(격리 실행/요약).
-- 메타스토어 & SID: `SID = H(model_ver | prompt_hash | seed | retriever_commit | corpus_snapshot | pattern_id | deps_digest | base_image_digest)` + 옵션(`effective_vuln_ids_digest`, `vuln_ids_digest`, `generator_mode`, `runtime_surface_digest`).
+## Quickstart
 
-## 동적 취약 삽입(LLM+RAG)
-- 기본 전략: `generator_mode=hybrid`에서 합성(synthesis) 우선 시도 후 실패 시 템플릿으로 폴백(또는 `generator_mode=template|synthesis`로 고정).
-- 증거 일관성: RuleSpec(정적/런타임 룰)의 성공 조건(서명/FLAG/JSON 키)을 Generator/PoC/Verifier가 동일하게 따르도록 정렬.
-- 실패 맥락: Reflexion 메모리를 다음 프롬프트에 주입하여 수렴(Generator/Verifier feedback loop).
-- GuardSpec: Researcher evidence 기반 동적 가드(`guard_spec.json`)를 생성하고 Generator/Verifier/Reviewer가 공통 소비(`docs/guardrails_dynamic.md`).
+사전 요구
+- Docker
+- Python 3.11+
+- `pip install -r requirements.txt`
 
-## 로드맵(동적화 TODO)
-- 하드코딩 제거 및 “새 CWE 입력 → 생성/실행/검증” end-to-end 안정화 로드맵: `docs/final_solution.md`
-- 현재 구현의 미비점/병목/개선안 분석: `docs/current_state_gap_analysis.md`
+대표 흐름
+1. PLAN: `python orchestrator/plan.py --input inputs/mvp_sqli.yml`
+2. 전체 루프: `python orchestrator/run_pipeline.py --sid <SID> --mode deterministic`
+3. 단계별 실행이 필요하면 아래 순서를 따릅니다.
 
-## RAG 설계·스냅샷
-- 코퍼스 층위: 공용(CWE/OWASP/Juliet) / 최신 PoC(CVE/PoC) / 사내(로그/메모).
-- 전처리/청킹: 코드(함수/클래스), 서술형(256~512 토큰), 메타(`vuln_id`, `framework`, `db`, `pattern_tag`, `source_url`, `license`).
-- 색인/검색: 벡터+키워드, top-k + reranker, Researcher는 ReAct/Reflexion 루프.
-- 스냅샷: `rag/index/<snapshot_id>/metadata.json`에 해시/모델/파라미터 기록.
+단계별 명령
+- RESEARCH: `python agents/researcher/main.py --sid <SID> --mode deterministic`
+- GENERATE: `python agents/generator/main.py --sid <SID> --mode deterministic`
+- EXECUTE: `python executor/runtime/docker_local.py --sid <SID> --build --run`
+- VERIFY: `python evals/poc_verifier/main.py --sid <SID>`
+- REVIEW: `python agents/reviewer/main.py --sid <SID> --mode deterministic`
+- PACK: `python orchestrator/pack.py --sid <SID>`
 
-## 실행기 보안·SBOM
-- 기본: read-only, `--security-opt no-new-privileges:true`, `--cap-drop=ALL`, `--tmpfs /tmp:rw,noexec,nosuid`.
-- 네트워크: 기본 `--network none` + egress 화이트리스트.
-- SBOM: Syft로 `sbom.spdx.json` 생성, 정책 게이트와 연계.
+## Artifact Map
 
-## 관측성·보안 게이트
-- 트레이싱: OTEL Collector, Trace/Span 규칙 일관.
-- 로깅: JSON Lines(`timestamp`, `level`, `trace_id`, `span_id`, `sid`, `component`, `message`).
-- 메트릭/대시보드: PoC 성공률/루프 수/다양성/재현율/KPI 알람.
+- `metadata/<SID>/plan.json`: normalized requirement and policy
+- `metadata/<SID>/researcher_report.json`: retrieval/evidence summary
+- `metadata/<SID>/resolved_contract.json`: current resolved contract surface when present
+- `metadata/<SID>/manifest.json`: pack summary
+- `workspaces/<SID>/app/`: generated bundle
+- `artifacts/<SID>/build/`: build log and SBOM
+- `artifacts/<SID>/run/`: run log and run summary
+- `artifacts/<SID>/reports/evals.json`: verifier result
 
-## 디코딩 전략·변이키
-- 프로파일: deterministic vs diverse(temperature/top-p/k).
-- Variation Key: `{mode, temperature, top_p, self_consistency_k, pattern_pool_seed, ...}` 정규화.
+## Common Checks
 
-## 평가(Evals)
-- PoC 판단/메타모픽 테스트/커버리지 규칙 요약.
-- 규칙 파일: `docs/evals/rules/*.yaml` (유지).
+- `pytest -q tests`
+- `pytest -q tests/test_pack_promotion.py tests/test_run_case_summary_surface.py`
+- representative E2E:
+  - `open-redirect-dynamic-name-only`
+  - `open-redirect-strict-dynamic-no-remote`
+  - `sqli-name-only`
+  - `foobar-name-only-negative`
 
-## 스키마(요약)
-- generator_manifest: 합성(synthesis) 경로의 메타 래퍼. `sid`, `mode`, `workspace_root`, `selected_candidate`, `manifest{files[], deps[], build/run, poc{cmd, success_signature, flag_token}}` 등.
-- packaging_metadata: 단계 타임스탬프/버전/스냅샷/이미지/리포트 레퍼런스.
-- researcher_report / reviewer_report / executor_result: 각 에이전트 출력 구조.
+## Troubleshooting Entry Points
 
-## 정책·윤리·리포팅·위험
-- 정책/사용 제한: 허용 도메인, SBOM 서명/검증, 윤리 규범.
-- 리포팅: 재현 리포트 필수 필드(스냅샷/지표/환경/명령/결과 요약).
-- 위험 레지스터: 주요 리스크와 완화 액션, 재발 방지 절차.
+- researcher/evidence 문제: `metadata/<SID>/search_traces/`, `researcher_report.json`
+- generator 문제: `metadata/<SID>/generator_manifest.json`, `generator_failures.jsonl`
+- executor 문제: `artifacts/<SID>/build/build.log`, `artifacts/<SID>/run/run.log`
+- verifier 문제: `artifacts/<SID>/reports/evals.json`, `docs/guardrails_dynamic.md`
+- pack/summary 문제: `metadata/<SID>/manifest.json`
 
-## 템플릿 예시
-- `workspaces/templates/sqli/flask_mysql_union/app/README.md`
-- `workspaces/templates/sqli/flask_sqlite_raw/app/README.md`
-- `workspaces/templates/csrf/flask_sqlite_csrf/app/README.md`
+## Safety Notes
 
-본 핸드북은 요지 중심으로 유지되며, 변경 시 PR 설명에 본 파일 경로를 명시해 추적 가능성을 확보합니다.
-
-## 코드 디렉토리별 상세 설명
-- 인덱스: `docs/code/README.md`
-- orchestrator: `docs/code/orchestrator.md`
-- common: `docs/code/common.md`
-- agents (researcher/generator/reviewer): `docs/code/agents_researcher.md`, `docs/code/agents_generator.md`, `docs/code/agents_reviewer.md`
-- executor: `docs/code/executor.md`
-- evals: `docs/code/evals.md`
-- rag: `docs/code/rag.md`
-- ops: `docs/code/ops.md`
-- workspaces/metadata/artifacts: `docs/code/workspaces.md`
+- `promotion_eligible`와 generalized support claim은 다릅니다. 판단 기준은 [docs/constraints.md](constraints.md)를 따릅니다.
+- degraded deterministic fallback은 runnable일 수 있어도 open-world success로 주장하지 않습니다.
+- 외부 네트워크나 sidecar 사용은 policy와 evidence가 정렬된 경우에만 허용합니다.

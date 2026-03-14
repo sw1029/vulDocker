@@ -407,6 +407,199 @@ def test_researcher_infers_tech_stack_candidates_from_stack_anchor_hits(tmp_path
     assert "stack_anchor_query" in candidates[0]["sources"]
 
 
+def test_evidence_payload_and_summary_surface_source_authority(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CWE-89",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service._query_plan_index = {  # type: ignore[attr-defined]
+        "OWASP SQL injection advisory": {"query": "OWASP SQL injection advisory", "evidence_type": "advisory"},
+        "GitHub SQLi vulnerable example": {"query": "GitHub SQLi vulnerable example", "evidence_type": "reference_impl"},
+    }
+    hits = [
+        SearchResult(
+            title="OWASP SQL injection advisory",
+            url="https://owasp.org/www-community/attacks/SQL_Injection",
+            snippet="official SQL injection advisory guidance",
+            source="remote",
+            provider="tavily",
+            query="OWASP SQL injection advisory",
+        ),
+        SearchResult(
+            title="GitHub SQLi vulnerable example",
+            url="https://github.com/example/sqli-demo",
+            snippet="example vulnerable code",
+            source="remote",
+            provider="tavily",
+            query="GitHub SQLi vulnerable example",
+        ),
+    ]
+
+    payload = service._build_evidence_payload(hits)  # type: ignore[attr-defined]
+    summary = service._summarize_evidence_types(hits)  # type: ignore[attr-defined]
+
+    assert payload[0]["source_authority"] == "high"
+    assert payload[1]["source_authority"] == "medium"
+    assert summary["by_source_authority"] == {"high": 1, "medium": 1}
+
+
+def test_evidence_graph_surfaces_source_authority_on_evidence_nodes(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CWE-89",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-89",
+        "vuln_name": "SQL Injection",
+    }
+    query_plan = {
+        "request_label": "SQL Injection",
+        "queries": [
+            {
+                "query": "OWASP SQL injection advisory",
+                "evidence_type": "advisory",
+                "priority": 10,
+                "family": "sqli",
+            }
+        ],
+    }
+    graph = service._build_evidence_graph(  # type: ignore[attr-defined]
+        search_hits=[
+            SearchResult(
+                title="OWASP SQL injection advisory",
+                url="https://owasp.org/www-community/attacks/SQL_Injection",
+                snippet="sql injection advisory with OR 1=1 and unsafe query composition",
+                source="remote",
+                provider="tavily",
+                query="OWASP SQL injection advisory",
+            )
+        ],
+        query_plan=query_plan,
+        tech_stack_candidates=[],
+        family_hypothesis_summary={
+            "ranked_families": [
+                {
+                    "family": "sqli",
+                    "confidence": "high",
+                    "score": 0.9,
+                    "matched_aliases": ["sql injection"],
+                    "matched_anchors": ["or 1=1"],
+                }
+            ]
+        },
+    )
+
+    evidence_nodes = [node for node in graph["nodes"] if node.get("kind") == "evidence"]
+    assert evidence_nodes[0]["source_authority"] == "high"
+
+
+def test_researcher_stack_anchor_query_without_text_support_stays_low_confidence(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="NAME-OPEN-REDIRECT",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    query_plan = {
+        "queries": [
+            {
+                "query": "Open Redirect vulnerable example python/fastapi",
+                "evidence_type": "stack_anchor",
+            }
+        ],
+    }
+    service._query_plan_index = {  # type: ignore[attr-defined]
+        "Open Redirect vulnerable example python/fastapi": {
+            "query": "Open Redirect vulnerable example python/fastapi",
+            "evidence_type": "stack_anchor",
+        }
+    }
+
+    candidates = service._infer_tech_stack_candidates(  # type: ignore[attr-defined]
+        [
+            SearchResult(
+                title="Open redirect note",
+                url="https://example.com/open-redirect",
+                snippet="generic redirect vulnerability example",
+                source="remote",
+                provider="tavily",
+                query="Open Redirect vulnerable example python/fastapi",
+            )
+        ],
+        query_plan,
+    )
+
+    assert candidates[0]["stack_id"] == "python/fastapi"
+    assert candidates[0]["confidence"] == "low"
+    assert candidates[0]["score"] == 0.05
+    assert candidates[0]["sources"] == ["stack_anchor_query"]
+
+
+def test_evidence_graph_does_not_add_support_edges_from_query_seed_alone(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="NAME-OPEN-REDIRECT",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "vuln_name": "Open Redirect",
+    }
+    query_plan = {
+        "request_label": "Open Redirect",
+        "queries": [
+            {
+                "query": "Open Redirect vulnerable example python/fastapi",
+                "evidence_type": "stack_anchor",
+                "priority": 9,
+                "family": "open_redirect",
+                "negative_family": False,
+            }
+        ],
+    }
+    graph = service._build_evidence_graph(  # type: ignore[attr-defined]
+        search_hits=[
+            SearchResult(
+                title="generic reference",
+                url="https://example.test/reference",
+                snippet="generic web security example without concrete framework or family markers",
+                source="remote",
+                query="Open Redirect vulnerable example python/fastapi",
+            )
+        ],
+        query_plan=query_plan,
+        tech_stack_candidates=[
+            {
+                "language": "python",
+                "framework": "fastapi",
+                "stack_id": "python/fastapi",
+                "confidence": "medium",
+                "score": 0.5,
+            }
+        ],
+        family_hypothesis_summary={
+            "ranked_families": [
+                {
+                    "family": "open_redirect",
+                    "confidence": "high",
+                    "score": 0.9,
+                    "matched_aliases": ["open redirect"],
+                    "matched_anchors": ["redirect target"],
+                }
+            ]
+        },
+    )
+
+    edges = graph["edges"]
+    assert {"from": "evidence:1", "to": "family:open_redirect", "kind": "supports_family_hypothesis"} not in edges
+    assert {"from": "evidence:1", "to": "stack:python/fastapi", "kind": "supports_stack_hypothesis"} not in edges
+
+
 def test_success_report_canonicalizes_unknown_vuln_id(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("agents.researcher.service.load_static_context", lambda _snapshot: "")
     service = _service_stub(

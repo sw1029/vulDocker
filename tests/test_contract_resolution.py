@@ -314,6 +314,52 @@ def test_contract_name_only_generation_spec_deprioritizes_low_confidence_backgro
     assert spec["planning_focus_summary"]["primary_focus"] != "family_disambiguation"
 
 
+def test_contract_name_only_generation_spec_uses_generation_execution_focus_for_compatibility_lane(
+    tmp_path: Path,
+) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "language": "python",
+            "framework": "flask",
+            "request_ir": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "resolution_state": "catalog_alias",
+                "resolution_match_class": "catalog_alias",
+                "resolution_confidence": "high",
+                "name_driven": True,
+                "family_candidates": [
+                    {"family": "open_redirect", "source": "catalog_resolution", "confidence": "high"},
+                ],
+            },
+            "policy": {"name_only_mode": "compatibility"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "open_redirect",
+                "top_confidence": "high",
+                "contradiction_count": 0,
+                "contradictory_families": [],
+            },
+        },
+    )
+
+    spec = payload["name_only_generation_spec"]
+
+    assert spec["required_contract"]["effective_mode"] == "compatibility"
+    assert spec["planning_focus_summary"]["primary_focus"] == "generation_execution"
+    assert spec["planning_focus_summary"]["by_focus"]["generation_execution"] == ["generation_ready"]
+
+
 def test_enriched_request_ir_filters_background_researcher_families_under_strong_request_resolution(
     tmp_path: Path,
 ) -> None:
@@ -676,7 +722,14 @@ def test_contract_runtime_recipe_prefers_unambiguous_researcher_stack_candidate_
         bundle_slug="name-open-redirect",
         researcher_report={
             "tech_stack_candidates": [
-                {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"},
+                {
+                    "language": "python",
+                    "framework": "fastapi",
+                    "stack_id": "python/fastapi",
+                    "confidence": "medium",
+                    "score": 0.55,
+                    "sources": ["search_hit_text"],
+                },
             ]
         },
         requirement={
@@ -695,6 +748,55 @@ def test_contract_runtime_recipe_prefers_unambiguous_researcher_stack_candidate_
     assert recipe["stack_locked"] is False
 
 
+def test_contract_runtime_recipe_prefers_researcher_top_stack_with_clear_margin(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        researcher_report={
+            "tech_stack_candidates": [
+                {
+                    "language": "python",
+                    "framework": "flask",
+                    "stack_id": "python/flask",
+                    "confidence": "medium",
+                    "score": 0.6,
+                    "sources": ["search_hit_text", "stack_anchor_query"],
+                },
+                {
+                    "language": "python",
+                    "framework": "fastapi",
+                    "stack_id": "python/fastapi",
+                    "confidence": "low",
+                    "score": 0.2,
+                    "sources": ["stack_anchor_query"],
+                },
+            ]
+        },
+        requirement={
+            "vuln_name": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "stack_hypotheses": [
+                {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
+                {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
+            ],
+        },
+    )
+
+    recipe = payload["runtime_recipe"]
+    assert recipe["framework"] == "flask"
+    assert recipe["stack_source"] == "researcher_candidate"
+    assert recipe["stack_locked"] is False
+    assert recipe["stack_selection"]["resolved"] is True
+    assert recipe["stack_selection"]["basis"] == "researcher_top_candidate"
+    assert recipe["stack_selection"]["selected_stack_id"] == "python/flask"
+    assert recipe["stack_selection"]["confidence"] == "medium"
+    assert recipe["stack_selection"]["margin"] == pytest.approx(0.4)
+
+
 def test_contract_runtime_recipe_ignores_ambiguous_researcher_stack_candidates(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
@@ -705,8 +807,22 @@ def test_contract_runtime_recipe_ignores_ambiguous_researcher_stack_candidates(t
         bundle_slug="name-open-redirect",
         researcher_report={
             "tech_stack_candidates": [
-                {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"},
-                {"language": "python", "framework": "flask", "stack_id": "python/flask", "confidence": "medium"},
+                {
+                    "language": "python",
+                    "framework": "fastapi",
+                    "stack_id": "python/fastapi",
+                    "confidence": "medium",
+                    "score": 0.45,
+                    "sources": ["search_hit_text"],
+                },
+                {
+                    "language": "python",
+                    "framework": "flask",
+                    "stack_id": "python/flask",
+                    "confidence": "medium",
+                    "score": 0.4,
+                    "sources": ["search_hit_text"],
+                },
             ]
         },
         requirement={
@@ -723,6 +839,121 @@ def test_contract_runtime_recipe_ignores_ambiguous_researcher_stack_candidates(t
     assert recipe["framework"] == "flask"
     assert recipe["stack_source"] == "profile_prior"
     assert recipe["stack_locked"] is False
+    assert recipe["stack_selection"]["resolved"] is False
+
+
+def test_contract_name_only_generation_spec_keeps_evidence_authority_focus_without_selection_support(
+    tmp_path: Path,
+) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "request_ir": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "resolution_state": "catalog_alias",
+                "pattern_seed_state": "preserved",
+                "evidence_ids": ["evidence:1"],
+                "family_candidates": [
+                    {"family": "open_redirect", "source": "catalog_resolution", "confidence": "high"}
+                ],
+            },
+            "request_identity": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "input_mode": "free_form_name",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+                "name_driven": True,
+            },
+            "name_resolution": {
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+            },
+            "policy": {"name_only_mode": "dynamic"},
+            "stack_hypotheses": [
+                {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
+                {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
+            ],
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "tech_stack_candidates": [
+                {
+                    "language": "python",
+                    "framework": "flask",
+                    "stack_id": "python/flask",
+                    "confidence": "medium",
+                    "score": 0.6,
+                    "sources": ["search_hit_text", "stack_anchor_query"],
+                },
+                {
+                    "language": "python",
+                    "framework": "fastapi",
+                    "stack_id": "python/fastapi",
+                    "confidence": "low",
+                    "score": 0.2,
+                    "sources": ["stack_anchor_query"],
+                },
+            ],
+            "family_hypothesis_summary": {
+                "top_family": "open_redirect",
+                "top_confidence": "high",
+                "contradiction_count": 0,
+                "contradictory_families": [],
+            },
+            "verification_spec": {
+                "success_mode": "text",
+                "success_text_markers": ["Exploit SUCCESS"],
+                "flag_token": "FLAG{OPEN_REDIRECT_OK}",
+                "assertion_program": [{"op": "contains", "string": "Exploit SUCCESS"}],
+                "negative_text_markers": ["Exploit FAILED"],
+                "negative_controls": [{"name": "benign-next", "expect_success": False}],
+                "metamorphic": {"total": 1, "passed": 1, "rationale": "same-origin redirect stays non-exploit"},
+            },
+        },
+    )
+
+    spec = payload["name_only_generation_spec"]
+    request_ir = payload["request_ir"]
+    executor_plan = payload["executor_plan"]
+    assert request_ir["selection_decision"]["stack"]["selected"] is True
+    assert request_ir["selection_decision"]["stack"]["selected_stack_id"] == "python/flask"
+    assert request_ir["selection_decision"]["stack"]["basis"] == "researcher_top_candidate"
+    assert "support_count" in request_ir["selection_decision"]["stack"]
+    assert isinstance(request_ir["selection_decision"]["stack"]["support_by_source_authority"], dict)
+    assert request_ir["selection_decision"]["family"]["selected"] is True
+    assert request_ir["selection_decision"]["family"]["selected_family"] == "open_redirect"
+    assert "support_count" in request_ir["selection_decision"]["family"]
+    assert isinstance(request_ir["selection_decision"]["family"]["support_by_source_authority"], dict)
+    assert request_ir["selection_decision"]["ready_for_materialization"] is True
+    assert request_ir["selection_decision"]["open_world_evidence_ready"] is False
+    assert executor_plan["service_port"] == 5000
+    assert executor_plan.get("health_path") in {None, "/health"}
+    assert executor_plan["stack_selection"]["selected_stack_id"] == "python/flask"
+    assert spec["stack_candidate_summary"]["working_stack_source"] == "researcher_candidate"
+    assert spec["stack_candidate_summary"]["working_stack_defaulted"] is False
+    assert spec["stack_candidate_summary"]["selection_resolved"] is True
+    assert spec["stack_candidate_summary"]["selection_basis"] == "researcher_top_candidate"
+    assert "selection_support_count" in spec["stack_candidate_summary"]
+    assert "selection_support_by_source_authority" in spec["stack_candidate_summary"]
+    assert "selection_support_count" in spec["family_candidate_summary"]
+    assert "selection_support_by_source_authority" in spec["family_candidate_summary"]
+    assert spec["planning_focus_summary"]["primary_focus"] == "evidence_authority"
+    assert spec["planning_focus_summary"]["by_focus"]["evidence_authority"] == [
+        "selected_family_support_missing",
+        "selected_stack_support_missing",
+        "selected_family_authority_thin",
+        "selected_stack_authority_thin",
+    ]
 
 
 def test_contract_marks_cwe352_as_compiler_supported_when_strategy_exists(tmp_path: Path) -> None:

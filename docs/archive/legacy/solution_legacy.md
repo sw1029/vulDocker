@@ -1,10 +1,12 @@
-# vulDocker 동적화 설계안 (Legacy → Plan, MoSCoW TODO)
+# vulDocker 동적화 설계안 (Legacy Reference)
 
-> 문서 목적: 구버전 개선 제안(`docs/solution_legacy.md`)을 **현재 코드/메타 구조와 정합**하도록 재정리하고, “LLM 기반 동적 생성/실행/검증”을 위한 계획 문서(TODO checklist)로 제공한다.
+> Archived reference. 이 문서는 historical snapshot이며 active source가 아니다.
 >
-> 아키텍처(PLAN → GENERATE → EXECUTE → VERIFY → REVIEW → PACK)는 유지한다.
->
-> 최신 단일 소스: `docs/solution.md`, `docs/final_solution.md` (본 문서는 상세 설계/작업 항목을 보강한 레거시-호환 계획서).
+> 현재 canonical 문서:
+> - 문제 정의: `docs/problem.md`
+> - 현재 상태: `docs/current_state_gap_analysis.md`
+> - 제약조건: `docs/constraints.md`
+> - 구현 로드맵: `docs/final_solution.md`
 
 ## 설계 요약(핵심 원칙)
 

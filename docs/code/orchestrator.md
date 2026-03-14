@@ -1,18 +1,31 @@
 # orchestrator 디렉토리
 
-핵심 파일
-- orchestrator/plan.py:1 — 요구 입력 정규화 → SID 계산 → `metadata/<SID>/plan.json` 작성. 경로 생성(`workspaces/`, `artifacts/`, `metadata/`).
-- orchestrator/pack.py:1 — 실행 산출물 취합/스냅샷/`manifest.json` 생성. REVIEW 게이트 정책(`--allow-intentional-vuln`) 반영.
+Status: support
+Audience: implementation
+Source of truth for: orchestrator entrypoints and output surfaces
+Not the source of truth for: project goals, constraints, roadmap
+Last validated against: current repo layout on 2026-03-14
 
-데이터 계약
-- 입력: `inputs/*.yml` (요구 스펙). 필수/선택 필드는 `plan.build_plan()`에서 정규화.
-- 출력(PLAN): `metadata/<SID>/plan.json` (paths/variation_key/policy/run_matrix 등 포함).
-- 출력(PACK): `metadata/<SID>/manifest.json`, `artifacts/<SID>/build/source_snapshot/`.
+Relevant canonical docs:
+- [문제 정의](../problem.md)
+- [현재 상태](../current_state_gap_analysis.md)
+- [제약조건](../constraints.md)
+- [로드맵](../final_solution.md)
 
-프로젝트 내 역할
-- 파이프라인의 시작/끝 단계 담당. 이후 단계(agents/executor/evals/reviewer)가 참조할 경로/정책/변이키를 결정.
+## 핵심 파일
 
-주요 의존
-- common.scripts: `common/sid.py:1`, `common/paths.py:1`, `common/plan.py:1`, `common/run_matrix.py:1`.
-- 리뷰 게이트: `metadata/<SID>/loop_state.json`을 기준으로 차단/통과 여부 판정.
+- `orchestrator/plan.py`: requirement 정규화, SID 계산, `plan.json` 작성
+- `orchestrator/run_pipeline.py`: RESEARCH → GENERATE → EXECUTE → VERIFY → REVIEW → PACK loop 실행
+- `orchestrator/pack.py`: summary/manifest rollup, readiness/promotion surfaces 생성
 
+## 구현상 중요 포인트
+
+- `plan.json`은 경로, policy, variation, run matrix의 시작점입니다.
+- `run_pipeline.py`는 stage timing과 capability gate를 surface합니다.
+- `pack.py`는 `name_only_outcome`, `support_promotion`, `open_world_readiness`, `artifact_quality`의 최종 집계면입니다.
+
+## Name-Only/Open-World 작업 시 먼저 볼 것
+
+- `plan.py`: 어떤 입력이 `request_ir`와 policy로 들어가는지
+- `run_pipeline.py`: 어떤 stage가 fail-closed/partial을 결정하는지
+- `pack.py`: 어떤 summary surface가 operator-facing truth가 되는지

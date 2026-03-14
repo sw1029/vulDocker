@@ -1,15 +1,23 @@
 # agents/researcher 디렉토리
 
-핵심 파일
-- agents/researcher/main.py:1 — CLI 엔트리. 번들 반복 실행, 인덱스(researcher_reports.json) 기록.
-- agents/researcher/service.py:1 — 검색/로컬 RAG/프롬프트 조립 → researcher_report.json 생성.
-- rag/tools/web_search.py:1 — 원격 검색(있으면) 우선, 실패 시 로컬 코퍼스 검색으로 폴백.
+Status: support
+Audience: implementation
+Source of truth for: researcher query/evidence/guard generation entrypoints
+Not the source of truth for: generalized evidence policy or high-level roadmap
+Last validated against: current repo layout on 2026-03-14
 
-데이터 계약
-- 입력: `metadata/<SID>/plan.json` (requirement/variation_key).
-- 출력: `metadata/<SID>/researcher_report.json` (또는 번들 범위 파일).
-- report(요약): vuln_id, intent, preconditions, tech_stack_candidates, minimal_repro_steps, references, pocs, deps, risks, retrieval_snapshot_id.
+Relevant canonical docs:
+- [현재 상태](../current_state_gap_analysis.md)
+- [제약조건](../constraints.md)
+- [로드맵](../final_solution.md)
 
-프로젝트 내 역할
-- Generator가 선택/합성 결정을 더 명료하게 내리도록 외부/내부 근거를 정리한 보고서를 제공.
+## 핵심 파일
 
+- `agents/researcher/main.py`: researcher CLI entry
+- `agents/researcher/service.py`: query plan, search, evidence graph, guard spec, researcher report 생성
+
+## 현재 구현상 포인트
+
+- family hypothesis와 stack candidates는 retrieval evidence를 바탕으로 enrich되지만 아직 closed-vocabulary 경향이 강합니다.
+- evidence graph와 source authority는 operator-facing summary를 개선하지만, causal proof나 full control-plane을 뜻하지는 않습니다.
+- researcher output은 generator와 pack surface에 크게 영향을 주므로 `request_ir`, `family_hypothesis_summary`, `tech_stack_candidates`, `evidence_graph`를 함께 봐야 합니다.

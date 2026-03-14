@@ -1,19 +1,26 @@
 # evals 디렉토리
 
-핵심 파일
-- evals/poc_verifier/main.py:1 — 번들별 run.log를 수집해 플러그인으로 평가하고 `reports/evals.json` 작성.
-- evals/poc_verifier/registry.py:1 — 검증기 레지스트리. 사용자 정의 함수 등록 + rule 기반 폴백/LLM 보조를 담당.
-- evals/poc_verifier/rule_based.py:1 — `docs/evals/rules/*.yaml` 스키마를 읽어 공통 검증을 수행(성공 시그니처/flag_token 매칭, JSON 출력 판정 등).
-  - run_summary/summary.json을 우선 사용하고, 정책 `plan.policy.verifier.require_exit_code_zero`를 인식합니다.
-- evals/poc_verifier/mvp_sqli.py:1 — SQLi 전용 검증기(필요 시 rule 기반 이전 단계에서 실행).
-- evals/poc_verifier/csrf.py:1 — CSRF 전용 검증기(존재 시, rule 기반 이전 단계에서 실행).
+Status: support
+Audience: implementation
+Source of truth for: verifier entrypoints and result surfaces
+Not the source of truth for: artifact-quality policy or project roadmap
+Last validated against: current repo layout on 2026-03-14
 
-데이터 계약
-- 입력: run/index.json(번들별 실행 기록), run.log(로그), requirement(plan에서 scope).
-- 출력: `artifacts/<SID>/reports/evals.json` (overall_pass, results[] 포함).
+Relevant canonical docs:
+- [제약조건](../constraints.md)
+- [로드맵](../final_solution.md)
 
-플러그인 계약
-- 함수 시그니처: `def verifier(log_path: Path) -> dict`.
-- 결과 권장 필드: verify_pass(bool), evidence(str), status(str: evaluated|unsupported 등), log_path(str).
-- 미지원/실패 시 LLM 보조 검증(정책 허용 시)으로 보완.
-- 정책 필드 예시: `verifier.require_exit_code_zero`, `verifier.llm_assist`, `verifier.log_excerpt_chars`.
+## 핵심 파일
+
+- `evals/poc_verifier/main.py`: verifier entrypoint
+- `evals/poc_verifier/rule_based.py`: rule/contract/log based verification
+- `evals/poc_verifier/registry.py`: verifier registry
+- `evals/poc_verifier/llm_assisted.py`: optional LLM-assisted verifier path
+
+## 현재 구현상 포인트
+
+- verifier는 declared rule, runtime rule, contract-oracle fallback을 구분합니다.
+- negative/metamorphic oracle metadata는 일부 surface에 반영되지만, full execution parity는 아직 제한적입니다.
+- eval 결과는 `verify_pass` 외에도 trust, independence, semantic consistency를 같이 읽어야 합니다.
+
+artifact quality나 support claim을 해석할 때는 반드시 [docs/constraints.md](../constraints.md)의 verifier/oracle constraints를 같이 참고합니다.

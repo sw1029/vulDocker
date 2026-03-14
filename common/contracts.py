@@ -505,6 +505,11 @@ def build_generator_contract(
         runtime_recipe=runtime_recipe,
         resolved=resolved_payload,
     )
+    executor_plan = _build_executor_plan(
+        runtime_recipe=runtime_recipe,
+        runtime_graph=runtime_graph,
+        resolved=resolved_payload,
+    )
 
     payload: Dict[str, Any] = {
         "schema_version": RESOLVED_CONTRACT_SCHEMA_VERSION,
@@ -520,6 +525,8 @@ def build_generator_contract(
         payload["runtime_recipe"] = runtime_recipe
     if runtime_graph:
         payload["runtime_graph"] = runtime_graph
+    if executor_plan:
+        payload["executor_plan"] = executor_plan
     exploit_oracle = _build_exploit_oracle(
         resolved=payload["resolved"],
         proposal=proposal or {},
@@ -615,6 +622,8 @@ def build_generator_contract(
         payload["runtime_recipe"] = deepcopy(runtime_recipe)
     if runtime_graph:
         payload["runtime_graph"] = deepcopy(runtime_graph)
+    if executor_plan:
+        payload["executor_plan"] = deepcopy(executor_plan)
     if evidence_graph:
         payload["evidence_graph"] = deepcopy(evidence_graph)
     if enriched_request_ir:
@@ -835,13 +844,13 @@ def _stack_hypotheses(requirement: Dict[str, Any]) -> list[Dict[str, str]]:
     return hypotheses
 
 
-def _researcher_stack_candidates(report: Dict[str, Any]) -> list[Dict[str, str]]:
+def _researcher_stack_candidates(report: Dict[str, Any]) -> list[Dict[str, Any]]:
     if not isinstance(report, dict):
         return []
     raw = report.get("tech_stack_candidates")
     if not isinstance(raw, list):
         return []
-    candidates: list[Dict[str, str]] = []
+    candidates: list[Dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for entry in raw:
         if not isinstance(entry, dict):
@@ -861,6 +870,16 @@ def _researcher_stack_candidates(report: Dict[str, Any]) -> list[Dict[str, str]]
                 "stack_id": _string_or_none(entry.get("stack_id")) or f"{language.lower()}/{framework.lower()}",
                 "source": "researcher_candidate",
                 "confidence": _string_or_none(entry.get("confidence")) or "unknown",
+                "score": entry.get("score"),
+                "sources": (
+                    [
+                        str(item).strip().lower()
+                        for item in (entry.get("sources") or [])
+                        if isinstance(item, str) and str(item).strip()
+                    ]
+                    if isinstance(entry.get("sources"), list)
+                    else []
+                ),
             }
         )
     return candidates
@@ -877,16 +896,51 @@ def _stack_confidence_rank(value: str) -> int:
     return 0
 
 
-def _single_confident_stack_candidate(candidates: list[Dict[str, str]]) -> Dict[str, str]:
+def _stack_candidate_score(entry: Dict[str, Any]) -> float:
+    try:
+        return float(entry.get("score") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _stack_candidate_sources(entry: Dict[str, Any]) -> list[str]:
+    if not isinstance(entry, dict):
+        return []
+    raw = entry.get("sources")
+    if not isinstance(raw, list):
+        return []
+    return [
+        str(item).strip().lower()
+        for item in raw
+        if isinstance(item, str) and str(item).strip()
+    ]
+
+
+def _stack_candidate_has_text_evidence(entry: Dict[str, Any]) -> bool:
+    sources = set(_stack_candidate_sources(entry))
+    return "search_hit_text" in sources or "explicit_requirement" in sources
+
+
+def _preferred_researcher_stack_candidate(candidates: list[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(candidates, list) or not candidates:
         return {}
-    if len(candidates) != 1:
+    normalized = [entry for entry in candidates if isinstance(entry, dict)]
+    if not normalized:
         return {}
-    top = candidates[0]
-    if not isinstance(top, dict):
-        return {}
+    top = normalized[0]
     confidence = str(top.get("confidence") or "").strip().lower()
-    if _stack_confidence_rank(confidence) < _stack_confidence_rank("medium"):
+    confidence_rank = _stack_confidence_rank(confidence)
+    if confidence_rank < _stack_confidence_rank("medium"):
+        return {}
+    has_text_evidence = _stack_candidate_has_text_evidence(top)
+    if not has_text_evidence:
+        return {}
+    if len(normalized) == 1:
+        return top
+    second_score = _stack_candidate_score(normalized[1])
+    top_margin = _stack_candidate_score(top) - second_score
+    required_margin = 0.15 if confidence_rank >= _stack_confidence_rank("high") else 0.25
+    if top_margin < required_margin:
         return {}
     return top
 
@@ -985,7 +1039,7 @@ def _stack_profile(requirement: Dict[str, Any], report: Dict[str, Any] | None = 
     explicit_framework = _string_or_none(requirement.get("framework") if isinstance(requirement, dict) else None)
     requirement_hypotheses = _stack_hypotheses(requirement if isinstance(requirement, dict) else {})
     researcher_hypotheses = _researcher_stack_candidates(report or {})
-    confident_researcher_hypothesis = _single_confident_stack_candidate(researcher_hypotheses)
+    confident_researcher_hypothesis = _preferred_researcher_stack_candidate(researcher_hypotheses)
     hypotheses = _merge_stack_candidates(researcher_hypotheses, requirement_hypotheses)
     if explicit_language and explicit_framework:
         language = explicit_language.lower()
@@ -1015,10 +1069,52 @@ def _stack_profile(requirement: Dict[str, Any], report: Dict[str, Any] | None = 
         framework = "flask"
         stack_source = "default_stack_profile"
         stack_locked = False
+    selected_stack_id = f"{language}/{framework}"
     stack_defaulted = bool(
         not stack_locked
         and stack_source in {"default_stack_profile", "profile_prior", "available_skeleton"}
     )
+    stack_selection: Dict[str, Any] = {
+        "selected_stack_id": selected_stack_id,
+        "source": stack_source,
+        "resolved": False,
+    }
+    if stack_locked and stack_source == "explicit_requirement":
+        stack_selection.update(
+            {
+                "resolved": True,
+                "confidence": "high",
+                "basis": "explicit_requirement",
+            }
+        )
+    elif stack_source == "researcher_candidate" and confident_researcher_hypothesis:
+        second_score = _stack_candidate_score(researcher_hypotheses[1]) if len(researcher_hypotheses) > 1 else 0.0
+        top_score = _stack_candidate_score(confident_researcher_hypothesis)
+        stack_selection.update(
+            {
+                "resolved": True,
+                "confidence": _string_or_none(confident_researcher_hypothesis.get("confidence")) or "unknown",
+                "score": round(top_score, 3),
+                "margin": round(max(0.0, top_score - second_score), 3),
+                "basis": "researcher_top_candidate",
+                "evidence_backed": _stack_candidate_has_text_evidence(confident_researcher_hypothesis),
+                "sources": _stack_candidate_sources(confident_researcher_hypothesis),
+            }
+        )
+    elif stack_source in {"profile_prior", "available_skeleton", "default_stack_profile"}:
+        stack_selection.update(
+            {
+                "basis": "repo_prior_default",
+                "confidence": "low",
+            }
+        )
+    elif stack_source == "stack_hypothesis":
+        stack_selection.update(
+            {
+                "basis": "soft_stack_hypothesis",
+                "confidence": "low",
+            }
+        )
     return {
         "language": language,
         "framework": framework,
@@ -1034,6 +1130,7 @@ def _stack_profile(requirement: Dict[str, Any], report: Dict[str, Any] | None = 
         "stack_locked": stack_locked,
         "stack_defaulted": stack_defaulted,
         "stack_hypotheses": hypotheses,
+        "stack_selection": stack_selection,
     }
 
 
@@ -1817,6 +1914,8 @@ def _build_runtime_recipe(
     }
     if stack_hypotheses:
         recipe["stack_hypotheses"] = deepcopy(stack_hypotheses)
+    if isinstance(stack.get("stack_selection"), dict) and stack.get("stack_selection"):
+        recipe["stack_selection"] = deepcopy(stack.get("stack_selection"))
     health_path = _runtime_health_path(manifest)
     if health_path:
         recipe["health_path"] = health_path
@@ -1932,6 +2031,50 @@ def _build_runtime_graph(
     return graph
 
 
+def _build_executor_plan(
+    *,
+    runtime_recipe: Dict[str, Any],
+    runtime_graph: Dict[str, Any],
+    resolved: Dict[str, Any],
+) -> Dict[str, Any]:
+    recipe = runtime_recipe if isinstance(runtime_recipe, dict) else {}
+    graph = runtime_graph if isinstance(runtime_graph, dict) else {}
+    if not recipe:
+        return {}
+    plan: Dict[str, Any] = {
+        "schema_version": "executor_plan@0.1",
+        "source": "resolved_contract.runtime_recipe",
+        "topology": _string_or_none(recipe.get("topology")) or "single_service",
+        "service_port": recipe.get("service_port") if isinstance(recipe.get("service_port"), int) else DEFAULT_APP_PORT,
+        "base_url": _string_or_none(resolved.get("base_url")) or None,
+        "service_entry": _string_or_none(recipe.get("service_entry")) or "app.py",
+        "poc_entry": _string_or_none(recipe.get("poc_entry")) or "poc.py",
+        "network_mode": _string_or_none(recipe.get("network_mode")) or "none",
+        "network_enabled": bool(recipe.get("network_enabled")),
+        "requires_external_db": bool(recipe.get("requires_external_db")),
+        "target_node": "service",
+    }
+    health_path = _string_or_none(recipe.get("health_path"))
+    if health_path:
+        plan["health_path"] = health_path
+    sidecars = recipe.get("sidecars") if isinstance(recipe.get("sidecars"), list) else []
+    if sidecars:
+        plan["sidecars"] = deepcopy(sidecars)
+    service_env = recipe.get("service_env") if isinstance(recipe.get("service_env"), dict) else {}
+    if service_env:
+        plan["service_env"] = deepcopy(service_env)
+    stack_selection = recipe.get("stack_selection") if isinstance(recipe.get("stack_selection"), dict) else {}
+    if stack_selection:
+        plan["stack_selection"] = deepcopy(stack_selection)
+    healthchecks = graph.get("healthchecks") if isinstance(graph.get("healthchecks"), list) else []
+    if healthchecks:
+        plan["healthchecks"] = deepcopy(healthchecks)
+    exploit_path = graph.get("exploit_path") if isinstance(graph.get("exploit_path"), dict) else {}
+    if exploit_path:
+        plan["exploit_path"] = deepcopy(exploit_path)
+    return plan
+
+
 def _runtime_graph_summary(runtime_graph: Dict[str, Any]) -> Dict[str, Any]:
     graph = runtime_graph if isinstance(runtime_graph, dict) else {}
     if not graph:
@@ -1965,11 +2108,16 @@ def _evidence_graph_summary(evidence_graph: Dict[str, Any]) -> Dict[str, Any]:
     edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
     by_kind: Dict[str, int] = {}
     by_edge_kind: Dict[str, int] = {}
+    by_source_authority: Dict[str, int] = {}
     for entry in nodes:
         if not isinstance(entry, dict):
             continue
         kind = _string_or_none(entry.get("kind")) or "unknown"
         by_kind[kind] = by_kind.get(kind, 0) + 1
+        if kind == "evidence":
+            authority = _string_or_none(entry.get("source_authority"))
+            if authority:
+                by_source_authority[authority] = by_source_authority.get(authority, 0) + 1
     for entry in edges:
         if not isinstance(entry, dict):
             continue
@@ -1980,6 +2128,7 @@ def _evidence_graph_summary(evidence_graph: Dict[str, Any]) -> Dict[str, Any]:
         "edge_count": int(graph.get("edge_count") or len(edges)),
         "by_kind": by_kind,
         "by_edge_kind": by_edge_kind,
+        "by_source_authority": by_source_authority,
         "source": _string_or_none(graph.get("source")) or "unknown",
     }
 
@@ -2084,6 +2233,72 @@ def _support_maps_from_evidence_graph(
             if edge_from not in values:
                 values.append(edge_from)
     return family_support, stack_support
+
+
+def _evidence_authority_map(evidence_graph: Dict[str, Any]) -> Dict[str, str]:
+    graph = evidence_graph if isinstance(evidence_graph, dict) else {}
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    authority_map: Dict[str, str] = {}
+    for entry in nodes:
+        if not isinstance(entry, dict):
+            continue
+        if _string_or_none(entry.get("kind")) != "evidence":
+            continue
+        node_id = _string_or_none(entry.get("id"))
+        authority = _string_or_none(entry.get("source_authority"))
+        if node_id and authority:
+            authority_map[node_id] = authority.lower()
+    return authority_map
+
+
+def _support_summary(evidence_ids: List[str], authority_map: Dict[str, str]) -> Dict[str, Any]:
+    normalized_ids: List[str] = []
+    seen: set[str] = set()
+    by_source_authority: Dict[str, int] = {}
+    for raw in evidence_ids:
+        token = _string_or_none(raw)
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized_ids.append(token)
+        authority = _string_or_none(authority_map.get(token))
+        if authority:
+            by_source_authority[authority] = by_source_authority.get(authority, 0) + 1
+    return {
+        "evidence_ids": normalized_ids,
+        "support_count": len(normalized_ids),
+        "support_by_source_authority": by_source_authority,
+        "evidence_backed": bool(normalized_ids),
+        "high_or_medium_authority_support": any(by_source_authority.get(level, 0) > 0 for level in ("high", "medium")),
+    }
+
+
+def _family_support_summary(
+    family: Any,
+    family_support: Dict[str, List[str]],
+    authority_map: Dict[str, str],
+) -> Dict[str, Any]:
+    candidate_keys = _family_match_keys(family)
+    evidence_ids: List[str] = []
+    for family_name, support_ids in family_support.items():
+        if not (_family_match_keys(family_name) & candidate_keys):
+            continue
+        for evidence_id in support_ids:
+            token = _string_or_none(evidence_id)
+            if token and token not in evidence_ids:
+                evidence_ids.append(token)
+    return _support_summary(evidence_ids, authority_map)
+
+
+def _stack_support_summary(
+    stack_id: Any,
+    stack_support: Dict[str, List[str]],
+    authority_map: Dict[str, str],
+) -> Dict[str, Any]:
+    normalized_stack_id = _string_or_none(stack_id)
+    if not normalized_stack_id:
+        return _support_summary([], authority_map)
+    return _support_summary(stack_support.get(normalized_stack_id.lower(), []), authority_map)
 
 
 def _attach_family_candidate_evidence(
@@ -2212,14 +2427,39 @@ def _stack_candidates_from_runtime_and_report(
     runtime_recipe: Dict[str, Any],
     report: Dict[str, Any],
 ) -> list[Dict[str, Any]]:
-    raw_candidates = (
-        runtime_recipe.get("stack_hypotheses")
-        if isinstance(runtime_recipe.get("stack_hypotheses"), list)
-        else report.get("tech_stack_candidates")
-        if isinstance(report.get("tech_stack_candidates"), list)
-        else []
-    )
     candidates: list[Dict[str, Any]] = []
+    selected_stack = runtime_recipe.get("stack_selection") if isinstance(runtime_recipe.get("stack_selection"), dict) else {}
+    selected_stack_id = _string_or_none(selected_stack.get("selected_stack_id"))
+    if selected_stack_id:
+        selected_language, _, selected_framework = selected_stack_id.partition("/")
+        candidate: Dict[str, Any] = {
+            "stack_id": selected_stack_id.lower(),
+            "source": _string_or_none(selected_stack.get("source")) or "runtime_selection",
+        }
+        if selected_language and selected_framework:
+            candidate["language"] = selected_language.lower()
+            candidate["framework"] = selected_framework.lower()
+        confidence = _string_or_none(selected_stack.get("confidence"))
+        if confidence:
+            candidate["confidence"] = confidence.lower()
+        score = selected_stack.get("score")
+        if isinstance(score, (int, float)):
+            candidate["score"] = round(float(score), 3)
+        sources = selected_stack.get("sources")
+        if isinstance(sources, list):
+            candidate["sources"] = [
+                str(item).strip().lower()
+                for item in sources
+                if isinstance(item, str) and str(item).strip()
+            ]
+        candidate["selected"] = bool(selected_stack.get("resolved"))
+        candidates.append(candidate)
+
+    raw_candidates = []
+    if isinstance(runtime_recipe.get("stack_hypotheses"), list):
+        raw_candidates.extend(runtime_recipe.get("stack_hypotheses") or [])
+    elif isinstance(report.get("tech_stack_candidates"), list):
+        raw_candidates.extend(report.get("tech_stack_candidates") or [])
     if not isinstance(raw_candidates, list):
         return candidates
     for entry in raw_candidates:
@@ -2437,6 +2677,13 @@ def _enriched_request_ir(
     negative_hypotheses = _negative_hypotheses_from_report(report, family_support)
     if negative_hypotheses:
         request_ir["negative_hypotheses"] = negative_hypotheses
+    selection_decision = _request_ir_selection_decision(
+        request_ir,
+        runtime_recipe=runtime_recipe,
+        evidence_graph=evidence_graph,
+    )
+    if selection_decision:
+        request_ir["selection_decision"] = selection_decision
     abstain_reason = _derived_request_ir_abstain_reason(
         request_ir,
         report=report,
@@ -2575,6 +2822,83 @@ def _request_ir_candidate_evidence_ids(request_ir: Dict[str, Any]) -> list[str]:
     return evidence_ids
 
 
+def _request_ir_selection_decision(
+    request_ir: Dict[str, Any],
+    *,
+    runtime_recipe: Dict[str, Any],
+    evidence_graph: Dict[str, Any],
+) -> Dict[str, Any]:
+    decision: Dict[str, Any] = {}
+    family_support, stack_support = _support_maps_from_evidence_graph(evidence_graph)
+    authority_map = _evidence_authority_map(evidence_graph)
+
+    family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
+    normalized_family_candidates = [entry for entry in family_candidates if isinstance(entry, dict)]
+    if normalized_family_candidates:
+        top_family = normalized_family_candidates[0]
+        family = _string_or_none(top_family.get("family"))
+        source = _string_or_none(top_family.get("source")) or "unknown"
+        confidence = _string_or_none(top_family.get("confidence")) or "unknown"
+        unique_families = {
+            str(entry.get("family") or "").strip().lower()
+            for entry in normalized_family_candidates
+            if str(entry.get("family") or "").strip()
+        }
+        family_payload: Dict[str, Any] = {
+            "candidate_count": len(normalized_family_candidates),
+            "top_family": family.lower() if family else None,
+            "source": source.lower(),
+            "confidence": confidence.lower(),
+            "selected": False,
+        }
+        if family:
+            family_payload.update(_family_support_summary(family, family_support, authority_map))
+        if family and (
+            len(unique_families) == 1
+            or (_is_request_resolution_family_source(source) and _family_confidence_rank(confidence) >= _family_confidence_rank("high"))
+        ):
+            family_payload["selected"] = True
+            family_payload["selected_family"] = family.lower()
+        decision["family"] = family_payload
+
+    stack_selection = runtime_recipe.get("stack_selection") if isinstance(runtime_recipe.get("stack_selection"), dict) else {}
+    if stack_selection:
+        selected_stack_id = _string_or_none(stack_selection.get("selected_stack_id"))
+        stack_payload: Dict[str, Any] = {
+            "selected_stack_id": selected_stack_id,
+            "source": _string_or_none(stack_selection.get("source")) or "unknown",
+            "confidence": _string_or_none(stack_selection.get("confidence")) or "unknown",
+            "margin": stack_selection.get("margin"),
+            "basis": _string_or_none(stack_selection.get("basis")) or None,
+            "selected": bool(stack_selection.get("resolved")),
+        }
+        if selected_stack_id:
+            stack_payload.update(_stack_support_summary(selected_stack_id, stack_support, authority_map))
+        sources = stack_selection.get("sources")
+        if isinstance(sources, list):
+            stack_payload["sources"] = [
+                str(item).strip().lower()
+                for item in sources
+                if isinstance(item, str) and str(item).strip()
+            ]
+        decision["stack"] = stack_payload
+
+    if decision:
+        decision["ready_for_materialization"] = bool((decision.get("family") or {}).get("selected")) and bool(
+            (decision.get("stack") or {}).get("selected")
+        )
+        family_payload = decision.get("family") if isinstance(decision.get("family"), dict) else {}
+        stack_payload = decision.get("stack") if isinstance(decision.get("stack"), dict) else {}
+        stack_basis = str(stack_payload.get("basis") or "").strip().lower()
+        stack_is_explicit = stack_basis == "explicit_requirement"
+        decision["open_world_evidence_ready"] = (
+            decision["ready_for_materialization"]
+            and family_payload.get("evidence_backed") is True
+            and (stack_payload.get("evidence_backed") is True or stack_is_explicit)
+        )
+    return decision
+
+
 def _name_only_planning_focus_summary(
     *,
     name_only_contract: Dict[str, Any],
@@ -2615,18 +2939,39 @@ def _name_only_planning_focus_summary(
         _add_focus("family_disambiguation", "family_ambiguous")
 
     working_stack_id = str(stack_candidate_summary.get("working_stack_id") or "").strip().lower()
+    stack_selection_resolved = stack_candidate_summary.get("selection_resolved") is True
     if not working_stack_id:
         _add_focus("stack_or_runtime_design", "stack_unresolved")
     if stack_candidate_summary.get("working_stack_defaulted") is True:
         _add_focus("stack_or_runtime_design", "stack_defaulted")
-    if stack_candidate_summary.get("ambiguous") is True:
+    if stack_candidate_summary.get("ambiguous") is True and not stack_selection_resolved:
         _add_focus("stack_or_runtime_design", "stack_ambiguous")
-
-    if not _request_ir_candidate_evidence_ids(request_ir):
-        _add_focus("evidence_authority", "family_candidate_evidence_missing")
 
     effective_mode = str(name_only_contract.get("effective_mode") or "").strip().lower()
     require_open_world_oracle = effective_mode in {"dynamic", "dynamic_eval", "strict_dynamic"}
+    require_remote_research = name_only_contract.get("require_remote_research") is True
+    require_evidence_authority = require_open_world_oracle or require_remote_research
+    request_ir_evidence_ids = _request_ir_candidate_evidence_ids(request_ir)
+    if require_evidence_authority and not request_ir_evidence_ids:
+        _add_focus("evidence_authority", "family_candidate_evidence_missing")
+    selection_decision = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+    family_decision = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
+    stack_decision = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+    family_selected = family_decision.get("selected") is True
+    stack_selected = stack_decision.get("selected") is True
+    family_evidence_backed = family_decision.get("evidence_backed") is True
+    stack_evidence_backed = stack_decision.get("evidence_backed") is True
+    stack_basis = str(stack_decision.get("basis") or "").strip().lower()
+    stack_is_explicit_or_locked = stack_basis == "explicit_requirement" or stack_candidate_summary.get("working_stack_locked") is True
+    if require_open_world_oracle:
+        if family_selected and not family_evidence_backed:
+            _add_focus("evidence_authority", "selected_family_support_missing")
+        if stack_selected and not stack_evidence_backed and not stack_is_explicit_or_locked:
+            _add_focus("evidence_authority", "selected_stack_support_missing")
+        if family_selected and family_decision.get("high_or_medium_authority_support") is not True:
+            _add_focus("evidence_authority", "selected_family_authority_thin")
+        if stack_selected and not stack_is_explicit_or_locked and stack_decision.get("high_or_medium_authority_support") is not True:
+            _add_focus("evidence_authority", "selected_stack_authority_thin")
     if require_open_world_oracle:
         if exploit_oracle.get("negative_control_present") is not True:
             _add_focus("oracle_realism", "negative_control_missing")
@@ -2634,8 +2979,21 @@ def _name_only_planning_focus_summary(
             _add_focus("oracle_realism", "metamorphic_missing")
     if name_only_contract.get("require_independent_verifier") is True:
         _add_focus("independent_verification", "independent_verifier_required")
-    if name_only_contract.get("require_remote_research") is True and not _request_ir_candidate_evidence_ids(request_ir):
+    if require_remote_research and not request_ir_evidence_ids:
         _add_focus("evidence_authority", "remote_research_evidence_missing")
+    if (
+        require_open_world_oracle
+        and working_family
+        and working_stack_id
+        and stack_selection_resolved
+        and stack_candidate_summary.get("working_stack_defaulted") is not True
+        and request_ir_evidence_ids
+        and (not family_selected or family_evidence_backed)
+        and (not stack_selected or stack_evidence_backed or stack_is_explicit_or_locked)
+        and exploit_oracle.get("negative_control_present") is True
+        and exploit_oracle.get("metamorphic_present") is True
+    ):
+        _add_focus("open_world_generation", "bounded_dynamic_generation")
 
     if not ordered_focuses:
         ordered_focuses.append("generation_execution")
@@ -2828,6 +3186,7 @@ def _build_name_only_generation_spec(
     framework = str(runtime_recipe.get("framework") or "").strip().lower()
     if language and framework:
         working_stack_id = f"{language}/{framework}"
+    raw_stack_selection = runtime_recipe.get("stack_selection") if isinstance(runtime_recipe.get("stack_selection"), dict) else {}
     stack_candidate_summary: Dict[str, Any] = {
         "candidate_count": 0,
         "working_stack_id": working_stack_id or None,
@@ -2835,6 +3194,12 @@ def _build_name_only_generation_spec(
         "working_stack_locked": bool(runtime_recipe.get("stack_locked")),
         "working_stack_defaulted": bool(runtime_recipe.get("stack_defaulted")),
         "ambiguous": False,
+        "selection_resolved": bool((raw_stack_selection or {}).get("resolved")),
+        "selection_confidence": str((raw_stack_selection or {}).get("confidence") or "").strip().lower() or None,
+        "selection_margin": raw_stack_selection.get("margin"),
+        "selection_score": raw_stack_selection.get("score"),
+        "selection_basis": str((raw_stack_selection or {}).get("basis") or "").strip().lower() or None,
+        "selection_sources": deepcopy(raw_stack_selection.get("sources")) if isinstance(raw_stack_selection.get("sources"), list) else [],
     }
     if isinstance(stack_hypotheses, list) and stack_hypotheses:
         unique_stacks = []
@@ -2863,6 +3228,23 @@ def _build_name_only_generation_spec(
                     "ambiguous": len(unique_stacks) > 1,
                 }
             )
+    if stack_candidate_summary.get("selection_resolved") is True and working_stack_id:
+        stack_candidate_summary["selected_stack_id"] = working_stack_id
+    selection_decision = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+    family_selection = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
+    stack_selection = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+    if family_selection:
+        family_candidate_summary["selection_evidence_backed"] = family_selection.get("evidence_backed") is True
+        family_candidate_summary["selection_support_count"] = int(family_selection.get("support_count") or 0)
+        family_candidate_summary["selection_support_by_source_authority"] = deepcopy(
+            family_selection.get("support_by_source_authority")
+        ) if isinstance(family_selection.get("support_by_source_authority"), dict) else {}
+    if stack_selection:
+        stack_candidate_summary["selection_evidence_backed"] = stack_selection.get("evidence_backed") is True
+        stack_candidate_summary["selection_support_count"] = int(stack_selection.get("support_count") or 0)
+        stack_candidate_summary["selection_support_by_source_authority"] = deepcopy(
+            stack_selection.get("support_by_source_authority")
+        ) if isinstance(stack_selection.get("support_by_source_authority"), dict) else {}
     payload: Dict[str, Any] = {
         "schema_version": "name_only_generation_spec@0.1",
         "request_label": request_label or None,
@@ -2931,6 +3313,8 @@ def _build_name_only_generation_spec(
             if key in exploit_oracle
         },
     }
+    if raw_stack_selection:
+        payload["runtime_recipe_summary"]["stack_selection"] = deepcopy(raw_stack_selection)
     payload["planning_focus_summary"] = _name_only_planning_focus_summary(
         name_only_contract=name_only_contract,
         request_ir=request_ir,

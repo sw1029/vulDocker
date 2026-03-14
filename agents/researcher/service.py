@@ -388,6 +388,7 @@ class ResearcherService:
             query_index = query_meta[0]
             query_entry = query_meta[1] if isinstance(query_meta[1], dict) else {}
             evidence_type = self._classify_evidence_type(hit)
+            source_authority = self._source_authority_for_hit(hit, evidence_type=evidence_type)
             text = self._search_hit_text(hit)
             nodes.append(
                 {
@@ -398,6 +399,7 @@ class ResearcherService:
                     "url": str(hit.url or "").strip() or None,
                     "query": str(hit.query or "").strip() or None,
                     "evidence_type": evidence_type or None,
+                    "source_authority": source_authority,
                 }
             )
             if query_index is not None:
@@ -415,6 +417,7 @@ class ResearcherService:
                     "query": query_value,
                     "query_entry": query_entry,
                     "evidence_type": evidence_type,
+                    "source_authority": source_authority,
                 }
             )
         ranked_families = (
@@ -561,20 +564,18 @@ class ResearcherService:
             "python/fastapi": ["fastapi", "uvicorn"],
         }
         for evidence in evidence_entries:
-            query_entry = evidence.get("query_entry") if isinstance(evidence.get("query_entry"), dict) else {}
-            query_family = str(query_entry.get("family") or "").strip().lower()
-            query_negative_family = query_entry.get("negative_family") is True
             evidence_text = str(evidence.get("text") or "")
             evidence_id = str(evidence.get("id") or "")
             if not evidence_id:
                 continue
             for family, family_meta in family_entries.items():
                 supports_family = False
-                if query_family and query_family == family:
-                    supports_family = True
-                elif any(token in evidence_text for token in family_meta.get("matched_aliases") or []):
+                family_label = family.replace("_", " ")
+                if any(token in evidence_text for token in family_meta.get("matched_aliases") or []):
                     supports_family = True
                 elif any(token in evidence_text for token in family_meta.get("matched_anchors") or []):
+                    supports_family = True
+                elif family_label and family_label in evidence_text:
                     supports_family = True
                 if supports_family:
                     add_edge(
@@ -586,11 +587,12 @@ class ResearcherService:
                     )
             for family, family_meta in negative_family_entries.items():
                 supports_negative_family = False
-                if query_negative_family and query_family and query_family == family:
-                    supports_negative_family = True
-                elif any(token in evidence_text for token in family_meta.get("matched_aliases") or []):
+                family_label = family.replace("_", " ")
+                if any(token in evidence_text for token in family_meta.get("matched_aliases") or []):
                     supports_negative_family = True
                 elif any(token in evidence_text for token in family_meta.get("matched_anchors") or []):
+                    supports_negative_family = True
+                elif family_label and family_label in evidence_text:
                     supports_negative_family = True
                 if supports_negative_family:
                     add_edge(
@@ -602,15 +604,11 @@ class ResearcherService:
                     )
             for stack_id, stack_meta in stack_entries.items():
                 supports_stack = False
-                query_value = str(evidence.get("query") or "").strip().lower()
-                query_target = str(query_entry.get("evidence_type") or "").strip().lower()
                 framework = str(stack_meta.get("framework") or "").strip().lower()
                 markers = list(known_framework_markers.get(stack_id, []))
                 if framework and framework not in markers:
                     markers.append(framework)
-                if stack_id and query_target == "stack_anchor" and (stack_id in query_value or (framework and framework in query_value)):
-                    supports_stack = True
-                elif any(marker in evidence_text for marker in markers if marker):
+                if any(marker in evidence_text for marker in markers if marker):
                     supports_stack = True
                 if supports_stack:
                     add_edge(
@@ -2621,10 +2619,12 @@ class ResearcherService:
         for hit in search_hits:
             query_plan_entry = self._query_plan_index.get(str(hit.query or "").strip()) or {}
             evidence_type = self._classify_evidence_type(hit)
+            source_authority = self._source_authority_for_hit(hit, evidence_type=evidence_type)
             item: Dict[str, Any] = {
                 "query": hit.query or "",
                 "query_target": str(query_plan_entry.get("evidence_type") or "").strip() or None,
                 "evidence_type": evidence_type,
+                "source_authority": source_authority,
                 "source": hit.source,
                 "title": hit.title,
                 "provider": hit.provider,
@@ -2640,11 +2640,14 @@ class ResearcherService:
     def _summarize_evidence_types(self, search_hits: List[SearchResult]) -> Dict[str, Any]:
         by_type: Dict[str, int] = {}
         by_query_target: Dict[str, int] = {}
+        by_source_authority: Dict[str, int] = {}
         matched_target_count = 0
         for hit in search_hits:
             actual = self._classify_evidence_type(hit)
             if actual:
                 by_type[actual] = by_type.get(actual, 0) + 1
+            authority = self._source_authority_for_hit(hit, evidence_type=actual)
+            by_source_authority[authority] = by_source_authority.get(authority, 0) + 1
             query_plan_entry = self._query_plan_index.get(str(hit.query or "").strip()) or {}
             expected = str(query_plan_entry.get("evidence_type") or "").strip()
             if expected:
@@ -2654,6 +2657,7 @@ class ResearcherService:
         return {
             "by_type": by_type,
             "by_query_target": by_query_target,
+            "by_source_authority": by_source_authority,
             "matched_target_count": matched_target_count,
             "query_count": len(self._query_plan_index),
             "hit_count": len(search_hits),
@@ -2716,6 +2720,7 @@ class ResearcherService:
             "python/flask": ["flask"],
             "python/fastapi": ["fastapi", "uvicorn"],
         }
+        stack_anchor_hints: set[str] = set()
 
         for hit in search_hits:
             query_text = str(hit.query or "").strip()
@@ -2729,10 +2734,13 @@ class ResearcherService:
             for stack_id, markers in known_framework_markers.items():
                 language, framework = stack_id.split("/", 1)
                 if expected_type == "stack_anchor" and any(marker in query_text.lower() for marker in (stack_id, framework)):
-                    add_candidate(language, framework, score=0.35, source="stack_anchor_query")
+                    stack_anchor_hints.add(stack_id)
                 marker_hits = sum(1 for marker in markers if marker in text)
                 if marker_hits:
                     add_candidate(language, framework, score=0.25 + (0.1 * max(0, marker_hits - 1)), source="search_hit_text")
+        for stack_id in sorted(stack_anchor_hints):
+            language, framework = stack_id.split("/", 1)
+            add_candidate(language, framework, score=0.05, source="stack_anchor_query")
 
         ranked = sorted(candidates.values(), key=lambda item: float(item.get("score") or 0.0), reverse=True)
         payload: List[Dict[str, Any]] = []
@@ -2790,6 +2798,34 @@ class ResearcherService:
         ):
             return "oracle_hint"
         return "reference"
+
+    @staticmethod
+    def _source_authority_for_hit(hit: SearchResult, *, evidence_type: str | None = None) -> str:
+        text = " ".join(
+            str(part or "").strip().lower()
+            for part in (hit.title, hit.url, hit.snippet)
+            if str(part or "").strip()
+        )
+        evidence_kind = str(evidence_type or "").strip().lower() or ResearcherService._classify_evidence_type(hit)
+        if evidence_kind == "advisory":
+            return "high"
+        if any(
+            token in text
+            for token in (
+                "nvd",
+                "mitre",
+                "owasp",
+                "cwe.mitre",
+                "security advisory",
+                "docs.python.org",
+                "fastapi.tiangolo.com",
+                "flask.palletsprojects.com",
+            )
+        ):
+            return "high"
+        if evidence_kind in {"reference_impl", "oracle_hint", "writeup"}:
+            return "medium"
+        return "low"
 
     def _resolve_semantic_signature(
         self,

@@ -210,6 +210,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
     researcher_summary = _researcher_summary(bundles)
     request_identity_summary = _request_identity_summary(bundles)
     request_ir_summary = _request_ir_summary(bundles)
+    selection_readiness_summary = _selection_readiness_summary(bundles)
     name_resolution_summary = _name_resolution_summary(bundles)
     lower_bound_rollup = _lower_bound_rollup(bundles)
     executor_feasibility_rollup = _executor_feasibility_rollup(bundles)
@@ -257,6 +258,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         "researcher_summary": researcher_summary,
         "request_identity_summary": request_identity_summary,
         "request_ir_summary": request_ir_summary,
+        "selection_readiness_summary": selection_readiness_summary,
         "name_resolution_summary": name_resolution_summary,
         "lower_bound_summary": lower_bound_rollup,
         "executor_feasibility_summary": executor_feasibility_rollup,
@@ -382,6 +384,11 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         basis = open_world.get("basis")
         if isinstance(basis, str) and basis.strip():
             manifest["open_world_basis"] = basis.strip()
+        selection_source = open_world.get("selection_source")
+        if isinstance(selection_source, str) and selection_source.strip():
+            manifest["open_world_selection_source"] = selection_source.strip()
+        if isinstance(open_world.get("selection_open_world_evidence_ready"), bool):
+            manifest["open_world_selection_evidence_ready"] = open_world["selection_open_world_evidence_ready"]
         strict_open_world = bundles[0].get("strict_open_world") or {}
         class_name = strict_open_world.get("class")
         if isinstance(class_name, str) and class_name.strip():
@@ -404,6 +411,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         runtime_graph = bundles[0].get("runtime_graph") or {}
         if isinstance(runtime_graph, dict) and runtime_graph:
             manifest["runtime_graph"] = runtime_graph
+        executor_plan = bundles[0].get("executor_plan") or {}
+        if isinstance(executor_plan, dict) and executor_plan:
+            manifest["executor_plan"] = executor_plan
         exploit_oracle = bundles[0].get("exploit_oracle") or {}
         if isinstance(exploit_oracle, dict) and exploit_oracle:
             manifest["exploit_oracle"] = exploit_oracle
@@ -615,6 +625,11 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             if isinstance(contract.get("exploit_oracle"), dict)
             else {}
         )
+        executor_plan = (
+            dict(contract.get("executor_plan"))
+            if isinstance(contract.get("executor_plan"), dict)
+            else {}
+        )
         evidence_graph = (
             dict(contract.get("evidence_graph"))
             if isinstance(contract.get("evidence_graph"), dict)
@@ -651,7 +666,9 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
                 else {}
             ),
             request_ir=(
-                requirement_view.get("request_ir")
+                contract_request_ir
+                if contract_request_ir
+                else requirement_view.get("request_ir")
                 if isinstance(requirement_view.get("request_ir"), dict)
                 else {}
             ),
@@ -674,7 +691,9 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
                 else {}
             ),
             request_ir=(
-                requirement_view.get("request_ir")
+                contract_request_ir
+                if contract_request_ir
+                else requirement_view.get("request_ir")
                 if isinstance(requirement_view.get("request_ir"), dict)
                 else {}
             ),
@@ -711,7 +730,9 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
                 else {}
             ),
             request_ir=(
-                requirement_view.get("request_ir")
+                contract_request_ir
+                if contract_request_ir
+                else requirement_view.get("request_ir")
                 if isinstance(requirement_view.get("request_ir"), dict)
                 else {}
             ),
@@ -750,6 +771,7 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "compiler_contract": compiler_contract,
             "runtime_recipe": runtime_recipe,
             "runtime_graph": runtime_graph,
+            "executor_plan": executor_plan,
             "exploit_oracle": exploit_oracle,
             "evidence_graph": evidence_graph,
             "name_only_generation_spec": name_only_generation_spec,
@@ -987,6 +1009,16 @@ def _bundle_support_promotion_status(bundle_entry: Dict[str, Any]) -> Dict[str, 
     if (family_dependence or {}).get("candidate_evidence_backed") is not True:
         reasons.append("family_evidence:candidate_unbacked")
 
+    request_kind = str((name_only_outcome or {}).get("request_kind") or "").strip().lower()
+    mode = str((name_only_outcome or {}).get("mode") or "").strip().lower()
+    if (
+        request_kind == "name_only"
+        and mode in {"dynamic", "dynamic_eval", "strict_dynamic"}
+        and (name_only_outcome or {}).get("selection_ready_for_materialization") is True
+        and (name_only_outcome or {}).get("selection_open_world_evidence_ready") is not True
+    ):
+        reasons.append("selection_evidence:open_world_not_ready")
+
     if str((name_only_outcome or {}).get("decision") or "").strip().lower() != "intent_met":
         reasons.append(
             f"name_only_outcome:{str((name_only_outcome or {}).get('decision') or '').strip().lower() or 'unknown'}"
@@ -1178,6 +1210,8 @@ def _open_world_readiness_blockers(bundle_entry: Dict[str, Any]) -> List[str]:
             blockers.append("stack_repo_prior_bounded")
         elif token.startswith("family_evidence:"):
             blockers.append("family_candidate_evidence_missing")
+        elif token.startswith("selection_evidence:"):
+            blockers.append("selection_open_world_evidence_not_ready")
         elif token.startswith("name_only_outcome:"):
             blockers.append("name_only_intent_not_met")
         elif token.startswith("base_promotion:"):
@@ -1204,6 +1238,7 @@ def _bundle_open_world_readiness(bundle_entry: Dict[str, Any]) -> Dict[str, Any]
         "open_world_class": str((open_world or {}).get("class") or "").strip() or None,
         "strict_open_world_class": str((strict_open_world or {}).get("class") or "").strip() or None,
         "name_only_decision": str((name_only_outcome or {}).get("decision") or "").strip() or None,
+        "selection_open_world_evidence_ready": bool((name_only_outcome or {}).get("selection_open_world_evidence_ready")),
         "stack_defaulted": bool((stack_dependence or {}).get("stack_defaulted")),
         "family_evidence_backed": bool((family_dependence or {}).get("candidate_evidence_backed")),
     }
@@ -1676,10 +1711,18 @@ def _apply_multibundle_top_level_rollups(manifest: Dict[str, Any], bundles: List
     for key, manifest_key in (
         ("confidence", "open_world_confidence"),
         ("basis", "open_world_basis"),
+        ("selection_source", "open_world_selection_source"),
     ):
         value = _rollup_multibundle_string_field(bundles, section="open_world", key=key)
         if value:
             manifest[manifest_key] = value
+    open_world_selection_evidence_ready = _rollup_multibundle_bool_field(
+        bundles,
+        section="open_world",
+        key="selection_open_world_evidence_ready",
+    )
+    if open_world_selection_evidence_ready is not None:
+        manifest["open_world_selection_evidence_ready"] = open_world_selection_evidence_ready
     counts_as_open_world_generalization = _rollup_multibundle_bool_field(
         bundles,
         section="open_world",
@@ -1781,6 +1824,28 @@ def _rollup_multibundle_name_only_outcome_field(
     return "mixed"
 
 
+def _attach_name_only_selection_surface(
+    payload: Dict[str, Any],
+    *,
+    provenance: Optional[Dict[str, Any]],
+    request_ir: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    verdict = dict(payload or {})
+    selection_state = _selection_decision_state(request_ir if isinstance(request_ir, dict) else {})
+    selection_source = str((provenance or {}).get("semantic_guided_selection_source") or "").strip().lower()
+    if selection_source:
+        verdict["selection_source"] = selection_source
+    verdict["selection_ready_for_materialization"] = selection_state.get("ready_for_materialization") is True
+    verdict["selection_open_world_evidence_ready"] = selection_state.get("open_world_evidence_ready") is True
+    selected_family = selection_state.get("selected_family")
+    if selected_family:
+        verdict["selected_family"] = selected_family
+    selected_stack_id = selection_state.get("selected_stack_id")
+    if selected_stack_id:
+        verdict["selected_stack_id"] = selected_stack_id
+    return verdict
+
+
 def _bundle_generalization_verdict(
     bundle,
     *,
@@ -1830,29 +1895,29 @@ def _bundle_generalization_verdict(
 
     if vuln_id.startswith("NAME-") or (name_driven and effective_mode in {"dynamic", "dynamic_eval", "strict_dynamic"}):
         if generation_origin == "capability_gate_rejected":
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "real_free_form_precondition_failed",
                 "counts_as_generalization": False,
                 "reason": "name-only lane failed before generation because strict open-world preconditions were unavailable",
                 "confidence": resolution_confidence or "unknown",
                 "basis": resolution_basis or "unknown",
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if generation_origin == "name_only_gate_rejected":
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "real_free_form_precondition_failed",
                 "counts_as_generalization": False,
                 "reason": "name-only lane failed before generation because strict live-LLM conditions were not satisfied",
                 "confidence": resolution_confidence or "unknown",
                 "basis": resolution_basis or "unknown",
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if support_level == "unsupported" or generation_origin == "research_short_circuit":
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "unsupported_free_form_negative",
                 "counts_as_generalization": False,
                 "reason": "name-only dynamic family is unsupported and intentionally fail-closed",
                 "confidence": resolution_confidence or "low",
                 "basis": resolution_basis or "synthetic_name",
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if (
             promotion_eligible
             and dynamicness_verdict == "trusted dynamic"
@@ -1860,13 +1925,13 @@ def _bundle_generalization_verdict(
             and resolution_confidence == "high"
             and resolution_basis in {"catalog_alias", "exact_identifier"}
         ):
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "real_free_form_positive",
                 "counts_as_generalization": True,
                 "reason": f"name-only dynamic lane closed via {dynamicness_verdict} without generic fallback",
                 "confidence": resolution_confidence or "unknown",
                 "basis": resolution_basis or "unknown",
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if (
             promotion_eligible
             and dynamicness_verdict == "compiler-first"
@@ -1874,7 +1939,7 @@ def _bundle_generalization_verdict(
             and resolution_confidence == "high"
             and resolution_basis in {"catalog_alias", "exact_identifier"}
         ):
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "real_free_form_curated_lower_bound",
                 "counts_as_generalization": False,
                 "reason": (
@@ -1885,8 +1950,8 @@ def _bundle_generalization_verdict(
                 "basis": resolution_basis or "unknown",
                 "lower_bound_dependent": True,
                 "template_dependent": False,
-            }
-        return {
+            }, provenance=provenance, request_ir=request_ir)
+        return _attach_name_only_selection_surface({
             "class": "real_free_form_non_generalizing",
             "counts_as_generalization": False,
             "reason": (
@@ -1903,7 +1968,7 @@ def _bundle_generalization_verdict(
             "basis": resolution_basis or "unknown",
             "lower_bound_dependent": dynamicness_verdict == "compiler-first",
             "template_dependent": dynamicness_verdict == "template-assisted",
-        }
+        }, provenance=provenance, request_ir=request_ir)
 
     if support_level in {"builtin_supported", "compiler_supported"} or compiler_contract.get("compiler_supported") is True:
         return {
@@ -2054,7 +2119,7 @@ def _bundle_open_world_verdict(
             "strict_dynamic_live_llm_unavailable",
             "strict_dynamic_remote_research_unavailable",
         }:
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "name_driven_capability_gate_failed",
                 "counts_as_generalization": False,
                 "reason": (
@@ -2065,9 +2130,9 @@ def _bundle_open_world_verdict(
                 "basis": resolution_basis or "unknown",
                 "lower_bound_dependent": False,
                 "template_dependent": False,
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if failure_stage == "NAME_ONLY_GATE" and failure_terminal_class == "strict_dynamic_disallowed_llm_path":
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "name_driven_live_llm_gate_failed",
                 "counts_as_generalization": False,
                 "reason": "strict_dynamic rejected the name-only lane before generation because a live LLM path was unavailable or disallowed",
@@ -2075,9 +2140,9 @@ def _bundle_open_world_verdict(
                 "basis": resolution_basis or "unknown",
                 "lower_bound_dependent": False,
                 "template_dependent": False,
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if support_level == "unsupported" or generation_origin == "research_short_circuit":
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "unsupported_free_form_negative",
                 "counts_as_generalization": False,
                 "reason": "free-form NAME-* family is unsupported and intentionally fail-closed",
@@ -2085,9 +2150,9 @@ def _bundle_open_world_verdict(
                 "basis": resolution_basis or "synthetic_name",
                 "lower_bound_dependent": False,
                 "template_dependent": template_dependent,
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if failure_stage == "GENERATOR" and dynamic_eval_status == "dynamic_failed":
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "name_driven_dynamic_failed",
                 "counts_as_generalization": False,
                 "reason": (
@@ -2098,7 +2163,7 @@ def _bundle_open_world_verdict(
                 "basis": resolution_basis or "unknown",
                 "lower_bound_dependent": False,
                 "template_dependent": False,
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if (
             promotion_eligible
             and dynamicness_verdict == "trusted dynamic"
@@ -2107,7 +2172,7 @@ def _bundle_open_world_verdict(
             and resolution_confidence == "high"
             and resolution_basis in {"catalog_alias", "exact_identifier"}
         ):
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "open_world_positive",
                 "counts_as_generalization": True,
                 "reason": "name-only lane closed via trusted dynamic generation without an existing curated lower bound",
@@ -2115,9 +2180,9 @@ def _bundle_open_world_verdict(
                 "basis": resolution_basis,
                 "lower_bound_dependent": False,
                 "template_dependent": template_dependent,
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if generation_origin == "deterministic_fallback" and fallback_class == "semantic_guided":
-            return {
+            return _attach_name_only_selection_surface({
                 "class": "semantic_guided_minimal_dynamic"
                 if materializer == "minimal_dynamic"
                 else "semantic_guided_degraded",
@@ -2133,7 +2198,7 @@ def _bundle_open_world_verdict(
                 "basis": resolution_basis or "unknown",
                 "lower_bound_dependent": True,
                 "template_dependent": template_dependent,
-            }
+            }, provenance=provenance, request_ir=request_ir)
         if resolution_basis in {"catalog_alias", "exact_identifier", "token_match"}:
             dependency = dynamicness_verdict or generation_origin or "lower-bound path"
             class_name = (
@@ -2141,7 +2206,7 @@ def _bundle_open_world_verdict(
                 if resolution_basis == "token_match"
                 else "catalog_resolved_lower_bound"
             )
-            return {
+            return _attach_name_only_selection_surface({
                 "class": class_name,
                 "counts_as_generalization": False,
                 "reason": (
@@ -2152,8 +2217,8 @@ def _bundle_open_world_verdict(
                 "basis": resolution_basis or "unknown",
                 "lower_bound_dependent": True,
                 "template_dependent": template_dependent,
-            }
-        return {
+            }, provenance=provenance, request_ir=request_ir)
+        return _attach_name_only_selection_surface({
             "class": "free_form_non_generalizing",
             "counts_as_generalization": False,
             "reason": "free-form NAME-* lane exists but resolution basis is not strong enough to count as open-world evidence",
@@ -2161,7 +2226,7 @@ def _bundle_open_world_verdict(
             "basis": resolution_basis or "unknown",
             "lower_bound_dependent": lower_bound_available,
             "template_dependent": template_dependent,
-        }
+        }, provenance=provenance, request_ir=request_ir)
 
     if (
         promotion_eligible
@@ -2752,6 +2817,13 @@ def _bundle_researcher_summary(
                 for key, value in by_type.items()
                 if isinstance(key, str) and key.strip() and isinstance(value, (int, float))
             }
+        by_source_authority = evidence_type_summary.get("by_source_authority")
+        if isinstance(by_source_authority, dict) and by_source_authority:
+            summary["evidence_source_authority"] = {
+                str(key): int(value)
+                for key, value in by_source_authority.items()
+                if isinstance(key, str) and key.strip() and isinstance(value, (int, float))
+            }
         matched_target_count = evidence_type_summary.get("matched_target_count")
         hit_count = evidence_type_summary.get("hit_count")
         if isinstance(matched_target_count, (int, float)) and isinstance(hit_count, (int, float)) and hit_count:
@@ -3108,6 +3180,7 @@ def _evidence_graph_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     total_edges = 0
     by_node_kind: Dict[str, int] = {}
     by_edge_kind: Dict[str, int] = {}
+    by_source_authority: Dict[str, int] = {}
     for entry in bundles:
         graph = entry.get("evidence_graph") or {}
         if not isinstance(graph, dict) or not graph:
@@ -3122,6 +3195,10 @@ def _evidence_graph_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
                 continue
             kind = str(node.get("kind") or "").strip().lower() or "unknown"
             by_node_kind[kind] = by_node_kind.get(kind, 0) + 1
+            if kind == "evidence":
+                authority = str(node.get("source_authority") or "").strip().lower()
+                if authority:
+                    by_source_authority[authority] = by_source_authority.get(authority, 0) + 1
         for edge in edges:
             if not isinstance(edge, dict):
                 continue
@@ -3134,6 +3211,7 @@ def _evidence_graph_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "average_edge_count": round(total_edges / graph_present_bundles, 2) if graph_present_bundles else 0.0,
         "by_node_kind": by_node_kind,
         "by_edge_kind": by_edge_kind,
+        "by_source_authority": by_source_authority,
     }
 
 
@@ -3141,6 +3219,7 @@ def _researcher_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_quality: Dict[str, int] = {}
     by_top_family_hypothesis: Dict[str, int] = {}
     by_top_family_confidence: Dict[str, int] = {}
+    by_source_authority: Dict[str, int] = {}
     shadow_mode_bundles = 0
     report_present_bundles = 0
     ran_bundles = 0
@@ -3169,6 +3248,16 @@ def _researcher_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
             degraded_bundles += 1
         if researcher.get("query_plan_present") is True:
             query_plan_bundles += 1
+        evidence_source_authority = (
+            researcher.get("evidence_source_authority")
+            if isinstance(researcher.get("evidence_source_authority"), dict)
+            else {}
+        )
+        if isinstance(evidence_source_authority, dict):
+            for key, value in evidence_source_authority.items():
+                if not isinstance(key, str) or not key.strip() or not isinstance(value, (int, float)):
+                    continue
+                by_source_authority[key.strip().lower()] = by_source_authority.get(key.strip().lower(), 0) + int(value)
         top_family = str(researcher.get("top_family_hypothesis") or "").strip()
         if top_family:
             by_top_family_hypothesis[top_family] = by_top_family_hypothesis.get(top_family, 0) + 1
@@ -3194,6 +3283,7 @@ def _researcher_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "contradiction_bundles": contradiction_bundles,
         "ambiguous_family_hypothesis_bundles": ambiguous_family_hypothesis_bundles,
         "by_quality": by_quality,
+        "by_source_authority": by_source_authority,
         "by_top_family_hypothesis": by_top_family_hypothesis,
         "by_top_family_confidence": by_top_family_confidence,
         "avg_query_target_match_rate": round(sum(query_target_match_rates) / len(query_target_match_rates), 3)
@@ -3256,10 +3346,17 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_resolution_confidence: Dict[str, int] = {}
     name_driven_bundles = 0
     evidence_backed_bundles = 0
+    selection_ready_bundles = 0
+    selected_family_bundles = 0
+    selected_stack_bundles = 0
     abstain_signaled_bundles = 0
     multi_identifier_candidate_bundles = 0
     ambiguous_family_candidate_bundles = 0
     ambiguous_stack_candidate_bundles = 0
+    resolved_ambiguous_family_candidate_bundles = 0
+    resolved_ambiguous_stack_candidate_bundles = 0
+    unresolved_ambiguous_family_candidate_bundles = 0
+    unresolved_ambiguous_stack_candidate_bundles = 0
     negative_hypothesis_bundles = 0
     identifier_candidate_counts: List[int] = []
     family_candidate_counts: List[int] = []
@@ -3292,16 +3389,33 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         stack_candidate_counts.append(len(stack_candidates))
         negative_hypothesis_counts.append(len(negative_hypotheses))
 
+        selection_state = _selection_decision_state(request_ir)
+        family_selected = selection_state.get("family_selected") is True
+        stack_selected = selection_state.get("stack_selected") is True
         if len(identifier_candidates) > 1:
             multi_identifier_candidate_bundles += 1
         if len(family_candidates) > 1:
             ambiguous_family_candidate_bundles += 1
+            if family_selected:
+                resolved_ambiguous_family_candidate_bundles += 1
+            else:
+                unresolved_ambiguous_family_candidate_bundles += 1
         if len(stack_candidates) > 1:
             ambiguous_stack_candidate_bundles += 1
+            if stack_selected:
+                resolved_ambiguous_stack_candidate_bundles += 1
+            else:
+                unresolved_ambiguous_stack_candidate_bundles += 1
         if negative_hypotheses:
             negative_hypothesis_bundles += 1
         if _stable_reason_token(request_ir.get("abstain_reason")):
             abstain_signaled_bundles += 1
+        if selection_state.get("ready_for_materialization") is True:
+            selection_ready_bundles += 1
+        if family_selected:
+            selected_family_bundles += 1
+        if stack_selected:
+            selected_stack_bundles += 1
 
         request_evidence_ids = [
             str(item).strip()
@@ -3336,10 +3450,17 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "bundle_count": len(bundles),
         "name_driven_bundles": name_driven_bundles,
         "evidence_backed_bundles": evidence_backed_bundles,
+        "selection_ready_bundles": selection_ready_bundles,
+        "selected_family_bundles": selected_family_bundles,
+        "selected_stack_bundles": selected_stack_bundles,
         "abstain_signaled_bundles": abstain_signaled_bundles,
         "multi_identifier_candidate_bundles": multi_identifier_candidate_bundles,
         "ambiguous_family_candidate_bundles": ambiguous_family_candidate_bundles,
         "ambiguous_stack_candidate_bundles": ambiguous_stack_candidate_bundles,
+        "resolved_ambiguous_family_candidate_bundles": resolved_ambiguous_family_candidate_bundles,
+        "resolved_ambiguous_stack_candidate_bundles": resolved_ambiguous_stack_candidate_bundles,
+        "unresolved_ambiguous_family_candidate_bundles": unresolved_ambiguous_family_candidate_bundles,
+        "unresolved_ambiguous_stack_candidate_bundles": unresolved_ambiguous_stack_candidate_bundles,
         "negative_hypothesis_bundles": negative_hypothesis_bundles,
         "avg_identifier_candidate_count": _avg(identifier_candidate_counts),
         "avg_family_candidate_count": _avg(family_candidate_counts),
@@ -3348,6 +3469,155 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "by_resolution_state": by_resolution_state,
         "by_resolution_match_class": by_resolution_match_class,
         "by_resolution_confidence": by_resolution_confidence,
+    }
+
+
+def _selection_decision_state(request_ir: Dict[str, Any]) -> Dict[str, Any]:
+    ir = request_ir if isinstance(request_ir, dict) else {}
+    selection_decision = ir.get("selection_decision") if isinstance(ir.get("selection_decision"), dict) else {}
+    family_decision = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
+    stack_decision = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+    family_selected = bool(family_decision.get("selected"))
+    stack_selected = bool(stack_decision.get("selected"))
+    return {
+        "family_selected": family_selected,
+        "stack_selected": stack_selected,
+        "selected_family": str(family_decision.get("selected_family") or "").strip().lower() or None,
+        "selected_stack_id": str(stack_decision.get("selected_stack_id") or "").strip().lower() or None,
+        "family_source": str(family_decision.get("source") or "").strip().lower() or None,
+        "stack_source": str(stack_decision.get("source") or "").strip().lower() or None,
+        "family_confidence": str(family_decision.get("confidence") or "").strip().lower() or None,
+        "stack_confidence": str(stack_decision.get("confidence") or "").strip().lower() or None,
+        "stack_basis": str(stack_decision.get("basis") or "").strip().lower() or None,
+        "family_evidence_backed": family_decision.get("evidence_backed") is True,
+        "stack_evidence_backed": stack_decision.get("evidence_backed") is True,
+        "family_support_count": int(family_decision.get("support_count") or 0),
+        "stack_support_count": int(stack_decision.get("support_count") or 0),
+        "family_high_or_medium_authority_support": family_decision.get("high_or_medium_authority_support") is True,
+        "stack_high_or_medium_authority_support": stack_decision.get("high_or_medium_authority_support") is True,
+        "family_support_by_source_authority": (
+            dict(family_decision.get("support_by_source_authority"))
+            if isinstance(family_decision.get("support_by_source_authority"), dict)
+            else {}
+        ),
+        "stack_support_by_source_authority": (
+            dict(stack_decision.get("support_by_source_authority"))
+            if isinstance(stack_decision.get("support_by_source_authority"), dict)
+            else {}
+        ),
+        "ready_for_materialization": bool(selection_decision.get("ready_for_materialization"))
+        or (family_selected and stack_selected),
+        "open_world_evidence_ready": selection_decision.get("open_world_evidence_ready") is True,
+    }
+
+
+def _selection_readiness_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    family_selected_bundles = 0
+    stack_selected_bundles = 0
+    ready_for_materialization_bundles = 0
+    open_world_evidence_ready_bundles = 0
+    resolved_ambiguous_family_bundles = 0
+    resolved_ambiguous_stack_bundles = 0
+    unresolved_ambiguous_family_bundles = 0
+    unresolved_ambiguous_stack_bundles = 0
+    by_family_source: Dict[str, int] = {}
+    by_stack_source: Dict[str, int] = {}
+    by_family_confidence: Dict[str, int] = {}
+    by_stack_confidence: Dict[str, int] = {}
+    by_stack_basis: Dict[str, int] = {}
+    family_evidence_backed_bundles = 0
+    stack_evidence_backed_bundles = 0
+    family_high_or_medium_authority_support_bundles = 0
+    stack_high_or_medium_authority_support_bundles = 0
+    by_family_support_authority: Dict[str, int] = {}
+    by_stack_support_authority: Dict[str, int] = {}
+
+    for entry in bundles:
+        request_ir = entry.get("request_ir") if isinstance(entry.get("request_ir"), dict) else {}
+        if not request_ir:
+            continue
+        selection_state = _selection_decision_state(request_ir)
+        family_selected = selection_state.get("family_selected") is True
+        stack_selected = selection_state.get("stack_selected") is True
+        if family_selected:
+            family_selected_bundles += 1
+        if stack_selected:
+            stack_selected_bundles += 1
+        if selection_state.get("ready_for_materialization") is True:
+            ready_for_materialization_bundles += 1
+        if selection_state.get("open_world_evidence_ready") is True:
+            open_world_evidence_ready_bundles += 1
+        if selection_state.get("family_evidence_backed") is True:
+            family_evidence_backed_bundles += 1
+        if selection_state.get("stack_evidence_backed") is True:
+            stack_evidence_backed_bundles += 1
+        if selection_state.get("family_high_or_medium_authority_support") is True:
+            family_high_or_medium_authority_support_bundles += 1
+        if selection_state.get("stack_high_or_medium_authority_support") is True:
+            stack_high_or_medium_authority_support_bundles += 1
+
+        family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
+        stack_candidates = request_ir.get("stack_candidates") if isinstance(request_ir.get("stack_candidates"), list) else []
+        if len(family_candidates) > 1:
+            if family_selected:
+                resolved_ambiguous_family_bundles += 1
+            else:
+                unresolved_ambiguous_family_bundles += 1
+        if len(stack_candidates) > 1:
+            if stack_selected:
+                resolved_ambiguous_stack_bundles += 1
+            else:
+                unresolved_ambiguous_stack_bundles += 1
+
+        family_source = selection_state.get("family_source")
+        if family_source:
+            by_family_source[family_source] = by_family_source.get(family_source, 0) + 1
+        stack_source = selection_state.get("stack_source")
+        if stack_source:
+            by_stack_source[stack_source] = by_stack_source.get(stack_source, 0) + 1
+        family_confidence = selection_state.get("family_confidence")
+        if family_confidence:
+            by_family_confidence[family_confidence] = by_family_confidence.get(family_confidence, 0) + 1
+        stack_confidence = selection_state.get("stack_confidence")
+        if stack_confidence:
+            by_stack_confidence[stack_confidence] = by_stack_confidence.get(stack_confidence, 0) + 1
+        stack_basis = selection_state.get("stack_basis")
+        if stack_basis:
+            by_stack_basis[stack_basis] = by_stack_basis.get(stack_basis, 0) + 1
+        family_support_authority = selection_state.get("family_support_by_source_authority")
+        if isinstance(family_support_authority, dict):
+            for key, value in family_support_authority.items():
+                token = str(key).strip().lower()
+                if token:
+                    by_family_support_authority[token] = by_family_support_authority.get(token, 0) + int(value)
+        stack_support_authority = selection_state.get("stack_support_by_source_authority")
+        if isinstance(stack_support_authority, dict):
+            for key, value in stack_support_authority.items():
+                token = str(key).strip().lower()
+                if token:
+                    by_stack_support_authority[token] = by_stack_support_authority.get(token, 0) + int(value)
+
+    return {
+        "bundle_count": len(bundles),
+        "family_selected_bundles": family_selected_bundles,
+        "stack_selected_bundles": stack_selected_bundles,
+        "ready_for_materialization_bundles": ready_for_materialization_bundles,
+        "open_world_evidence_ready_bundles": open_world_evidence_ready_bundles,
+        "family_evidence_backed_bundles": family_evidence_backed_bundles,
+        "stack_evidence_backed_bundles": stack_evidence_backed_bundles,
+        "family_high_or_medium_authority_support_bundles": family_high_or_medium_authority_support_bundles,
+        "stack_high_or_medium_authority_support_bundles": stack_high_or_medium_authority_support_bundles,
+        "resolved_ambiguous_family_bundles": resolved_ambiguous_family_bundles,
+        "resolved_ambiguous_stack_bundles": resolved_ambiguous_stack_bundles,
+        "unresolved_ambiguous_family_bundles": unresolved_ambiguous_family_bundles,
+        "unresolved_ambiguous_stack_bundles": unresolved_ambiguous_stack_bundles,
+        "by_family_source": by_family_source,
+        "by_stack_source": by_stack_source,
+        "by_family_confidence": by_family_confidence,
+        "by_stack_confidence": by_stack_confidence,
+        "by_stack_basis": by_stack_basis,
+        "by_family_support_authority": by_family_support_authority,
+        "by_stack_support_authority": by_stack_support_authority,
     }
 
 
@@ -3485,6 +3755,7 @@ def _bundle_stack_dependence(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
     stack_source = str(runtime_recipe.get("stack_source") or "").strip().lower() or top_source or "unknown"
     stack_locked = bool(runtime_recipe.get("stack_locked"))
     stack_defaulted = bool(runtime_recipe.get("stack_defaulted"))
+    stack_selection = runtime_recipe.get("stack_selection") if isinstance(runtime_recipe.get("stack_selection"), dict) else {}
     ambiguous = len(unique_stack_ids) > 1
     repo_bounded_sources = {"profile_prior", "available_skeleton", "default_stack_profile", "stack_hypothesis"}
     repo_prior_bounded = stack_source in repo_bounded_sources
@@ -3510,6 +3781,9 @@ def _bundle_stack_dependence(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
         "repo_prior_bounded": repo_prior_bounded,
         "researcher_inferred": researcher_inferred,
         "top_confidence": top_confidence or None,
+        "selection_resolved": bool((stack_selection or {}).get("resolved")),
+        "selection_confidence": str((stack_selection or {}).get("confidence") or "").strip().lower() or None,
+        "selection_margin": stack_selection.get("margin"),
         "working_stack_evidence_ids": working_stack_evidence_ids,
         "working_stack_evidence_count": len(working_stack_evidence_ids),
         "working_stack_evidence_backed": bool(working_stack_evidence_ids),
@@ -4320,6 +4594,7 @@ def _name_only_next_required_step(
 
 
 def _name_only_partial_next_required_step(bundle_entry: Dict[str, Any]) -> str:
+    request_ir = bundle_entry.get("request_ir") if isinstance(bundle_entry.get("request_ir"), dict) else {}
     stack_dependence = (
         bundle_entry.get("stack_dependence") if isinstance(bundle_entry.get("stack_dependence"), dict) else {}
     )
@@ -4331,15 +4606,24 @@ def _name_only_partial_next_required_step(bundle_entry: Dict[str, Any]) -> str:
         bundle_entry.get("strict_open_world") if isinstance(bundle_entry.get("strict_open_world"), dict) else {}
     )
     dynamic_eval = bundle_entry.get("dynamic_eval") if isinstance(bundle_entry.get("dynamic_eval"), dict) else {}
+    intent = bundle_entry.get("intent_satisfaction") if isinstance(bundle_entry.get("intent_satisfaction"), dict) else {}
+    selection_state = _selection_decision_state(request_ir)
+    family_selected = selection_state.get("family_selected") is True
+    stack_selected = selection_state.get("stack_selected") is True
+    selection_ready = selection_state.get("ready_for_materialization") is True
+    open_world_evidence_ready = selection_state.get("open_world_evidence_ready") is True
+    mode = str((intent or {}).get("mode") or "").strip().lower()
 
-    if (stack_dependence or {}).get("stack_defaulted") is True:
+    if (stack_dependence or {}).get("stack_defaulted") is True and not stack_selected:
         return "stack_or_runtime_design"
-    if str((stack_dependence or {}).get("class") or "").strip().lower() == "repo_prior_bounded":
+    if str((stack_dependence or {}).get("class") or "").strip().lower() == "repo_prior_bounded" and not stack_selected:
         return "stack_or_runtime_design"
-    if (family_dependence or {}).get("ambiguous") is True:
+    if (family_dependence or {}).get("ambiguous") is True and not family_selected:
         return "research"
     if (family_dependence or {}).get("candidate_evidence_backed") is not True:
         return "research"
+    if selection_ready and mode in {"dynamic", "dynamic_eval", "strict_dynamic"} and not open_world_evidence_ready:
+        return "evidence_authority"
 
     dynamic_eval_status = str((dynamic_eval or {}).get("status") or "").strip().lower()
     open_world_class = str((open_world or {}).get("class") or "").strip().lower()
@@ -4355,6 +4639,8 @@ def _name_only_partial_next_required_step(bundle_entry: Dict[str, Any]) -> str:
     }:
         return "open_world_generation"
     if (open_world or {}).get("lower_bound_dependent") is True:
+        return "open_world_generation"
+    if selection_ready and mode in {"dynamic", "dynamic_eval", "strict_dynamic"}:
         return "open_world_generation"
     return "generalization"
 
@@ -4372,6 +4658,7 @@ def _bundle_name_only_outcome(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
     family_dependence = (
         bundle_entry.get("family_dependence") if isinstance(bundle_entry.get("family_dependence"), dict) else {}
     )
+    selection_state = _selection_decision_state(request_ir)
     completion_state = (
         bundle_entry.get("completion_state") if isinstance(bundle_entry.get("completion_state"), dict) else {}
     )
@@ -4454,6 +4741,16 @@ def _bundle_name_only_outcome(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
         "stage_ceiling": str((completion_state or {}).get("stage_ceiling") or "").strip() or "unknown",
         "fully_validated": bool((completion_state or {}).get("fully_validated")),
         "next_required_step": next_required_step,
+        "selection_ready_for_materialization": selection_state.get("ready_for_materialization") is True,
+        "selection_open_world_evidence_ready": selection_state.get("open_world_evidence_ready") is True,
+        "family_selected": selection_state.get("family_selected") is True,
+        "selected_family": selection_state.get("selected_family"),
+        "family_evidence_backed": selection_state.get("family_evidence_backed") is True,
+        "family_support_count": selection_state.get("family_support_count"),
+        "stack_selected": selection_state.get("stack_selected") is True,
+        "selected_stack_id": selection_state.get("selected_stack_id"),
+        "stack_evidence_backed": selection_state.get("stack_evidence_backed") is True,
+        "stack_support_count": selection_state.get("stack_support_count"),
         "open_world_class": str((open_world or {}).get("class") or "").strip() or None,
         "strict_open_world_class": str((strict_open_world or {}).get("class") or "").strip() or None,
         "stack_dependence_class": str((bundle_entry.get("stack_dependence") or {}).get("class") or "").strip() or None,

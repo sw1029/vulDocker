@@ -819,6 +819,15 @@ def test_bundle_open_world_separates_minimal_dynamic_name_only_lane() -> None:
             "generation_origin": "deterministic_fallback",
             "fallback_class": "semantic_guided",
             "materializer": "minimal_dynamic",
+            "semantic_guided_selection_source": "request_ir_selection",
+        },
+        request_ir={
+            "selection_decision": {
+                "family": {"selected": True, "selected_family": "open_redirect"},
+                "stack": {"selected": True, "selected_stack_id": "python/flask"},
+                "ready_for_materialization": True,
+                "open_world_evidence_ready": True,
+            }
         },
         name_resolution={"confidence": "high", "match_class": "catalog_alias"},
     )
@@ -827,6 +836,10 @@ def test_bundle_open_world_separates_minimal_dynamic_name_only_lane() -> None:
     assert verdict["class"] == "semantic_guided_minimal_dynamic"
     assert verdict["counts_as_generalization"] is False
     assert verdict["lower_bound_dependent"] is True
+    assert verdict["selection_source"] == "request_ir_selection"
+    assert verdict["selection_open_world_evidence_ready"] is True
+    assert verdict["selected_family"] == "open_redirect"
+    assert verdict["selected_stack_id"] == "python/flask"
     assert summary["by_class"]["semantic_guided_minimal_dynamic"] == 1
 
 
@@ -843,12 +856,19 @@ def test_bundle_open_world_uses_request_ir_for_alias_resolved_name_only_minimal_
             "generation_origin": "deterministic_fallback",
             "fallback_class": "semantic_guided",
             "materializer": "minimal_dynamic",
+            "semantic_guided_selection_source": "request_ir_selection",
         },
         request_ir={
             "name_driven": True,
             "resolved_vuln_id": "CWE-89",
             "resolution_confidence": "high",
             "resolution_match_class": "catalog_alias",
+            "selection_decision": {
+                "family": {"selected": True, "selected_family": "sql_injection"},
+                "stack": {"selected": True, "selected_stack_id": "python/flask"},
+                "ready_for_materialization": True,
+                "open_world_evidence_ready": False,
+            },
         },
         name_resolution={"confidence": "high", "match_class": "catalog_alias"},
     )
@@ -857,6 +877,8 @@ def test_bundle_open_world_uses_request_ir_for_alias_resolved_name_only_minimal_
     assert verdict["counts_as_generalization"] is False
     assert verdict["lower_bound_dependent"] is True
     assert verdict["basis"] == "catalog_alias"
+    assert verdict["selection_source"] == "request_ir_selection"
+    assert verdict["selection_open_world_evidence_ready"] is False
 
 
 def test_bundle_open_world_marks_dynamic_name_only_generator_failure_as_attempt_failure() -> None:
@@ -1322,7 +1344,13 @@ def test_bundle_support_promotion_rejects_degraded_dynamic_bundle_even_when_base
             "artifact_quality": {"band": "high", "oracle_clarity": "high", "topology_clarity": "high"},
             "stack_dependence": {"stack_defaulted": True, "repo_prior_bounded": True},
             "family_dependence": {"candidate_evidence_backed": True},
-            "name_only_outcome": {"decision": "partial"},
+            "name_only_outcome": {
+                "request_kind": "name_only",
+                "mode": "dynamic",
+                "decision": "partial",
+                "selection_ready_for_materialization": True,
+                "selection_open_world_evidence_ready": False,
+            },
         }
     )
     summary = _support_promotion_summary([{"slug": "name-open-redirect", "support_promotion": status}])
@@ -1331,6 +1359,7 @@ def test_bundle_support_promotion_rejects_degraded_dynamic_bundle_even_when_base
     assert "strict_open_world:strict_minimal_dynamic_fallback" in status["reasons"]
     assert "open_world:semantic_guided_minimal_dynamic" in status["reasons"]
     assert "stack_selection:defaulted" in status["reasons"]
+    assert "selection_evidence:open_world_not_ready" in status["reasons"]
     assert "name_only_outcome:partial" in status["reasons"]
     assert summary["eligible_bundles"] == 0
 
@@ -1365,12 +1394,13 @@ def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
                     "open_world:semantic_guided_minimal_dynamic",
                     "artifact_quality:medium",
                     "stack_selection:defaulted",
+                    "selection_evidence:open_world_not_ready",
                     "name_only_outcome:partial",
                 ],
             },
             "stack_dependence": {"stack_defaulted": True},
             "family_dependence": {"candidate_evidence_backed": True},
-            "name_only_outcome": {"decision": "partial"},
+            "name_only_outcome": {"decision": "partial", "selection_open_world_evidence_ready": False},
             "open_world": {"class": "semantic_guided_minimal_dynamic"},
             "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
         }
@@ -1380,7 +1410,9 @@ def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
     assert "strict_open_world_gate" in readiness["blockers"]
     assert "open_world_non_positive" in readiness["blockers"]
     assert "stack_defaulted" in readiness["blockers"]
+    assert "selection_open_world_evidence_not_ready" in readiness["blockers"]
     assert "name_only_intent_not_met" in readiness["blockers"]
+    assert readiness["selection_open_world_evidence_ready"] is False
 
 
 def test_open_world_readiness_summary_rolls_up_blockers() -> None:
@@ -1800,6 +1832,17 @@ def test_request_ir_summary_tracks_candidate_ambiguity_evidence_and_negative_hyp
                         {"stack_id": "python/fastapi", "confidence": "low"},
                     ],
                     "negative_hypotheses": [{"family": "template_injection", "source": "researcher_contradiction"}],
+                    "selection_decision": {
+                        "family": {"selected": True, "selected_family": "xss", "source": "token_match"},
+                        "stack": {
+                            "selected": True,
+                            "selected_stack_id": "python/flask",
+                            "source": "researcher_candidate",
+                            "confidence": "medium",
+                            "basis": "researcher_top_candidate",
+                        },
+                        "ready_for_materialization": True,
+                    },
                 },
             },
             {
@@ -1823,6 +1866,10 @@ def test_request_ir_summary_tracks_candidate_ambiguity_evidence_and_negative_hyp
     assert summary["multi_identifier_candidate_bundles"] == 1
     assert summary["ambiguous_family_candidate_bundles"] == 1
     assert summary["ambiguous_stack_candidate_bundles"] == 1
+    assert summary["resolved_ambiguous_family_candidate_bundles"] == 1
+    assert summary["resolved_ambiguous_stack_candidate_bundles"] == 1
+    assert summary["unresolved_ambiguous_family_candidate_bundles"] == 0
+    assert summary["unresolved_ambiguous_stack_candidate_bundles"] == 0
     assert summary["negative_hypothesis_bundles"] == 1
     assert summary["avg_identifier_candidate_count"] == 1.5
     assert summary["avg_family_candidate_count"] == 1.5
@@ -1831,6 +1878,104 @@ def test_request_ir_summary_tracks_candidate_ambiguity_evidence_and_negative_hyp
     assert summary["by_resolution_state"] == {"token_match": 1, "catalog_alias": 1}
     assert summary["by_resolution_match_class"] == {"token_match": 1, "catalog_alias": 1}
     assert summary["by_resolution_confidence"] == {"medium": 1, "high": 1}
+
+
+def test_selection_readiness_summary_tracks_selected_and_resolved_ambiguity() -> None:
+    summary = pack_mod._selection_readiness_summary(
+        [
+            {
+                "request_ir": {
+                    "family_candidates": [
+                        {"family": "xss", "confidence": "medium"},
+                        {"family": "template_injection", "confidence": "low"},
+                    ],
+                    "stack_candidates": [
+                        {"stack_id": "python/flask", "confidence": "medium"},
+                        {"stack_id": "python/fastapi", "confidence": "low"},
+                    ],
+                    "selection_decision": {
+                        "family": {
+                            "selected": True,
+                            "selected_family": "xss",
+                            "source": "token_match",
+                            "confidence": "medium",
+                            "evidence_backed": True,
+                            "support_count": 2,
+                            "support_by_source_authority": {"high": 1, "medium": 1},
+                            "high_or_medium_authority_support": True,
+                        },
+                        "stack": {
+                            "selected": True,
+                            "selected_stack_id": "python/flask",
+                            "source": "researcher_candidate",
+                            "confidence": "high",
+                            "basis": "researcher_top_candidate",
+                            "evidence_backed": True,
+                            "support_count": 1,
+                            "support_by_source_authority": {"medium": 1},
+                            "high_or_medium_authority_support": True,
+                        },
+                        "ready_for_materialization": True,
+                        "open_world_evidence_ready": True,
+                    },
+                }
+            },
+            {
+                "request_ir": {
+                    "family_candidates": [
+                        {"family": "open_redirect", "confidence": "high"},
+                        {"family": "xss", "confidence": "low"},
+                    ],
+                    "stack_candidates": [
+                        {"stack_id": "python/flask", "confidence": "low"},
+                        {"stack_id": "python/fastapi", "confidence": "low"},
+                    ],
+                    "selection_decision": {
+                        "family": {
+                            "selected": False,
+                            "top_family": "open_redirect",
+                            "source": "catalog_alias",
+                            "evidence_backed": False,
+                            "support_count": 0,
+                            "support_by_source_authority": {},
+                            "high_or_medium_authority_support": False,
+                        },
+                        "stack": {
+                            "selected": False,
+                            "selected_stack_id": "python/flask",
+                            "source": "profile_prior",
+                            "evidence_backed": False,
+                            "support_count": 0,
+                            "support_by_source_authority": {},
+                            "high_or_medium_authority_support": False,
+                        },
+                        "ready_for_materialization": False,
+                        "open_world_evidence_ready": False,
+                    },
+                }
+            },
+        ]
+    )
+
+    assert summary["family_selected_bundles"] == 1
+    assert summary["stack_selected_bundles"] == 1
+    assert summary["ready_for_materialization_bundles"] == 1
+    assert summary["open_world_evidence_ready_bundles"] == 1
+    assert summary["family_evidence_backed_bundles"] == 1
+    assert summary["stack_evidence_backed_bundles"] == 1
+    assert summary["family_high_or_medium_authority_support_bundles"] == 1
+    assert summary["stack_high_or_medium_authority_support_bundles"] == 1
+    assert summary["resolved_ambiguous_family_bundles"] == 1
+    assert summary["resolved_ambiguous_stack_bundles"] == 1
+    assert summary["unresolved_ambiguous_family_bundles"] == 1
+    assert summary["unresolved_ambiguous_stack_bundles"] == 1
+    assert summary["by_family_source"] == {"token_match": 1, "catalog_alias": 1}
+    assert summary["by_stack_source"] == {"researcher_candidate": 1, "profile_prior": 1}
+    assert summary["by_family_confidence"] == {"medium": 1}
+    assert summary["by_stack_confidence"] == {"high": 1}
+    assert summary["by_stack_basis"] == {"researcher_top_candidate": 1}
+    assert summary["by_family_support_authority"] == {"high": 1, "medium": 1}
+    assert summary["by_stack_support_authority"] == {"medium": 1}
 
 
 def test_family_dependence_summary_tracks_semantic_signature_and_unresolved_fallbacks() -> None:
@@ -2239,6 +2384,154 @@ def test_bundle_name_only_outcome_surfaces_runtime_design_step_for_fully_validat
     assert payload["decision"] == "partial"
     assert payload["fully_validated"] is True
     assert payload["next_required_step"] == "stack_or_runtime_design"
+
+
+def test_bundle_name_only_outcome_uses_evidence_authority_when_selection_support_is_thin() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "dynamic",
+                "status": "degraded_dynamic_success",
+                "meets_intent": False,
+                "partial": True,
+                "closure_source": "degraded_deterministic_fallback",
+                "required_contract": {
+                    "allowed_execution_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                        "degraded_deterministic_fallback",
+                    ],
+                    "intent_satisfying_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                    ],
+                },
+            },
+            "request_ir": {
+                "selection_decision": {
+                    "family": {
+                        "selected": True,
+                        "selected_family": "open_redirect",
+                        "source": "catalog_resolution",
+                        "confidence": "high",
+                    },
+                    "stack": {
+                        "selected": True,
+                        "selected_stack_id": "python/flask",
+                        "source": "researcher_candidate",
+                        "confidence": "high",
+                        "basis": "researcher_top_candidate",
+                    },
+                    "ready_for_materialization": True,
+                    "open_world_evidence_ready": False,
+                }
+            },
+            "completion_state": {
+                "stage_ceiling": "fully_validated",
+                "fully_validated": True,
+            },
+            "dynamic_eval": {"enabled": True, "status": "degraded_success"},
+            "open_world": {"class": "semantic_guided_minimal_dynamic", "lower_bound_dependent": True},
+            "strict_open_world": {"class": "strict_semantic_guided_fallback"},
+            "stack_dependence": {
+                "class": "researcher_inferred",
+                "stack_defaulted": False,
+            },
+            "family_dependence": {
+                "class": "semantic_signature_bounded",
+                "ambiguous": True,
+                "candidate_evidence_backed": True,
+            },
+        }
+    )
+
+    assert payload["decision"] == "partial"
+    assert payload["next_required_step"] == "evidence_authority"
+    assert payload["selection_ready_for_materialization"] is True
+    assert payload["selection_open_world_evidence_ready"] is False
+    assert payload["family_selected"] is True
+    assert payload["selected_family"] == "open_redirect"
+    assert payload["family_evidence_backed"] is False
+    assert payload["family_support_count"] == 0
+    assert payload["stack_selected"] is True
+    assert payload["selected_stack_id"] == "python/flask"
+    assert payload["stack_evidence_backed"] is False
+    assert payload["stack_support_count"] == 0
+
+
+def test_bundle_name_only_outcome_uses_open_world_generation_when_selection_is_evidence_ready() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "dynamic",
+                "status": "degraded_dynamic_success",
+                "meets_intent": False,
+                "partial": True,
+                "closure_source": "degraded_deterministic_fallback",
+                "required_contract": {
+                    "allowed_execution_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                        "degraded_deterministic_fallback",
+                    ],
+                    "intent_satisfying_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                    ],
+                },
+            },
+            "request_ir": {
+                "selection_decision": {
+                    "family": {
+                        "selected": True,
+                        "selected_family": "open_redirect",
+                        "source": "catalog_resolution",
+                        "confidence": "high",
+                        "evidence_backed": True,
+                        "support_count": 4,
+                        "support_by_source_authority": {"medium": 3, "high": 1},
+                        "high_or_medium_authority_support": True,
+                    },
+                    "stack": {
+                        "selected": True,
+                        "selected_stack_id": "python/flask",
+                        "source": "researcher_candidate",
+                        "confidence": "high",
+                        "basis": "researcher_top_candidate",
+                        "evidence_backed": True,
+                        "support_count": 2,
+                        "support_by_source_authority": {"medium": 2},
+                        "high_or_medium_authority_support": True,
+                    },
+                    "ready_for_materialization": True,
+                    "open_world_evidence_ready": True,
+                }
+            },
+            "completion_state": {
+                "stage_ceiling": "fully_validated",
+                "fully_validated": True,
+            },
+            "dynamic_eval": {"enabled": True, "status": "degraded_success"},
+            "open_world": {"class": "semantic_guided_minimal_dynamic", "lower_bound_dependent": True},
+            "strict_open_world": {"class": "strict_semantic_guided_fallback"},
+            "stack_dependence": {
+                "class": "researcher_inferred",
+                "stack_defaulted": False,
+            },
+            "family_dependence": {
+                "class": "semantic_signature_bounded",
+                "ambiguous": True,
+                "candidate_evidence_backed": True,
+            },
+        }
+    )
+
+    assert payload["decision"] == "partial"
+    assert payload["next_required_step"] == "open_world_generation"
+    assert payload["selection_ready_for_materialization"] is True
+    assert payload["selection_open_world_evidence_ready"] is True
 
 
 def test_bundle_intent_satisfaction_preserves_generation_closure_source_when_executor_fails() -> None:

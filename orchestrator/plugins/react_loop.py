@@ -536,6 +536,7 @@ class ReactLoop:
                 text = str(raw or "").strip().lower()
             if not text:
                 continue
+            authority_weight = _authority_weight_for_search_result(raw)
             for family, config in _FAMILY_HINTS.items():
                 aliases = [token for token in config.get("aliases") or [] if isinstance(token, str) and token.strip()]
                 anchors = [token for token in config.get("anchors") or [] if isinstance(token, str) and token.strip()]
@@ -544,7 +545,8 @@ class ReactLoop:
                 if not matched_aliases and not matched_anchors:
                     continue
                 entry = _ensure_family(family)
-                entry["score"] += min(0.65, (0.18 * len(matched_aliases)) + (0.12 * len(matched_anchors)))
+                increment = min(0.65, (0.18 * len(matched_aliases)) + (0.12 * len(matched_anchors)))
+                entry["score"] += round(increment * authority_weight, 3)
                 entry["signals"] += 1
                 for token in matched_aliases:
                     if token not in entry["matched_aliases"]:
@@ -851,6 +853,35 @@ def _score_to_confidence(score: float) -> str:
     if score >= 0.40:
         return "medium"
     return "low"
+
+
+def _authority_weight_for_search_result(raw: Any) -> float:
+    if hasattr(raw, "title") and hasattr(raw, "snippet"):
+        text = " ".join(
+            str(part or "").strip().lower()
+            for part in (getattr(raw, "title", ""), getattr(raw, "url", ""), getattr(raw, "snippet", ""))
+            if str(part or "").strip()
+        )
+    elif isinstance(raw, dict):
+        text = " ".join(
+            str(part or "").strip().lower()
+            for part in (raw.get("title"), raw.get("url"), raw.get("snippet"))
+            if str(part or "").strip()
+        )
+    else:
+        text = str(raw or "").strip().lower()
+    if not text:
+        return 1.0
+    if any(
+        token in text
+        for token in ("nvd", "mitre", "owasp", "advisory", "cwe-", "cve-", "security advisory")
+    ):
+        return 1.15
+    if any(token in text for token in ("github.com", "gitlab", "dockerfile", "docker-compose")):
+        return 1.05
+    if any(token in text for token in ("writeup", "walkthrough", "medium.com", "blog", "exploit tutorial")):
+        return 1.0
+    return 0.9
 
 
 def _downgrade_confidence(confidence: str, steps: int = 1) -> str:

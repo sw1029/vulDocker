@@ -263,6 +263,7 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "request_identity": bundle.get("request_identity") or {},
                 "request_ir": bundle.get("request_ir") or {},
                 "name_resolution": bundle.get("name_resolution") or {},
+                "executor_plan": bundle.get("executor_plan") or {},
                 "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
                 "semantic_guided_selection_source": (bundle.get("provenance") or {}).get("semantic_guided_selection_source"),
                 "semantic_guided_abstain_reason": (bundle.get("provenance") or {}).get("semantic_guided_abstain_reason"),
@@ -284,6 +285,10 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "open_world_reason": (bundle.get("open_world") or {}).get("reason"),
                 "open_world_confidence": (bundle.get("open_world") or {}).get("confidence"),
                 "open_world_basis": (bundle.get("open_world") or {}).get("basis"),
+                "open_world_selection_source": (bundle.get("open_world") or {}).get("selection_source"),
+                "open_world_selection_evidence_ready": (bundle.get("open_world") or {}).get(
+                    "selection_open_world_evidence_ready"
+                ),
                 "strict_open_world_class": (bundle.get("strict_open_world") or {}).get("class"),
                 "counts_as_strict_open_world_generalization": (
                     (bundle.get("strict_open_world") or {}).get("counts_as_generalization")
@@ -326,7 +331,9 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "researcher_summary": manifest.get("researcher_summary") or {},
         "request_identity_summary": manifest.get("request_identity_summary") or {},
         "request_ir_summary": manifest.get("request_ir_summary") or {},
+        "selection_readiness_summary": manifest.get("selection_readiness_summary") or {},
         "name_resolution_summary": manifest.get("name_resolution_summary") or {},
+        "executor_plan": manifest.get("executor_plan") or {},
         "generalization_summary": manifest.get("generalization_summary") or {},
         "open_world_summary": manifest.get("open_world_summary") or {},
         "strict_open_world_summary": manifest.get("strict_open_world_summary") or {},
@@ -389,6 +396,8 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "open_world_reason": manifest.get("open_world_reason"),
         "open_world_confidence": manifest.get("open_world_confidence"),
         "open_world_basis": manifest.get("open_world_basis"),
+        "open_world_selection_source": manifest.get("open_world_selection_source"),
+        "open_world_selection_evidence_ready": manifest.get("open_world_selection_evidence_ready"),
         "strict_open_world_class": manifest.get("strict_open_world_class"),
         "counts_as_strict_open_world_generalization": manifest.get("counts_as_strict_open_world_generalization"),
         "strict_open_world_reason": manifest.get("strict_open_world_reason"),
@@ -585,6 +594,7 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
         "request_ir",
         "runtime_recipe",
         "runtime_graph",
+        "executor_plan",
         "evidence_graph",
         "dynamic_eval",
         "artifact_quality",

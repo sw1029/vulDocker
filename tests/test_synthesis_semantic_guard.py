@@ -921,6 +921,104 @@ def test_dynamic_eval_semantic_guided_fallback_can_use_request_resolution_to_dis
     assert manifest["metadata"]["semantic_guided_ambiguous"] is True
 
 
+def test_dynamic_eval_semantic_guided_fallback_prefers_request_ir_selection_when_evidence_ready(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-TEMPLATE-INJECTION")
+    engine._requirement["policy"] = {"name_only_mode": "dynamic"}  # type: ignore[index]
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "Template Injection",
+        "resolved_vuln_id": "NAME-TEMPLATE-INJECTION",
+        "resolution_state": "catalog_alias",
+        "resolution_match_class": "catalog_alias",
+        "resolution_confidence": "high",
+        "name_driven": True,
+        "family_candidates": [
+            {"family": "template_injection", "source": "catalog_resolution", "confidence": "high"}
+        ],
+        "selection_decision": {
+            "family": {
+                "selected": True,
+                "selected_family": "template_injection",
+                "support_count": 4,
+                "support_by_source_authority": {"medium": 3, "high": 1},
+                "evidence_backed": True,
+                "high_or_medium_authority_support": True,
+            },
+            "stack": {
+                "selected": True,
+                "selected_stack_id": "python/flask",
+                "basis": "researcher_top_candidate",
+                "support_count": 2,
+                "support_by_source_authority": {"medium": 2},
+                "evidence_backed": True,
+                "high_or_medium_authority_support": True,
+            },
+            "ready_for_materialization": True,
+            "open_world_evidence_ready": True,
+        },
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "search_degraded": True,
+        "quality_reason": "guard fallback mode due to degraded retrieval",
+        "evidence_relevance": {"confidence": "low"},
+        "family_hypothesis_summary": {
+            "top_family": "xss",
+            "top_confidence": "low",
+            "top_margin": 0.01,
+            "ambiguous": True,
+            "contradiction_count": 2,
+        },
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "template payload"],
+            "sink": ["render_template_string"],
+            "exploit_precondition": ["cross-site scripting", "server-side template injection"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "template_injection"
+    assert manifest["metadata"]["semantic_guided_selection_source"] == "request_ir_selection"
+
+
+def test_fallback_stack_id_prefers_request_ir_selected_stack_when_runtime_recipe_missing(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "NAME-OPEN-REDIRECT")
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "name_driven": True,
+        "selection_decision": {
+            "family": {
+                "selected": True,
+                "selected_family": "open_redirect",
+                "support_count": 4,
+                "support_by_source_authority": {"medium": 4},
+                "evidence_backed": True,
+                "high_or_medium_authority_support": True,
+            },
+            "stack": {
+                "selected": True,
+                "selected_stack_id": "python/fastapi",
+                "basis": "researcher_top_candidate",
+                "support_count": 2,
+                "support_by_source_authority": {"medium": 2},
+                "evidence_backed": True,
+                "high_or_medium_authority_support": True,
+            },
+            "ready_for_materialization": True,
+            "open_world_evidence_ready": True,
+        },
+        "stack_candidates": [
+            {"stack_id": "python/flask", "confidence": "high"},
+            {"stack_id": "python/fastapi", "confidence": "high"},
+        ],
+    }
+
+    assert engine._fallback_stack_id() == "python/fastapi"
+
+
 def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materializer_for_path_traversal(
     tmp_path: Path,
 ) -> None:

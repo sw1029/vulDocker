@@ -1265,6 +1265,42 @@ class SynthesisEngine:
             return ""
         return str(entry.get("family") or "").strip().lower()
 
+    def _request_ir_selection_decision(self) -> Dict[str, Any]:
+        requirement = self._requirement if isinstance(self._requirement, dict) else {}
+        request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+        payload = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _request_ir_selected_family(self, *, require_open_world_evidence_ready: bool = True) -> str:
+        selection = self._request_ir_selection_decision()
+        if not selection:
+            return ""
+        if require_open_world_evidence_ready and selection.get("open_world_evidence_ready") is not True:
+            return ""
+        family = selection.get("family") if isinstance(selection.get("family"), dict) else {}
+        if family.get("selected") is not True:
+            return ""
+        token = str(family.get("selected_family") or family.get("top_family") or "").strip().lower()
+        return token
+
+    def _request_ir_selected_stack_id(self) -> str:
+        selection = self._request_ir_selection_decision()
+        if not selection:
+            return ""
+        stack = selection.get("stack") if isinstance(selection.get("stack"), dict) else {}
+        if stack.get("selected") is not True:
+            return ""
+        stack_id = str(stack.get("selected_stack_id") or "").strip().lower()
+        if not stack_id:
+            return ""
+        if selection.get("open_world_evidence_ready") is True:
+            return stack_id
+        basis = str(stack.get("basis") or "").strip().lower()
+        source = str(stack.get("source") or "").strip().lower()
+        if basis == "explicit_requirement" or source == "explicit_requirement":
+            return stack_id
+        return ""
+
     def _name_driven_family_for_explicit_family_fallback(self) -> str:
         if not self._is_name_driven_requirement():
             return ""
@@ -1489,6 +1525,11 @@ class SynthesisEngine:
         }
         if not candidates:
             resolution["abstain_reason"] = "no_semantic_family_match"
+            return resolution
+        selected_family = self._request_ir_selected_family(require_open_world_evidence_ready=True)
+        if selected_family in candidates:
+            resolution["family"] = selected_family
+            resolution["selection_source"] = "request_ir_selection"
             return resolution
         if len(candidates) == 1:
             family = candidates[0]
@@ -3172,6 +3213,9 @@ class SynthesisEngine:
         framework = str(runtime_recipe.get("framework") or requirement.get("framework") or "").strip().lower()
         if language and framework:
             return f"{language}/{framework}"
+        request_ir_selected_stack = self._request_ir_selected_stack_id()
+        if request_ir_selected_stack:
+            return request_ir_selected_stack
         request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
         stack_candidates = request_ir.get("stack_candidates") if isinstance(request_ir.get("stack_candidates"), list) else []
         request_ir_stack = self._single_confident_stack_candidate_id(stack_candidates)

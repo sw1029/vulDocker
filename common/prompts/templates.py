@@ -348,6 +348,52 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
         pattern_seed_state = str(request_ir.get("pattern_seed_state") or "").strip()
         if pattern_seed_state:
             lines.append(f"- Pattern seed state: `{pattern_seed_state}`.")
+        selection_decision = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+        if isinstance(selection_decision, dict) and selection_decision:
+            family_decision = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
+            stack_decision = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+            if family_decision.get("selected") is True:
+                selected_family = str(family_decision.get("selected_family") or family_decision.get("top_family") or "").strip()
+                detail: List[str] = []
+                if selected_family:
+                    detail.append(f"family=`{selected_family}`")
+                support_count = family_decision.get("support_count")
+                if isinstance(support_count, int):
+                    detail.append(f"support_count=`{support_count}`")
+                support_by_authority = family_decision.get("support_by_source_authority")
+                if isinstance(support_by_authority, dict) and support_by_authority:
+                    compact = ",".join(
+                        f"{str(key).strip().lower()}:{int(value)}"
+                        for key, value in support_by_authority.items()
+                        if str(key).strip()
+                    )
+                    if compact:
+                        detail.append(f"support_authority=`{compact}`")
+                if detail:
+                    lines.append("- Request IR selected family: " + ", ".join(detail) + ".")
+            if stack_decision.get("selected") is True:
+                selected_stack = str(stack_decision.get("selected_stack_id") or "").strip()
+                stack_basis = str(stack_decision.get("basis") or "").strip()
+                stack_margin = stack_decision.get("margin")
+                detail = [f"stack=`{selected_stack}`"] if selected_stack else []
+                if stack_basis:
+                    detail.append(f"basis=`{stack_basis}`")
+                if isinstance(stack_margin, (int, float)):
+                    detail.append(f"margin=`{stack_margin}`")
+                support_count = stack_decision.get("support_count")
+                if isinstance(support_count, int):
+                    detail.append(f"support_count=`{support_count}`")
+                support_by_authority = stack_decision.get("support_by_source_authority")
+                if isinstance(support_by_authority, dict) and support_by_authority:
+                    compact = ",".join(
+                        f"{str(key).strip().lower()}:{int(value)}"
+                        for key, value in support_by_authority.items()
+                        if str(key).strip()
+                    )
+                    if compact:
+                        detail.append(f"support_authority=`{compact}`")
+                if detail:
+                    lines.append("- Request IR selected stack: " + ", ".join(detail) + ".")
     identifier_candidate_summary = (
         spec.get("identifier_candidate_summary")
         if isinstance(spec.get("identifier_candidate_summary"), dict)
@@ -396,6 +442,9 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
                 detail.append(f"count=`{candidate_count}`")
             if isinstance(material_candidate_count, int):
                 detail.append(f"material_count=`{material_candidate_count}`")
+            selection_support_count = family_candidate_summary.get("selection_support_count")
+            if isinstance(selection_support_count, int):
+                detail.append(f"selected_support_count=`{selection_support_count}`")
             lines.append("- Family candidate preview: " + ", ".join(detail) + ".")
         if isinstance(deprioritized_candidate_count, int) and deprioritized_candidate_count > 0:
             lines.append(
@@ -428,6 +477,23 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
             lines.append(f"- Runtime working topology: `{topology}`.")
         if stack_defaulted is True:
             lines.append("- Runtime stack remains repo-prior/defaulted and is not evidence-backed yet.")
+        stack_selection = runtime_recipe_summary.get("stack_selection") if isinstance(runtime_recipe_summary.get("stack_selection"), dict) else {}
+        if isinstance(stack_selection, dict) and stack_selection.get("resolved") is True:
+            detail: List[str] = []
+            selected_stack_id = str(stack_selection.get("selected_stack_id") or "").strip()
+            if selected_stack_id:
+                detail.append(f"selected=`{selected_stack_id}`")
+            confidence = str(stack_selection.get("confidence") or "").strip()
+            if confidence:
+                detail.append(f"confidence=`{confidence}`")
+            margin = stack_selection.get("margin")
+            if isinstance(margin, (int, float)):
+                detail.append(f"margin=`{margin}`")
+            basis = str(stack_selection.get("basis") or "").strip()
+            if basis:
+                detail.append(f"basis=`{basis}`")
+            if detail:
+                lines.append("- Runtime stack selection: " + ", ".join(detail) + ".")
     stack_candidate_summary = (
         spec.get("stack_candidate_summary")
         if isinstance(spec.get("stack_candidate_summary"), dict)
@@ -461,6 +527,9 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
             detail.append(f"top_confidence=`{top_confidence}`")
         if detail:
             lines.append("- Stack candidate preview: " + ", ".join(detail) + ".")
+        selection_support_count = stack_candidate_summary.get("selection_support_count")
+        if isinstance(selection_support_count, int):
+            lines.append(f"- Selected stack support count: `{selection_support_count}`.")
         if stack_candidate_summary.get("ambiguous") is True:
             lines.append("- Stack candidates remain ambiguous; stay within bounded repo-supported stacks unless stronger evidence is present.")
     runtime_graph_summary = (
@@ -479,6 +548,20 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
             lines.append(f"- Runtime graph preview: `{node_count}` node(s), `{edge_count}` edge(s).")
         if sidecars:
             lines.append("- Runtime graph sidecars: `" + "`, `".join(str(item) for item in sidecars) + "`.")
+    executor_plan = req.get("executor_plan") if isinstance(req.get("executor_plan"), dict) else {}
+    if isinstance(executor_plan, dict) and executor_plan:
+        detail: List[str] = []
+        service_port = executor_plan.get("service_port")
+        if isinstance(service_port, int):
+            detail.append(f"service_port=`{service_port}`")
+        health_path = str(executor_plan.get("health_path") or "").strip()
+        if health_path:
+            detail.append(f"health_path=`{health_path}`")
+        topology = str(executor_plan.get("topology") or "").strip()
+        if topology:
+            detail.append(f"topology=`{topology}`")
+        if detail:
+            lines.append("- Executor plan preview: " + ", ".join(detail) + ".")
     evidence_graph_summary = (
         spec.get("evidence_graph_summary")
         if isinstance(spec.get("evidence_graph_summary"), dict)

@@ -134,6 +134,7 @@ def run_container_with_poc(
     container_name = f"{sid}-{bundle.slug}-runtime"
     network_mode = network_alias.mode
     service_port = _resolve_service_port(metadata_dir, workspace)
+    health_path = _resolve_health_path(metadata_dir)
     base_url = _resolve_base_url(executor_policy, service_port)
     service_env = _resolve_service_env(metadata_dir)
     start_cmd = [
@@ -163,7 +164,7 @@ def run_container_with_poc(
         time.sleep(1)
         logs_cmd = [DOCKER_BIN, "logs", container_name]
         try:
-            _wait_for_app_ready(container_name, run_log, port=service_port)
+            _wait_for_app_ready(container_name, run_log, port=service_port, health_path=health_path)
         except ExecutorError:
             run_command(logs_cmd, run_log, check=False)
             raise
@@ -510,6 +511,14 @@ def _resolve_service_port(metadata_dir: Path, workspace: Path) -> int:
     """Resolve service port from generator metadata, manifest, or Dockerfile."""
     contract = _load_generator_contract(metadata_dir)
     if isinstance(contract, dict):
+        executor_plan = contract.get("executor_plan") if isinstance(contract.get("executor_plan"), dict) else {}
+        if isinstance(executor_plan, dict):
+            try:
+                value = int(executor_plan.get("service_port"))
+            except Exception:
+                value = None
+            if value:
+                return value
         try:
             value = int(contract.get("service_port"))
         except Exception:
@@ -526,6 +535,22 @@ def _resolve_service_port(metadata_dir: Path, workspace: Path) -> int:
     if port:
         return port
     return DEFAULT_APP_PORT
+
+
+def _resolve_health_path(metadata_dir: Path) -> str | None:
+    contract = _load_generator_contract(metadata_dir)
+    if isinstance(contract, dict):
+        executor_plan = contract.get("executor_plan") if isinstance(contract.get("executor_plan"), dict) else {}
+        if isinstance(executor_plan, dict):
+            path = executor_plan.get("health_path")
+            if isinstance(path, str) and path.strip():
+                return path.strip()
+        runtime_recipe = contract.get("runtime_recipe") if isinstance(contract.get("runtime_recipe"), dict) else {}
+        if isinstance(runtime_recipe, dict):
+            path = runtime_recipe.get("health_path")
+            if isinstance(path, str) and path.strip():
+                return path.strip()
+    return None
 
 
 def _resolve_service_env(metadata_dir: Path) -> Dict[str, str]:
@@ -945,6 +970,7 @@ def _wait_for_app_ready(
     log_path: Path,
     *,
     port: int,
+    health_path: str | None = None,
     retries: int = 10,
     delay: float = 1.5,
 ) -> None:
@@ -961,18 +987,29 @@ def _wait_for_app_ready(
     bash_tcp = f"cat < /dev/null > /dev/tcp/{host}/{port}"
     nc_tcp = f"nc -z -w1 {shlex.quote(host)} {port}"
     busybox_tcp = f"busybox nc -z -w1 {shlex.quote(host)} {port}"
-    url = f"http://{host}:{port}/"
-    curl_http = f"curl --max-time 1 -sS -o /dev/null {shlex.quote(url)}"
-    wget_http = f"wget -qO- --timeout=1 {shlex.quote(url)} >/dev/null"
+    urls: List[str] = []
+    normalized_health_path = str(health_path or "").strip()
+    if normalized_health_path:
+        if not normalized_health_path.startswith("/"):
+            normalized_health_path = "/" + normalized_health_path
+        urls.append(f"http://{host}:{port}{normalized_health_path}")
+    urls.append(f"http://{host}:{port}/")
+    http_strategies: List[List[str]] = []
+    for url in urls:
+        http_strategies.extend(
+            [
+                ["sh", "-c", f"curl --max-time 1 -sS -o /dev/null {shlex.quote(url)}"],
+                ["sh", "-c", f"wget -qO- --timeout=1 {shlex.quote(url)} >/dev/null"],
+            ]
+        )
     strategies: List[List[str]] = [
         ["python", "-c", py_script, str(port)],
         ["python3", "-c", py_script, str(port)],
         ["bash", "-lc", bash_tcp],
         ["sh", "-c", nc_tcp],
         ["sh", "-c", busybox_tcp],
-        ["sh", "-c", curl_http],
-        ["sh", "-c", wget_http],
     ]
+    strategies.extend(http_strategies)
     for attempt in range(1, retries + 1):
         for strategy in strategies:
             proc = subprocess.run(

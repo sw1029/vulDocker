@@ -1,20 +1,26 @@
 # agents/generator 디렉토리
 
-핵심 파일
-- agents/generator/main.py:1 — 번들 슬러그별 실행 진입점, 결과 인덱스(generator_runs.json) 작성.
-- agents/generator/service.py:1 — 템플릿 탐색/가용성 판정(태그/DB), hybrid 모드(합성 우선 + 템플릿 보강), LLM 호출.
-- agents/generator/synthesis.py:1 — manifest(JSON) 기반 합성: 파일/의존성/경로 제약, 결정적 폴백.
+Status: support
+Audience: implementation
+Source of truth for: generator modes, synthesis/template/compiler entrypoints
+Not the source of truth for: project-level roadmap or current evidence baseline
+Last validated against: current repo layout on 2026-03-14
 
-데이터 계약
-- 입력: `metadata/<SID>/plan.json` (requirement/variation_key/policy/run_matrix).
-- 출력: `workspaces/<SID>/app/` (단일 취약) 또는 서브디렉토리 구조(다중 취약), `metadata/<SID>/generator_runs.json`.
-- manifest 스키마(요약): intent, pattern_tags[], files[], deps[], build, run, poc{cmd,success_signature}, notes, metadata.
+Relevant canonical docs:
+- [현재 상태](../current_state_gap_analysis.md)
+- [제약조건](../constraints.md)
+- [로드맵](../final_solution.md)
 
-프로젝트 내 역할
-- 요구+RAG 신호를 바탕으로 취약 환경을 “합성/보강”하여 실행 가능한 워크스페이스를 생성.
+## 핵심 파일
 
-주요 상호작용
-- common/prompts: 합성 프롬프트와 가드레일 지시 사용.
-- rag/memories: 실패 맥락을 프롬프트에 주입 가능.
-- executor: Dockerfile/app/poc가 실행기에 의해 빌드/실행됨.
+- `agents/generator/main.py`: generator CLI entry
+- `agents/generator/service.py`: mode 선택, compiler/template/synthesis orchestration
+- `agents/generator/synthesis.py`: manifest candidate 생성, guard, deterministic fallback
 
+## 현재 구현상 포인트
+
+- current synthesis는 one-shot manifest candidate와 deterministic fallback을 함께 사용합니다.
+- dynamic lane의 boundedness는 family-aware/semantic-guided fallback builder에 크게 의존합니다.
+- `request_ir`, `runtime_recipe`, `executor_plan`, `exploit_oracle`가 prompt/contract에 주입되지만, 아직 staged synthesis control-plane은 아닙니다.
+
+이 디렉토리 작업은 항상 [docs/final_solution.md](../final_solution.md)의 phased plan과 [docs/constraints.md](../constraints.md)의 generator constraints를 기준으로 해야 합니다.
