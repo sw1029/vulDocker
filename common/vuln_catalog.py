@@ -192,6 +192,132 @@ def vuln_catalog_entries() -> List[Dict[str, Any]]:
     return [dict(entry) for entry in _catalog_payload().values()]
 
 
+def catalog_family_candidates_for_label(
+    raw_label: Any,
+    *,
+    resolved_vuln_id: Any = "",
+) -> List[Dict[str, Any]]:
+    label = normalize_vuln_label(raw_label)
+    if not label:
+        return []
+    label_tokens = set(_content_tokens(raw_label))
+    candidates: Dict[str, Dict[str, Any]] = {}
+
+    def _confidence_rank(value: str) -> int:
+        token = str(value or "").strip().lower()
+        if token == "high":
+            return 3
+        if token == "medium":
+            return 2
+        if token == "low":
+            return 1
+        return 0
+
+    def _register(
+        *,
+        family: str,
+        source: str,
+        confidence: str,
+        vuln_id: str = "",
+        overlap: int = 0,
+        score: float = 0.0,
+    ) -> None:
+        token = str(family or "").strip().lower()
+        if not token:
+            return
+        candidate = {
+            "family": token,
+            "source": source,
+            "confidence": confidence,
+        }
+        if vuln_id:
+            candidate["matched_vuln_id"] = vuln_id
+        if overlap > 0:
+            candidate["token_overlap"] = overlap
+        if score > 0:
+            candidate["match_score"] = round(score, 3)
+        existing = candidates.get(token)
+        if not isinstance(existing, dict):
+            candidates[token] = candidate
+            return
+        if _confidence_rank(str(candidate.get("confidence") or "")) > _confidence_rank(str(existing.get("confidence") or "")):
+            candidates[token] = candidate
+            return
+        if float(candidate.get("match_score") or 0.0) > float(existing.get("match_score") or 0.0):
+            candidates[token] = candidate
+
+    resolved_entry = resolve_vuln_catalog_entry(vuln_id=resolved_vuln_id, raw_label=raw_label)
+    if isinstance(resolved_entry, dict):
+        _register(
+            family=str(resolved_entry.get("family") or "").strip().lower(),
+            source="catalog_resolution",
+            confidence="high",
+            vuln_id=str(resolved_entry.get("vuln_id") or "").strip(),
+            overlap=len(label_tokens),
+            score=1.0,
+        )
+
+    if len(label_tokens) < 2:
+        return list(candidates.values())
+
+    for entry in _catalog_payload().values():
+        if not isinstance(entry, dict):
+            continue
+        family = str(entry.get("family") or "").strip().lower()
+        vuln_id = str(entry.get("vuln_id") or "").strip()
+        best_overlap = 0
+        best_score = 0.0
+
+        for alias in entry.get("label_aliases") or []:
+            alias_tokens = set(_content_tokens(alias))
+            overlap = len(label_tokens & alias_tokens)
+            if overlap < 2:
+                continue
+            score = overlap / max(len(label_tokens), len(alias_tokens))
+            if score < 0.5:
+                continue
+            if overlap > best_overlap or score > best_score:
+                best_overlap = overlap
+                best_score = score
+
+        for token_set in entry.get("token_sets") or []:
+            candidate_tokens = {
+                token
+                for token in token_set
+                if isinstance(token, str) and token and token not in TOKEN_MATCH_STOPWORDS
+            }
+            overlap = len(label_tokens & candidate_tokens)
+            if overlap < 2:
+                continue
+            score = overlap / max(len(label_tokens), len(candidate_tokens))
+            if score < 0.5:
+                continue
+            if overlap > best_overlap or score > best_score:
+                best_overlap = overlap
+                best_score = score
+
+        if best_overlap < 2 or best_score < 0.5:
+            continue
+        confidence = "medium" if best_score >= 0.75 else "low"
+        _register(
+            family=family,
+            source="label_overlap",
+            confidence=confidence,
+            vuln_id=vuln_id,
+            overlap=best_overlap,
+            score=best_score,
+        )
+
+    return sorted(
+        candidates.values(),
+        key=lambda item: (
+            -_confidence_rank(str(item.get("confidence") or "")),
+            -float(item.get("match_score") or 0.0),
+            str(item.get("family") or ""),
+        ),
+    )
+
+
 def vuln_catalog_entry(vuln_id: str) -> Optional[Dict[str, Any]]:
     canonical = _catalog_indexes()["identifier_aliases"].get(_normalize_identifier(vuln_id) or "")
     if not canonical:
@@ -347,6 +473,7 @@ def catalog_semantic_support_defaults() -> Dict[str, Dict[str, str]]:
 
 
 __all__ = [
+    "catalog_family_candidates_for_label",
     "catalog_profile_defaults",
     "catalog_semantic_support_defaults",
     "mapped_vuln_id_with_source",

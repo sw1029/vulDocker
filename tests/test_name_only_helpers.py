@@ -42,3 +42,28 @@ def test_build_name_only_contract_uses_request_ir_name_driven_signal() -> None:
     assert contract["effective_mode"] == "dynamic"
     assert contract["require_research"] is True
     assert contract["allow_degraded_fallback"] is True
+
+
+def test_build_name_only_contract_separates_execution_paths_from_intent_paths() -> None:
+    requirement = {
+        "vuln_id": "CWE-79",
+        "request_ir": {
+            "request_label": "Reflected XSS",
+            "resolved_vuln_id": "CWE-79",
+            "name_driven": True,
+            "resolution_state": "token_match",
+        },
+        "policy": {"name_only_mode": "dynamic"},
+    }
+
+    contract = build_name_only_contract(requirement=requirement)
+
+    assert contract["allowed_execution_paths"] == [
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback",
+    ]
+    assert contract["intent_satisfying_paths"] == [
+        "trusted_dynamic",
+        "strict_open_world_positive",
+    ]

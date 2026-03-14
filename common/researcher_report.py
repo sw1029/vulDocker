@@ -44,6 +44,7 @@ _PASSTHROUGH_KEYS = (
     "query_plan",
     "evidence_type_summary",
     "family_hypothesis_summary",
+    "evidence_graph",
     "llm_execution",
 )
 

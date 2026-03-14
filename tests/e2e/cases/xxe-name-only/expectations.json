@@ -12,8 +12,8 @@
     "compose_mode": "registry",
     "generation_origin": "compiler_generated",
     "dynamicness_verdict": "compiler-first",
-    "generalization_class": "real_free_form_positive",
-    "counts_as_generalization": true,
+    "generalization_class": "real_free_form_curated_lower_bound",
+    "counts_as_generalization": false,
     "verification_rule_source": "declared_rule",
     "verification_trust": "high",
     "verification_independence": "independent"
@@ -39,8 +39,8 @@
       "verification_rule_source": "declared_rule",
       "verification_trust": "high",
       "verification_independence": "independent",
-      "generalization_class": "real_free_form_positive",
-      "counts_as_generalization": true
+      "generalization_class": "real_free_form_curated_lower_bound",
+      "counts_as_generalization": false
     }
   ],
   "reviewer": {

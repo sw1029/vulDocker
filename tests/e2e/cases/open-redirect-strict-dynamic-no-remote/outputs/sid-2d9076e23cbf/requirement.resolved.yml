@@ -1,0 +1,273 @@
+vuln_name: Open Redirect
+seed: 5564
+generator_mode: synthesis
+policy:
+  name_only_mode: strict_dynamic
+  allow_runtime_rule_override_static: false
+  allow_name_family_fallback: false
+  open_world_strict: false
+  dynamic_eval: false
+  dynamic_eval_allow_lower_bound_fallback: false
+  require_researcher_evidence: true
+  allow_unknown_pattern_seed: false
+  guard:
+    enforcement: block_both
+    failure_policy: closed_unknown
+    dynamic_scope: assertions_semantics
+    call_budget:
+      mode: bundle_once
+      ensemble_runs: 3
+    autofix:
+      level: code
+      max_attempts: 1
+    unsupported_op_policy: normalize_retry
+    low_confidence_unknown_policy: warn
+    refresh_researcher_on_guard_dsl_error: true
+    semantic_refresh_threshold: 2
+    hint_payload_enabled: true
+    failure_fingerprint_window: 3
+  verifier:
+    low_trust_unknown_policy: warn
+    min_promotion_independence: compiler_coupled
+    min_name_resolution_confidence: low
+  name_only_contract:
+    enabled: true
+    mode: strict_dynamic
+    effective_mode: strict_dynamic
+    require_research: true
+    require_remote_research: true
+    allow_degraded_fallback: false
+    allow_lower_bound_recovery: false
+    allow_curated_lower_bound_closure: false
+    allow_template_closure: false
+    require_strict_open_world: true
+    require_independent_verifier: true
+    require_live_llm: true
+    allow_stub_llm: false
+    allow_fixture_llm: false
+    allowed_closure_sources:
+    - strict_open_world_positive
+    allowed_execution_paths:
+    - strict_open_world_positive
+    intent_satisfying_paths:
+    - strict_open_world_positive
+    allowed_llm_paths:
+    - live
+    intent_success_rule: strict_open_world_positive_only
+vuln_id: NAME-OPEN-REDIRECT
+vuln_ids:
+- NAME-OPEN-REDIRECT
+multi_vuln: false
+vuln_id_resolutions:
+- field: vuln_name
+  input: Open Redirect
+  resolved_vuln_id: NAME-OPEN-REDIRECT
+  source: alias
+  match_class: catalog_alias
+  confidence: high
+vuln_request_identities:
+- request_label: Open Redirect
+  normalized_request_label: open redirect
+  resolved_vuln_id: NAME-OPEN-REDIRECT
+  input_mode: free_form_name
+  source: alias
+  match_class: catalog_alias
+  confidence: high
+  field: vuln_name
+  synthetic_resolution: false
+  catalog_backed_resolution: true
+  token_match_resolution: false
+  exact_identifier_resolution: false
+  name_driven: true
+name_resolution:
+  field: vuln_name
+  input: Open Redirect
+  resolved_vuln_id: NAME-OPEN-REDIRECT
+  source: alias
+  match_class: catalog_alias
+  confidence: high
+request_identity:
+  request_label: Open Redirect
+  normalized_request_label: open redirect
+  resolved_vuln_id: NAME-OPEN-REDIRECT
+  input_mode: free_form_name
+  source: alias
+  match_class: catalog_alias
+  confidence: high
+  field: vuln_name
+  synthetic_resolution: false
+  catalog_backed_resolution: true
+  token_match_resolution: false
+  exact_identifier_resolution: false
+  name_driven: true
+requirement_id: AUTO-NAME-OPEN-REDIRECT
+intent: Auto-normalized minimal-input run for Open Redirect
+vuln_label: Open Redirect
+retriever_commit: stub
+corpus_snapshot: rag-snap-mvp
+pattern_id: open-redirect
+deps_digest: sha256:auto
+runtime:
+  allow_external_db: false
+dep_guard:
+  llm_assist: true
+  auto_patch: true
+user_deps:
+- requests==2.31.0
+stack_hypotheses:
+- language: python
+  framework: flask
+  stack_id: python/flask
+  source: profile_prior
+  confidence: low
+- language: python
+  framework: fastapi
+  stack_id: python/fastapi
+  source: available_skeleton
+  confidence: low
+_normalization_defaults:
+  profile: Open Redirect
+  applied_fields:
+  - requirement_id
+  - intent
+  - vuln_label
+  - retriever_commit
+  - corpus_snapshot
+  - pattern_id
+  - deps_digest
+  - runtime.allow_external_db
+  - dep_guard.llm_assist
+  - dep_guard.auto_patch
+  - user_deps
+  - stack_hypotheses
+researcher:
+  search_policy: remote_required
+  generate_candidate_templates: false
+  shadow_mode: false
+  search_filters: {}
+request_ir:
+  raw_label: Open Redirect
+  request_label: Open Redirect
+  normalized_request_label: open redirect
+  resolved_vuln_id: NAME-OPEN-REDIRECT
+  resolved_vuln_id_candidate: NAME-OPEN-REDIRECT
+  input_mode: free_form_name
+  name_driven: true
+  resolution_state: catalog_alias
+  resolution_source: alias
+  resolution_match_class: catalog_alias
+  resolution_confidence: high
+  identifier_candidates:
+  - vuln_id: NAME-OPEN-REDIRECT
+    source: alias
+    confidence: high
+  catalog_backed: true
+  token_match_backed: false
+  synthetic_resolution: false
+  exact_identifier_resolution: false
+  pattern_id: open-redirect
+  pattern_seed_state: preserved
+  stack_candidates:
+  - language: python
+    framework: flask
+    stack_id: python/flask
+    source: profile_prior
+    confidence: low
+  - language: python
+    framework: fastapi
+    stack_id: python/fastapi
+    source: available_skeleton
+    confidence: low
+  family_candidates:
+  - family: open_redirect
+    source: catalog_resolution
+    confidence: high
+    matched_vuln_id: NAME-OPEN-REDIRECT
+  abstain_reason: null
+  evidence_ids: []
+  name_only_mode: strict_dynamic
+  required_contract:
+    effective_mode: strict_dynamic
+    require_research: true
+    require_remote_research: true
+    allow_degraded_fallback: false
+    allow_lower_bound_recovery: false
+    allow_curated_lower_bound_closure: false
+    allow_template_closure: false
+    require_strict_open_world: true
+    require_independent_verifier: true
+    require_live_llm: true
+    allow_stub_llm: false
+    allow_fixture_llm: false
+    allowed_closure_sources:
+    - strict_open_world_positive
+    allowed_execution_paths:
+    - strict_open_world_positive
+    intent_satisfying_paths:
+    - strict_open_world_positive
+    allowed_llm_paths:
+    - live
+    intent_success_rule: strict_open_world_positive_only
+vuln_request_irs:
+- raw_label: Open Redirect
+  request_label: Open Redirect
+  normalized_request_label: open redirect
+  resolved_vuln_id: NAME-OPEN-REDIRECT
+  resolved_vuln_id_candidate: NAME-OPEN-REDIRECT
+  input_mode: free_form_name
+  name_driven: true
+  resolution_state: catalog_alias
+  resolution_source: alias
+  resolution_match_class: catalog_alias
+  resolution_confidence: high
+  identifier_candidates:
+  - vuln_id: NAME-OPEN-REDIRECT
+    source: alias
+    confidence: high
+  catalog_backed: true
+  token_match_backed: false
+  synthetic_resolution: false
+  exact_identifier_resolution: false
+  pattern_id: open-redirect
+  pattern_seed_state: preserved
+  stack_candidates:
+  - language: python
+    framework: flask
+    stack_id: python/flask
+    source: profile_prior
+    confidence: low
+  - language: python
+    framework: fastapi
+    stack_id: python/fastapi
+    source: available_skeleton
+    confidence: low
+  family_candidates:
+  - family: open_redirect
+    source: catalog_resolution
+    confidence: high
+    matched_vuln_id: NAME-OPEN-REDIRECT
+  abstain_reason: null
+  evidence_ids: []
+  name_only_mode: strict_dynamic
+  required_contract:
+    effective_mode: strict_dynamic
+    require_research: true
+    require_remote_research: true
+    allow_degraded_fallback: false
+    allow_lower_bound_recovery: false
+    allow_curated_lower_bound_closure: false
+    allow_template_closure: false
+    require_strict_open_world: true
+    require_independent_verifier: true
+    require_live_llm: true
+    allow_stub_llm: false
+    allow_fixture_llm: false
+    allowed_closure_sources:
+    - strict_open_world_positive
+    allowed_execution_paths:
+    - strict_open_world_positive
+    intent_satisfying_paths:
+    - strict_open_world_positive
+    allowed_llm_paths:
+    - live
+    intent_success_rule: strict_open_world_positive_only

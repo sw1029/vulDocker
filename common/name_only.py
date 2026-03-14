@@ -18,6 +18,13 @@ _DYNAMIC_ALLOWED_CLOSURE_SOURCES = [
     "strict_open_world_positive",
 ]
 _STRICT_DYNAMIC_ALLOWED_CLOSURE_SOURCES = ["strict_open_world_positive"]
+_COMPATIBILITY_ALLOWED_EXECUTION_PATHS = list(_COMPATIBILITY_ALLOWED_CLOSURE_SOURCES)
+_DYNAMIC_ALLOWED_EXECUTION_PATHS = [
+    "trusted_dynamic",
+    "strict_open_world_positive",
+    "degraded_deterministic_fallback",
+]
+_STRICT_DYNAMIC_ALLOWED_EXECUTION_PATHS = ["strict_open_world_positive"]
 
 
 def is_name_driven_requirement(requirement: Any) -> bool:
@@ -93,12 +100,18 @@ def build_name_only_contract(
     require_live_llm = require_strict_open_world
     if effective_mode == "compatibility":
         allowed_closure_sources = list(_COMPATIBILITY_ALLOWED_CLOSURE_SOURCES)
+        allowed_execution_paths = list(_COMPATIBILITY_ALLOWED_EXECUTION_PATHS)
+        intent_satisfying_paths = list(_COMPATIBILITY_ALLOWED_EXECUTION_PATHS)
         intent_success_rule = "any_non_failed_runnable_closure"
     elif effective_mode in {"dynamic", "dynamic_eval"}:
         allowed_closure_sources = list(_DYNAMIC_ALLOWED_CLOSURE_SOURCES)
+        allowed_execution_paths = list(_DYNAMIC_ALLOWED_EXECUTION_PATHS)
+        intent_satisfying_paths = list(_DYNAMIC_ALLOWED_CLOSURE_SOURCES)
         intent_success_rule = "open_world_positive_only"
     else:
         allowed_closure_sources = list(_STRICT_DYNAMIC_ALLOWED_CLOSURE_SOURCES)
+        allowed_execution_paths = list(_STRICT_DYNAMIC_ALLOWED_EXECUTION_PATHS)
+        intent_satisfying_paths = list(_STRICT_DYNAMIC_ALLOWED_EXECUTION_PATHS)
         intent_success_rule = "strict_open_world_positive_only"
 
     return {
@@ -117,6 +130,8 @@ def build_name_only_contract(
         "allow_stub_llm": not require_live_llm,
         "allow_fixture_llm": not require_live_llm,
         "allowed_closure_sources": allowed_closure_sources,
+        "allowed_execution_paths": allowed_execution_paths,
+        "intent_satisfying_paths": intent_satisfying_paths,
         "allowed_llm_paths": (
             ["live", "fixture", "stub"]
             if effective_mode == "compatibility"

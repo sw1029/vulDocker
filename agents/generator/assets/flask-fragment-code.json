@@ -14,12 +14,15 @@
       "@app.post('/transfer')",
       "def transfer():",
       "    # Registry-backed compiler fragment: state-changing endpoint accepts cookie-authenticated POST with no CSRF token.",
+      "    if 'user' not in session:",
+      "        return jsonify({'ok': False, 'error': 'auth required', 'flag': None}), 403",
       "    user = session.get('user', 'victim')",
       "    recipient = request.form.get('recipient', 'attacker')",
       "    amount = int(request.form.get('amount', '250'))",
       "    BALANCES[recipient] = BALANCES.get(recipient, 0) + amount",
       "    BALANCES[user] = BALANCES.get(user, 1000) - amount",
-      "    return jsonify({'ok': True, 'by': user, 'recipient': recipient, 'amount': amount, 'recipient_balance': BALANCES[recipient], 'flag': 'FLAG-csrf-demo-token'})"
+      "    compromised = recipient == 'attacker' and amount > 0",
+      "    return jsonify({'ok': True, 'by': user, 'recipient': recipient, 'amount': amount, 'recipient_balance': BALANCES[recipient], 'flag': 'FLAG-csrf-demo-token' if compromised else None})"
     ],
     "app_setup_block": [
       "app.secret_key = 'csrf-compiler-secret'",
@@ -79,7 +82,8 @@
       "    user = request.args.get('user', 'alice')",
       "    ldap_filter = '(&(uid=' + user + ')(status=active))'",
       "    rows = search_directory(ldap_filter)",
-      "    return jsonify({'count': len(rows), 'rows': rows, 'filter': ldap_filter, 'flag': 'FLAG{LDAPI_OK}'})"
+      "    compromised = len(rows) >= 2 and any(str(row.get('role', '')) == 'admin' for row in rows if isinstance(row, dict))",
+      "    return jsonify({'count': len(rows), 'rows': rows, 'filter': ldap_filter, 'flag': 'FLAG{LDAPI_OK}' if compromised else None})"
     ],
     "app_setup_block": [
       "DIRECTORY = [",
@@ -186,7 +190,8 @@
       "    cur = conn.cursor()",
       "    rows = cur.execute(query).fetchall()",
       "    conn.close()",
-      "    return jsonify({'match': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': 'FLAG-sqli-demo-token'})"
+      "    compromised = any(str(row['username']) == 'admin' for row in rows)",
+      "    return jsonify({'match': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': 'FLAG-sqli-demo-token' if compromised else None})"
     ],
     "app_setup_block": [
       "DB_PATH = Path('/tmp/sqli-demo.db')",
@@ -234,7 +239,8 @@
       "        \"AND password = '\" + request.args.get('password', '') + \"'\"",
       "    )",
       "    rows = query_db(query)",
-      "    return jsonify({'match': bool(rows), 'rows': rows, 'query': query, 'flag': 'FLAG-sqli-demo-token'})"
+      "    compromised = any(str(row.get('username', '')) == 'admin' for row in rows if isinstance(row, dict))",
+      "    return jsonify({'match': bool(rows), 'rows': rows, 'query': query, 'flag': 'FLAG-sqli-demo-token' if compromised else None})"
     ],
     "app_setup_block": [
       "APP_PORT = int(os.environ.get('APP_PORT', '{{port}}'))",

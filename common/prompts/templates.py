@@ -291,6 +291,37 @@ def _exploit_oracle_contract(requirement: Dict[str, object]) -> str:
     json_flag_key = str(oracle.get("json_flag_key") or "").strip()
     if json_flag_key:
         lines.append(f"- JSON flag key: `{json_flag_key}`.")
+    negative_markers = [
+        str(item).strip()
+        for item in (oracle.get("negative_text_markers") or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if negative_markers:
+        lines.append(f"- Negative markers (must stay absent on success): `{', '.join(negative_markers)}`.")
+    forbidden_markers = [
+        str(item).strip()
+        for item in (oracle.get("forbidden_success_markers") or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if forbidden_markers:
+        lines.append(f"- Forbidden success markers: `{', '.join(forbidden_markers)}`.")
+    negative_controls = oracle.get("negative_controls") if isinstance(oracle.get("negative_controls"), list) else []
+    if negative_controls:
+        lines.append(f"- Negative control cases: `{len(negative_controls)}`.")
+    metamorphic = oracle.get("metamorphic") if isinstance(oracle.get("metamorphic"), dict) else {}
+    if metamorphic:
+        total = metamorphic.get("total")
+        passed = metamorphic.get("passed")
+        rationale = str(metamorphic.get("rationale") or "").strip()
+        detail: List[str] = []
+        if isinstance(total, int):
+            detail.append(f"total=`{total}`")
+        if isinstance(passed, int):
+            detail.append(f"passed=`{passed}`")
+        if rationale:
+            detail.append(f"rationale=`{rationale}`")
+        if detail:
+            lines.append("- Metamorphic oracle context: " + ", ".join(detail) + ".")
     poc_cmd = str(oracle.get("poc_cmd") or "").strip()
     if poc_cmd:
         lines.append(f"- Preferred PoC command: `{poc_cmd}`.")
@@ -317,6 +348,24 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
         pattern_seed_state = str(request_ir.get("pattern_seed_state") or "").strip()
         if pattern_seed_state:
             lines.append(f"- Pattern seed state: `{pattern_seed_state}`.")
+    identifier_candidate_summary = (
+        spec.get("identifier_candidate_summary")
+        if isinstance(spec.get("identifier_candidate_summary"), dict)
+        else {}
+    )
+    if isinstance(identifier_candidate_summary, dict) and identifier_candidate_summary:
+        candidate_count = identifier_candidate_summary.get("candidate_count")
+        resolved_candidate = str(identifier_candidate_summary.get("resolved_vuln_id_candidate") or "").strip()
+        abstain_reason = str(identifier_candidate_summary.get("abstain_reason") or "").strip()
+        detail: List[str] = []
+        if isinstance(candidate_count, int):
+            detail.append(f"count=`{candidate_count}`")
+        if resolved_candidate:
+            detail.append(f"resolved_candidate=`{resolved_candidate}`")
+        if abstain_reason:
+            detail.append(f"abstain_reason=`{abstain_reason}`")
+        if detail:
+            lines.append("- Identifier candidate preview: " + ", ".join(detail) + ".")
     effective_mode = str(spec.get("effective_mode") or "").strip()
     if effective_mode:
         lines.append(f"- Name-only effective mode: `{effective_mode}`.")
@@ -335,6 +384,8 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
         top_source = str(family_candidate_summary.get("top_source") or "").strip()
         top_confidence = str(family_candidate_summary.get("top_confidence") or "").strip()
         candidate_count = family_candidate_summary.get("candidate_count")
+        material_candidate_count = family_candidate_summary.get("material_candidate_count")
+        deprioritized_candidate_count = family_candidate_summary.get("deprioritized_candidate_count")
         if top_family:
             detail = [f"top=`{top_family}`"]
             if top_source:
@@ -343,9 +394,24 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
                 detail.append(f"confidence=`{top_confidence}`")
             if isinstance(candidate_count, int):
                 detail.append(f"count=`{candidate_count}`")
+            if isinstance(material_candidate_count, int):
+                detail.append(f"material_count=`{material_candidate_count}`")
             lines.append("- Family candidate preview: " + ", ".join(detail) + ".")
+        if isinstance(deprioritized_candidate_count, int) and deprioritized_candidate_count > 0:
+            lines.append(
+                f"- Low-confidence/background family candidates were deprioritized: `{deprioritized_candidate_count}`."
+            )
         if family_candidate_summary.get("ambiguous") is True:
             lines.append("- Family candidate set is ambiguous; avoid overcommitting beyond supported family evidence.")
+    negative_hypotheses = spec.get("negative_hypotheses") if isinstance(spec.get("negative_hypotheses"), list) else []
+    if negative_hypotheses:
+        normalized = [
+            str(item.get("family") or "").strip()
+            for item in negative_hypotheses
+            if isinstance(item, dict) and str(item.get("family") or "").strip()
+        ]
+        if normalized:
+            lines.append("- Negative family hypotheses: `" + "`, `".join(normalized) + "`.")
     runtime_recipe_summary = (
         spec.get("runtime_recipe_summary")
         if isinstance(spec.get("runtime_recipe_summary"), dict)
@@ -355,10 +421,13 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
         language = str(runtime_recipe_summary.get("language") or "").strip()
         framework = str(runtime_recipe_summary.get("framework") or "").strip()
         topology = str(runtime_recipe_summary.get("topology") or "").strip()
+        stack_defaulted = runtime_recipe_summary.get("stack_defaulted")
         if language and framework:
             lines.append(f"- Runtime working stack: `{language}/{framework}`.")
         if topology:
             lines.append(f"- Runtime working topology: `{topology}`.")
+        if stack_defaulted is True:
+            lines.append("- Runtime stack remains repo-prior/defaulted and is not evidence-backed yet.")
     stack_candidate_summary = (
         spec.get("stack_candidate_summary")
         if isinstance(spec.get("stack_candidate_summary"), dict)
@@ -368,6 +437,7 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
         working_stack_id = str(stack_candidate_summary.get("working_stack_id") or "").strip()
         working_stack_source = str(stack_candidate_summary.get("working_stack_source") or "").strip()
         working_stack_locked = stack_candidate_summary.get("working_stack_locked")
+        working_stack_defaulted = stack_candidate_summary.get("working_stack_defaulted")
         candidate_count = stack_candidate_summary.get("candidate_count")
         top_stack_id = str(stack_candidate_summary.get("top_stack_id") or "").strip()
         top_source = str(stack_candidate_summary.get("top_source") or "").strip()
@@ -379,6 +449,8 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
             detail.append(f"source=`{working_stack_source}`")
         if isinstance(working_stack_locked, bool):
             detail.append(f"locked=`{working_stack_locked}`")
+        if isinstance(working_stack_defaulted, bool):
+            detail.append(f"defaulted=`{working_stack_defaulted}`")
         if isinstance(candidate_count, int):
             detail.append(f"count=`{candidate_count}`")
         if top_stack_id and top_stack_id != working_stack_id:
@@ -407,6 +479,20 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
             lines.append(f"- Runtime graph preview: `{node_count}` node(s), `{edge_count}` edge(s).")
         if sidecars:
             lines.append("- Runtime graph sidecars: `" + "`, `".join(str(item) for item in sidecars) + "`.")
+    evidence_graph_summary = (
+        spec.get("evidence_graph_summary")
+        if isinstance(spec.get("evidence_graph_summary"), dict)
+        else {}
+    )
+    if isinstance(evidence_graph_summary, dict) and evidence_graph_summary:
+        node_count = evidence_graph_summary.get("node_count")
+        edge_count = evidence_graph_summary.get("edge_count")
+        source = str(evidence_graph_summary.get("source") or "").strip()
+        if isinstance(node_count, int) and isinstance(edge_count, int):
+            prefix = f"- Evidence graph preview: `{node_count}` node(s), `{edge_count}` edge(s)"
+            if source:
+                prefix += f", source=`{source}`"
+            lines.append(prefix + ".")
     required_contract = spec.get("required_contract") if isinstance(spec.get("required_contract"), dict) else {}
     if isinstance(required_contract, dict) and required_contract:
         required_bits: List[str] = []
@@ -422,6 +508,34 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
                 required_bits.append(f"{key}={bool(required_contract.get(key))}")
         if required_bits:
             lines.append("- Name-only execution contract: `" + "`, `".join(required_bits) + "`.")
+    planning_focus_summary = (
+        spec.get("planning_focus_summary")
+        if isinstance(spec.get("planning_focus_summary"), dict)
+        else {}
+    )
+    if isinstance(planning_focus_summary, dict) and planning_focus_summary:
+        primary_focus = str(planning_focus_summary.get("primary_focus") or "").strip()
+        if primary_focus:
+            lines.append(f"- Planning primary focus: `{primary_focus}`.")
+        by_focus = planning_focus_summary.get("by_focus") if isinstance(planning_focus_summary.get("by_focus"), dict) else {}
+        focus_lines: List[str] = []
+        for focus in planning_focus_summary.get("focuses") or []:
+            token = str(focus or "").strip()
+            if not token:
+                continue
+            reasons = by_focus.get(token) if isinstance(by_focus, dict) else []
+            normalized_reasons = [
+                str(item).strip()
+                for item in reasons
+                if isinstance(item, str) and str(item).strip()
+            ]
+            if normalized_reasons:
+                focus_lines.append(f"{token}=[{', '.join(normalized_reasons)}]")
+            else:
+                focus_lines.append(token)
+        if focus_lines:
+            lines.append("- Planning focus breakdown: `" + "`, `".join(focus_lines) + "`.")
+        lines.append("- Use the planning focus order before claiming open-world success; resolve earlier focus items first.")
     return "\n".join(lines) if lines else "- No name-only generation spec was provided."
 
 

@@ -116,7 +116,13 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
                 "success_mode": "text",
                 "success_text_markers": ["Exploit SUCCESS"],
                 "flag_token": "FLAG{OPEN_REDIRECT_OK}",
-                "assertion_program": [{"op": "contains", "string": "Exploit SUCCESS"}],
+                "assertion_program": [
+                    {"op": "contains", "string": "Exploit SUCCESS"},
+                    {"op": "not_contains", "string": "Exploit FAILED"},
+                ],
+                "negative_text_markers": ["Exploit FAILED"],
+                "negative_controls": [{"name": "benign-next", "expect_success": False}],
+                "metamorphic": {"total": 1, "passed": 1, "rationale": "same-origin redirect stays non-exploit"},
             },
         },
     )
@@ -127,8 +133,12 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
     assert oracle["success_signature"] == "Exploit SUCCESS"
     assert oracle["flag_token"] == "FLAG{OPEN_REDIRECT_OK}"
     assert oracle["source"] == "researcher_verification_spec"
+    assert oracle["negative_text_markers"] == ["Exploit FAILED"]
+    assert oracle["negative_controls"] == [{"name": "benign-next", "expect_success": False}]
+    assert oracle["metamorphic"] == {"total": 1, "passed": 1, "rationale": "same-origin redirect stays non-exploit"}
     assert oracle["assertion_program"] == [
         {"op": "contains", "string": "Exploit SUCCESS"},
+        {"op": "not_contains", "string": "Exploit FAILED"},
         {"op": "contains", "string": "FLAG{OPEN_REDIRECT_OK}"},
     ]
     assert spec["request_label"] == "Open Redirect"
@@ -143,9 +153,25 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
     assert spec["stack_candidate_summary"]["ambiguous"] is True
     assert spec["required_contract"]["require_research"] is True
     assert spec["required_contract"]["intent_success_rule"] == "open_world_positive_only"
+    assert spec["planning_focus_summary"]["primary_focus"] == "stack_or_runtime_design"
+    assert spec["planning_focus_summary"]["by_focus"]["stack_or_runtime_design"] == [
+        "stack_defaulted",
+        "stack_ambiguous",
+    ]
+    assert spec["planning_focus_summary"]["by_focus"]["evidence_authority"] == [
+        "family_candidate_evidence_missing",
+    ]
     assert spec["exploit_oracle_summary"]["success_signature"] == "Exploit SUCCESS"
+    assert spec["exploit_oracle_summary"]["negative_text_markers"] == ["Exploit FAILED"]
+    assert spec["exploit_oracle_summary"]["negative_controls"] == [{"name": "benign-next", "expect_success": False}]
+    assert spec["exploit_oracle_summary"]["metamorphic"] == {
+        "total": 1,
+        "passed": 1,
+        "rationale": "same-origin redirect stays non-exploit",
+    }
     assert spec["exploit_oracle_summary"]["assertion_program"] == [
         {"op": "contains", "string": "Exploit SUCCESS"},
+        {"op": "not_contains", "string": "Exploit FAILED"},
         {"op": "contains", "string": "FLAG{OPEN_REDIRECT_OK}"},
     ]
 
@@ -234,6 +260,208 @@ def test_contract_name_only_generation_spec_prefers_request_ir_source_label(tmp_
     assert spec["request_label"] == "Reflected XSS"
     assert spec["request_ir"]["name_driven"] is True
     assert profile["requested_name"] == "Reflected XSS"
+
+
+def test_contract_name_only_generation_spec_deprioritizes_low_confidence_background_families_when_resolution_is_strong(
+    tmp_path: Path,
+) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "request_ir": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "resolution_state": "catalog_alias",
+                "resolution_match_class": "catalog_alias",
+                "resolution_confidence": "high",
+                "name_driven": True,
+                "family_candidates": [
+                    {"family": "open_redirect", "source": "catalog_resolution", "confidence": "high"},
+                ],
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "open_redirect",
+                "top_confidence": "high",
+                "ranked_families": [
+                    {"family": "open_redirect", "confidence": "high", "score": 0.93, "signal_hits": 8},
+                    {"family": "xss", "confidence": "medium", "score": 0.72, "signal_hits": 3},
+                    {"family": "ssrf", "confidence": "low", "score": 0.18, "signal_hits": 1},
+                ],
+                "contradiction_count": 0,
+                "contradictory_families": [],
+                "ambiguous": False,
+            },
+        },
+    )
+
+    spec = payload["name_only_generation_spec"]
+
+    assert spec["family_candidate_summary"]["candidate_count"] == 3
+    assert spec["family_candidate_summary"]["material_candidate_count"] == 1
+    assert spec["family_candidate_summary"]["deprioritized_candidate_count"] == 2
+    assert spec["family_candidate_summary"]["material_ambiguous"] is False
+    assert spec["planning_focus_summary"]["primary_focus"] != "family_disambiguation"
+
+
+def test_enriched_request_ir_filters_background_researcher_families_under_strong_request_resolution(
+    tmp_path: Path,
+) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "request_ir": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "resolution_state": "catalog_alias",
+                "resolution_match_class": "catalog_alias",
+                "resolution_confidence": "high",
+                "name_driven": True,
+                "family_candidates": [
+                    {"family": "open_redirect", "source": "catalog_resolution", "confidence": "high"},
+                ],
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "open_redirect",
+                "top_confidence": "high",
+                "ranked_families": [
+                    {"family": "open_redirect", "confidence": "high", "score": 0.93, "signal_hits": 8},
+                    {"family": "xss", "confidence": "medium", "score": 0.72, "signal_hits": 3},
+                    {"family": "ssrf", "confidence": "low", "score": 0.18, "signal_hits": 1},
+                ],
+                "contradiction_count": 0,
+                "contradictory_families": [],
+                "ambiguous": False,
+            },
+        },
+    )
+
+    families = [item["family"] for item in payload["request_ir"]["family_candidates"]]
+
+    assert families == ["open_redirect"]
+
+
+def test_contract_surfaces_identifier_candidate_summary_and_evidence_graph(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-79",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="cwe-79",
+        requirement={
+            "vuln_id": "CWE-79",
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "resolved_vuln_id_candidate": "CWE-79",
+                "resolution_state": "token_match",
+                "resolution_match_class": "token_match",
+                "resolution_confidence": "medium",
+                "name_driven": True,
+                "identifier_candidates": [
+                    {"vuln_id": "CWE-79", "source": "fragment_strategy_fallback", "confidence": "medium"},
+                    {"vuln_id": "NAME-REFLECTED-XSS", "source": "synthetic_name_preview", "confidence": "low"},
+                ],
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "xss",
+                "top_confidence": "medium",
+                "ranked_families": [
+                    {"family": "xss", "confidence": "medium", "score": 0.62, "signal_hits": 2},
+                    {"family": "template_injection", "confidence": "low", "score": 0.17, "signal_hits": 1},
+                ],
+                "contradiction_count": 1,
+                "contradictory_families": ["template_injection"],
+                "ambiguous": True,
+            },
+            "tech_stack_candidates": [
+                {
+                    "language": "python",
+                    "framework": "flask",
+                    "stack_id": "python/flask",
+                    "confidence": "medium",
+                    "score": 0.51,
+                    "sources": ["search_hit_text"],
+                }
+            ],
+            "evidence_graph": {
+                "schema_version": "evidence_graph@0.1",
+                "source": "researcher_derived",
+                "node_count": 6,
+                "edge_count": 6,
+                "nodes": [
+                    {"id": "request", "kind": "request"},
+                    {"id": "query:1", "kind": "query"},
+                    {"id": "evidence:1", "kind": "evidence"},
+                    {"id": "family:xss", "kind": "family_hypothesis"},
+                    {"id": "family:template_injection", "kind": "family_hypothesis"},
+                    {"id": "stack:python/flask", "kind": "stack_hypothesis"},
+                ],
+                "edges": [
+                    {"from": "request", "to": "query:1", "kind": "planned_query"},
+                    {"from": "query:1", "to": "evidence:1", "kind": "retrieved_evidence"},
+                    {"from": "request", "to": "family:xss", "kind": "family_hypothesis"},
+                    {"from": "request", "to": "family:template_injection", "kind": "family_hypothesis"},
+                    {"from": "evidence:1", "to": "family:xss", "kind": "supports_family_hypothesis"},
+                    {"from": "evidence:1", "to": "stack:python/flask", "kind": "supports_stack_hypothesis"},
+                ],
+            },
+        },
+    )
+
+    spec = payload["name_only_generation_spec"]
+    enriched_request_ir = payload["request_ir"]
+
+    assert payload["evidence_graph"]["schema_version"] == "evidence_graph@0.1"
+    assert enriched_request_ir["abstain_reason"] == "ambiguous_family_hypothesis"
+    assert enriched_request_ir["evidence_ids"] == ["evidence:1"]
+    assert enriched_request_ir["family_candidates"][0]["family"] == "xss"
+    assert enriched_request_ir["family_candidates"][0]["evidence_ids"] == ["evidence:1"]
+    assert enriched_request_ir["family_candidates"][1]["family"] == "template_injection"
+    assert "evidence_ids" not in enriched_request_ir["family_candidates"][1]
+    assert enriched_request_ir["stack_candidates"][0]["stack_id"] == "python/flask"
+    assert enriched_request_ir["stack_candidates"][0]["evidence_ids"] == ["evidence:1"]
+    assert enriched_request_ir["negative_hypotheses"] == [
+        {"family": "template_injection", "source": "researcher_contradiction"}
+    ]
+    assert spec["identifier_candidate_summary"]["candidate_count"] == 2
+    assert spec["identifier_candidate_summary"]["resolved_vuln_id_candidate"] == "CWE-79"
+    assert spec["identifier_candidate_summary"]["abstain_reason"] == "ambiguous_family_hypothesis"
+    assert spec["request_ir"]["evidence_ids"] == ["evidence:1"]
+    assert spec["request_ir"]["negative_hypotheses"] == [
+        {"family": "template_injection", "source": "researcher_contradiction"}
+    ]
+    assert spec["evidence_graph_summary"]["node_count"] == 6
+    assert spec["evidence_graph_summary"]["edge_count"] == 6
+    assert spec["evidence_graph_summary"]["by_kind"]["evidence"] == 1
+    assert spec["evidence_graph_summary"]["by_edge_kind"]["supports_family_hypothesis"] == 1
+    assert spec["evidence_graph_summary"]["by_edge_kind"]["supports_stack_hypothesis"] == 1
 
 
 def test_contract_name_only_generation_spec_uses_request_ir_fallback_source(tmp_path: Path) -> None:
@@ -611,6 +839,116 @@ def test_contract_uses_researcher_proposal_when_rule_is_missing(tmp_path: Path) 
         {"op": "contains", "string": "UNKNOWN SUCCESS"},
         {"op": "contains", "string": "FLAG-unknown"},
     ]
+
+
+def test_contract_derives_verification_contract_from_generator_manifest_poc(tmp_path: Path) -> None:
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {
+                            "path": "app.py",
+                            "role": "service_main",
+                            "content": "print('service')\n",
+                        },
+                        {
+                            "path": "poc.py",
+                            "role": "poc_entry",
+                            "content": (
+                                "print('UNKNOWN SUCCESS')\n"
+                                "print('FLAG-unknown')\n"
+                                "print('Exploit FAILED')\n"
+                            ),
+                        },
+                    ],
+                    "run": {"command": "python app.py", "port": 5000},
+                    "poc": {
+                        "cmd": "python poc.py --base-url {{base_url}}",
+                        "success_signature": "UNKNOWN SUCCESS",
+                        "flag_token": "FLAG-unknown",
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-9999",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-9999",
+    )
+
+    proposal = payload["proposed_verification_contract"]
+    oracle = payload["exploit_oracle"]
+    assert proposal["source"] == "generator_manifest.poc_derived_verification_spec"
+    assert proposal["success_signature"] == "UNKNOWN SUCCESS"
+    assert proposal["flag_token"] == "FLAG-unknown"
+    assert proposal["negative_text_markers"] == ["Exploit FAILED"]
+    assert oracle["source"] == "generator_manifest.poc_derived_verification_spec"
+    assert {"op": "not_contains", "string": "Exploit FAILED"} in oracle["assertion_program"]
+
+
+def test_contract_merges_manifest_negative_markers_into_researcher_proposal(tmp_path: Path) -> None:
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {
+                            "path": "app.py",
+                            "role": "service_main",
+                            "content": "print('service')\n",
+                        },
+                        {
+                            "path": "poc.py",
+                            "role": "poc_entry",
+                            "content": (
+                                "print('UNKNOWN SUCCESS')\n"
+                                "print('FLAG-unknown')\n"
+                                "print('Exploit FAILED')\n"
+                            ),
+                        },
+                    ],
+                    "run": {"command": "python app.py", "port": 5000},
+                    "poc": {
+                        "cmd": "python poc.py --base-url {{base_url}}",
+                        "success_signature": "UNKNOWN SUCCESS",
+                        "flag_token": "FLAG-unknown",
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-9999",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-9999",
+        researcher_report={
+            "verification_spec": {
+                "success_text_markers": ["UNKNOWN SUCCESS"],
+                "flag_token": "FLAG-unknown",
+            }
+        },
+    )
+
+    proposal = payload["proposed_verification_contract"]
+    oracle = payload["exploit_oracle"]
+    assert proposal["source"] == "researcher_report.verification_spec"
+    assert proposal["negative_text_markers"] == ["Exploit FAILED"]
+    assert oracle["source"] == "researcher_verification_spec"
+    assert {"op": "not_contains", "string": "Exploit FAILED"} in oracle["assertion_program"]
 
 
 def test_contract_marks_insufficient_unknown_semantics_as_empty(tmp_path: Path) -> None:

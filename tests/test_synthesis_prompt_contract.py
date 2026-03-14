@@ -88,6 +88,7 @@ def test_name_only_synthesis_prompt_surfaces_soft_stack_hypotheses_when_stack_is
                 "framework": "flask",
                 "stack_source": "profile_prior",
                 "stack_locked": False,
+                "stack_defaulted": True,
                 "stack_hypotheses": [
                     {"language": "python", "framework": "flask", "source": "profile_prior", "confidence": "low"},
                     {"language": "python", "framework": "fastapi", "source": "available_skeleton", "confidence": "low"},
@@ -196,6 +197,10 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                 "source": "researcher_verification_spec",
                 "success_signature": "Exploit SUCCESS",
                 "flag_token": "FLAG{OPEN_REDIRECT_OK}",
+                "negative_text_markers": ["Exploit FAILED"],
+                "forbidden_success_markers": ["false positive"],
+                "negative_controls": [{"name": "benign-next", "expect_success": False}],
+                "metamorphic": {"total": 1, "passed": 1, "rationale": "same-origin redirect stays non-exploit"},
                 "poc_cmd": "python poc.py --base-url {{base_url}}",
             },
             "name_only_generation_spec": {
@@ -212,28 +217,54 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                     "top_family": "open_redirect",
                     "top_source": "catalog_resolution",
                     "top_confidence": "high",
-                    "candidate_count": 1,
+                    "candidate_count": 3,
+                    "material_candidate_count": 1,
+                    "deprioritized_candidate_count": 2,
                     "ambiguous": False,
                 },
+                "negative_hypotheses": [
+                    {"family": "xss", "source": "researcher_contradiction"},
+                ],
                 "runtime_recipe_summary": {
                     "language": "python",
                     "framework": "flask",
                     "topology": "single_service",
+                    "stack_defaulted": True,
                 },
                 "stack_candidate_summary": {
                     "working_stack_id": "python/flask",
                     "working_stack_source": "profile_prior",
                     "working_stack_locked": False,
+                    "working_stack_defaulted": True,
                     "candidate_count": 2,
                     "top_stack_id": "python/flask",
                     "top_source": "profile_prior",
                     "top_confidence": "low",
                     "ambiguous": True,
                 },
+                "evidence_graph_summary": {
+                    "node_count": 5,
+                    "edge_count": 4,
+                    "by_kind": {"request": 1, "query": 2, "evidence": 1, "family_hypothesis": 1},
+                    "source": "researcher_derived",
+                },
                 "required_contract": {
                     "require_research": True,
                     "allow_degraded_fallback": True,
                     "require_live_llm": False,
+                },
+                "planning_focus_summary": {
+                    "primary_focus": "stack_or_runtime_design",
+                    "focuses": ["stack_or_runtime_design", "evidence_authority"],
+                    "by_focus": {
+                        "stack_or_runtime_design": ["stack_defaulted", "stack_ambiguous"],
+                        "evidence_authority": ["family_candidate_evidence_missing"],
+                    },
+                    "reason_tokens": [
+                        "stack_defaulted",
+                        "stack_ambiguous",
+                        "family_candidate_evidence_missing",
+                    ],
                 },
             },
         },
@@ -248,9 +279,25 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
     assert "Request resolution state: `catalog_alias`." in prompt
     assert "Pattern seed state: `preserved`." in prompt
     assert "Working family hypothesis: `open_redirect` (request_identity)." in prompt
-    assert "Family candidate preview: top=`open_redirect`, source=`catalog_resolution`, confidence=`high`, count=`1`." in prompt
-    assert "Stack candidate preview: working=`python/flask`, source=`profile_prior`, locked=`False`, count=`2`, top_confidence=`low`." in prompt
+    assert (
+        "Family candidate preview: top=`open_redirect`, source=`catalog_resolution`, confidence=`high`, "
+        "count=`3`, material_count=`1`."
+    ) in prompt
+    assert "Low-confidence/background family candidates were deprioritized: `2`." in prompt
+    assert "Negative markers (must stay absent on success): `Exploit FAILED`." in prompt
+    assert "Forbidden success markers: `false positive`." in prompt
+    assert "Negative control cases: `1`." in prompt
+    assert "Metamorphic oracle context: total=`1`, passed=`1`, rationale=`same-origin redirect stays non-exploit`." in prompt
+    assert "Negative family hypotheses: `xss`." in prompt
+    assert "Runtime stack remains repo-prior/defaulted and is not evidence-backed yet." in prompt
+    assert "Stack candidate preview: working=`python/flask`, source=`profile_prior`, locked=`False`, defaulted=`True`, count=`2`, top_confidence=`low`." in prompt
     assert "Stack candidates remain ambiguous; stay within bounded repo-supported stacks unless stronger evidence is present." in prompt
+    assert "Evidence graph preview: `5` node(s), `4` edge(s), source=`researcher_derived`." in prompt
+    assert "Planning primary focus: `stack_or_runtime_design`." in prompt
+    assert (
+        "Planning focus breakdown: `stack_or_runtime_design=[stack_defaulted, stack_ambiguous]`, "
+        "`evidence_authority=[family_candidate_evidence_missing]`."
+    ) in prompt
 
 
 def test_name_only_prompt_surfaces_runtime_graph_preview() -> None:

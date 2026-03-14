@@ -35,8 +35,8 @@
         "compatibility_lower_bound": 1
       }
     },
-    "generalization_class": "real_free_form_positive",
-    "counts_as_generalization": true
+    "generalization_class": "real_free_form_curated_lower_bound",
+    "counts_as_generalization": false
   },
   "evals": [
     {
@@ -67,8 +67,8 @@
         "status": "compatibility_lower_bound",
         "meets_intent": true
       },
-      "generalization_class": "real_free_form_positive",
-      "counts_as_generalization": true
+      "generalization_class": "real_free_form_curated_lower_bound",
+      "counts_as_generalization": false
     }
   ],
   "reviewer": {

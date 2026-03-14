@@ -237,6 +237,24 @@ def test_request_ir_marks_genericized_unknown_pattern_seed_for_synthetic_name() 
     assert request_ir["required_contract"]["require_remote_research"] is True
 
 
+def test_request_ir_surfaces_multiple_family_candidates_for_broad_free_form_phrase() -> None:
+    normalized = normalize_requirement(
+        {
+            "vuln_name": "Cross Site Injection",
+            "policy": {"name_only_mode": "dynamic"},
+        }
+    )
+
+    request_ir = normalized.requirement.get("request_ir") or {}
+    families = [str(item.get("family") or "").strip().lower() for item in request_ir.get("family_candidates") or []]
+
+    assert request_ir["resolved_vuln_id"] == "NAME-CROSS-SITE-INJECTION"
+    assert request_ir["resolution_state"] == "synthetic_name"
+    assert "xss" in families
+    assert "csrf" in families
+    assert len(families) >= 2
+
+
 def test_researcher_search_filters_are_normalized() -> None:
     requirement = _base_requirement("CWE-9999")
     requirement["researcher"] = {

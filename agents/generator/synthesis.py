@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import sys
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1208,6 +1209,26 @@ class SynthesisEngine:
                 family = str(entry.get("family") or "").strip().lower()
                 if family:
                     return family
+        unique_candidates: List[tuple[str, str, str]] = []
+        seen_families: set[str] = set()
+        for entry in family_candidates:
+            if not isinstance(entry, dict):
+                continue
+            family = str(entry.get("family") or "").strip().lower()
+            if not family or family in seen_families:
+                continue
+            seen_families.add(family)
+            unique_candidates.append(
+                (
+                    family,
+                    str(entry.get("confidence") or "").strip().lower(),
+                    str(entry.get("source") or "").strip().lower(),
+                )
+            )
+        if len(unique_candidates) == 1:
+            family, confidence, source = unique_candidates[0]
+            if confidence in {"medium", "high"} and source in {"catalog_resolution", "label_overlap", "request_resolution"}:
+                return family
         resolved_vuln_id = str(
             (request_ir or {}).get("resolved_vuln_id")
             or
@@ -1717,6 +1738,23 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = {
+            "success_text_markers": [success_signature],
+            "flag_token": flag_token,
+            "negative_text_markers": ["Unexpected redirect response"],
+            "negative_controls": [
+                {
+                    "name": "missing-next",
+                    "expect_success": False,
+                    "rationale": "missing next parameter should fail closed instead of producing exploit success",
+                }
+            ],
+            "metamorphic": {
+                "total": 1,
+                "passed": 1,
+                "rationale": "relative same-origin redirects should not be counted as open redirect exploit success",
+            },
+        }
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -1727,6 +1765,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -2312,7 +2351,8 @@ class SynthesisEngine:
                     "    conn.row_factory = sqlite3.Row",
                     "    rows = conn.execute(query).fetchall()",
                     "    conn.close()",
-                    "    return {'success': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': FLAG_TOKEN}",
+                    "    compromised = any(str(row['username']) == 'admin' for row in rows)",
+                    "    return {'success': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': FLAG_TOKEN if compromised else None}",
                     "",
                     "if __name__ == '__main__':",
                     "    import uvicorn",
@@ -2363,7 +2403,8 @@ class SynthesisEngine:
                     "    conn.row_factory = sqlite3.Row",
                     "    rows = conn.execute(query).fetchall()",
                     "    conn.close()",
-                    "    return jsonify({'success': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': FLAG_TOKEN})",
+                    "    compromised = any(str(row['username']) == 'admin' for row in rows)",
+                    "    return jsonify({'success': bool(rows), 'rows': [dict(row) for row in rows], 'query': query, 'flag': FLAG_TOKEN if compromised else None})",
                     "",
                     "if __name__ == '__main__':",
                     "    init_db()",
@@ -2894,18 +2935,29 @@ class SynthesisEngine:
         if self._fastapi_stack(stack):
             app_content = "\n".join(
                 [
-                    "from fastapi import FastAPI",
+                    "from fastapi import FastAPI, Request",
+                    "from fastapi.responses import JSONResponse",
                     "",
                     "app = FastAPI()",
                     f"FLAG_TOKEN = {effective_flag!r}",
+                    "SESSION_COOKIE = 'victim-session'",
                     "app.state.balance = 1000",
                     "",
                     "@app.get('/health')",
                     "def health():",
                     "    return {'status': 'ok'}",
                     "",
+                    "@app.get('/login')",
+                    "def login():",
+                    "    response = JSONResponse({'success': True, 'session': 'victim'})",
+                    "    response.set_cookie('session', SESSION_COOKIE)",
+                    "    return response",
+                    "",
                     "@app.post('/transfer')",
-                    "def transfer(amount: int = 100):",
+                    "def transfer(request: Request, amount: int = 100):",
+                    "    if request.cookies.get('session') != SESSION_COOKIE:",
+                    "        return JSONResponse({'success': False, 'error': 'auth required'}, status_code=403)",
+                    "    # Intentional CSRF flaw: cookie-authenticated state change with no CSRF token validation.",
                     "    app.state.balance -= amount",
                     "    return {'success': True, 'balance': app.state.balance, 'flag': FLAG_TOKEN}",
                     "",
@@ -2919,18 +2971,28 @@ class SynthesisEngine:
         else:
             app_content = "\n".join(
                 [
-                    "from flask import Flask, jsonify, request",
+                    "from flask import Flask, jsonify, make_response, request",
                     "",
                     "app = Flask(__name__)",
                     f"FLAG_TOKEN = {effective_flag!r}",
+                    "SESSION_COOKIE = 'victim-session'",
                     "BALANCE = {'value': 1000}",
                     "",
                     "@app.get('/health')",
                     "def health():",
                     "    return jsonify({'status': 'ok'})",
                     "",
+                    "@app.get('/login')",
+                    "def login():",
+                    "    response = make_response(jsonify({'success': True, 'session': 'victim'}))",
+                    "    response.set_cookie('session', SESSION_COOKIE)",
+                    "    return response",
+                    "",
                     "@app.post('/transfer')",
                     "def transfer():",
+                    "    if request.cookies.get('session') != SESSION_COOKIE:",
+                    "        return jsonify({'success': False, 'error': 'auth required'}), 403",
+                    "    # Intentional CSRF flaw: cookie-authenticated state change with no CSRF token validation.",
                     "    amount = int(request.args.get('amount', '100'))",
                     "    BALANCE['value'] -= amount",
                     "    return jsonify({'success': True, 'balance': BALANCE['value'], 'flag': FLAG_TOKEN})",
@@ -2944,9 +3006,10 @@ class SynthesisEngine:
         poc_content = "\n".join(
             [
                 "import argparse",
+                "import http.cookiejar",
                 "import json",
                 "from urllib.parse import quote",
-                "from urllib.request import Request, urlopen",
+                "from urllib.request import HTTPCookieProcessor, Request, build_opener",
                 "",
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
@@ -2956,9 +3019,14 @@ class SynthesisEngine:
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
                 "    args = parser.parse_args()",
+                "    jar = http.cookiejar.CookieJar()",
+                "    opener = build_opener(HTTPCookieProcessor(jar))",
+                "    login_request = Request(args.base_url.rstrip('/') + '/login', method='GET')",
+                "    with opener.open(login_request, timeout=5) as response:",
+                "        json.loads(response.read().decode('utf-8', errors='ignore'))",
                 "    url = args.base_url.rstrip('/') + '/transfer?amount=' + quote('100')",
                 "    request = Request(url, method='POST')",
-                "    with urlopen(request, timeout=5) as response:",
+                "    with opener.open(request, timeout=5) as response:",
                 "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
                 "    if payload.get('success') is True and str(payload.get('flag')) == FLAG_TOKEN:",
                 "        print(SUCCESS_SIGNATURE)",
@@ -3249,6 +3317,7 @@ class SynthesisEngine:
         app_content: str,
         poc_content: Optional[str],
         service_path: str = "app.py",
+        verification_spec: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         deps = [
             line.strip()
@@ -3315,7 +3384,7 @@ class SynthesisEngine:
         }
         if flag_token:
             poc_block["flag_token"] = flag_token
-        return {
+        manifest = {
             "intent": f"{vuln_id} fallback synthesis",
             "pattern_tags": self._fallback_pattern_tags(vuln_id),
             "files": files,
@@ -3332,6 +3401,9 @@ class SynthesisEngine:
                 "fallback_class": "family_aware",
             },
         }
+        if isinstance(verification_spec, dict) and verification_spec:
+            manifest["verification_spec"] = deepcopy(verification_spec)
+        return manifest
 
     def _fallback_manifest_sqli(
         self,

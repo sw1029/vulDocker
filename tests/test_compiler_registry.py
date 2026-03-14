@@ -156,6 +156,9 @@ def test_csrf_registry_manifest_records_scaffold_and_fragment_metadata() -> None
     assert metadata["fragment_id"] == "csrf_state_change_route"
     assert metadata["compose_mode"] == "registry"
     assert result.manifest["poc"]["flag_token"] == "FLAG-csrf-demo-token"
+    service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    assert "if 'user' not in session:" in service_main["content"]
+    assert "'flag': 'FLAG-csrf-demo-token' if compromised else None" in service_main["content"]
 
 
 def test_command_injection_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
@@ -223,6 +226,8 @@ def test_ldap_injection_registry_manifest_records_scaffold_and_fragment_metadata
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
     assert "ldap_filter = '(&(uid=' + user + ')(status=active))'" in service_main["content"]
     assert "search_directory(ldap_filter)" in service_main["content"]
+    assert "compromised = len(rows) >= 2" in service_main["content"]
+    assert "'flag': 'FLAG{LDAPI_OK}' if compromised else None" in service_main["content"]
     assert result.manifest["poc"]["flag_token"] == "FLAG{LDAPI_OK}"
 
 
@@ -245,6 +250,8 @@ def test_sqli_registry_manifest_records_scaffold_and_fragment_metadata() -> None
     assert metadata["compose_mode"] == "registry"
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
     assert "init_db()" in service_main["content"]
+    assert "compromised = any(str(row['username']) == 'admin' for row in rows)" in service_main["content"]
+    assert "'flag': 'FLAG-sqli-demo-token' if compromised else None" in service_main["content"]
     assert result.manifest["poc"]["flag_token"] == "FLAG-sqli-demo-token"
 
 
@@ -280,6 +287,8 @@ def test_mysql_sqli_registry_manifest_records_external_db_metadata() -> None:
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
     assert "mysql.connector.connect" in service_main["content"]
     assert "missing-db-host" in service_main["content"]
+    assert "compromised = any(str(row.get('username', '')) == 'admin' for row in rows if isinstance(row, dict))" in service_main["content"]
+    assert "'flag': 'FLAG-sqli-demo-token' if compromised else None" in service_main["content"]
     assert "Runtime assumptions: external service dependency with env contract" in readme["content"]
     assert "DB_HOST" in readme["content"]
 

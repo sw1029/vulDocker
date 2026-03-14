@@ -590,6 +590,45 @@ def test_dynamic_eval_semantic_guided_fallback_can_use_unambiguous_researcher_st
     assert manifest["metadata"]["materializer"] == "minimal_dynamic"
 
 
+def test_request_identity_guided_family_accepts_single_medium_family_candidate_for_synthetic_name(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-UNSAFE-REDIRECT")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "Unsafe Redirect",
+        "resolved_vuln_id": "NAME-UNSAFE-REDIRECT",
+        "name_driven": True,
+        "resolution_state": "synthetic_name",
+        "resolution_confidence": "low",
+        "family_candidates": [
+            {"family": "open_redirect", "confidence": "medium", "source": "label_overlap"}
+        ],
+    }
+
+    assert engine._request_identity_guided_family() == "open_redirect"
+
+
+def test_request_identity_guided_family_keeps_ambiguous_synthetic_name_unresolved(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CROSS-SITE-INJECTION")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "Cross Site Injection",
+        "resolved_vuln_id": "NAME-CROSS-SITE-INJECTION",
+        "name_driven": True,
+        "resolution_state": "synthetic_name",
+        "resolution_confidence": "low",
+        "family_candidates": [
+            {"family": "xss", "confidence": "low", "source": "label_overlap"},
+            {"family": "csrf", "confidence": "low", "source": "label_overlap"},
+        ],
+    }
+
+    assert engine._request_identity_guided_family() == ""
+
+
 def test_dynamic_eval_semantic_guided_fallback_ignores_ambiguous_researcher_stack_candidates(
     tmp_path: Path,
 ) -> None:
@@ -706,6 +745,35 @@ def test_dynamic_eval_semantic_guided_fallback_tolerates_minor_contradiction_wit
     assert manifest["metadata"]["fallback_class"] == "semantic_guided"
     assert manifest["metadata"]["semantic_guided_family"] == "open_redirect"
     assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+
+
+def test_dynamic_eval_semantic_guided_open_redirect_manifest_includes_verification_spec(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-OPEN-REDIRECT")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "open_redirect",
+            "top_confidence": "high",
+            "top_margin": 0.34,
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "next parameter"],
+            "sink": ["redirect(", "location header"],
+            "exploit_precondition": ["open redirect", "external redirect"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    verification_spec = manifest.get("verification_spec") or {}
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert verification_spec["negative_controls"][0]["name"] == "missing-next"
+    assert verification_spec["metamorphic"]["passed"] == 1
+    assert "open redirect exploit success" in verification_spec["metamorphic"]["rationale"]
 
 
 def test_dynamic_eval_semantic_guided_fallback_can_use_request_identity_when_research_is_degraded(
@@ -1036,6 +1104,7 @@ def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materiali
     poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
     assert "Asset-backed family-aware fallback template for SQLi." not in service_main["content"]
     assert "sqlite3.connect(DB_PATH)" in service_main["content"]
+    assert "FLAG_TOKEN if compromised else None" in service_main["content"]
     assert "admin' OR '1'='1" in poc_entry["content"]
     assert not any("semantic mismatch:" in item for item in errors)
     semantics = (report or {}).get("semantics") or {}
@@ -1115,7 +1184,10 @@ def test_dynamic_eval_semantic_guided_fallback_prefers_minimal_dynamic_materiali
     service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
     poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
     assert "Asset-backed family-aware fallback template for CSRF." not in service_main["content"]
+    assert "@app.get('/login')" in service_main["content"]
+    assert "request.cookies.get('session')" in service_main["content"]
     assert "@app.post('/transfer')" in service_main["content"]
+    assert "HTTPCookieProcessor" in poc_entry["content"]
     assert "method='POST'" in poc_entry["content"]
     assert not any("semantic mismatch:" in item for item in errors)
     semantics = (report or {}).get("semantics") or {}
@@ -1157,6 +1229,8 @@ def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_csrf_minimal_dyn
     requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
     assert manifest["metadata"]["materializer"] == "minimal_dynamic"
     assert "from fastapi import FastAPI" in service_main["content"]
+    assert "response.set_cookie('session', SESSION_COOKIE)" in service_main["content"]
+    assert "request.cookies.get('session')" in service_main["content"]
     assert "@app.post('/transfer')" in service_main["content"]
     assert "fastapi==" in requirements["content"].lower()
     assert "uvicorn==" in requirements["content"].lower()

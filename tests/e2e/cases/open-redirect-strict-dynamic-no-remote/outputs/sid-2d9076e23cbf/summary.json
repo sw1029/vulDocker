@@ -1,0 +1,1239 @@
+{
+  "sid": "sid-2d9076e23cbf",
+  "overall_pass": null,
+  "pipeline_result": "failure",
+  "promotion_eligible": false,
+  "promotion_reasons": [
+    "name-open-redirect: pipeline:run_missing",
+    "name-open-redirect: pipeline:verify_missing",
+    "name-open-redirect: pipeline:review_missing"
+  ],
+  "memory_promotion": {
+    "eligible": false,
+    "reasons": [
+      "base_promotion:ineligible",
+      "strict_open_world:strict_dynamic_capability_unavailable",
+      "artifact_quality:low",
+      "oracle_clarity:low",
+      "topology_clarity:missing"
+    ]
+  },
+  "memory_promotion_eligible": false,
+  "support_promotion": {
+    "eligible": false,
+    "reasons": [
+      "base_promotion:ineligible",
+      "strict_open_world:strict_dynamic_capability_unavailable",
+      "open_world:name_driven_capability_gate_failed",
+      "artifact_quality:low",
+      "oracle_clarity:low",
+      "topology_clarity:missing",
+      "stack_selection:defaulted",
+      "family_evidence:candidate_unbacked",
+      "name_only_outcome:fail_closed"
+    ]
+  },
+  "support_promotion_eligible": false,
+  "open_world_readiness_summary": {
+    "bundle_count": 1,
+    "ready_bundles": 0,
+    "not_ready_bundles": 1,
+    "all_ready": false,
+    "by_blocker": {
+      "base_promotion_ineligible": 1,
+      "strict_open_world_gate": 1,
+      "open_world_non_positive": 1,
+      "artifact_quality_below_high": 1,
+      "oracle_clarity_below_high": 1,
+      "topology_clarity_below_medium": 1,
+      "stack_defaulted": 1,
+      "family_candidate_evidence_missing": 1,
+      "name_only_intent_not_met": 1
+    }
+  },
+  "boundedness_summary": {
+    "catalog_entries": 12,
+    "catalog_families": 12,
+    "family_hint_families": 12,
+    "template_count": 3,
+    "scaffold_stack_pool": 2,
+    "compiler_strategy_count": 13,
+    "semantic_guided_family_builders": 12,
+    "executor_topology_classes": [
+      "single_service",
+      "service_plus_sidecar"
+    ],
+    "executor_multi_primary_supported": false,
+    "closed_vocabulary_family_discovery": true,
+    "stack_pool_bounded": true,
+    "compiler_registry_bounded": true,
+    "executor_topology_bounded": true
+  },
+  "open_world_readiness": {
+    "ready": false,
+    "blockers": [
+      "base_promotion_ineligible",
+      "strict_open_world_gate",
+      "open_world_non_positive",
+      "artifact_quality_below_high",
+      "oracle_clarity_below_high",
+      "topology_clarity_below_medium",
+      "stack_defaulted",
+      "family_candidate_evidence_missing",
+      "name_only_intent_not_met"
+    ],
+    "open_world_class": "name_driven_capability_gate_failed",
+    "strict_open_world_class": "strict_dynamic_capability_unavailable",
+    "name_only_decision": "fail_closed",
+    "stack_defaulted": true,
+    "family_evidence_backed": false
+  },
+  "open_world_ready": false,
+  "generation_summary": {
+    "bundle_count": 1,
+    "by_origin": {
+      "capability_gate_rejected": 1
+    },
+    "by_dynamicness_verdict": {
+      "pre-generation fail-closed": 1
+    },
+    "by_compose_mode": {},
+    "by_stack_scaffold_id": {},
+    "llm_stub_bundles": 0,
+    "llm_fixture_bundles": 0,
+    "fallback_bundles": 0,
+    "family_override_bundles": 0,
+    "template_origin_bundles": 0,
+    "template_assisted_bundles": 0,
+    "registry_compose_bundles": 0,
+    "scaffolded_bundles": 0,
+    "dynamic_eval_attempted_bundles": 1,
+    "dynamic_eval_recovered_bundles": 0
+  },
+  "compiler_contract_summary": {
+    "bundle_count": 1,
+    "supported_bundles": 1,
+    "unsupported_bundles": 0,
+    "by_strategy": {
+      "open_redirect_reflect": 1
+    },
+    "by_support_level": {
+      "compiler_supported": 1
+    }
+  },
+  "verification_summary": {
+    "bundle_count": 1,
+    "by_rule_source": {},
+    "by_trust": {},
+    "by_independence": {},
+    "low_trust_bundles": 0
+  },
+  "researcher_summary": {
+    "bundle_count": 1,
+    "shadow_mode_bundles": 0,
+    "report_present_bundles": 0,
+    "ran_bundles": 0,
+    "skipped_bundles": 0,
+    "degraded_bundles": 0,
+    "query_plan_bundles": 0,
+    "contradiction_bundles": 0,
+    "ambiguous_family_hypothesis_bundles": 0,
+    "by_quality": {},
+    "by_top_family_hypothesis": {},
+    "by_top_family_confidence": {},
+    "avg_query_target_match_rate": 0.0
+  },
+  "request_identity_summary": {
+    "bundle_count": 1,
+    "name_driven_bundles": 1,
+    "synthetic_resolution_bundles": 0,
+    "by_input_mode": {
+      "free_form_name": 1
+    },
+    "by_match_class": {
+      "catalog_alias": 1
+    },
+    "by_confidence": {
+      "high": 1
+    }
+  },
+  "request_ir_summary": {
+    "bundle_count": 1,
+    "name_driven_bundles": 1,
+    "evidence_backed_bundles": 0,
+    "abstain_signaled_bundles": 0,
+    "multi_identifier_candidate_bundles": 0,
+    "ambiguous_family_candidate_bundles": 0,
+    "ambiguous_stack_candidate_bundles": 1,
+    "negative_hypothesis_bundles": 0,
+    "avg_identifier_candidate_count": 1.0,
+    "avg_family_candidate_count": 1.0,
+    "avg_stack_candidate_count": 2.0,
+    "avg_negative_hypothesis_count": 0.0,
+    "by_resolution_state": {
+      "catalog_alias": 1
+    },
+    "by_resolution_match_class": {
+      "catalog_alias": 1
+    },
+    "by_resolution_confidence": {
+      "high": 1
+    }
+  },
+  "name_resolution_summary": {
+    "bundle_count": 1,
+    "resolved_bundles": 1,
+    "by_source": {
+      "alias": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_match_class": {
+      "catalog_alias": 1
+    }
+  },
+  "generalization_summary": {
+    "bundle_count": 1,
+    "positive_generalization_bundles": 0,
+    "realized_bundles": 0,
+    "hypothetical_bundles": 1,
+    "fully_validated_bundles": 0,
+    "realized_positive_generalization_bundles": 0,
+    "fully_validated_positive_generalization_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "by_class": {
+      "real_free_form_precondition_failed": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_basis": {
+      "catalog_alias": 1
+    }
+  },
+  "open_world_summary": {
+    "bundle_count": 1,
+    "positive_open_world_bundles": 0,
+    "realized_bundles": 0,
+    "hypothetical_bundles": 1,
+    "fully_validated_bundles": 0,
+    "realized_positive_open_world_bundles": 0,
+    "fully_validated_positive_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "template_dependent_bundles": 0,
+    "by_class": {
+      "name_driven_capability_gate_failed": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_basis": {
+      "catalog_alias": 1
+    }
+  },
+  "strict_open_world_summary": {
+    "bundle_count": 1,
+    "positive_strict_open_world_bundles": 0,
+    "realized_bundles": 0,
+    "hypothetical_bundles": 1,
+    "fully_validated_bundles": 0,
+    "realized_positive_strict_open_world_bundles": 0,
+    "fully_validated_positive_strict_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "template_dependent_bundles": 0,
+    "fixture_backed_bundles": 0,
+    "stub_backed_bundles": 0,
+    "research_degraded_bundles": 0,
+    "verifier_coupled_bundles": 0,
+    "by_class": {
+      "strict_dynamic_capability_unavailable": 1
+    }
+  },
+  "dynamic_eval_summary": {
+    "bundle_count": 1,
+    "enabled_bundles": 1,
+    "attempted_bundles": 1,
+    "lower_bound_recovered_bundles": 0,
+    "by_status": {},
+    "by_fallback_path": {}
+  },
+  "artifact_quality_summary": {
+    "bundle_count": 1,
+    "average_score": 1.0,
+    "by_band": {
+      "low": 1
+    },
+    "readme_present_bundles": 0,
+    "runtime_recipe_bundles": 0,
+    "stack_defaulted_bundles": 1
+  },
+  "evidence_graph_summary": {
+    "bundle_count": 1,
+    "graph_present_bundles": 0,
+    "average_node_count": 0.0,
+    "average_edge_count": 0.0,
+    "by_node_kind": {},
+    "by_edge_kind": {}
+  },
+  "template_dependence_summary": {
+    "bundle_count": 1,
+    "template_assisted_bundles": 0,
+    "template_dependent_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "name_only_lower_bound_bundles": 0,
+    "open_world_positive_bundles": 0,
+    "minimal_dynamic_bundles": 0,
+    "realized_minimal_dynamic_bundles": 0,
+    "fully_validated_minimal_dynamic_bundles": 0,
+    "hypothetical_lower_bound_bundles": 0,
+    "by_open_world_class": {
+      "name_driven_capability_gate_failed": 1
+    }
+  },
+  "runtime_surface_summary": {
+    "bundle_count": 1,
+    "realized_bundles": 0,
+    "hypothetical_bundles": 1,
+    "network_enabled_bundles": 0,
+    "sidecar_bundles": 0,
+    "by_topology": {
+      "single_service": 1
+    }
+  },
+  "stack_dependence_summary": {
+    "bundle_count": 1,
+    "repo_prior_bounded_bundles": 1,
+    "stack_defaulted_bundles": 1,
+    "researcher_inferred_bundles": 0,
+    "ambiguous_bundles": 1,
+    "locked_bundles": 0,
+    "evidence_backed_bundles": 0,
+    "by_class": {
+      "repo_prior_bounded": 1
+    },
+    "by_stack_source": {
+      "profile_prior": 1
+    }
+  },
+  "family_dependence_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "family_bounded_bundles": 0,
+    "ambiguous_bundles": 0,
+    "evidence_backed_bundles": 0,
+    "candidate_evidence_backed_bundles": 0,
+    "negative_hypothesis_bundles": 0,
+    "by_class": {
+      "precondition_failed": 1
+    },
+    "by_selection_source": {
+      "catalog_resolution": 1
+    },
+    "by_abstain_reason": {},
+    "by_resolution_confidence": {
+      "high": 1
+    },
+    "by_resolution_basis": {
+      "catalog_alias": 1
+    }
+  },
+  "intent_satisfaction_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "meets_intent_bundles": 0,
+    "partial_bundles": 0,
+    "all_name_only_meet_intent": false,
+    "by_status": {
+      "strict_dynamic_failed": 1
+    },
+    "by_closure_source": {
+      "failed": 1
+    },
+    "by_llm_path": {
+      "not_used": 1
+    },
+    "by_research_quality": {
+      "unknown": 1
+    }
+  },
+  "name_only_outcome_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "intent_met_bundles": 0,
+    "partial_bundles": 0,
+    "abstained_bundles": 0,
+    "fail_closed_bundles": 1,
+    "failed_bundles": 0,
+    "by_decision": {
+      "fail_closed": 1
+    },
+    "by_next_required_step": {
+      "capability_or_research": 1
+    },
+    "by_abstain_reason": {},
+    "by_terminal_failure_class": {
+      "strict_dynamic_remote_research_unavailable": 1
+    },
+    "by_stage_ceiling": {
+      "pre_generation": 1
+    }
+  },
+  "partial_progress_summary": {
+    "bundle_count": 1,
+    "successful_bundles": 0,
+    "failed_bundles": 1,
+    "executed_bundles": 0,
+    "verified_bundles": 0,
+    "research_blocked_bundles": 0,
+    "partial_success": false
+  },
+  "completion_summary": {
+    "bundle_count": 1,
+    "generated_bundles": 0,
+    "executed_bundles": 0,
+    "verified_bundles": 0,
+    "reviewed_bundles": 0,
+    "fully_validated_bundles": 0,
+    "by_stage_ceiling": {
+      "pre_generation": 1
+    }
+  },
+  "compiler_supported": true,
+  "compiler_strategy": "open_redirect_reflect",
+  "compiler_reason": "compiler strategy and scaffold are available",
+  "compiler_family": null,
+  "stack_scaffold_id": null,
+  "stack_scaffold_version": null,
+  "fragment_id": null,
+  "compose_mode": null,
+  "service_env": null,
+  "request_identity": {
+    "request_label": "Open Redirect",
+    "normalized_request_label": "open redirect",
+    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+    "input_mode": "free_form_name",
+    "source": "alias",
+    "match_class": "catalog_alias",
+    "confidence": "high",
+    "field": "vuln_name",
+    "synthetic_resolution": false,
+    "catalog_backed_resolution": true,
+    "token_match_resolution": false,
+    "exact_identifier_resolution": false,
+    "name_driven": true
+  },
+  "request_ir": {
+    "raw_label": "Open Redirect",
+    "request_label": "Open Redirect",
+    "normalized_request_label": "open redirect",
+    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+    "resolved_vuln_id_candidate": "NAME-OPEN-REDIRECT",
+    "input_mode": "free_form_name",
+    "name_driven": true,
+    "resolution_state": "catalog_alias",
+    "resolution_source": "alias",
+    "resolution_match_class": "catalog_alias",
+    "resolution_confidence": "high",
+    "identifier_candidates": [
+      {
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "source": "alias",
+        "confidence": "high"
+      }
+    ],
+    "catalog_backed": true,
+    "token_match_backed": false,
+    "synthetic_resolution": false,
+    "exact_identifier_resolution": false,
+    "pattern_id": "open-redirect",
+    "pattern_seed_state": "preserved",
+    "stack_candidates": [
+      {
+        "stack_id": "python/flask",
+        "source": "profile_prior",
+        "language": "python",
+        "framework": "flask",
+        "confidence": "low"
+      },
+      {
+        "stack_id": "python/fastapi",
+        "source": "available_skeleton",
+        "language": "python",
+        "framework": "fastapi",
+        "confidence": "low"
+      }
+    ],
+    "family_candidates": [
+      {
+        "family": "open_redirect",
+        "source": "catalog_resolution",
+        "confidence": "high",
+        "matched_vuln_id": "NAME-OPEN-REDIRECT"
+      }
+    ],
+    "abstain_reason": null,
+    "evidence_ids": [],
+    "name_only_mode": "strict_dynamic",
+    "required_contract": {
+      "effective_mode": "strict_dynamic",
+      "require_research": true,
+      "require_remote_research": true,
+      "allow_degraded_fallback": false,
+      "allow_lower_bound_recovery": false,
+      "allow_curated_lower_bound_closure": false,
+      "allow_template_closure": false,
+      "require_strict_open_world": true,
+      "require_independent_verifier": true,
+      "require_live_llm": true,
+      "allow_stub_llm": false,
+      "allow_fixture_llm": false,
+      "allowed_closure_sources": [
+        "strict_open_world_positive"
+      ],
+      "allowed_execution_paths": [
+        "strict_open_world_positive"
+      ],
+      "intent_satisfying_paths": [
+        "strict_open_world_positive"
+      ],
+      "allowed_llm_paths": [
+        "live"
+      ],
+      "intent_success_rule": "strict_open_world_positive_only"
+    }
+  },
+  "name_resolution": {
+    "field": "vuln_name",
+    "input": "Open Redirect",
+    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+    "source": "alias",
+    "match_class": "catalog_alias",
+    "confidence": "high"
+  },
+  "generation_origin": "capability_gate_rejected",
+  "semantic_guided_selection_source": null,
+  "semantic_guided_abstain_reason": null,
+  "semantic_guided_ambiguous": null,
+  "verification_rule_source": null,
+  "verification_trust": null,
+  "verification_independence": null,
+  "semantic_supported": true,
+  "semantic_status": "aligned",
+  "semantic_source": "resolved_contract.semantic_contract",
+  "llm_fixture_used": false,
+  "provider_health_state": "strict_dynamic_remote_research_unavailable",
+  "total_duration_s": 0.101,
+  "performance_retry_count": 0,
+  "performance_by_stage": {
+    "CAPABILITY_CHECK": {
+      "count": 1,
+      "duration_s": 0.0,
+      "skipped": 0
+    },
+    "PACK": {
+      "count": 1,
+      "duration_s": 0.101,
+      "skipped": 0
+    }
+  },
+  "dynamicness_verdict": "pre-generation fail-closed",
+  "dynamicness_reason": "generation was skipped after strict remote-research capability precheck",
+  "family_non_remote_available": true,
+  "effective_non_remote_available": true,
+  "compiler_path_enabled": true,
+  "executor_feasibility_status": "not_required",
+  "generalization_class": "real_free_form_precondition_failed",
+  "counts_as_generalization": false,
+  "generalization_reason": "name-only lane failed before generation because strict open-world preconditions were unavailable",
+  "generalization_confidence": "high",
+  "generalization_basis": "catalog_alias",
+  "open_world_class": "name_driven_capability_gate_failed",
+  "counts_as_open_world_generalization": false,
+  "open_world_reason": "strict_dynamic rejected the name-only lane before RESEARCH because required live-LLM or remote-research capability was unavailable",
+  "open_world_confidence": "high",
+  "open_world_basis": "catalog_alias",
+  "strict_open_world_class": "strict_dynamic_capability_unavailable",
+  "counts_as_strict_open_world_generalization": false,
+  "strict_open_world_reason": "strict_dynamic requires live LLM and remote-research preconditions, but capability precheck failed before RESEARCH",
+  "runtime_recipe": {
+    "language": "python",
+    "framework": "flask",
+    "stack_source": "profile_prior",
+    "stack_locked": false,
+    "stack_defaulted": true,
+    "transport": "http",
+    "service_entry": "app.py",
+    "poc_entry": "poc.py",
+    "service_port": 5000,
+    "db": null,
+    "allow_external_db": false,
+    "requires_external_db": false,
+    "network_mode": "none",
+    "network_enabled": false,
+    "sidecars": [],
+    "service_env": {},
+    "seed_files": [],
+    "topology": "single_service",
+    "output_mode": "auto",
+    "stack_hypotheses": [
+      {
+        "language": "python",
+        "framework": "flask",
+        "stack_id": "python/flask",
+        "source": "profile_prior",
+        "confidence": "low"
+      },
+      {
+        "language": "python",
+        "framework": "fastapi",
+        "stack_id": "python/fastapi",
+        "source": "available_skeleton",
+        "confidence": "low"
+      }
+    ],
+    "source": "resolved_contract",
+    "hypothetical": true,
+    "realized": false
+  },
+  "runtime_recipe_hypothetical": true,
+  "runtime_graph": {
+    "schema_version": "runtime_graph@0.1",
+    "source": "derived_from_runtime_recipe",
+    "topology": "single_service",
+    "network": {
+      "mode": "none",
+      "enabled": false
+    },
+    "nodes": [
+      {
+        "id": "service",
+        "kind": "service",
+        "role": "primary",
+        "language": "python",
+        "framework": "flask",
+        "entry": "app.py",
+        "transport": "http",
+        "port": 5000
+      }
+    ],
+    "edges": [
+      {
+        "from": "poc",
+        "to": "service",
+        "kind": "exploit_http",
+        "transport": "http",
+        "target_port": 5000
+      }
+    ],
+    "healthchecks": [],
+    "env_contract": [],
+    "exploit_path": {
+      "entrypoint": "poc.py",
+      "target_node": "service",
+      "service_entry": "app.py",
+      "transport": "http",
+      "port": 5000,
+      "base_url": "http://127.0.0.1:5000",
+      "success_signal": "Exploit SUCCESS",
+      "flag_token": "FLAG{OPEN_REDIRECT_OK}"
+    },
+    "hypothetical": true,
+    "realized": false
+  },
+  "runtime_graph_hypothetical": true,
+  "evidence_graph": {},
+  "dynamic_eval": {
+    "enabled": true,
+    "attempted": true
+  },
+  "artifact_quality": {
+    "band": "low",
+    "score": 1,
+    "generation_authenticity": "native",
+    "readme_present": false,
+    "readme_substantive": false,
+    "readme_quickstart": false,
+    "readme_verification": false,
+    "readme_runtime": false,
+    "runtime_recipe_present": false,
+    "topology_clarity": "missing",
+    "oracle_clarity": "low",
+    "oracle_rigor": "medium",
+    "negative_control_present": false,
+    "metamorphic_present": false,
+    "verification_independence": "missing",
+    "verification_trust": "missing",
+    "notes": [
+      "README missing",
+      "runtime topology clarity is incomplete",
+      "exploit oracle clarity is limited",
+      "bundle stopped before code generation; runtime recipe remains planning-only",
+      "oracle contract lacks explicit negative-control or forbidden-success markers",
+      "oracle contract lacks metamorphic checks",
+      "stack selection remained repo-prior/defaulted rather than evidence-led"
+    ]
+  },
+  "stack_dependence": {
+    "class": "repo_prior_bounded",
+    "working_stack_id": "python/flask",
+    "stack_source": "profile_prior",
+    "stack_locked": false,
+    "stack_defaulted": true,
+    "candidate_count": 2,
+    "ambiguous": true,
+    "repo_prior_bounded": true,
+    "researcher_inferred": false,
+    "top_confidence": "low",
+    "working_stack_evidence_ids": [],
+    "working_stack_evidence_count": 0,
+    "working_stack_evidence_backed": false
+  },
+  "family_dependence": {
+    "class": "precondition_failed",
+    "name_only": true,
+    "family_bounded": false,
+    "ambiguous": false,
+    "candidate_count": 1,
+    "selection_source": "catalog_resolution",
+    "abstain_reason": null,
+    "working_family": "open_redirect",
+    "working_family_evidence_ids": [],
+    "working_family_evidence_count": 0,
+    "working_family_evidence_backed": false,
+    "candidate_evidence_ids": [],
+    "candidate_evidence_count": 0,
+    "candidate_evidence_backed": false,
+    "resolution_confidence": "high",
+    "resolution_basis": "catalog_alias",
+    "negative_hypothesis_count": 0
+  },
+  "intent_satisfaction": {
+    "request_kind": "name_only",
+    "mode": "strict_dynamic",
+    "status": "strict_dynamic_failed",
+    "meets_intent": false,
+    "partial": false,
+    "reason": "strict dynamic lane failed before acceptable materialization",
+    "closure_source": "failed",
+    "generation_origin": "capability_gate_rejected",
+    "fallback_class": null,
+    "llm_path": "not_used",
+    "research_quality": "unknown",
+    "verification_independence": "unknown",
+    "verification_trust": "unknown",
+    "required_contract": {
+      "require_research": true,
+      "require_remote_research": true,
+      "allow_degraded_fallback": false,
+      "allow_lower_bound_recovery": false,
+      "require_strict_open_world": true,
+      "require_independent_verifier": true,
+      "require_live_llm": true,
+      "allowed_closure_sources": [
+        "strict_open_world_positive"
+      ],
+      "allowed_execution_paths": [
+        "strict_open_world_positive"
+      ],
+      "intent_satisfying_paths": [
+        "strict_open_world_positive"
+      ],
+      "allowed_llm_paths": [
+        "live"
+      ],
+      "intent_success_rule": "strict_open_world_positive_only"
+    }
+  },
+  "name_only_outcome": {
+    "request_kind": "name_only",
+    "mode": "strict_dynamic",
+    "decision": "fail_closed",
+    "decision_reason": "strict_dynamic_remote_research_unavailable",
+    "abstain_reason": null,
+    "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+    "closure_source": "failed",
+    "allowed_by_execution_contract": false,
+    "satisfies_intent_contract": false,
+    "stage_ceiling": "pre_generation",
+    "fully_validated": false,
+    "next_required_step": "capability_or_research",
+    "open_world_class": "name_driven_capability_gate_failed",
+    "strict_open_world_class": "strict_dynamic_capability_unavailable",
+    "stack_dependence_class": "repo_prior_bounded",
+    "family_dependence_class": "precondition_failed"
+  },
+  "name_only_decision": "fail_closed",
+  "name_only_next_required_step": "capability_or_research",
+  "completion_state": {
+    "generated": false,
+    "executed": false,
+    "run_passed": false,
+    "verified": false,
+    "verify_pass": null,
+    "reviewed": false,
+    "review_ready": false,
+    "fully_validated": false,
+    "stage_ceiling": "pre_generation",
+    "generation_origin": "capability_gate_rejected"
+  },
+  "stage_ceiling": "pre_generation",
+  "fully_validated": false,
+  "researcher": {
+    "shadow_mode_enabled": false,
+    "force_run": false,
+    "dynamic_eval_enabled": true,
+    "search_policy": "remote_required",
+    "report_present": false,
+    "ran": false
+  },
+  "pipeline_returncode": 1,
+  "failure": {
+    "stage": "CAPABILITY_CHECK",
+    "reason": "strict_dynamic requires remote researcher evidence, but capability precheck failed before RESEARCH: provider=none; search_policy requires remote search, but no remote provider is configured",
+    "fix_hint": "Configure a remote search provider (for example Tavily via VUL_WEB_SEARCH_PROVIDER/VUL_WEB_SEARCH_API_KEY or a custom endpoint via VUL_WEB_SEARCH_ENDPOINT) or relax policy.name_only_mode / researcher.search_policy.",
+    "timestamp": "2026-03-13T14:32:43.030857+00:00",
+    "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+    "retry_recommended": false,
+    "metadata": {
+      "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+      "retry_recommended": false,
+      "required_gate": "strict_dynamic",
+      "search_provider": "none",
+      "search_configured": false,
+      "search_error": "search_policy requires remote search, but no remote provider is configured",
+      "search_endpoint_or_base_url": null,
+      "search_auth_present": null,
+      "require_remote_research": true
+    }
+  },
+  "bundles": [
+    {
+      "slug": "name-open-redirect",
+      "vuln_id": "NAME-OPEN-REDIRECT",
+      "verify_pass": null,
+      "evidence": "",
+      "run_passed": null,
+      "exit_code": null,
+      "run_log": null,
+      "rule": null,
+      "promotion_eligible": false,
+      "promotion_reasons": [
+        "pipeline:run_missing",
+        "pipeline:verify_missing",
+        "pipeline:review_missing"
+      ],
+      "memory_promotion_eligible": false,
+      "memory_promotion_reasons": [
+        "base_promotion:ineligible",
+        "strict_open_world:strict_dynamic_capability_unavailable",
+        "artifact_quality:low",
+        "oracle_clarity:low",
+        "topology_clarity:missing"
+      ],
+      "support_promotion_eligible": false,
+      "support_promotion_reasons": [
+        "base_promotion:ineligible",
+        "strict_open_world:strict_dynamic_capability_unavailable",
+        "open_world:name_driven_capability_gate_failed",
+        "artifact_quality:low",
+        "oracle_clarity:low",
+        "topology_clarity:missing",
+        "stack_selection:defaulted",
+        "family_evidence:candidate_unbacked",
+        "name_only_outcome:fail_closed"
+      ],
+      "open_world_readiness": {
+        "ready": false,
+        "blockers": [
+          "base_promotion_ineligible",
+          "strict_open_world_gate",
+          "open_world_non_positive",
+          "artifact_quality_below_high",
+          "oracle_clarity_below_high",
+          "topology_clarity_below_medium",
+          "stack_defaulted",
+          "family_candidate_evidence_missing",
+          "name_only_intent_not_met"
+        ],
+        "open_world_class": "name_driven_capability_gate_failed",
+        "strict_open_world_class": "strict_dynamic_capability_unavailable",
+        "name_only_decision": "fail_closed",
+        "stack_defaulted": true,
+        "family_evidence_backed": false
+      },
+      "open_world_ready": false,
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "semantic_source": "resolved_contract.semantic_contract",
+      "verification_rule_source": null,
+      "verification_trust": null,
+      "verification_independence": null,
+      "verification_trust_reason": null,
+      "compiler_supported": true,
+      "compiler_strategy": "open_redirect_reflect",
+      "compiler_reason": "compiler strategy and scaffold are available",
+      "compiler_family": null,
+      "stack_scaffold_id": null,
+      "stack_scaffold_version": null,
+      "fragment_id": null,
+      "compose_mode": null,
+      "service_env": null,
+      "request_identity": {
+        "request_label": "Open Redirect",
+        "normalized_request_label": "open redirect",
+        "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+        "input_mode": "free_form_name",
+        "source": "alias",
+        "match_class": "catalog_alias",
+        "confidence": "high",
+        "field": "vuln_name",
+        "synthetic_resolution": false,
+        "catalog_backed_resolution": true,
+        "token_match_resolution": false,
+        "exact_identifier_resolution": false,
+        "name_driven": true
+      },
+      "request_ir": {
+        "raw_label": "Open Redirect",
+        "request_label": "Open Redirect",
+        "normalized_request_label": "open redirect",
+        "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+        "resolved_vuln_id_candidate": "NAME-OPEN-REDIRECT",
+        "input_mode": "free_form_name",
+        "name_driven": true,
+        "resolution_state": "catalog_alias",
+        "resolution_source": "alias",
+        "resolution_match_class": "catalog_alias",
+        "resolution_confidence": "high",
+        "identifier_candidates": [
+          {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "source": "alias",
+            "confidence": "high"
+          }
+        ],
+        "catalog_backed": true,
+        "token_match_backed": false,
+        "synthetic_resolution": false,
+        "exact_identifier_resolution": false,
+        "pattern_id": "open-redirect",
+        "pattern_seed_state": "preserved",
+        "stack_candidates": [
+          {
+            "stack_id": "python/flask",
+            "source": "profile_prior",
+            "language": "python",
+            "framework": "flask",
+            "confidence": "low"
+          },
+          {
+            "stack_id": "python/fastapi",
+            "source": "available_skeleton",
+            "language": "python",
+            "framework": "fastapi",
+            "confidence": "low"
+          }
+        ],
+        "family_candidates": [
+          {
+            "family": "open_redirect",
+            "source": "catalog_resolution",
+            "confidence": "high",
+            "matched_vuln_id": "NAME-OPEN-REDIRECT"
+          }
+        ],
+        "abstain_reason": null,
+        "evidence_ids": [],
+        "name_only_mode": "strict_dynamic",
+        "required_contract": {
+          "effective_mode": "strict_dynamic",
+          "require_research": true,
+          "require_remote_research": true,
+          "allow_degraded_fallback": false,
+          "allow_lower_bound_recovery": false,
+          "allow_curated_lower_bound_closure": false,
+          "allow_template_closure": false,
+          "require_strict_open_world": true,
+          "require_independent_verifier": true,
+          "require_live_llm": true,
+          "allow_stub_llm": false,
+          "allow_fixture_llm": false,
+          "allowed_closure_sources": [
+            "strict_open_world_positive"
+          ],
+          "allowed_execution_paths": [
+            "strict_open_world_positive"
+          ],
+          "intent_satisfying_paths": [
+            "strict_open_world_positive"
+          ],
+          "allowed_llm_paths": [
+            "live"
+          ],
+          "intent_success_rule": "strict_open_world_positive_only"
+        }
+      },
+      "name_resolution": {
+        "input": "Open Redirect",
+        "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+        "source": "alias",
+        "match_class": "catalog_alias",
+        "confidence": "high"
+      },
+      "generation_origin": "capability_gate_rejected",
+      "semantic_guided_selection_source": null,
+      "semantic_guided_abstain_reason": null,
+      "semantic_guided_ambiguous": null,
+      "llm_fixture_used": false,
+      "dynamicness_verdict": "pre-generation fail-closed",
+      "dynamicness_reason": "generation was skipped after strict remote-research capability precheck",
+      "family_non_remote_available": true,
+      "effective_non_remote_available": true,
+      "compiler_path_enabled": true,
+      "executor_feasibility_status": "not_required",
+      "generalization_class": "real_free_form_precondition_failed",
+      "counts_as_generalization": false,
+      "generalization_reason": "name-only lane failed before generation because strict open-world preconditions were unavailable",
+      "generalization_confidence": "high",
+      "generalization_basis": "catalog_alias",
+      "open_world_class": "name_driven_capability_gate_failed",
+      "counts_as_open_world_generalization": false,
+      "open_world_reason": "strict_dynamic rejected the name-only lane before RESEARCH because required live-LLM or remote-research capability was unavailable",
+      "open_world_confidence": "high",
+      "open_world_basis": "catalog_alias",
+      "strict_open_world_class": "strict_dynamic_capability_unavailable",
+      "counts_as_strict_open_world_generalization": false,
+      "strict_open_world_reason": "strict_dynamic requires live LLM and remote-research preconditions, but capability precheck failed before RESEARCH",
+      "researcher_quality": null,
+      "researcher_shadow_mode": false,
+      "researcher_report_present": false,
+      "runtime_recipe": {
+        "language": "python",
+        "framework": "flask",
+        "stack_source": "profile_prior",
+        "stack_locked": false,
+        "stack_defaulted": true,
+        "transport": "http",
+        "service_entry": "app.py",
+        "poc_entry": "poc.py",
+        "service_port": 5000,
+        "db": null,
+        "allow_external_db": false,
+        "requires_external_db": false,
+        "network_mode": "none",
+        "network_enabled": false,
+        "sidecars": [],
+        "service_env": {},
+        "seed_files": [],
+        "topology": "single_service",
+        "output_mode": "auto",
+        "stack_hypotheses": [
+          {
+            "language": "python",
+            "framework": "flask",
+            "stack_id": "python/flask",
+            "source": "profile_prior",
+            "confidence": "low"
+          },
+          {
+            "language": "python",
+            "framework": "fastapi",
+            "stack_id": "python/fastapi",
+            "source": "available_skeleton",
+            "confidence": "low"
+          }
+        ],
+        "source": "resolved_contract",
+        "hypothetical": true,
+        "realized": false
+      },
+      "runtime_graph": {
+        "schema_version": "runtime_graph@0.1",
+        "source": "derived_from_runtime_recipe",
+        "topology": "single_service",
+        "network": {
+          "mode": "none",
+          "enabled": false
+        },
+        "nodes": [
+          {
+            "id": "service",
+            "kind": "service",
+            "role": "primary",
+            "language": "python",
+            "framework": "flask",
+            "entry": "app.py",
+            "transport": "http",
+            "port": 5000
+          }
+        ],
+        "edges": [
+          {
+            "from": "poc",
+            "to": "service",
+            "kind": "exploit_http",
+            "transport": "http",
+            "target_port": 5000
+          }
+        ],
+        "healthchecks": [],
+        "env_contract": [],
+        "exploit_path": {
+          "entrypoint": "poc.py",
+          "target_node": "service",
+          "service_entry": "app.py",
+          "transport": "http",
+          "port": 5000,
+          "base_url": "http://127.0.0.1:5000",
+          "success_signal": "Exploit SUCCESS",
+          "flag_token": "FLAG{OPEN_REDIRECT_OK}"
+        },
+        "hypothetical": true,
+        "realized": false
+      },
+      "evidence_graph": {},
+      "dynamic_eval": {
+        "enabled": true,
+        "attempted": true
+      },
+      "artifact_quality": {
+        "band": "low",
+        "score": 1,
+        "generation_authenticity": "native",
+        "readme_present": false,
+        "readme_substantive": false,
+        "readme_quickstart": false,
+        "readme_verification": false,
+        "readme_runtime": false,
+        "runtime_recipe_present": false,
+        "topology_clarity": "missing",
+        "oracle_clarity": "low",
+        "oracle_rigor": "medium",
+        "negative_control_present": false,
+        "metamorphic_present": false,
+        "verification_independence": "missing",
+        "verification_trust": "missing",
+        "notes": [
+          "README missing",
+          "runtime topology clarity is incomplete",
+          "exploit oracle clarity is limited",
+          "bundle stopped before code generation; runtime recipe remains planning-only",
+          "oracle contract lacks explicit negative-control or forbidden-success markers",
+          "oracle contract lacks metamorphic checks",
+          "stack selection remained repo-prior/defaulted rather than evidence-led"
+        ]
+      },
+      "stack_dependence": {
+        "class": "repo_prior_bounded",
+        "working_stack_id": "python/flask",
+        "stack_source": "profile_prior",
+        "stack_locked": false,
+        "stack_defaulted": true,
+        "candidate_count": 2,
+        "ambiguous": true,
+        "repo_prior_bounded": true,
+        "researcher_inferred": false,
+        "top_confidence": "low",
+        "working_stack_evidence_ids": [],
+        "working_stack_evidence_count": 0,
+        "working_stack_evidence_backed": false
+      },
+      "family_dependence": {
+        "class": "precondition_failed",
+        "name_only": true,
+        "family_bounded": false,
+        "ambiguous": false,
+        "candidate_count": 1,
+        "selection_source": "catalog_resolution",
+        "abstain_reason": null,
+        "working_family": "open_redirect",
+        "working_family_evidence_ids": [],
+        "working_family_evidence_count": 0,
+        "working_family_evidence_backed": false,
+        "candidate_evidence_ids": [],
+        "candidate_evidence_count": 0,
+        "candidate_evidence_backed": false,
+        "resolution_confidence": "high",
+        "resolution_basis": "catalog_alias",
+        "negative_hypothesis_count": 0
+      },
+      "intent_satisfaction": {
+        "request_kind": "name_only",
+        "mode": "strict_dynamic",
+        "status": "strict_dynamic_failed",
+        "meets_intent": false,
+        "partial": false,
+        "reason": "strict dynamic lane failed before acceptable materialization",
+        "closure_source": "failed",
+        "generation_origin": "capability_gate_rejected",
+        "fallback_class": null,
+        "llm_path": "not_used",
+        "research_quality": "unknown",
+        "verification_independence": "unknown",
+        "verification_trust": "unknown",
+        "required_contract": {
+          "require_research": true,
+          "require_remote_research": true,
+          "allow_degraded_fallback": false,
+          "allow_lower_bound_recovery": false,
+          "require_strict_open_world": true,
+          "require_independent_verifier": true,
+          "require_live_llm": true,
+          "allowed_closure_sources": [
+            "strict_open_world_positive"
+          ],
+          "allowed_execution_paths": [
+            "strict_open_world_positive"
+          ],
+          "intent_satisfying_paths": [
+            "strict_open_world_positive"
+          ],
+          "allowed_llm_paths": [
+            "live"
+          ],
+          "intent_success_rule": "strict_open_world_positive_only"
+        }
+      },
+      "name_only_outcome": {
+        "request_kind": "name_only",
+        "mode": "strict_dynamic",
+        "decision": "fail_closed",
+        "decision_reason": "strict_dynamic_remote_research_unavailable",
+        "abstain_reason": null,
+        "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+        "closure_source": "failed",
+        "allowed_by_execution_contract": false,
+        "satisfies_intent_contract": false,
+        "stage_ceiling": "pre_generation",
+        "fully_validated": false,
+        "next_required_step": "capability_or_research",
+        "open_world_class": "name_driven_capability_gate_failed",
+        "strict_open_world_class": "strict_dynamic_capability_unavailable",
+        "stack_dependence_class": "repo_prior_bounded",
+        "family_dependence_class": "precondition_failed"
+      },
+      "completion_state": {
+        "generated": false,
+        "executed": false,
+        "run_passed": false,
+        "verified": false,
+        "verify_pass": null,
+        "reviewed": false,
+        "review_ready": false,
+        "fully_validated": false,
+        "stage_ceiling": "pre_generation",
+        "generation_origin": "capability_gate_rejected"
+      },
+      "failure_reason": "strict_dynamic requires remote researcher evidence, but capability precheck failed before RESEARCH: provider=none; search_policy requires remote search, but no remote provider is configured",
+      "terminal_failure_class": "strict_dynamic_remote_research_unavailable"
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": [],
+    "issues_sample": []
+  },
+  "manifest_path": "/home/ysw/vulDocker/metadata/sid-2d9076e23cbf/failure_manifest.json",
+  "manifest_file": "failure_manifest.json",
+  "reviewer_path": null
+}

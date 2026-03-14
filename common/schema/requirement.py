@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from common.contracts import can_resolve_without_remote_research_for_requirement
 from common.name_only import VALID_NAME_ONLY_MODES, build_name_only_contract, is_name_driven_requirement
 from common.vuln_catalog import (
+    catalog_family_candidates_for_label,
     catalog_profile_defaults,
     mapped_vuln_id_with_source,
     normalize_vuln_label,
@@ -288,30 +289,86 @@ def _family_candidates_for_request_ir(
     candidates: List[Dict[str, str]] = []
     seen: set[str] = set()
 
-    def add_candidate(family: Any, *, source: str, confidence: str) -> None:
+    def add_candidate(family: Any, *, source: str, confidence: str, matched_vuln_id: str = "") -> None:
         token = str(family or "").strip().lower()
+        if not token or token in seen:
+            return
+        seen.add(token)
+        payload = {
+            "family": token,
+            "source": source,
+            "confidence": confidence or "unknown",
+        }
+        if matched_vuln_id:
+            payload["matched_vuln_id"] = matched_vuln_id
+        candidates.append(payload)
+
+    for candidate in catalog_family_candidates_for_label(
+        request_label,
+        resolved_vuln_id=resolved_vuln_id,
+    ):
+        if not isinstance(candidate, dict):
+            continue
+        add_candidate(
+            candidate.get("family"),
+            source=str(candidate.get("source") or "").strip().lower() or "catalog_resolution",
+            confidence=str(candidate.get("confidence") or "").strip().lower()
+            or resolution_confidence
+            or ("high" if resolution_state in {"catalog_alias", "explicit_identifier"} else "medium"),
+            matched_vuln_id=str(candidate.get("matched_vuln_id") or "").strip(),
+        )
+    return candidates
+
+
+def _identifier_candidates_for_request_ir(
+    requirement: Dict[str, Any],
+    *,
+    request_label: str,
+    resolved_vuln_id: str,
+    resolution_source: str,
+    resolution_confidence: str,
+) -> List[Dict[str, str]]:
+    candidates: List[Dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add_candidate(identifier: Any, *, source: str, confidence: str) -> None:
+        token = str(identifier or "").strip().upper()
         if not token or token in seen:
             return
         seen.add(token)
         candidates.append(
             {
-                "family": token,
-                "source": source,
+                "vuln_id": token,
+                "source": source or "unknown",
                 "confidence": confidence or "unknown",
             }
         )
 
-    catalog_entry = resolve_vuln_catalog_entry(
-        vuln_id=resolved_vuln_id,
-        pattern_id=requirement.get("pattern_id"),
-        raw_label=request_label,
-    )
-    if isinstance(catalog_entry, dict):
+    if resolved_vuln_id:
         add_candidate(
-            catalog_entry.get("family"),
-            source="catalog_resolution",
-            confidence=resolution_confidence or ("high" if resolution_state in {"catalog_alias", "explicit_identifier"} else "medium"),
+            resolved_vuln_id,
+            source=resolution_source or "resolved_only",
+            confidence=resolution_confidence or "unknown",
         )
+
+    for key in ("vuln_id", "cwe_id", "cve_id", "vuln_name", "vulnerability_name", "weakness_name", "cwe_name"):
+        raw = requirement.get(key)
+        identifier, source = _coerce_vuln_reference(
+            raw,
+            allow_synthetic_name=key in {"vuln_id", "vuln_name", "vulnerability_name", "weakness_name", "cwe_name"},
+        )
+        if not identifier:
+            continue
+        add_candidate(
+            identifier,
+            source=source or f"input:{key}",
+            confidence=_name_resolution_confidence(source or ""),
+        )
+
+    synthetic = _synthetic_name_vuln_id(request_label)
+    if synthetic and synthetic != str(resolved_vuln_id or "").strip().upper():
+        add_candidate(synthetic, source="synthetic_name_preview", confidence="low")
+
     return candidates
 
 
@@ -383,15 +440,24 @@ def _build_request_ir(
         }
     )
     payload: Dict[str, Any] = {
+        "raw_label": request_label,
         "request_label": request_label,
         "normalized_request_label": normalized_request_label,
         "resolved_vuln_id": resolved_vuln_id or None,
+        "resolved_vuln_id_candidate": resolved_vuln_id or None,
         "input_mode": str((request_identity or {}).get("input_mode") or "").strip().lower() or "explicit_identifier",
         "name_driven": name_driven,
         "resolution_state": resolution_state,
         "resolution_source": resolution_source or "unknown",
         "resolution_match_class": resolution_match_class or "unknown",
         "resolution_confidence": resolution_confidence or "unknown",
+        "identifier_candidates": _identifier_candidates_for_request_ir(
+            requirement,
+            request_label=request_label,
+            resolved_vuln_id=resolved_vuln_id,
+            resolution_source=resolution_source,
+            resolution_confidence=resolution_confidence,
+        ),
         "catalog_backed": bool((request_identity or {}).get("catalog_backed_resolution")),
         "token_match_backed": bool((request_identity or {}).get("token_match_resolution")),
         "synthetic_resolution": bool((request_identity or {}).get("synthetic_resolution")),
@@ -406,6 +472,8 @@ def _build_request_ir(
             resolution_state=resolution_state,
             resolution_confidence=resolution_confidence,
         ),
+        "abstain_reason": None,
+        "evidence_ids": [],
         "name_only_mode": str(name_only_contract.get("mode") or "compatibility"),
         "required_contract": {
             key: deepcopy(name_only_contract.get(key))
@@ -423,6 +491,8 @@ def _build_request_ir(
                 "allow_stub_llm",
                 "allow_fixture_llm",
                 "allowed_closure_sources",
+                "allowed_execution_paths",
+                "intent_satisfying_paths",
                 "allowed_llm_paths",
                 "intent_success_rule",
             )

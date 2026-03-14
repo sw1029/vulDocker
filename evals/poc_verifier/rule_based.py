@@ -148,10 +148,16 @@ def verify_with_rule(
         success = text_success
         evidence.extend(text_evidence)
 
-    runtime_assertion_pass, runtime_assertion_evidence = _evaluate_runtime_assertions(rulespec, log_text)
+    runtime_assertion_pass, runtime_assertion_evidence, runtime_assertion_present = _evaluate_runtime_assertions(
+        rulespec,
+        log_text,
+    )
     if runtime_assertion_evidence:
         evidence.extend(runtime_assertion_evidence)
-    exploit_pass = bool(success or runtime_assertion_pass)
+    if runtime_assertion_present:
+        exploit_pass = runtime_assertion_pass if not success else bool(success and runtime_assertion_pass)
+    else:
+        exploit_pass = bool(success or runtime_assertion_pass)
     success = exploit_pass
 
     success, exit_evidence = _apply_exit_policy(success, summary_data, policy, rulespec)
@@ -275,21 +281,19 @@ def _verifier_low_trust_unknown_policy(policy: Optional[Dict[str, Any]]) -> str:
 def _evaluate_runtime_assertions(
     rulespec: RuleSpec,
     log_text: str,
-) -> Tuple[bool, List[str]]:
+) -> Tuple[bool, List[str], bool]:
     if not isinstance(rulespec, RuleSpec):
-        return False, []
+        return False, [], False
     runtime = rulespec.runtime if isinstance(rulespec.runtime, dict) else {}
     program = runtime.get("assertion_program")
     if not isinstance(program, list) or not program:
-        return False, []
+        return False, [], False
     success, outcomes = run_assertions(log_text, program)
-    if not success:
-        return False, []
     evidence: List[str] = []
     for outcome in outcomes:
         prefix = "PASS" if outcome.success else "FAIL"
         evidence.append(f"[{prefix}::{outcome.op}] {outcome.details}")
-    return True, evidence
+    return success, evidence, True
 
 
 def _evaluate_guard_consistency(
@@ -396,13 +400,47 @@ def _rule_from_contract_oracle(
         json_output["flag_key"] = json_flag_key
     if json_output:
         output["json"] = json_output
+    assertion_program = oracle.get("assertion_program") if isinstance(oracle.get("assertion_program"), list) else []
+    runtime: Dict[str, Any] = {}
+    if success_signature:
+        runtime["success_text_markers"] = [success_signature]
+    if flag_token:
+        runtime["flag_token"] = flag_token
+    negative_markers = [
+        str(item).strip()
+        for item in (oracle.get("negative_text_markers") or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    normalized_assertions = list(assertion_program)
+    for marker in negative_markers:
+        if not any(
+            isinstance(item, dict)
+            and str(item.get("op") or "").strip().lower() in {"not_contains", "stdout_not_contains"}
+            and str(item.get("string") or item.get("contains") or item.get("needle") or "").strip() == marker
+            for item in normalized_assertions
+        ):
+            normalized_assertions.append({"op": "not_contains", "string": marker})
+    if normalized_assertions:
+        runtime["assertion_program"] = normalized_assertions
+    if negative_markers:
+        runtime["negative_text_markers"] = negative_markers
     strict = bool(flag_token)
     return {
         "cwe": cwe,
+        "version": 2,
+        "scenario_type": "web-poc",
+        "verification": {
+            "source": "runtime",
+            "require_flag": bool(flag_token),
+            "flag_mode": "strict" if flag_token else "none",
+            "exit_code": "zero",
+        },
+        "llm": {"assist_default": True, "assertion_budget": 8},
         "success_signature": success_signature,
         "flag_token": flag_token,
         "strict_flag": strict,
         "output": output,
+        "runtime": runtime,
     }
 
 

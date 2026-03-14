@@ -154,3 +154,113 @@ def test_react_loop_query_plan_surfaces_stack_hypotheses_without_locking_stack(t
     assert plan["stack_hypotheses"][0]["stack_id"] == "python/flask"
     assert any(item["evidence_type"] == "stack_anchor" for item in plan["queries"])
     assert any("python/flask" in item["query"] for item in plan["queries"])
+
+
+def test_react_loop_query_plan_uses_request_ir_family_candidates_for_broad_phrase(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-react-family-candidates"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    plan = loop.query_plan_from_requirement(
+        {
+            "vuln_id": "NAME-CROSS-SITE-INJECTION",
+            "vuln_name": "Cross Site Injection",
+            "request_identity": {"request_label": "Cross Site Injection", "name_driven": True},
+            "request_ir": {
+                "request_label": "Cross Site Injection",
+                "resolved_vuln_id": "NAME-CROSS-SITE-INJECTION",
+                "name_driven": True,
+                "resolution_state": "synthetic_name",
+                "family_candidates": [
+                    {"family": "xss", "confidence": "medium", "source": "label_overlap"},
+                    {"family": "csrf", "confidence": "low", "source": "label_overlap"},
+                ],
+            },
+        },
+        limit=8,
+    )
+
+    families = [str(item.get("family") or "").strip().lower() for item in plan["family_hypotheses"]]
+
+    assert "xss" in families
+    assert "csrf" in families
+    assert any(
+        ("cross-site scripting" in item["query"].lower()) or ("csrf" in item["query"].lower())
+        for item in plan["queries"]
+    )
+
+
+def test_react_loop_query_plan_does_not_reinject_raw_vuln_id_family_for_canonicalized_name_driven_lane(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-react-request-ir-authority"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    plan = loop.query_plan_from_requirement(
+        {
+            "vuln_id": "CWE-79",
+            "vuln_name": "Reflected XSS",
+            "request_identity": {"request_label": "Reflected XSS", "name_driven": True},
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "resolution_state": "catalog_alias",
+                "resolution_confidence": "high",
+                "name_driven": True,
+                "family_candidates": [
+                    {"family": "xss", "confidence": "high", "source": "catalog_resolution"},
+                ],
+            },
+        },
+        limit=4,
+    )
+
+    xss_entries = [item for item in plan["family_hypotheses"] if item.get("family") == "xss"]
+    assert xss_entries
+    assert all(item.get("basis") != "vuln_id" for item in xss_entries)
+    assert any(item.get("basis") == "catalog_resolution" for item in xss_entries)
+    assert all("cwe-79" not in str(item.get("query") or "").lower() for item in plan["queries"])
+
+
+def test_react_loop_query_plan_surfaces_negative_family_hypotheses_and_contradiction_query(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-react-negative-families"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    plan = loop.query_plan_from_requirement(
+        {
+            "vuln_id": "CWE-79",
+            "vuln_name": "Reflected XSS",
+            "request_identity": {"request_label": "Reflected XSS", "name_driven": True},
+            "request_ir": {
+                "request_label": "Reflected XSS",
+                "resolved_vuln_id": "CWE-79",
+                "name_driven": True,
+                "family_candidates": [
+                    {"family": "xss", "confidence": "high", "source": "catalog_resolution"},
+                ],
+                "negative_hypotheses": [
+                    {"family": "template_injection", "source": "researcher_contradiction"},
+                ],
+            },
+        },
+        limit=6,
+    )
+
+    assert plan["negative_family_hypotheses"] == [
+        {"family": "template_injection", "source": "researcher_contradiction"}
+    ]
+    assert any(
+        item["evidence_type"] == "contradiction_check"
+        and item.get("family") == "template_injection"
+        and item.get("negative_family") is True
+        for item in plan["queries"]
+    )

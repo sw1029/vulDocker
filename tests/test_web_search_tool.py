@@ -71,6 +71,39 @@ def test_web_search_tool_remote_prefer_falls_back_to_local_when_remote_unavailab
     assert execution.degraded is True
 
 
+def test_web_search_tool_remote_prefer_uses_backoff_after_first_remote_failure(monkeypatch, tmp_path: Path) -> None:
+    corpus_root = tmp_path / "rag" / "corpus" / "processed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "note.md").write_text("unknown cwe exploit note", encoding="utf-8")
+    calls = {"count": 0}
+
+    def _fake_remote(self, request):  # noqa: ANN001
+        calls["count"] += 1
+        return [], SearchExecution(
+            provider="tavily",
+            configured=True,
+            error="temporary remote failure",
+            degraded=False,
+            request=request.to_payload(),
+        )
+
+    monkeypatch.setattr(WebSearchTool, "_remote_search", _fake_remote)
+
+    tool = WebSearchTool(provider="tavily", api_key="token")
+    tool.local_root = tmp_path / "rag" / "corpus"
+
+    first = tool.search("unknown cwe", policy="remote_prefer")
+    second = tool.search("unknown cwe", policy="remote_prefer")
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert calls["count"] == 1
+    execution = tool.last_execution()
+    assert execution is not None
+    assert execution.degraded is True
+    assert execution.error == "temporary remote failure"
+
+
 def test_web_search_tool_loads_tavily_key_from_config_loader(monkeypatch) -> None:
     monkeypatch.delenv("VUL_WEB_SEARCH_API_KEY", raising=False)
     monkeypatch.setattr("rag.tools.web_search.get_tavily_api_key", lambda: "ini-token")

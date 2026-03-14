@@ -1,0 +1,2384 @@
+{
+  "sid": "sid-41704fcd225a",
+  "overall_pass": true,
+  "pipeline_result": "success",
+  "promotion_eligible": true,
+  "promotion_reasons": [],
+  "memory_promotion": {
+    "eligible": false,
+    "reasons": [
+      "strict_open_world:strict_minimal_dynamic_fallback",
+      "artifact_quality:medium"
+    ]
+  },
+  "memory_promotion_eligible": false,
+  "support_promotion": {
+    "eligible": false,
+    "reasons": [
+      "strict_open_world:strict_minimal_dynamic_fallback",
+      "open_world:semantic_guided_minimal_dynamic",
+      "artifact_quality:medium",
+      "stack_selection:defaulted",
+      "name_only_outcome:partial"
+    ]
+  },
+  "support_promotion_eligible": false,
+  "open_world_readiness_summary": {
+    "bundle_count": 1,
+    "ready_bundles": 0,
+    "not_ready_bundles": 1,
+    "all_ready": false,
+    "by_blocker": {
+      "strict_open_world_gate": 1,
+      "open_world_non_positive": 1,
+      "artifact_quality_below_high": 1,
+      "stack_defaulted": 1,
+      "name_only_intent_not_met": 1
+    }
+  },
+  "boundedness_summary": {
+    "catalog_entries": 12,
+    "catalog_families": 12,
+    "family_hint_families": 12,
+    "template_count": 3,
+    "scaffold_stack_pool": 2,
+    "compiler_strategy_count": 13,
+    "semantic_guided_family_builders": 12,
+    "executor_topology_classes": [
+      "single_service",
+      "service_plus_sidecar"
+    ],
+    "executor_multi_primary_supported": false,
+    "closed_vocabulary_family_discovery": true,
+    "stack_pool_bounded": true,
+    "compiler_registry_bounded": true,
+    "executor_topology_bounded": true
+  },
+  "open_world_readiness": {
+    "ready": false,
+    "blockers": [
+      "strict_open_world_gate",
+      "open_world_non_positive",
+      "artifact_quality_below_high",
+      "stack_defaulted",
+      "name_only_intent_not_met"
+    ],
+    "open_world_class": "semantic_guided_minimal_dynamic",
+    "strict_open_world_class": "strict_minimal_dynamic_fallback",
+    "name_only_decision": "partial",
+    "stack_defaulted": true,
+    "family_evidence_backed": true
+  },
+  "open_world_ready": false,
+  "generation_summary": {
+    "bundle_count": 1,
+    "by_origin": {
+      "deterministic_fallback": 1
+    },
+    "by_dynamicness_verdict": {
+      "deterministic fallback dependent": 1
+    },
+    "by_compose_mode": {},
+    "by_stack_scaffold_id": {},
+    "llm_stub_bundles": 1,
+    "llm_fixture_bundles": 0,
+    "fallback_bundles": 1,
+    "family_override_bundles": 0,
+    "template_origin_bundles": 0,
+    "template_assisted_bundles": 0,
+    "registry_compose_bundles": 0,
+    "scaffolded_bundles": 0,
+    "dynamic_eval_attempted_bundles": 1,
+    "dynamic_eval_recovered_bundles": 0
+  },
+  "compiler_contract_summary": {
+    "bundle_count": 1,
+    "supported_bundles": 1,
+    "unsupported_bundles": 0,
+    "by_strategy": {
+      "open_redirect_reflect": 1
+    },
+    "by_support_level": {
+      "compiler_supported": 1
+    }
+  },
+  "verification_summary": {
+    "bundle_count": 1,
+    "by_rule_source": {
+      "declared_rule": 1
+    },
+    "by_trust": {
+      "high": 1
+    },
+    "by_independence": {
+      "independent": 1
+    },
+    "low_trust_bundles": 0
+  },
+  "researcher_summary": {
+    "bundle_count": 1,
+    "shadow_mode_bundles": 0,
+    "report_present_bundles": 1,
+    "ran_bundles": 1,
+    "skipped_bundles": 0,
+    "degraded_bundles": 0,
+    "query_plan_bundles": 1,
+    "contradiction_bundles": 1,
+    "ambiguous_family_hypothesis_bundles": 0,
+    "by_quality": {
+      "sufficient": 1
+    },
+    "by_top_family_hypothesis": {
+      "open_redirect": 1
+    },
+    "by_top_family_confidence": {
+      "high": 1
+    },
+    "avg_query_target_match_rate": 0.25
+  },
+  "request_identity_summary": {
+    "bundle_count": 1,
+    "name_driven_bundles": 1,
+    "synthetic_resolution_bundles": 0,
+    "by_input_mode": {
+      "free_form_name": 1
+    },
+    "by_match_class": {
+      "catalog_alias": 1
+    },
+    "by_confidence": {
+      "high": 1
+    }
+  },
+  "request_ir_summary": {
+    "bundle_count": 1,
+    "name_driven_bundles": 1,
+    "evidence_backed_bundles": 1,
+    "abstain_signaled_bundles": 0,
+    "multi_identifier_candidate_bundles": 0,
+    "ambiguous_family_candidate_bundles": 1,
+    "ambiguous_stack_candidate_bundles": 1,
+    "negative_hypothesis_bundles": 1,
+    "avg_identifier_candidate_count": 1.0,
+    "avg_family_candidate_count": 4.0,
+    "avg_stack_candidate_count": 2.0,
+    "avg_negative_hypothesis_count": 1.0,
+    "by_resolution_state": {
+      "catalog_alias": 1
+    },
+    "by_resolution_match_class": {
+      "catalog_alias": 1
+    },
+    "by_resolution_confidence": {
+      "high": 1
+    }
+  },
+  "name_resolution_summary": {
+    "bundle_count": 1,
+    "resolved_bundles": 1,
+    "by_source": {
+      "alias": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_match_class": {
+      "catalog_alias": 1
+    }
+  },
+  "generalization_summary": {
+    "bundle_count": 1,
+    "positive_generalization_bundles": 0,
+    "realized_bundles": 1,
+    "hypothetical_bundles": 0,
+    "fully_validated_bundles": 1,
+    "realized_positive_generalization_bundles": 0,
+    "fully_validated_positive_generalization_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "by_class": {
+      "real_free_form_non_generalizing": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_basis": {
+      "catalog_alias": 1
+    }
+  },
+  "open_world_summary": {
+    "bundle_count": 1,
+    "positive_open_world_bundles": 0,
+    "realized_bundles": 1,
+    "hypothetical_bundles": 0,
+    "fully_validated_bundles": 1,
+    "realized_positive_open_world_bundles": 0,
+    "fully_validated_positive_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 1,
+    "template_dependent_bundles": 0,
+    "by_class": {
+      "semantic_guided_minimal_dynamic": 1
+    },
+    "by_confidence": {
+      "high": 1
+    },
+    "by_basis": {
+      "catalog_alias": 1
+    }
+  },
+  "strict_open_world_summary": {
+    "bundle_count": 1,
+    "positive_strict_open_world_bundles": 0,
+    "realized_bundles": 1,
+    "hypothetical_bundles": 0,
+    "fully_validated_bundles": 1,
+    "realized_positive_strict_open_world_bundles": 0,
+    "fully_validated_positive_strict_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 1,
+    "template_dependent_bundles": 0,
+    "fixture_backed_bundles": 0,
+    "stub_backed_bundles": 1,
+    "research_degraded_bundles": 0,
+    "verifier_coupled_bundles": 0,
+    "by_class": {
+      "strict_minimal_dynamic_fallback": 1
+    }
+  },
+  "dynamic_eval_summary": {
+    "bundle_count": 1,
+    "enabled_bundles": 1,
+    "attempted_bundles": 1,
+    "lower_bound_recovered_bundles": 0,
+    "by_status": {
+      "degraded_success": 1
+    },
+    "by_fallback_path": {}
+  },
+  "artifact_quality_summary": {
+    "bundle_count": 1,
+    "average_score": 8.0,
+    "by_band": {
+      "medium": 1
+    },
+    "readme_present_bundles": 1,
+    "runtime_recipe_bundles": 1,
+    "stack_defaulted_bundles": 1
+  },
+  "evidence_graph_summary": {
+    "bundle_count": 1,
+    "graph_present_bundles": 1,
+    "average_node_count": 23.0,
+    "average_edge_count": 44.0,
+    "by_node_kind": {
+      "request": 1,
+      "query": 4,
+      "evidence": 12,
+      "family_hypothesis": 4,
+      "stack_hypothesis": 2
+    },
+    "by_edge_kind": {
+      "planned_query": 4,
+      "retrieved_evidence": 12,
+      "family_hypothesis": 4,
+      "stack_hypothesis": 2,
+      "supports_family_hypothesis": 16,
+      "supports_stack_hypothesis": 6
+    }
+  },
+  "template_dependence_summary": {
+    "bundle_count": 1,
+    "template_assisted_bundles": 0,
+    "template_dependent_bundles": 0,
+    "lower_bound_dependent_bundles": 1,
+    "name_only_lower_bound_bundles": 1,
+    "open_world_positive_bundles": 0,
+    "minimal_dynamic_bundles": 1,
+    "realized_minimal_dynamic_bundles": 1,
+    "fully_validated_minimal_dynamic_bundles": 1,
+    "hypothetical_lower_bound_bundles": 0,
+    "by_open_world_class": {
+      "semantic_guided_minimal_dynamic": 1
+    }
+  },
+  "runtime_surface_summary": {
+    "bundle_count": 1,
+    "realized_bundles": 1,
+    "hypothetical_bundles": 0,
+    "network_enabled_bundles": 0,
+    "sidecar_bundles": 0,
+    "by_topology": {
+      "single_service": 1
+    }
+  },
+  "stack_dependence_summary": {
+    "bundle_count": 1,
+    "repo_prior_bounded_bundles": 1,
+    "stack_defaulted_bundles": 1,
+    "researcher_inferred_bundles": 0,
+    "ambiguous_bundles": 1,
+    "locked_bundles": 0,
+    "evidence_backed_bundles": 1,
+    "by_class": {
+      "repo_prior_bounded": 1
+    },
+    "by_stack_source": {
+      "profile_prior": 1
+    }
+  },
+  "family_dependence_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "family_bounded_bundles": 1,
+    "ambiguous_bundles": 1,
+    "evidence_backed_bundles": 1,
+    "candidate_evidence_backed_bundles": 1,
+    "negative_hypothesis_bundles": 1,
+    "by_class": {
+      "semantic_signature_bounded": 1
+    },
+    "by_selection_source": {
+      "semantic_signature": 1
+    },
+    "by_abstain_reason": {},
+    "by_resolution_confidence": {
+      "high": 1
+    },
+    "by_resolution_basis": {
+      "catalog_alias": 1
+    }
+  },
+  "intent_satisfaction_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "meets_intent_bundles": 0,
+    "partial_bundles": 1,
+    "all_name_only_meet_intent": false,
+    "by_status": {
+      "degraded_dynamic_success": 1
+    },
+    "by_closure_source": {
+      "degraded_deterministic_fallback": 1
+    },
+    "by_llm_path": {
+      "stub": 1
+    },
+    "by_research_quality": {
+      "sufficient": 1
+    }
+  },
+  "name_only_outcome_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "intent_met_bundles": 0,
+    "partial_bundles": 1,
+    "abstained_bundles": 0,
+    "fail_closed_bundles": 0,
+    "failed_bundles": 0,
+    "by_decision": {
+      "partial": 1
+    },
+    "by_next_required_step": {
+      "stack_or_runtime_design": 1
+    },
+    "by_abstain_reason": {},
+    "by_terminal_failure_class": {},
+    "by_stage_ceiling": {
+      "fully_validated": 1
+    }
+  },
+  "partial_progress_summary": {
+    "bundle_count": 1,
+    "successful_bundles": 1,
+    "failed_bundles": 0,
+    "executed_bundles": 1,
+    "verified_bundles": 1,
+    "research_blocked_bundles": 0,
+    "partial_success": false
+  },
+  "completion_summary": {
+    "bundle_count": 1,
+    "generated_bundles": 1,
+    "executed_bundles": 1,
+    "verified_bundles": 1,
+    "reviewed_bundles": 1,
+    "fully_validated_bundles": 1,
+    "by_stage_ceiling": {
+      "fully_validated": 1
+    }
+  },
+  "compiler_supported": true,
+  "compiler_strategy": "open_redirect_reflect",
+  "compiler_reason": "compiler strategy and scaffold are available",
+  "compiler_family": null,
+  "stack_scaffold_id": null,
+  "stack_scaffold_version": null,
+  "fragment_id": null,
+  "compose_mode": null,
+  "service_env": null,
+  "request_identity": {
+    "request_label": "Open Redirect",
+    "normalized_request_label": "open redirect",
+    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+    "input_mode": "free_form_name",
+    "source": "alias",
+    "match_class": "catalog_alias",
+    "confidence": "high",
+    "field": "vuln_name",
+    "synthetic_resolution": false,
+    "catalog_backed_resolution": true,
+    "token_match_resolution": false,
+    "exact_identifier_resolution": false,
+    "name_driven": true
+  },
+  "request_ir": {
+    "raw_label": "Open Redirect",
+    "request_label": "Open Redirect",
+    "normalized_request_label": "open redirect",
+    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+    "resolved_vuln_id_candidate": "NAME-OPEN-REDIRECT",
+    "input_mode": "free_form_name",
+    "name_driven": true,
+    "resolution_state": "catalog_alias",
+    "resolution_source": "alias",
+    "resolution_match_class": "catalog_alias",
+    "resolution_confidence": "high",
+    "identifier_candidates": [
+      {
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "source": "alias",
+        "confidence": "high"
+      }
+    ],
+    "catalog_backed": true,
+    "token_match_backed": false,
+    "synthetic_resolution": false,
+    "exact_identifier_resolution": false,
+    "pattern_id": "open-redirect",
+    "pattern_seed_state": "preserved",
+    "stack_candidates": [
+      {
+        "stack_id": "python/flask",
+        "source": "profile_prior",
+        "language": "python",
+        "framework": "flask",
+        "confidence": "low",
+        "evidence_ids": [
+          "evidence:10",
+          "evidence:11",
+          "evidence:12"
+        ]
+      },
+      {
+        "stack_id": "python/fastapi",
+        "source": "available_skeleton",
+        "language": "python",
+        "framework": "fastapi",
+        "confidence": "low",
+        "evidence_ids": [
+          "evidence:4",
+          "evidence:5",
+          "evidence:6"
+        ]
+      }
+    ],
+    "family_candidates": [
+      {
+        "family": "open_redirect",
+        "source": "catalog_resolution",
+        "confidence": "high",
+        "matched_vuln_id": "NAME-OPEN-REDIRECT",
+        "evidence_ids": [
+          "evidence:2",
+          "evidence:3",
+          "evidence:4",
+          "evidence:5",
+          "evidence:6",
+          "evidence:7",
+          "evidence:8",
+          "evidence:9",
+          "evidence:10",
+          "evidence:11",
+          "evidence:12"
+        ]
+      },
+      {
+        "family": "xss",
+        "source": "researcher_hypothesis",
+        "confidence": "medium",
+        "score": 0.72,
+        "signal_hits": 3,
+        "evidence_ids": [
+          "evidence:1",
+          "evidence:2",
+          "evidence:9"
+        ]
+      },
+      {
+        "family": "ssrf",
+        "source": "researcher_hypothesis",
+        "confidence": "low",
+        "score": 0.18,
+        "signal_hits": 1,
+        "evidence_ids": [
+          "evidence:3"
+        ]
+      },
+      {
+        "family": "path_traversal",
+        "source": "researcher_hypothesis",
+        "confidence": "low",
+        "score": 0.12,
+        "signal_hits": 1,
+        "evidence_ids": [
+          "evidence:8"
+        ]
+      }
+    ],
+    "abstain_reason": null,
+    "evidence_ids": [
+      "evidence:1",
+      "evidence:2",
+      "evidence:3",
+      "evidence:4",
+      "evidence:5",
+      "evidence:6",
+      "evidence:7",
+      "evidence:8",
+      "evidence:9",
+      "evidence:10",
+      "evidence:11",
+      "evidence:12"
+    ],
+    "name_only_mode": "dynamic",
+    "required_contract": {
+      "effective_mode": "dynamic",
+      "require_research": true,
+      "require_remote_research": false,
+      "allow_degraded_fallback": true,
+      "allow_lower_bound_recovery": false,
+      "allow_curated_lower_bound_closure": false,
+      "allow_template_closure": false,
+      "require_strict_open_world": false,
+      "require_independent_verifier": false,
+      "require_live_llm": false,
+      "allow_stub_llm": true,
+      "allow_fixture_llm": true,
+      "allowed_closure_sources": [
+        "trusted_dynamic",
+        "strict_open_world_positive"
+      ],
+      "allowed_execution_paths": [
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "intent_satisfying_paths": [
+        "trusted_dynamic",
+        "strict_open_world_positive"
+      ],
+      "allowed_llm_paths": [
+        "live",
+        "fixture",
+        "stub"
+      ],
+      "intent_success_rule": "open_world_positive_only"
+    },
+    "negative_hypotheses": [
+      {
+        "family": "xss",
+        "source": "researcher_contradiction",
+        "evidence_ids": [
+          "evidence:1",
+          "evidence:2",
+          "evidence:9"
+        ]
+      }
+    ]
+  },
+  "name_resolution": {
+    "field": "vuln_name",
+    "input": "Open Redirect",
+    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+    "source": "alias",
+    "match_class": "catalog_alias",
+    "confidence": "high"
+  },
+  "generation_origin": "deterministic_fallback",
+  "semantic_guided_selection_source": "semantic_signature",
+  "semantic_guided_abstain_reason": null,
+  "semantic_guided_ambiguous": false,
+  "verification_rule_source": "declared_rule",
+  "verification_trust": "high",
+  "verification_independence": "independent",
+  "semantic_supported": true,
+  "semantic_status": "aligned",
+  "semantic_source": "generator_manifest",
+  "llm_fixture_used": false,
+  "provider_health_state": "llm_degraded",
+  "total_duration_s": 10.244,
+  "performance_retry_count": 0,
+  "performance_by_stage": {
+    "RESEARCH": {
+      "count": 1,
+      "duration_s": 3.797,
+      "skipped": 0
+    },
+    "GENERATOR": {
+      "count": 1,
+      "duration_s": 1.379,
+      "skipped": 0
+    },
+    "EXECUTOR_BUILD": {
+      "count": 1,
+      "duration_s": 0.768,
+      "skipped": 0
+    },
+    "EXECUTOR_RUN": {
+      "count": 1,
+      "duration_s": 1.577,
+      "skipped": 0
+    },
+    "VERIFY": {
+      "count": 1,
+      "duration_s": 1.333,
+      "skipped": 0
+    },
+    "REVIEW": {
+      "count": 1,
+      "duration_s": 1.272,
+      "skipped": 0
+    },
+    "DIVERSITY": {
+      "count": 1,
+      "duration_s": 0.029,
+      "skipped": 0
+    },
+    "PACK": {
+      "count": 1,
+      "duration_s": 0.089,
+      "skipped": 0
+    }
+  },
+  "dynamicness_verdict": "deterministic fallback dependent",
+  "dynamicness_reason": "deterministic fallback generation path was used",
+  "family_non_remote_available": true,
+  "effective_non_remote_available": true,
+  "compiler_path_enabled": true,
+  "executor_feasibility_status": "not_required",
+  "generalization_class": "real_free_form_non_generalizing",
+  "counts_as_generalization": false,
+  "generalization_reason": "name-only dynamic lane closed but resolution confidence/basis is high/catalog_alias",
+  "generalization_confidence": "high",
+  "generalization_basis": "catalog_alias",
+  "open_world_class": "semantic_guided_minimal_dynamic",
+  "counts_as_open_world_generalization": false,
+  "open_world_reason": "name-only lane closed by semantic-guided deterministic fallback using a minimal dynamic materializer; this reduces direct template dependence, but remains below open-world generation",
+  "open_world_confidence": "high",
+  "open_world_basis": "catalog_alias",
+  "strict_open_world_class": "strict_minimal_dynamic_fallback",
+  "counts_as_strict_open_world_generalization": false,
+  "strict_open_world_reason": "bundle closed through a semantic-guided minimal dynamic materializer and remains below strict open-world acceptance",
+  "runtime_recipe": {
+    "language": "python",
+    "framework": "flask",
+    "stack_source": "profile_prior",
+    "stack_locked": false,
+    "stack_defaulted": true,
+    "transport": "http",
+    "service_entry": "app.py",
+    "poc_entry": "poc.py",
+    "service_port": 8000,
+    "db": null,
+    "allow_external_db": false,
+    "requires_external_db": false,
+    "network_mode": "none",
+    "network_enabled": false,
+    "sidecars": [],
+    "service_env": {},
+    "seed_files": [],
+    "topology": "single_service",
+    "output_mode": "auto",
+    "stack_hypotheses": [
+      {
+        "language": "python",
+        "framework": "flask",
+        "stack_id": "python/flask",
+        "source": "profile_prior",
+        "confidence": "low"
+      },
+      {
+        "language": "python",
+        "framework": "fastapi",
+        "stack_id": "python/fastapi",
+        "source": "available_skeleton",
+        "confidence": "low"
+      }
+    ],
+    "health_path": "/health",
+    "source": "resolved_contract",
+    "hypothetical": false,
+    "realized": true
+  },
+  "runtime_recipe_hypothetical": false,
+  "runtime_graph": {
+    "schema_version": "runtime_graph@0.1",
+    "source": "derived_from_runtime_recipe",
+    "topology": "single_service",
+    "network": {
+      "mode": "none",
+      "enabled": false
+    },
+    "nodes": [
+      {
+        "id": "service",
+        "kind": "service",
+        "role": "primary",
+        "language": "python",
+        "framework": "flask",
+        "entry": "app.py",
+        "transport": "http",
+        "port": 8000
+      }
+    ],
+    "edges": [
+      {
+        "from": "poc",
+        "to": "service",
+        "kind": "exploit_http",
+        "transport": "http",
+        "target_port": 8000
+      }
+    ],
+    "healthchecks": [
+      {
+        "node": "service",
+        "path": "/health",
+        "port": 8000,
+        "transport": "http"
+      }
+    ],
+    "env_contract": [],
+    "exploit_path": {
+      "entrypoint": "poc.py",
+      "target_node": "service",
+      "service_entry": "app.py",
+      "transport": "http",
+      "port": 8000,
+      "base_url": "http://127.0.0.1:8000",
+      "success_signal": "Exploit SUCCESS",
+      "flag_token": "FLAG{OPEN_REDIRECT_OK}"
+    },
+    "hypothetical": false,
+    "realized": true
+  },
+  "runtime_graph_hypothetical": false,
+  "evidence_graph": {
+    "schema_version": "evidence_graph@0.1",
+    "source": "researcher_derived",
+    "node_count": 23,
+    "edge_count": 44,
+    "nodes": [
+      {
+        "id": "request",
+        "kind": "request",
+        "label": "Open Redirect",
+        "vuln_id": "NAME-OPEN-REDIRECT"
+      },
+      {
+        "id": "query:1",
+        "kind": "query",
+        "query": "Open Redirect vulnerability writeup exploit poc",
+        "evidence_type": "writeup"
+      },
+      {
+        "id": "query:2",
+        "kind": "query",
+        "query": "Open Redirect vulnerable example python/fastapi",
+        "evidence_type": "stack_anchor"
+      },
+      {
+        "id": "query:3",
+        "kind": "query",
+        "query": "Open Redirect vulnerable example github",
+        "evidence_type": "reference_impl"
+      },
+      {
+        "id": "query:4",
+        "kind": "query",
+        "query": "Open Redirect vulnerable example python/flask",
+        "evidence_type": "stack_anchor"
+      },
+      {
+        "id": "evidence:1",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://github.com/robotmikhro/exploit/blob/master/POC/open-redirect-lead-to-xss-at-pointblank.id/WRITEUP.md",
+        "query": "Open Redirect vulnerability writeup exploit poc",
+        "evidence_type": "reference_impl"
+      },
+      {
+        "id": "evidence:2",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://systemweakness.com/how-an-open-redirect-vulnerability-got-a-bug-bounty-of-500-13ece7a987d8",
+        "query": "Open Redirect vulnerability writeup exploit poc",
+        "evidence_type": "reference"
+      },
+      {
+        "id": "evidence:3",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://infosecwriteups.com/from-open-redirect-to-internal-access-my-ssrf-exploit-story-10a736962f98",
+        "query": "Open Redirect vulnerability writeup exploit poc",
+        "evidence_type": "writeup"
+      },
+      {
+        "id": "evidence:4",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://github.com/python/cpython/issues/132826",
+        "query": "Open Redirect vulnerable example python/fastapi",
+        "evidence_type": "reference_impl"
+      },
+      {
+        "id": "evidence:5",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://www.linkedin.com/posts/threatstats_fastapi-sso-apisecurity-activity-7407900951585492992-aW0c",
+        "query": "Open Redirect vulnerable example python/fastapi",
+        "evidence_type": "reference"
+      },
+      {
+        "id": "evidence:6",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://www.stackhawk.com/blog/what-is-open-redirect/",
+        "query": "Open Redirect vulnerable example python/fastapi",
+        "evidence_type": "writeup"
+      },
+      {
+        "id": "evidence:7",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://github.com/denoyey/Open-Redirect",
+        "query": "Open Redirect vulnerable example github",
+        "evidence_type": "reference_impl"
+      },
+      {
+        "id": "evidence:8",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://swisskyrepo.github.io/PayloadsAllTheThings/Open%20Redirect/",
+        "query": "Open Redirect vulnerable example github",
+        "evidence_type": "reference"
+      },
+      {
+        "id": "evidence:9",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://github.com/Stolichnayer/mist-ce-open-redirect",
+        "query": "Open Redirect vulnerable example github",
+        "evidence_type": "reference_impl"
+      },
+      {
+        "id": "evidence:10",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://github.com/brandon-t-elliott/CVE-2023-49438",
+        "query": "Open Redirect vulnerable example python/flask",
+        "evidence_type": "reference_impl"
+      },
+      {
+        "id": "evidence:11",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://www.pythonkitchen.com/how-prevent-open-redirect-vulnerab-flask/",
+        "query": "Open Redirect vulnerable example python/flask",
+        "evidence_type": "reference"
+      },
+      {
+        "id": "evidence:12",
+        "kind": "evidence",
+        "source": "remote",
+        "provider": "tavily",
+        "url": "https://medium.com/@loveleshgangil/open-redirection-vulnerabilities-complete-guide-to-improper-front-end-redirect-validation-2d40599d8442",
+        "query": "Open Redirect vulnerable example python/flask",
+        "evidence_type": "writeup"
+      },
+      {
+        "id": "family:open_redirect",
+        "kind": "family_hypothesis",
+        "family": "open_redirect",
+        "confidence": "high",
+        "score": 1.0,
+        "matched_aliases": [
+          "open redirect",
+          "redirection",
+          "open redirection"
+        ],
+        "matched_anchors": [
+          "next parameter",
+          "location header",
+          "redirect target"
+        ]
+      },
+      {
+        "id": "family:xss",
+        "kind": "family_hypothesis",
+        "family": "xss",
+        "confidence": "medium",
+        "score": 0.72,
+        "matched_aliases": [
+          "xss",
+          "cross-site scripting"
+        ],
+        "matched_anchors": []
+      },
+      {
+        "id": "family:ssrf",
+        "kind": "family_hypothesis",
+        "family": "ssrf",
+        "confidence": "low",
+        "score": 0.18,
+        "matched_aliases": [
+          "ssrf"
+        ],
+        "matched_anchors": []
+      },
+      {
+        "id": "family:path_traversal",
+        "kind": "family_hypothesis",
+        "family": "path_traversal",
+        "confidence": "low",
+        "score": 0.12,
+        "matched_aliases": [],
+        "matched_anchors": [
+          "../"
+        ]
+      },
+      {
+        "id": "stack:python/flask",
+        "kind": "stack_hypothesis",
+        "stack_id": "python/flask",
+        "confidence": "high",
+        "score": 2.05
+      },
+      {
+        "id": "stack:python/fastapi",
+        "kind": "stack_hypothesis",
+        "stack_id": "python/fastapi",
+        "confidence": "high",
+        "score": 1.45
+      }
+    ],
+    "edges": [
+      {
+        "from": "request",
+        "to": "query:1",
+        "kind": "planned_query"
+      },
+      {
+        "from": "request",
+        "to": "query:2",
+        "kind": "planned_query"
+      },
+      {
+        "from": "request",
+        "to": "query:3",
+        "kind": "planned_query"
+      },
+      {
+        "from": "request",
+        "to": "query:4",
+        "kind": "planned_query"
+      },
+      {
+        "from": "query:1",
+        "to": "evidence:1",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:1",
+        "to": "evidence:2",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:1",
+        "to": "evidence:3",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:2",
+        "to": "evidence:4",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:2",
+        "to": "evidence:5",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:2",
+        "to": "evidence:6",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:3",
+        "to": "evidence:7",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:3",
+        "to": "evidence:8",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:3",
+        "to": "evidence:9",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:4",
+        "to": "evidence:10",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:4",
+        "to": "evidence:11",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "query:4",
+        "to": "evidence:12",
+        "kind": "retrieved_evidence"
+      },
+      {
+        "from": "request",
+        "to": "family:open_redirect",
+        "kind": "family_hypothesis"
+      },
+      {
+        "from": "request",
+        "to": "family:xss",
+        "kind": "family_hypothesis"
+      },
+      {
+        "from": "request",
+        "to": "family:ssrf",
+        "kind": "family_hypothesis"
+      },
+      {
+        "from": "request",
+        "to": "family:path_traversal",
+        "kind": "family_hypothesis"
+      },
+      {
+        "from": "request",
+        "to": "stack:python/flask",
+        "kind": "stack_hypothesis"
+      },
+      {
+        "from": "request",
+        "to": "stack:python/fastapi",
+        "kind": "stack_hypothesis"
+      },
+      {
+        "from": "evidence:1",
+        "to": "family:xss",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:2",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:2",
+        "to": "family:xss",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:3",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:3",
+        "to": "family:ssrf",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:4",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:4",
+        "to": "stack:python/fastapi",
+        "kind": "supports_stack_hypothesis"
+      },
+      {
+        "from": "evidence:5",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:5",
+        "to": "stack:python/fastapi",
+        "kind": "supports_stack_hypothesis"
+      },
+      {
+        "from": "evidence:6",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:6",
+        "to": "stack:python/fastapi",
+        "kind": "supports_stack_hypothesis"
+      },
+      {
+        "from": "evidence:7",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:8",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:8",
+        "to": "family:path_traversal",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:9",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:9",
+        "to": "family:xss",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:10",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:10",
+        "to": "stack:python/flask",
+        "kind": "supports_stack_hypothesis"
+      },
+      {
+        "from": "evidence:11",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:11",
+        "to": "stack:python/flask",
+        "kind": "supports_stack_hypothesis"
+      },
+      {
+        "from": "evidence:12",
+        "to": "family:open_redirect",
+        "kind": "supports_family_hypothesis"
+      },
+      {
+        "from": "evidence:12",
+        "to": "stack:python/flask",
+        "kind": "supports_stack_hypothesis"
+      }
+    ]
+  },
+  "dynamic_eval": {
+    "enabled": true,
+    "status": "degraded_success",
+    "attempted": true,
+    "lower_bound_fallback_used": false
+  },
+  "artifact_quality": {
+    "band": "medium",
+    "score": 8,
+    "generation_authenticity": "degraded_fallback",
+    "readme_present": true,
+    "readme_substantive": true,
+    "readme_quickstart": true,
+    "readme_verification": true,
+    "readme_runtime": true,
+    "runtime_recipe_present": true,
+    "topology_clarity": "medium",
+    "oracle_clarity": "high",
+    "oracle_rigor": "medium",
+    "negative_control_present": true,
+    "metamorphic_present": false,
+    "verification_independence": "independent",
+    "verification_trust": "high",
+    "notes": [
+      "deterministic fallback bundle: operator-facing quality is capped below native dynamic/template artifacts",
+      "oracle contract lacks metamorphic checks",
+      "stack selection remained repo-prior/defaulted rather than evidence-led"
+    ]
+  },
+  "stack_dependence": {
+    "class": "repo_prior_bounded",
+    "working_stack_id": "python/flask",
+    "stack_source": "profile_prior",
+    "stack_locked": false,
+    "stack_defaulted": true,
+    "candidate_count": 2,
+    "ambiguous": true,
+    "repo_prior_bounded": true,
+    "researcher_inferred": false,
+    "top_confidence": "low",
+    "working_stack_evidence_ids": [
+      "evidence:10",
+      "evidence:11",
+      "evidence:12"
+    ],
+    "working_stack_evidence_count": 3,
+    "working_stack_evidence_backed": true
+  },
+  "family_dependence": {
+    "class": "semantic_signature_bounded",
+    "name_only": true,
+    "family_bounded": true,
+    "ambiguous": true,
+    "candidate_count": 4,
+    "selection_source": "semantic_signature",
+    "abstain_reason": null,
+    "working_family": "open_redirect",
+    "working_family_evidence_ids": [
+      "evidence:2",
+      "evidence:3",
+      "evidence:4",
+      "evidence:5",
+      "evidence:6",
+      "evidence:7",
+      "evidence:8",
+      "evidence:9",
+      "evidence:10",
+      "evidence:11",
+      "evidence:12"
+    ],
+    "working_family_evidence_count": 11,
+    "working_family_evidence_backed": true,
+    "candidate_evidence_ids": [
+      "evidence:2",
+      "evidence:3",
+      "evidence:4",
+      "evidence:5",
+      "evidence:6",
+      "evidence:7",
+      "evidence:8",
+      "evidence:9",
+      "evidence:10",
+      "evidence:11",
+      "evidence:12"
+    ],
+    "candidate_evidence_count": 11,
+    "candidate_evidence_backed": true,
+    "resolution_confidence": "high",
+    "resolution_basis": "catalog_alias",
+    "negative_hypothesis_count": 1
+  },
+  "intent_satisfaction": {
+    "request_kind": "name_only",
+    "mode": "dynamic",
+    "status": "degraded_dynamic_success",
+    "meets_intent": false,
+    "partial": true,
+    "reason": "dynamic lane remained runnable, but closure still relied on degraded deterministic fallback",
+    "closure_source": "degraded_deterministic_fallback",
+    "generation_origin": "deterministic_fallback",
+    "fallback_class": "semantic_guided",
+    "llm_path": "stub",
+    "research_quality": "sufficient",
+    "verification_independence": "independent",
+    "verification_trust": "high",
+    "required_contract": {
+      "require_research": true,
+      "require_remote_research": false,
+      "allow_degraded_fallback": true,
+      "allow_lower_bound_recovery": false,
+      "require_strict_open_world": false,
+      "require_independent_verifier": false,
+      "require_live_llm": false,
+      "allowed_closure_sources": [
+        "trusted_dynamic",
+        "strict_open_world_positive"
+      ],
+      "allowed_execution_paths": [
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "intent_satisfying_paths": [
+        "trusted_dynamic",
+        "strict_open_world_positive"
+      ],
+      "allowed_llm_paths": [
+        "live",
+        "fixture",
+        "stub"
+      ],
+      "intent_success_rule": "open_world_positive_only"
+    }
+  },
+  "name_only_outcome": {
+    "request_kind": "name_only",
+    "mode": "dynamic",
+    "decision": "partial",
+    "decision_reason": "degraded_dynamic_success",
+    "abstain_reason": null,
+    "terminal_failure_class": null,
+    "closure_source": "degraded_deterministic_fallback",
+    "allowed_by_execution_contract": true,
+    "satisfies_intent_contract": false,
+    "stage_ceiling": "fully_validated",
+    "fully_validated": true,
+    "next_required_step": "stack_or_runtime_design",
+    "open_world_class": "semantic_guided_minimal_dynamic",
+    "strict_open_world_class": "strict_minimal_dynamic_fallback",
+    "stack_dependence_class": "repo_prior_bounded",
+    "family_dependence_class": "semantic_signature_bounded"
+  },
+  "name_only_decision": "partial",
+  "name_only_next_required_step": "stack_or_runtime_design",
+  "completion_state": {
+    "generated": true,
+    "executed": true,
+    "run_passed": true,
+    "verified": true,
+    "verify_pass": true,
+    "reviewed": true,
+    "review_ready": true,
+    "fully_validated": true,
+    "stage_ceiling": "fully_validated",
+    "generation_origin": "deterministic_fallback"
+  },
+  "stage_ceiling": "fully_validated",
+  "fully_validated": true,
+  "researcher": {
+    "shadow_mode_enabled": false,
+    "force_run": false,
+    "dynamic_eval_enabled": true,
+    "search_policy": "remote_prefer",
+    "report_present": true,
+    "ran": true,
+    "quality": "sufficient",
+    "quality_reason": "sufficient evidence",
+    "search_health_path": "/home/ysw/vulDocker/metadata/sid-41704fcd225a/search_health.json",
+    "search_degraded": false,
+    "guard_fallback": false,
+    "semantic_signature_source": [
+      "pattern"
+    ],
+    "evidence_relevance_score": 0.87,
+    "evidence_relevance_threshold": 0.35,
+    "evidence_relevance_confidence": "high",
+    "candidate_rule_count": 1,
+    "query_plan_present": true,
+    "query_plan_family_hypothesis_count": 1,
+    "evidence_types": {
+      "reference_impl": 5,
+      "reference": 4,
+      "writeup": 3
+    },
+    "query_target_match_rate": 0.25,
+    "top_family_hypothesis": "open_redirect",
+    "top_family_hypothesis_confidence": "high",
+    "top_family_hypothesis_raw_confidence": "high",
+    "family_hypothesis_contradictions": 1,
+    "top_family_hypothesis_margin": 0.28,
+    "family_hypothesis_ambiguous": false,
+    "llm_stub_used": true,
+    "llm_failure_class": "provider_disabled"
+  },
+  "pipeline_returncode": 0,
+  "failure": {},
+  "bundles": [
+    {
+      "slug": "name-open-redirect",
+      "vuln_id": "NAME-OPEN-REDIRECT",
+      "verify_pass": true,
+      "evidence": "Found signature: Exploit SUCCESS, Found flag token: FLAG{OPEN_REDIRECT_OK}, [PASS::contains] substring=found: Exploit SUCCESS, [PASS::contains] substring=found: FLAG{OPEN_REDIRECT_OK}, app.py matches /redirect\\(|RedirectResponse\\(/, app.py matches /request\\.args\\.get\\('next'|next\\s*:\\s*str\\s*=\\s*Query\\(/, poc.py contains 'Exploit SUCCESS', poc.py contains 'FLAG{OPEN_REDIRECT_OK}', Semantic consistency check passed",
+      "run_passed": true,
+      "exit_code": 0,
+      "run_log": "/home/ysw/vulDocker/artifacts/sid-41704fcd225a/run/run.log",
+      "rule": "NAME-OPEN-REDIRECT",
+      "promotion_eligible": true,
+      "promotion_reasons": [],
+      "memory_promotion_eligible": false,
+      "memory_promotion_reasons": [
+        "strict_open_world:strict_minimal_dynamic_fallback",
+        "artifact_quality:medium"
+      ],
+      "support_promotion_eligible": false,
+      "support_promotion_reasons": [
+        "strict_open_world:strict_minimal_dynamic_fallback",
+        "open_world:semantic_guided_minimal_dynamic",
+        "artifact_quality:medium",
+        "stack_selection:defaulted",
+        "name_only_outcome:partial"
+      ],
+      "open_world_readiness": {
+        "ready": false,
+        "blockers": [
+          "strict_open_world_gate",
+          "open_world_non_positive",
+          "artifact_quality_below_high",
+          "stack_defaulted",
+          "name_only_intent_not_met"
+        ],
+        "open_world_class": "semantic_guided_minimal_dynamic",
+        "strict_open_world_class": "strict_minimal_dynamic_fallback",
+        "name_only_decision": "partial",
+        "stack_defaulted": true,
+        "family_evidence_backed": true
+      },
+      "open_world_ready": false,
+      "semantic_supported": true,
+      "semantic_status": "aligned",
+      "semantic_source": "generator_manifest",
+      "verification_rule_source": "declared_rule",
+      "verification_trust": "high",
+      "verification_independence": "independent",
+      "verification_trust_reason": "verification used a declared static/runtime rule contract",
+      "compiler_supported": true,
+      "compiler_strategy": "open_redirect_reflect",
+      "compiler_reason": "compiler strategy and scaffold are available",
+      "compiler_family": null,
+      "stack_scaffold_id": null,
+      "stack_scaffold_version": null,
+      "fragment_id": null,
+      "compose_mode": null,
+      "service_env": null,
+      "request_identity": {
+        "request_label": "Open Redirect",
+        "normalized_request_label": "open redirect",
+        "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+        "input_mode": "free_form_name",
+        "source": "alias",
+        "match_class": "catalog_alias",
+        "confidence": "high",
+        "field": "vuln_name",
+        "synthetic_resolution": false,
+        "catalog_backed_resolution": true,
+        "token_match_resolution": false,
+        "exact_identifier_resolution": false,
+        "name_driven": true
+      },
+      "request_ir": {
+        "raw_label": "Open Redirect",
+        "request_label": "Open Redirect",
+        "normalized_request_label": "open redirect",
+        "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+        "resolved_vuln_id_candidate": "NAME-OPEN-REDIRECT",
+        "input_mode": "free_form_name",
+        "name_driven": true,
+        "resolution_state": "catalog_alias",
+        "resolution_source": "alias",
+        "resolution_match_class": "catalog_alias",
+        "resolution_confidence": "high",
+        "identifier_candidates": [
+          {
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "source": "alias",
+            "confidence": "high"
+          }
+        ],
+        "catalog_backed": true,
+        "token_match_backed": false,
+        "synthetic_resolution": false,
+        "exact_identifier_resolution": false,
+        "pattern_id": "open-redirect",
+        "pattern_seed_state": "preserved",
+        "stack_candidates": [
+          {
+            "stack_id": "python/flask",
+            "source": "profile_prior",
+            "language": "python",
+            "framework": "flask",
+            "confidence": "low",
+            "evidence_ids": [
+              "evidence:10",
+              "evidence:11",
+              "evidence:12"
+            ]
+          },
+          {
+            "stack_id": "python/fastapi",
+            "source": "available_skeleton",
+            "language": "python",
+            "framework": "fastapi",
+            "confidence": "low",
+            "evidence_ids": [
+              "evidence:4",
+              "evidence:5",
+              "evidence:6"
+            ]
+          }
+        ],
+        "family_candidates": [
+          {
+            "family": "open_redirect",
+            "source": "catalog_resolution",
+            "confidence": "high",
+            "matched_vuln_id": "NAME-OPEN-REDIRECT",
+            "evidence_ids": [
+              "evidence:2",
+              "evidence:3",
+              "evidence:4",
+              "evidence:5",
+              "evidence:6",
+              "evidence:7",
+              "evidence:8",
+              "evidence:9",
+              "evidence:10",
+              "evidence:11",
+              "evidence:12"
+            ]
+          },
+          {
+            "family": "xss",
+            "source": "researcher_hypothesis",
+            "confidence": "medium",
+            "score": 0.72,
+            "signal_hits": 3,
+            "evidence_ids": [
+              "evidence:1",
+              "evidence:2",
+              "evidence:9"
+            ]
+          },
+          {
+            "family": "ssrf",
+            "source": "researcher_hypothesis",
+            "confidence": "low",
+            "score": 0.18,
+            "signal_hits": 1,
+            "evidence_ids": [
+              "evidence:3"
+            ]
+          },
+          {
+            "family": "path_traversal",
+            "source": "researcher_hypothesis",
+            "confidence": "low",
+            "score": 0.12,
+            "signal_hits": 1,
+            "evidence_ids": [
+              "evidence:8"
+            ]
+          }
+        ],
+        "abstain_reason": null,
+        "evidence_ids": [
+          "evidence:1",
+          "evidence:2",
+          "evidence:3",
+          "evidence:4",
+          "evidence:5",
+          "evidence:6",
+          "evidence:7",
+          "evidence:8",
+          "evidence:9",
+          "evidence:10",
+          "evidence:11",
+          "evidence:12"
+        ],
+        "name_only_mode": "dynamic",
+        "required_contract": {
+          "effective_mode": "dynamic",
+          "require_research": true,
+          "require_remote_research": false,
+          "allow_degraded_fallback": true,
+          "allow_lower_bound_recovery": false,
+          "allow_curated_lower_bound_closure": false,
+          "allow_template_closure": false,
+          "require_strict_open_world": false,
+          "require_independent_verifier": false,
+          "require_live_llm": false,
+          "allow_stub_llm": true,
+          "allow_fixture_llm": true,
+          "allowed_closure_sources": [
+            "trusted_dynamic",
+            "strict_open_world_positive"
+          ],
+          "allowed_execution_paths": [
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "intent_satisfying_paths": [
+            "trusted_dynamic",
+            "strict_open_world_positive"
+          ],
+          "allowed_llm_paths": [
+            "live",
+            "fixture",
+            "stub"
+          ],
+          "intent_success_rule": "open_world_positive_only"
+        },
+        "negative_hypotheses": [
+          {
+            "family": "xss",
+            "source": "researcher_contradiction",
+            "evidence_ids": [
+              "evidence:1",
+              "evidence:2",
+              "evidence:9"
+            ]
+          }
+        ]
+      },
+      "name_resolution": {
+        "input": "Open Redirect",
+        "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+        "source": "alias",
+        "match_class": "catalog_alias",
+        "confidence": "high"
+      },
+      "generation_origin": "deterministic_fallback",
+      "semantic_guided_selection_source": "semantic_signature",
+      "semantic_guided_abstain_reason": null,
+      "semantic_guided_ambiguous": false,
+      "llm_fixture_used": false,
+      "dynamicness_verdict": "deterministic fallback dependent",
+      "dynamicness_reason": "deterministic fallback generation path was used",
+      "family_non_remote_available": true,
+      "effective_non_remote_available": true,
+      "compiler_path_enabled": true,
+      "executor_feasibility_status": "not_required",
+      "generalization_class": "real_free_form_non_generalizing",
+      "counts_as_generalization": false,
+      "generalization_reason": "name-only dynamic lane closed but resolution confidence/basis is high/catalog_alias",
+      "generalization_confidence": "high",
+      "generalization_basis": "catalog_alias",
+      "open_world_class": "semantic_guided_minimal_dynamic",
+      "counts_as_open_world_generalization": false,
+      "open_world_reason": "name-only lane closed by semantic-guided deterministic fallback using a minimal dynamic materializer; this reduces direct template dependence, but remains below open-world generation",
+      "open_world_confidence": "high",
+      "open_world_basis": "catalog_alias",
+      "strict_open_world_class": "strict_minimal_dynamic_fallback",
+      "counts_as_strict_open_world_generalization": false,
+      "strict_open_world_reason": "bundle closed through a semantic-guided minimal dynamic materializer and remains below strict open-world acceptance",
+      "researcher_quality": "sufficient",
+      "researcher_shadow_mode": false,
+      "researcher_report_present": true,
+      "runtime_recipe": {
+        "language": "python",
+        "framework": "flask",
+        "stack_source": "profile_prior",
+        "stack_locked": false,
+        "stack_defaulted": true,
+        "transport": "http",
+        "service_entry": "app.py",
+        "poc_entry": "poc.py",
+        "service_port": 8000,
+        "db": null,
+        "allow_external_db": false,
+        "requires_external_db": false,
+        "network_mode": "none",
+        "network_enabled": false,
+        "sidecars": [],
+        "service_env": {},
+        "seed_files": [],
+        "topology": "single_service",
+        "output_mode": "auto",
+        "stack_hypotheses": [
+          {
+            "language": "python",
+            "framework": "flask",
+            "stack_id": "python/flask",
+            "source": "profile_prior",
+            "confidence": "low"
+          },
+          {
+            "language": "python",
+            "framework": "fastapi",
+            "stack_id": "python/fastapi",
+            "source": "available_skeleton",
+            "confidence": "low"
+          }
+        ],
+        "health_path": "/health",
+        "source": "resolved_contract",
+        "hypothetical": false,
+        "realized": true
+      },
+      "runtime_graph": {
+        "schema_version": "runtime_graph@0.1",
+        "source": "derived_from_runtime_recipe",
+        "topology": "single_service",
+        "network": {
+          "mode": "none",
+          "enabled": false
+        },
+        "nodes": [
+          {
+            "id": "service",
+            "kind": "service",
+            "role": "primary",
+            "language": "python",
+            "framework": "flask",
+            "entry": "app.py",
+            "transport": "http",
+            "port": 8000
+          }
+        ],
+        "edges": [
+          {
+            "from": "poc",
+            "to": "service",
+            "kind": "exploit_http",
+            "transport": "http",
+            "target_port": 8000
+          }
+        ],
+        "healthchecks": [
+          {
+            "node": "service",
+            "path": "/health",
+            "port": 8000,
+            "transport": "http"
+          }
+        ],
+        "env_contract": [],
+        "exploit_path": {
+          "entrypoint": "poc.py",
+          "target_node": "service",
+          "service_entry": "app.py",
+          "transport": "http",
+          "port": 8000,
+          "base_url": "http://127.0.0.1:8000",
+          "success_signal": "Exploit SUCCESS",
+          "flag_token": "FLAG{OPEN_REDIRECT_OK}"
+        },
+        "hypothetical": false,
+        "realized": true
+      },
+      "evidence_graph": {
+        "schema_version": "evidence_graph@0.1",
+        "source": "researcher_derived",
+        "node_count": 23,
+        "edge_count": 44,
+        "nodes": [
+          {
+            "id": "request",
+            "kind": "request",
+            "label": "Open Redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT"
+          },
+          {
+            "id": "query:1",
+            "kind": "query",
+            "query": "Open Redirect vulnerability writeup exploit poc",
+            "evidence_type": "writeup"
+          },
+          {
+            "id": "query:2",
+            "kind": "query",
+            "query": "Open Redirect vulnerable example python/fastapi",
+            "evidence_type": "stack_anchor"
+          },
+          {
+            "id": "query:3",
+            "kind": "query",
+            "query": "Open Redirect vulnerable example github",
+            "evidence_type": "reference_impl"
+          },
+          {
+            "id": "query:4",
+            "kind": "query",
+            "query": "Open Redirect vulnerable example python/flask",
+            "evidence_type": "stack_anchor"
+          },
+          {
+            "id": "evidence:1",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://github.com/robotmikhro/exploit/blob/master/POC/open-redirect-lead-to-xss-at-pointblank.id/WRITEUP.md",
+            "query": "Open Redirect vulnerability writeup exploit poc",
+            "evidence_type": "reference_impl"
+          },
+          {
+            "id": "evidence:2",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://systemweakness.com/how-an-open-redirect-vulnerability-got-a-bug-bounty-of-500-13ece7a987d8",
+            "query": "Open Redirect vulnerability writeup exploit poc",
+            "evidence_type": "reference"
+          },
+          {
+            "id": "evidence:3",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://infosecwriteups.com/from-open-redirect-to-internal-access-my-ssrf-exploit-story-10a736962f98",
+            "query": "Open Redirect vulnerability writeup exploit poc",
+            "evidence_type": "writeup"
+          },
+          {
+            "id": "evidence:4",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://github.com/python/cpython/issues/132826",
+            "query": "Open Redirect vulnerable example python/fastapi",
+            "evidence_type": "reference_impl"
+          },
+          {
+            "id": "evidence:5",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://www.linkedin.com/posts/threatstats_fastapi-sso-apisecurity-activity-7407900951585492992-aW0c",
+            "query": "Open Redirect vulnerable example python/fastapi",
+            "evidence_type": "reference"
+          },
+          {
+            "id": "evidence:6",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://www.stackhawk.com/blog/what-is-open-redirect/",
+            "query": "Open Redirect vulnerable example python/fastapi",
+            "evidence_type": "writeup"
+          },
+          {
+            "id": "evidence:7",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://github.com/denoyey/Open-Redirect",
+            "query": "Open Redirect vulnerable example github",
+            "evidence_type": "reference_impl"
+          },
+          {
+            "id": "evidence:8",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://swisskyrepo.github.io/PayloadsAllTheThings/Open%20Redirect/",
+            "query": "Open Redirect vulnerable example github",
+            "evidence_type": "reference"
+          },
+          {
+            "id": "evidence:9",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://github.com/Stolichnayer/mist-ce-open-redirect",
+            "query": "Open Redirect vulnerable example github",
+            "evidence_type": "reference_impl"
+          },
+          {
+            "id": "evidence:10",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://github.com/brandon-t-elliott/CVE-2023-49438",
+            "query": "Open Redirect vulnerable example python/flask",
+            "evidence_type": "reference_impl"
+          },
+          {
+            "id": "evidence:11",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://www.pythonkitchen.com/how-prevent-open-redirect-vulnerab-flask/",
+            "query": "Open Redirect vulnerable example python/flask",
+            "evidence_type": "reference"
+          },
+          {
+            "id": "evidence:12",
+            "kind": "evidence",
+            "source": "remote",
+            "provider": "tavily",
+            "url": "https://medium.com/@loveleshgangil/open-redirection-vulnerabilities-complete-guide-to-improper-front-end-redirect-validation-2d40599d8442",
+            "query": "Open Redirect vulnerable example python/flask",
+            "evidence_type": "writeup"
+          },
+          {
+            "id": "family:open_redirect",
+            "kind": "family_hypothesis",
+            "family": "open_redirect",
+            "confidence": "high",
+            "score": 1.0,
+            "matched_aliases": [
+              "open redirect",
+              "redirection",
+              "open redirection"
+            ],
+            "matched_anchors": [
+              "next parameter",
+              "location header",
+              "redirect target"
+            ]
+          },
+          {
+            "id": "family:xss",
+            "kind": "family_hypothesis",
+            "family": "xss",
+            "confidence": "medium",
+            "score": 0.72,
+            "matched_aliases": [
+              "xss",
+              "cross-site scripting"
+            ],
+            "matched_anchors": []
+          },
+          {
+            "id": "family:ssrf",
+            "kind": "family_hypothesis",
+            "family": "ssrf",
+            "confidence": "low",
+            "score": 0.18,
+            "matched_aliases": [
+              "ssrf"
+            ],
+            "matched_anchors": []
+          },
+          {
+            "id": "family:path_traversal",
+            "kind": "family_hypothesis",
+            "family": "path_traversal",
+            "confidence": "low",
+            "score": 0.12,
+            "matched_aliases": [],
+            "matched_anchors": [
+              "../"
+            ]
+          },
+          {
+            "id": "stack:python/flask",
+            "kind": "stack_hypothesis",
+            "stack_id": "python/flask",
+            "confidence": "high",
+            "score": 2.05
+          },
+          {
+            "id": "stack:python/fastapi",
+            "kind": "stack_hypothesis",
+            "stack_id": "python/fastapi",
+            "confidence": "high",
+            "score": 1.45
+          }
+        ],
+        "edges": [
+          {
+            "from": "request",
+            "to": "query:1",
+            "kind": "planned_query"
+          },
+          {
+            "from": "request",
+            "to": "query:2",
+            "kind": "planned_query"
+          },
+          {
+            "from": "request",
+            "to": "query:3",
+            "kind": "planned_query"
+          },
+          {
+            "from": "request",
+            "to": "query:4",
+            "kind": "planned_query"
+          },
+          {
+            "from": "query:1",
+            "to": "evidence:1",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:1",
+            "to": "evidence:2",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:1",
+            "to": "evidence:3",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:2",
+            "to": "evidence:4",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:2",
+            "to": "evidence:5",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:2",
+            "to": "evidence:6",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:3",
+            "to": "evidence:7",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:3",
+            "to": "evidence:8",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:3",
+            "to": "evidence:9",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:4",
+            "to": "evidence:10",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:4",
+            "to": "evidence:11",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "query:4",
+            "to": "evidence:12",
+            "kind": "retrieved_evidence"
+          },
+          {
+            "from": "request",
+            "to": "family:open_redirect",
+            "kind": "family_hypothesis"
+          },
+          {
+            "from": "request",
+            "to": "family:xss",
+            "kind": "family_hypothesis"
+          },
+          {
+            "from": "request",
+            "to": "family:ssrf",
+            "kind": "family_hypothesis"
+          },
+          {
+            "from": "request",
+            "to": "family:path_traversal",
+            "kind": "family_hypothesis"
+          },
+          {
+            "from": "request",
+            "to": "stack:python/flask",
+            "kind": "stack_hypothesis"
+          },
+          {
+            "from": "request",
+            "to": "stack:python/fastapi",
+            "kind": "stack_hypothesis"
+          },
+          {
+            "from": "evidence:1",
+            "to": "family:xss",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:2",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:2",
+            "to": "family:xss",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:3",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:3",
+            "to": "family:ssrf",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:4",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:4",
+            "to": "stack:python/fastapi",
+            "kind": "supports_stack_hypothesis"
+          },
+          {
+            "from": "evidence:5",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:5",
+            "to": "stack:python/fastapi",
+            "kind": "supports_stack_hypothesis"
+          },
+          {
+            "from": "evidence:6",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:6",
+            "to": "stack:python/fastapi",
+            "kind": "supports_stack_hypothesis"
+          },
+          {
+            "from": "evidence:7",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:8",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:8",
+            "to": "family:path_traversal",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:9",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:9",
+            "to": "family:xss",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:10",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:10",
+            "to": "stack:python/flask",
+            "kind": "supports_stack_hypothesis"
+          },
+          {
+            "from": "evidence:11",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:11",
+            "to": "stack:python/flask",
+            "kind": "supports_stack_hypothesis"
+          },
+          {
+            "from": "evidence:12",
+            "to": "family:open_redirect",
+            "kind": "supports_family_hypothesis"
+          },
+          {
+            "from": "evidence:12",
+            "to": "stack:python/flask",
+            "kind": "supports_stack_hypothesis"
+          }
+        ]
+      },
+      "dynamic_eval": {
+        "enabled": true,
+        "status": "degraded_success",
+        "attempted": true,
+        "lower_bound_fallback_used": false
+      },
+      "artifact_quality": {
+        "band": "medium",
+        "score": 8,
+        "generation_authenticity": "degraded_fallback",
+        "readme_present": true,
+        "readme_substantive": true,
+        "readme_quickstart": true,
+        "readme_verification": true,
+        "readme_runtime": true,
+        "runtime_recipe_present": true,
+        "topology_clarity": "medium",
+        "oracle_clarity": "high",
+        "oracle_rigor": "medium",
+        "negative_control_present": true,
+        "metamorphic_present": false,
+        "verification_independence": "independent",
+        "verification_trust": "high",
+        "notes": [
+          "deterministic fallback bundle: operator-facing quality is capped below native dynamic/template artifacts",
+          "oracle contract lacks metamorphic checks",
+          "stack selection remained repo-prior/defaulted rather than evidence-led"
+        ]
+      },
+      "stack_dependence": {
+        "class": "repo_prior_bounded",
+        "working_stack_id": "python/flask",
+        "stack_source": "profile_prior",
+        "stack_locked": false,
+        "stack_defaulted": true,
+        "candidate_count": 2,
+        "ambiguous": true,
+        "repo_prior_bounded": true,
+        "researcher_inferred": false,
+        "top_confidence": "low",
+        "working_stack_evidence_ids": [
+          "evidence:10",
+          "evidence:11",
+          "evidence:12"
+        ],
+        "working_stack_evidence_count": 3,
+        "working_stack_evidence_backed": true
+      },
+      "family_dependence": {
+        "class": "semantic_signature_bounded",
+        "name_only": true,
+        "family_bounded": true,
+        "ambiguous": true,
+        "candidate_count": 4,
+        "selection_source": "semantic_signature",
+        "abstain_reason": null,
+        "working_family": "open_redirect",
+        "working_family_evidence_ids": [
+          "evidence:2",
+          "evidence:3",
+          "evidence:4",
+          "evidence:5",
+          "evidence:6",
+          "evidence:7",
+          "evidence:8",
+          "evidence:9",
+          "evidence:10",
+          "evidence:11",
+          "evidence:12"
+        ],
+        "working_family_evidence_count": 11,
+        "working_family_evidence_backed": true,
+        "candidate_evidence_ids": [
+          "evidence:2",
+          "evidence:3",
+          "evidence:4",
+          "evidence:5",
+          "evidence:6",
+          "evidence:7",
+          "evidence:8",
+          "evidence:9",
+          "evidence:10",
+          "evidence:11",
+          "evidence:12"
+        ],
+        "candidate_evidence_count": 11,
+        "candidate_evidence_backed": true,
+        "resolution_confidence": "high",
+        "resolution_basis": "catalog_alias",
+        "negative_hypothesis_count": 1
+      },
+      "intent_satisfaction": {
+        "request_kind": "name_only",
+        "mode": "dynamic",
+        "status": "degraded_dynamic_success",
+        "meets_intent": false,
+        "partial": true,
+        "reason": "dynamic lane remained runnable, but closure still relied on degraded deterministic fallback",
+        "closure_source": "degraded_deterministic_fallback",
+        "generation_origin": "deterministic_fallback",
+        "fallback_class": "semantic_guided",
+        "llm_path": "stub",
+        "research_quality": "sufficient",
+        "verification_independence": "independent",
+        "verification_trust": "high",
+        "required_contract": {
+          "require_research": true,
+          "require_remote_research": false,
+          "allow_degraded_fallback": true,
+          "allow_lower_bound_recovery": false,
+          "require_strict_open_world": false,
+          "require_independent_verifier": false,
+          "require_live_llm": false,
+          "allowed_closure_sources": [
+            "trusted_dynamic",
+            "strict_open_world_positive"
+          ],
+          "allowed_execution_paths": [
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "intent_satisfying_paths": [
+            "trusted_dynamic",
+            "strict_open_world_positive"
+          ],
+          "allowed_llm_paths": [
+            "live",
+            "fixture",
+            "stub"
+          ],
+          "intent_success_rule": "open_world_positive_only"
+        }
+      },
+      "name_only_outcome": {
+        "request_kind": "name_only",
+        "mode": "dynamic",
+        "decision": "partial",
+        "decision_reason": "degraded_dynamic_success",
+        "abstain_reason": null,
+        "terminal_failure_class": null,
+        "closure_source": "degraded_deterministic_fallback",
+        "allowed_by_execution_contract": true,
+        "satisfies_intent_contract": false,
+        "stage_ceiling": "fully_validated",
+        "fully_validated": true,
+        "next_required_step": "stack_or_runtime_design",
+        "open_world_class": "semantic_guided_minimal_dynamic",
+        "strict_open_world_class": "strict_minimal_dynamic_fallback",
+        "stack_dependence_class": "repo_prior_bounded",
+        "family_dependence_class": "semantic_signature_bounded"
+      },
+      "completion_state": {
+        "generated": true,
+        "executed": true,
+        "run_passed": true,
+        "verified": true,
+        "verify_pass": true,
+        "reviewed": true,
+        "review_ready": true,
+        "fully_validated": true,
+        "stage_ceiling": "fully_validated",
+        "generation_origin": "deterministic_fallback"
+      },
+      "failure_reason": null,
+      "terminal_failure_class": null
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": [],
+    "issues_sample": []
+  },
+  "manifest_path": "/home/ysw/vulDocker/metadata/sid-41704fcd225a/manifest.json",
+  "manifest_file": "manifest.json",
+  "reviewer_path": "/home/ysw/vulDocker/metadata/sid-41704fcd225a/reviewer_report.json"
+}

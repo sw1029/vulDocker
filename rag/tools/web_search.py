@@ -51,6 +51,8 @@ class WebSearchTool:
         self.max_local_files = max_local_files
         self.local_root = get_repo_root() / "rag" / "corpus"
         self._last_execution: Optional[SearchExecution] = None
+        self._remote_backoff_reason: str = ""
+        self._remote_backoff_provider: str = ""
 
     def search(self, query: str, limit: int = 3, policy: str = "remote_prefer") -> List[SearchResult]:
         """Return up to ``limit`` results for a query."""
@@ -101,6 +103,21 @@ class WebSearchTool:
             )
             return local_hits
 
+        if policy == "remote_prefer" and self._remote_backoff_reason:
+            local_hits = self._annotate_hits(self._local_search(query, limit), query)
+            provider_name = self._remote_backoff_provider or self.provider_name or ("custom" if self.endpoint else "none")
+            self._last_execution = SearchExecution(
+                provider=provider_name,
+                configured=bool(self._build_remote_provider()),
+                result_count=len(local_hits),
+                degraded=True,
+                error=self._remote_backoff_reason,
+                endpoint_or_base_url=self.endpoint or self.base_url or None,
+                auth_present=bool(self.api_key) if provider_name == "tavily" else None,
+                request=request.to_payload(),
+            )
+            return local_hits
+
         remote_hits, execution = self._remote_search(request)
         remote_hits = self._annotate_hits(remote_hits, query)
         if policy == "remote_required":
@@ -108,6 +125,8 @@ class WebSearchTool:
             return remote_hits
 
         if remote_hits:
+            self._remote_backoff_reason = ""
+            self._remote_backoff_provider = ""
             self._last_execution = execution
             return remote_hits
 
@@ -115,6 +134,14 @@ class WebSearchTool:
         execution.result_count = len(local_hits)
         if execution.error or not execution.configured:
             execution.degraded = True
+            if execution.error:
+                self._remote_backoff_reason = str(execution.error)
+                self._remote_backoff_provider = str(execution.provider or self.provider_name or "")
+            elif not execution.configured:
+                self._remote_backoff_reason = self._remote_provider_error(
+                    self.provider_name or ("custom" if self.endpoint else "none")
+                )
+                self._remote_backoff_provider = str(execution.provider or self.provider_name or "")
         self._last_execution = execution
         return local_hits
 

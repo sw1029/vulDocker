@@ -184,6 +184,110 @@ def test_unknown_rule_based_verifier_can_use_contract_oracle_json_output(
     assert "resolved_contract oracle contract" in result["evidence"]
 
 
+def test_unknown_rule_based_verifier_uses_contract_oracle_assertion_program_with_negative_markers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    metadata_dir = repo_root / "metadata" / "sid-oracle-assertions"
+    workspace_dir = repo_root / "workspaces" / "sid-oracle-assertions" / "app"
+    run_dir = repo_root / "artifacts" / "sid-oracle-assertions" / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    (workspace_dir / "app.py").write_text("print('service')\n", encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nExploit FAILED\n", encoding="utf-8")
+
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-oracle-assertions",
+            "slug": "cwe-9999",
+            "vuln_id": "CWE-9999",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "exploit_oracle": {
+                "success_signature": "Exploit SUCCESS",
+                "negative_text_markers": ["Exploit FAILED"],
+                "assertion_program": [
+                    {"op": "contains", "string": "Exploit SUCCESS"},
+                    {"op": "not_contains", "string": "Exploit FAILED"},
+                ],
+                "source": "researcher_verification_spec",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-9999",
+        run_dir / "run.log",
+        run_summary={"sid": "sid-oracle-assertions", "slug": "cwe-9999", "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is False
+    assert result["verification_rule_source"] == "contract_oracle_fallback"
+    assert result["verification_independence"] == "contract_coupled"
+
+
+def test_unknown_rule_based_verifier_converts_negative_markers_into_runtime_assertions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    metadata_dir = repo_root / "metadata" / "sid-oracle-negative-markers"
+    workspace_dir = repo_root / "workspaces" / "sid-oracle-negative-markers" / "app"
+    run_dir = repo_root / "artifacts" / "sid-oracle-negative-markers" / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    (workspace_dir / "app.py").write_text("print('service')\n", encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\nExploit FAILED\n", encoding="utf-8")
+
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-oracle-negative-markers",
+            "slug": "cwe-9999",
+            "vuln_id": "CWE-9999",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "exploit_oracle": {
+                "success_signature": "Exploit SUCCESS",
+                "negative_text_markers": ["Exploit FAILED"],
+                "source": "generator_manifest.poc_derived_verification_spec",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CWE-9999",
+        run_dir / "run.log",
+        run_summary={"sid": "sid-oracle-negative-markers", "slug": "cwe-9999", "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is False
+    assert result["verification_rule_source"] == "contract_oracle_fallback"
+    assert result["verification_independence"] == "contract_coupled"
+
+
 def test_rule_based_verifier_fails_closed_when_unknown_contract_status_is_empty(
     tmp_path: Path,
     monkeypatch,

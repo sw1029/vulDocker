@@ -1,77 +1,136 @@
-requirement_id: E2E-TRUSTED-DYNAMIC-SQLI-0001
-intent: 'E2E 회귀: fixture-backed llm_manifest trusted-dynamic SQLi 검증'
+vuln_name: Foobar
+vuln_id: NAME-FOOBAR
 vuln_ids:
-- CWE-89
+- NAME-FOOBAR
 multi_vuln: false
+vuln_id_resolutions:
+- field: vuln_name
+  input: Foobar
+  resolved_vuln_id: NAME-FOOBAR
+  source: synthetic_name
+  match_class: synthetic_name
+  confidence: low
+vuln_request_identities:
+- request_label: Foobar
+  normalized_request_label: foobar
+  resolved_vuln_id: NAME-FOOBAR
+  input_mode: free_form_name
+  source: synthetic_name
+  match_class: synthetic_name
+  confidence: low
+  field: vuln_name
+  synthetic_resolution: true
+  catalog_backed_resolution: false
+  token_match_resolution: false
+  exact_identifier_resolution: false
+  name_driven: true
+name_resolution:
+  field: vuln_name
+  input: Foobar
+  resolved_vuln_id: NAME-FOOBAR
+  source: synthetic_name
+  match_class: synthetic_name
+  confidence: low
+request_identity:
+  request_label: Foobar
+  normalized_request_label: foobar
+  resolved_vuln_id: NAME-FOOBAR
+  input_mode: free_form_name
+  source: synthetic_name
+  match_class: synthetic_name
+  confidence: low
+  field: vuln_name
+  synthetic_resolution: true
+  catalog_backed_resolution: false
+  token_match_resolution: false
+  exact_identifier_resolution: false
+  name_driven: true
+requirement_id: AUTO-NAME-FOOBAR
+intent: Auto-normalized minimal-input run for Foobar
+vuln_label: Foobar
 language: python
 framework: flask
-seed: 4242
+seed: 1000
 retriever_commit: stub
 corpus_snapshot: rag-snap-mvp
-pattern_id: sqli-string-concat
-deps_digest: sha256:placeholder
+pattern_id: generic-web-vuln
+deps_digest: sha256:auto
 base_image_digest: sha256:python311
-allow_intentional_vuln: true
+generator_mode: synthesis
 runtime:
   base_image: python:3.11-slim
   package_manager: pip
-  db: sqlite
   allow_external_db: false
-user_deps:
-- requests==2.31.0
-- pymysql
-generator_mode: synthesis
-variation_key:
-  mode: deterministic
-  self_consistency_k: 1
-  pattern_pool_seed: 4242
 dep_guard:
   llm_assist: true
   auto_patch: true
+user_deps:
+- requests==2.31.0
+_normalization_defaults:
+  profile: Foobar
+  applied_fields:
+  - requirement_id
+  - intent
+  - vuln_label
+  - language
+  - framework
+  - seed
+  - retriever_commit
+  - corpus_snapshot
+  - pattern_id
+  - deps_digest
+  - base_image_digest
+  - generator_mode
+  - runtime.base_image
+  - runtime.package_manager
+  - runtime.allow_external_db
+  - dep_guard.llm_assist
+  - dep_guard.auto_patch
+  - user_deps
+researcher:
+  search_policy: remote_required
+  generate_candidate_templates: false
+  shadow_mode: false
+  search_filters: {}
 policy:
-  stop_on_first_failure: false
+  allow_runtime_rule_override_static: false
+  allow_name_family_fallback: false
+  open_world_strict: false
   dynamic_eval: false
   dynamic_eval_allow_lower_bound_fallback: false
+  name_only_mode: compatibility
+  require_researcher_evidence: true
+  allow_unknown_pattern_seed: false
   guard:
     enforcement: block_both
     failure_policy: closed_unknown
     dynamic_scope: assertions_semantics
-    unsupported_op_policy: normalize_retry
-    refresh_researcher_on_guard_dsl_error: true
-    semantic_refresh_threshold: 2
-    hint_payload_enabled: true
-    failure_fingerprint_window: 3
     call_budget:
       mode: bundle_once
       ensemble_runs: 3
     autofix:
       level: code
       max_attempts: 1
+    unsupported_op_policy: normalize_retry
     low_confidence_unknown_policy: warn
+    refresh_researcher_on_guard_dsl_error: true
+    semantic_refresh_threshold: 2
+    hint_payload_enabled: true
+    failure_fingerprint_window: 3
   verifier:
-    require_exit_code_zero: true
-    strict_flag_default: true
-    prefer_rule: true
-    llm_assist: true
     low_trust_unknown_policy: warn
     min_promotion_independence: compiler_coupled
     min_name_resolution_confidence: low
-  allow_runtime_rule_override_static: false
-  allow_name_family_fallback: false
-  open_world_strict: false
-  name_only_mode: compatibility
-  require_researcher_evidence: false
-  allow_unknown_pattern_seed: false
   name_only_contract:
-    enabled: false
+    enabled: true
     mode: compatibility
     effective_mode: compatibility
     require_research: false
-    require_remote_research: false
+    require_remote_research: true
     allow_degraded_fallback: false
     allow_lower_bound_recovery: false
-    allow_curated_lower_bound_closure: false
-    allow_template_closure: false
+    allow_curated_lower_bound_closure: true
+    allow_template_closure: true
     require_strict_open_world: false
     require_independent_verifier: false
     require_live_llm: false
@@ -100,111 +159,46 @@ policy:
     - fixture
     - stub
     intent_success_rule: any_non_failed_runnable_closure
-executor:
-  allow_network: false
-  network_mode: none
-  sidecars: []
-compiler:
-  enabled: false
-vuln_id: CWE-89
-vuln_id_resolutions:
-- field: vuln_ids[0]
-  input: CWE-89
-  resolved_vuln_id: CWE-89
-  source: alias
-  match_class: catalog_alias
-  confidence: high
-vuln_request_identities:
-- request_label: CWE-89
-  normalized_request_label: cwe 89
-  resolved_vuln_id: CWE-89
-  input_mode: explicit_identifier
-  source: alias
-  match_class: catalog_alias
-  confidence: high
-  field: vuln_ids[0]
-  synthetic_resolution: false
-  catalog_backed_resolution: true
-  token_match_resolution: false
-  exact_identifier_resolution: false
-  name_driven: false
-name_resolution:
-  field: vuln_ids[0]
-  input: CWE-89
-  resolved_vuln_id: CWE-89
-  source: alias
-  match_class: catalog_alias
-  confidence: high
-request_identity:
-  request_label: CWE-89
-  normalized_request_label: cwe 89
-  resolved_vuln_id: CWE-89
-  input_mode: explicit_identifier
-  source: alias
-  match_class: catalog_alias
-  confidence: high
-  field: vuln_ids[0]
-  synthetic_resolution: false
-  catalog_backed_resolution: true
-  token_match_resolution: false
-  exact_identifier_resolution: false
-  name_driven: false
-vuln_label: SQL Injection
-_normalization_defaults:
-  profile: SQL Injection
-  applied_fields:
-  - vuln_label
-researcher:
-  search_policy: remote_prefer
-  generate_candidate_templates: false
-  shadow_mode: false
-  search_filters: {}
 request_ir:
-  raw_label: CWE-89
-  request_label: CWE-89
-  normalized_request_label: cwe 89
-  resolved_vuln_id: CWE-89
-  resolved_vuln_id_candidate: CWE-89
-  input_mode: explicit_identifier
-  name_driven: false
-  resolution_state: catalog_alias
-  resolution_source: alias
-  resolution_match_class: catalog_alias
-  resolution_confidence: high
+  raw_label: Foobar
+  request_label: Foobar
+  normalized_request_label: foobar
+  resolved_vuln_id: NAME-FOOBAR
+  resolved_vuln_id_candidate: NAME-FOOBAR
+  input_mode: free_form_name
+  name_driven: true
+  resolution_state: synthetic_name
+  resolution_source: synthetic_name
+  resolution_match_class: synthetic_name
+  resolution_confidence: low
   identifier_candidates:
-  - vuln_id: CWE-89
-    source: alias
-    confidence: high
-  - vuln_id: NAME-CWE-89
-    source: synthetic_name_preview
+  - vuln_id: NAME-FOOBAR
+    source: synthetic_name
     confidence: low
-  catalog_backed: true
+  catalog_backed: false
   token_match_backed: false
-  synthetic_resolution: false
+  synthetic_resolution: true
   exact_identifier_resolution: false
-  pattern_id: sqli-string-concat
-  pattern_seed_state: preserved
+  pattern_id: generic-web-vuln
+  pattern_seed_state: genericized_unknown
   stack_candidates:
   - language: python
     framework: flask
     stack_id: python/flask
     source: explicit_requirement
     confidence: high
-  family_candidates:
-  - family: sql_injection
-    source: catalog_resolution
-    confidence: high
+  family_candidates: []
   abstain_reason: null
   evidence_ids: []
   name_only_mode: compatibility
   required_contract:
     effective_mode: compatibility
     require_research: false
-    require_remote_research: false
+    require_remote_research: true
     allow_degraded_fallback: false
     allow_lower_bound_recovery: false
-    allow_curated_lower_bound_closure: false
-    allow_template_closure: false
+    allow_curated_lower_bound_closure: true
+    allow_template_closure: true
     require_strict_open_world: false
     require_independent_verifier: false
     require_live_llm: false
@@ -234,51 +228,45 @@ request_ir:
     - stub
     intent_success_rule: any_non_failed_runnable_closure
 vuln_request_irs:
-- raw_label: CWE-89
-  request_label: CWE-89
-  normalized_request_label: cwe 89
-  resolved_vuln_id: CWE-89
-  resolved_vuln_id_candidate: CWE-89
-  input_mode: explicit_identifier
-  name_driven: false
-  resolution_state: catalog_alias
-  resolution_source: alias
-  resolution_match_class: catalog_alias
-  resolution_confidence: high
+- raw_label: Foobar
+  request_label: Foobar
+  normalized_request_label: foobar
+  resolved_vuln_id: NAME-FOOBAR
+  resolved_vuln_id_candidate: NAME-FOOBAR
+  input_mode: free_form_name
+  name_driven: true
+  resolution_state: synthetic_name
+  resolution_source: synthetic_name
+  resolution_match_class: synthetic_name
+  resolution_confidence: low
   identifier_candidates:
-  - vuln_id: CWE-89
-    source: alias
-    confidence: high
-  - vuln_id: NAME-CWE-89
-    source: synthetic_name_preview
+  - vuln_id: NAME-FOOBAR
+    source: synthetic_name
     confidence: low
-  catalog_backed: true
+  catalog_backed: false
   token_match_backed: false
-  synthetic_resolution: false
+  synthetic_resolution: true
   exact_identifier_resolution: false
-  pattern_id: sqli-string-concat
-  pattern_seed_state: preserved
+  pattern_id: generic-web-vuln
+  pattern_seed_state: genericized_unknown
   stack_candidates:
   - language: python
     framework: flask
     stack_id: python/flask
     source: explicit_requirement
     confidence: high
-  family_candidates:
-  - family: sql_injection
-    source: catalog_resolution
-    confidence: high
+  family_candidates: []
   abstain_reason: null
   evidence_ids: []
   name_only_mode: compatibility
   required_contract:
     effective_mode: compatibility
     require_research: false
-    require_remote_research: false
+    require_remote_research: true
     allow_degraded_fallback: false
     allow_lower_bound_recovery: false
-    allow_curated_lower_bound_closure: false
-    allow_template_closure: false
+    allow_curated_lower_bound_closure: true
+    allow_template_closure: true
     require_strict_open_world: false
     require_independent_verifier: false
     require_live_llm: false

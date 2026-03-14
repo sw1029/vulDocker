@@ -7,8 +7,8 @@
     "pipeline_returncode": 0,
     "generation_origin": "compiler_generated",
     "dynamicness_verdict": "compiler-first",
-    "generalization_class": "real_free_form_positive",
-    "counts_as_generalization": true
+    "generalization_class": "real_free_form_curated_lower_bound",
+    "counts_as_generalization": false
   },
   "evals": [
     {
@@ -23,8 +23,8 @@
       "dynamicness_verdict": "compiler-first",
       "semantic_supported": true,
       "semantic_status": "aligned",
-      "generalization_class": "real_free_form_positive",
-      "counts_as_generalization": true
+      "generalization_class": "real_free_form_curated_lower_bound",
+      "counts_as_generalization": false
     }
   ],
   "reviewer": {

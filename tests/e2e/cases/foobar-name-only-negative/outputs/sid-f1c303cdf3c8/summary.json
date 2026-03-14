@@ -1,0 +1,1227 @@
+{
+  "sid": "sid-f1c303cdf3c8",
+  "overall_pass": null,
+  "pipeline_result": "failure",
+  "promotion_eligible": false,
+  "promotion_reasons": [
+    "name-foobar: pipeline:run_missing",
+    "name-foobar: pipeline:verify_missing",
+    "name-foobar: pipeline:review_missing",
+    "name-foobar: compiler:unsupported",
+    "name-foobar: compiler_reason:semantic family unsupported for compiler-backed generation"
+  ],
+  "memory_promotion": {
+    "eligible": false,
+    "reasons": [
+      "base_promotion:ineligible",
+      "strict_open_world:strict_fail_closed_negative",
+      "artifact_quality:low",
+      "oracle_clarity:missing",
+      "topology_clarity:missing"
+    ]
+  },
+  "memory_promotion_eligible": false,
+  "support_promotion": {
+    "eligible": false,
+    "reasons": [
+      "base_promotion:ineligible",
+      "strict_open_world:strict_fail_closed_negative",
+      "open_world:unsupported_free_form_negative",
+      "artifact_quality:low",
+      "oracle_clarity:missing",
+      "topology_clarity:missing",
+      "family_evidence:candidate_unbacked",
+      "name_only_outcome:abstain"
+    ]
+  },
+  "support_promotion_eligible": false,
+  "open_world_readiness_summary": {
+    "bundle_count": 1,
+    "ready_bundles": 0,
+    "not_ready_bundles": 1,
+    "all_ready": false,
+    "by_blocker": {
+      "base_promotion_ineligible": 1,
+      "strict_open_world_gate": 1,
+      "open_world_non_positive": 1,
+      "artifact_quality_below_high": 1,
+      "oracle_clarity_below_high": 1,
+      "topology_clarity_below_medium": 1,
+      "family_candidate_evidence_missing": 1,
+      "name_only_intent_not_met": 1
+    }
+  },
+  "boundedness_summary": {
+    "catalog_entries": 12,
+    "catalog_families": 12,
+    "family_hint_families": 12,
+    "template_count": 3,
+    "scaffold_stack_pool": 2,
+    "compiler_strategy_count": 13,
+    "semantic_guided_family_builders": 12,
+    "executor_topology_classes": [
+      "single_service",
+      "service_plus_sidecar"
+    ],
+    "executor_multi_primary_supported": false,
+    "closed_vocabulary_family_discovery": true,
+    "stack_pool_bounded": true,
+    "compiler_registry_bounded": true,
+    "executor_topology_bounded": true
+  },
+  "open_world_readiness": {
+    "ready": false,
+    "blockers": [
+      "base_promotion_ineligible",
+      "strict_open_world_gate",
+      "open_world_non_positive",
+      "artifact_quality_below_high",
+      "oracle_clarity_below_high",
+      "topology_clarity_below_medium",
+      "family_candidate_evidence_missing",
+      "name_only_intent_not_met"
+    ],
+    "open_world_class": "unsupported_free_form_negative",
+    "strict_open_world_class": "strict_fail_closed_negative",
+    "name_only_decision": "abstain",
+    "stack_defaulted": false,
+    "family_evidence_backed": false
+  },
+  "open_world_ready": false,
+  "generation_summary": {
+    "bundle_count": 1,
+    "by_origin": {
+      "research_short_circuit": 1
+    },
+    "by_dynamicness_verdict": {
+      "pre-generation fail-closed": 1
+    },
+    "by_compose_mode": {},
+    "by_stack_scaffold_id": {},
+    "llm_stub_bundles": 0,
+    "llm_fixture_bundles": 0,
+    "fallback_bundles": 0,
+    "family_override_bundles": 0,
+    "template_origin_bundles": 0,
+    "template_assisted_bundles": 0,
+    "registry_compose_bundles": 0,
+    "scaffolded_bundles": 0,
+    "dynamic_eval_attempted_bundles": 0,
+    "dynamic_eval_recovered_bundles": 0
+  },
+  "compiler_contract_summary": {
+    "bundle_count": 1,
+    "supported_bundles": 0,
+    "unsupported_bundles": 1,
+    "by_strategy": {},
+    "by_support_level": {
+      "unsupported": 1
+    }
+  },
+  "verification_summary": {
+    "bundle_count": 1,
+    "by_rule_source": {},
+    "by_trust": {},
+    "by_independence": {},
+    "low_trust_bundles": 0
+  },
+  "researcher_summary": {
+    "bundle_count": 1,
+    "shadow_mode_bundles": 0,
+    "report_present_bundles": 0,
+    "ran_bundles": 0,
+    "skipped_bundles": 0,
+    "degraded_bundles": 0,
+    "query_plan_bundles": 0,
+    "contradiction_bundles": 0,
+    "ambiguous_family_hypothesis_bundles": 0,
+    "by_quality": {},
+    "by_top_family_hypothesis": {},
+    "by_top_family_confidence": {},
+    "avg_query_target_match_rate": 0.0
+  },
+  "request_identity_summary": {
+    "bundle_count": 1,
+    "name_driven_bundles": 1,
+    "synthetic_resolution_bundles": 1,
+    "by_input_mode": {
+      "free_form_name": 1
+    },
+    "by_match_class": {
+      "synthetic_name": 1
+    },
+    "by_confidence": {
+      "low": 1
+    }
+  },
+  "request_ir_summary": {
+    "bundle_count": 1,
+    "name_driven_bundles": 1,
+    "evidence_backed_bundles": 0,
+    "abstain_signaled_bundles": 0,
+    "multi_identifier_candidate_bundles": 0,
+    "ambiguous_family_candidate_bundles": 0,
+    "ambiguous_stack_candidate_bundles": 0,
+    "negative_hypothesis_bundles": 0,
+    "avg_identifier_candidate_count": 1.0,
+    "avg_family_candidate_count": 0.0,
+    "avg_stack_candidate_count": 1.0,
+    "avg_negative_hypothesis_count": 0.0,
+    "by_resolution_state": {
+      "synthetic_name": 1
+    },
+    "by_resolution_match_class": {
+      "synthetic_name": 1
+    },
+    "by_resolution_confidence": {
+      "low": 1
+    }
+  },
+  "name_resolution_summary": {
+    "bundle_count": 1,
+    "resolved_bundles": 1,
+    "by_source": {
+      "synthetic_name": 1
+    },
+    "by_confidence": {
+      "low": 1
+    },
+    "by_match_class": {
+      "synthetic_name": 1
+    }
+  },
+  "generalization_summary": {
+    "bundle_count": 1,
+    "positive_generalization_bundles": 0,
+    "realized_bundles": 0,
+    "hypothetical_bundles": 1,
+    "fully_validated_bundles": 0,
+    "realized_positive_generalization_bundles": 0,
+    "fully_validated_positive_generalization_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "by_class": {
+      "unsupported_free_form_negative": 1
+    },
+    "by_confidence": {
+      "low": 1
+    },
+    "by_basis": {
+      "synthetic_name": 1
+    }
+  },
+  "open_world_summary": {
+    "bundle_count": 1,
+    "positive_open_world_bundles": 0,
+    "realized_bundles": 0,
+    "hypothetical_bundles": 1,
+    "fully_validated_bundles": 0,
+    "realized_positive_open_world_bundles": 0,
+    "fully_validated_positive_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "template_dependent_bundles": 0,
+    "by_class": {
+      "unsupported_free_form_negative": 1
+    },
+    "by_confidence": {
+      "low": 1
+    },
+    "by_basis": {
+      "synthetic_name": 1
+    }
+  },
+  "strict_open_world_summary": {
+    "bundle_count": 1,
+    "positive_strict_open_world_bundles": 0,
+    "realized_bundles": 0,
+    "hypothetical_bundles": 1,
+    "fully_validated_bundles": 0,
+    "realized_positive_strict_open_world_bundles": 0,
+    "fully_validated_positive_strict_open_world_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "template_dependent_bundles": 0,
+    "fixture_backed_bundles": 0,
+    "stub_backed_bundles": 0,
+    "research_degraded_bundles": 0,
+    "verifier_coupled_bundles": 0,
+    "by_class": {
+      "strict_fail_closed_negative": 1
+    }
+  },
+  "dynamic_eval_summary": {
+    "bundle_count": 1,
+    "enabled_bundles": 0,
+    "attempted_bundles": 0,
+    "lower_bound_recovered_bundles": 0,
+    "by_status": {},
+    "by_fallback_path": {}
+  },
+  "artifact_quality_summary": {
+    "bundle_count": 1,
+    "average_score": 0.0,
+    "by_band": {
+      "low": 1
+    },
+    "readme_present_bundles": 0,
+    "runtime_recipe_bundles": 0,
+    "stack_defaulted_bundles": 0
+  },
+  "evidence_graph_summary": {
+    "bundle_count": 1,
+    "graph_present_bundles": 0,
+    "average_node_count": 0.0,
+    "average_edge_count": 0.0,
+    "by_node_kind": {},
+    "by_edge_kind": {}
+  },
+  "template_dependence_summary": {
+    "bundle_count": 1,
+    "template_assisted_bundles": 0,
+    "template_dependent_bundles": 0,
+    "lower_bound_dependent_bundles": 0,
+    "name_only_lower_bound_bundles": 0,
+    "open_world_positive_bundles": 0,
+    "minimal_dynamic_bundles": 0,
+    "realized_minimal_dynamic_bundles": 0,
+    "fully_validated_minimal_dynamic_bundles": 0,
+    "hypothetical_lower_bound_bundles": 0,
+    "by_open_world_class": {
+      "unsupported_free_form_negative": 1
+    }
+  },
+  "runtime_surface_summary": {
+    "bundle_count": 1,
+    "realized_bundles": 0,
+    "hypothetical_bundles": 1,
+    "network_enabled_bundles": 0,
+    "sidecar_bundles": 0,
+    "by_topology": {
+      "single_service": 1
+    }
+  },
+  "stack_dependence_summary": {
+    "bundle_count": 1,
+    "repo_prior_bounded_bundles": 0,
+    "stack_defaulted_bundles": 0,
+    "researcher_inferred_bundles": 0,
+    "ambiguous_bundles": 0,
+    "locked_bundles": 1,
+    "evidence_backed_bundles": 0,
+    "by_class": {
+      "explicit_requirement_locked": 1
+    },
+    "by_stack_source": {
+      "explicit_requirement": 1
+    }
+  },
+  "family_dependence_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "family_bounded_bundles": 0,
+    "ambiguous_bundles": 0,
+    "evidence_backed_bundles": 0,
+    "candidate_evidence_backed_bundles": 0,
+    "negative_hypothesis_bundles": 0,
+    "by_class": {
+      "precondition_failed": 1
+    },
+    "by_selection_source": {},
+    "by_abstain_reason": {},
+    "by_resolution_confidence": {
+      "low": 1
+    },
+    "by_resolution_basis": {
+      "synthetic_name": 1
+    }
+  },
+  "intent_satisfaction_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "meets_intent_bundles": 0,
+    "partial_bundles": 0,
+    "all_name_only_meet_intent": false,
+    "by_status": {
+      "compatibility_failed": 1
+    },
+    "by_closure_source": {
+      "failed": 1
+    },
+    "by_llm_path": {
+      "not_used": 1
+    },
+    "by_research_quality": {
+      "unknown": 1
+    }
+  },
+  "name_only_outcome_summary": {
+    "bundle_count": 1,
+    "name_only_bundles": 1,
+    "intent_met_bundles": 0,
+    "partial_bundles": 0,
+    "abstained_bundles": 1,
+    "fail_closed_bundles": 0,
+    "failed_bundles": 0,
+    "by_decision": {
+      "abstain": 1
+    },
+    "by_next_required_step": {
+      "research": 1
+    },
+    "by_abstain_reason": {
+      "semantic_support_missing": 1
+    },
+    "by_terminal_failure_class": {
+      "semantic_support_missing": 1
+    },
+    "by_stage_ceiling": {
+      "pre_generation": 1
+    }
+  },
+  "partial_progress_summary": {
+    "bundle_count": 1,
+    "successful_bundles": 0,
+    "failed_bundles": 1,
+    "executed_bundles": 0,
+    "verified_bundles": 0,
+    "research_blocked_bundles": 1,
+    "partial_success": false
+  },
+  "completion_summary": {
+    "bundle_count": 1,
+    "generated_bundles": 0,
+    "executed_bundles": 0,
+    "verified_bundles": 0,
+    "reviewed_bundles": 0,
+    "fully_validated_bundles": 0,
+    "by_stage_ceiling": {
+      "pre_generation": 1
+    }
+  },
+  "compiler_supported": false,
+  "compiler_strategy": null,
+  "compiler_reason": "semantic family unsupported for compiler-backed generation",
+  "compiler_family": null,
+  "stack_scaffold_id": null,
+  "stack_scaffold_version": null,
+  "fragment_id": null,
+  "compose_mode": null,
+  "service_env": null,
+  "request_identity": {
+    "request_label": "Foobar",
+    "normalized_request_label": "foobar",
+    "resolved_vuln_id": "NAME-FOOBAR",
+    "input_mode": "free_form_name",
+    "source": "synthetic_name",
+    "match_class": "synthetic_name",
+    "confidence": "low",
+    "field": "vuln_name",
+    "synthetic_resolution": true,
+    "catalog_backed_resolution": false,
+    "token_match_resolution": false,
+    "exact_identifier_resolution": false,
+    "name_driven": true
+  },
+  "request_ir": {
+    "raw_label": "Foobar",
+    "request_label": "Foobar",
+    "normalized_request_label": "foobar",
+    "resolved_vuln_id": "NAME-FOOBAR",
+    "resolved_vuln_id_candidate": "NAME-FOOBAR",
+    "input_mode": "free_form_name",
+    "name_driven": true,
+    "resolution_state": "synthetic_name",
+    "resolution_source": "synthetic_name",
+    "resolution_match_class": "synthetic_name",
+    "resolution_confidence": "low",
+    "identifier_candidates": [
+      {
+        "vuln_id": "NAME-FOOBAR",
+        "source": "synthetic_name",
+        "confidence": "low"
+      }
+    ],
+    "catalog_backed": false,
+    "token_match_backed": false,
+    "synthetic_resolution": true,
+    "exact_identifier_resolution": false,
+    "pattern_id": "generic-web-vuln",
+    "pattern_seed_state": "genericized_unknown",
+    "stack_candidates": [
+      {
+        "language": "python",
+        "framework": "flask",
+        "stack_id": "python/flask",
+        "source": "explicit_requirement",
+        "confidence": "high"
+      }
+    ],
+    "family_candidates": [],
+    "abstain_reason": null,
+    "evidence_ids": [],
+    "name_only_mode": "compatibility",
+    "required_contract": {
+      "effective_mode": "compatibility",
+      "require_research": false,
+      "require_remote_research": true,
+      "allow_degraded_fallback": false,
+      "allow_lower_bound_recovery": false,
+      "allow_curated_lower_bound_closure": true,
+      "allow_template_closure": true,
+      "require_strict_open_world": false,
+      "require_independent_verifier": false,
+      "require_live_llm": false,
+      "allow_stub_llm": true,
+      "allow_fixture_llm": true,
+      "allowed_closure_sources": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "allowed_execution_paths": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "intent_satisfying_paths": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "allowed_llm_paths": [
+        "live",
+        "fixture",
+        "stub"
+      ],
+      "intent_success_rule": "any_non_failed_runnable_closure"
+    }
+  },
+  "name_resolution": {
+    "field": "vuln_name",
+    "input": "Foobar",
+    "resolved_vuln_id": "NAME-FOOBAR",
+    "source": "synthetic_name",
+    "match_class": "synthetic_name",
+    "confidence": "low"
+  },
+  "generation_origin": "research_short_circuit",
+  "semantic_guided_selection_source": null,
+  "semantic_guided_abstain_reason": null,
+  "semantic_guided_ambiguous": null,
+  "verification_rule_source": null,
+  "verification_trust": null,
+  "verification_independence": null,
+  "semantic_supported": false,
+  "semantic_status": "unsupported",
+  "semantic_source": "resolved_contract.semantic_contract",
+  "llm_fixture_used": false,
+  "provider_health_state": "not_probed",
+  "total_duration_s": 0.093,
+  "performance_retry_count": 0,
+  "performance_by_stage": {
+    "RESEARCH": {
+      "count": 1,
+      "duration_s": 0.0,
+      "skipped": 0
+    },
+    "PACK": {
+      "count": 1,
+      "duration_s": 0.093,
+      "skipped": 0
+    }
+  },
+  "dynamicness_verdict": "pre-generation fail-closed",
+  "dynamicness_reason": "generation was skipped after semantic support precheck",
+  "family_non_remote_available": false,
+  "effective_non_remote_available": false,
+  "compiler_path_enabled": true,
+  "executor_feasibility_status": "not_required",
+  "generalization_class": "unsupported_free_form_negative",
+  "counts_as_generalization": false,
+  "generalization_reason": "name-only dynamic family is unsupported and intentionally fail-closed",
+  "generalization_confidence": "low",
+  "generalization_basis": "synthetic_name",
+  "open_world_class": "unsupported_free_form_negative",
+  "counts_as_open_world_generalization": false,
+  "open_world_reason": "free-form NAME-* family is unsupported and intentionally fail-closed",
+  "open_world_confidence": "low",
+  "open_world_basis": "synthetic_name",
+  "strict_open_world_class": "strict_fail_closed_negative",
+  "counts_as_strict_open_world_generalization": false,
+  "strict_open_world_reason": "bundle stopped before generation, so it cannot count as strict open-world evidence",
+  "runtime_recipe": {
+    "language": "python",
+    "framework": "flask",
+    "stack_source": "explicit_requirement",
+    "stack_locked": true,
+    "stack_defaulted": false,
+    "transport": "http",
+    "service_entry": "app.py",
+    "poc_entry": "poc.py",
+    "service_port": 5000,
+    "db": null,
+    "allow_external_db": false,
+    "requires_external_db": false,
+    "network_mode": "none",
+    "network_enabled": false,
+    "sidecars": [],
+    "service_env": {},
+    "seed_files": [],
+    "topology": "single_service",
+    "output_mode": "auto",
+    "source": "resolved_contract",
+    "hypothetical": true,
+    "realized": false
+  },
+  "runtime_recipe_hypothetical": true,
+  "runtime_graph": {
+    "schema_version": "runtime_graph@0.1",
+    "source": "derived_from_runtime_recipe",
+    "topology": "single_service",
+    "network": {
+      "mode": "none",
+      "enabled": false
+    },
+    "nodes": [
+      {
+        "id": "service",
+        "kind": "service",
+        "role": "primary",
+        "language": "python",
+        "framework": "flask",
+        "entry": "app.py",
+        "transport": "http",
+        "port": 5000
+      }
+    ],
+    "edges": [
+      {
+        "from": "poc",
+        "to": "service",
+        "kind": "exploit_http",
+        "transport": "http",
+        "target_port": 5000
+      }
+    ],
+    "healthchecks": [],
+    "env_contract": [],
+    "exploit_path": {
+      "entrypoint": "poc.py",
+      "target_node": "service",
+      "service_entry": "app.py",
+      "transport": "http",
+      "port": 5000,
+      "base_url": "http://127.0.0.1:5000",
+      "success_signal": null,
+      "flag_token": null
+    },
+    "hypothetical": true,
+    "realized": false
+  },
+  "runtime_graph_hypothetical": true,
+  "evidence_graph": {},
+  "dynamic_eval": {
+    "enabled": false,
+    "attempted": false
+  },
+  "artifact_quality": {
+    "band": "low",
+    "score": 0,
+    "generation_authenticity": "native",
+    "readme_present": false,
+    "readme_substantive": false,
+    "readme_quickstart": false,
+    "readme_verification": false,
+    "readme_runtime": false,
+    "runtime_recipe_present": false,
+    "topology_clarity": "missing",
+    "oracle_clarity": "missing",
+    "oracle_rigor": "missing",
+    "negative_control_present": false,
+    "metamorphic_present": false,
+    "verification_independence": "missing",
+    "verification_trust": "missing",
+    "notes": [
+      "README missing",
+      "runtime topology clarity is incomplete",
+      "exploit oracle clarity is limited",
+      "bundle stopped before code generation; runtime recipe remains planning-only"
+    ]
+  },
+  "stack_dependence": {
+    "class": "explicit_requirement_locked",
+    "working_stack_id": "python/flask",
+    "stack_source": "explicit_requirement",
+    "stack_locked": true,
+    "stack_defaulted": false,
+    "candidate_count": 1,
+    "ambiguous": false,
+    "repo_prior_bounded": false,
+    "researcher_inferred": false,
+    "top_confidence": "high",
+    "working_stack_evidence_ids": [],
+    "working_stack_evidence_count": 0,
+    "working_stack_evidence_backed": false
+  },
+  "family_dependence": {
+    "class": "precondition_failed",
+    "name_only": true,
+    "family_bounded": false,
+    "ambiguous": false,
+    "candidate_count": 0,
+    "selection_source": null,
+    "abstain_reason": null,
+    "working_family": null,
+    "working_family_evidence_ids": [],
+    "working_family_evidence_count": 0,
+    "working_family_evidence_backed": false,
+    "candidate_evidence_ids": [],
+    "candidate_evidence_count": 0,
+    "candidate_evidence_backed": false,
+    "resolution_confidence": "low",
+    "resolution_basis": "synthetic_name",
+    "negative_hypothesis_count": 0
+  },
+  "intent_satisfaction": {
+    "request_kind": "name_only",
+    "mode": "compatibility",
+    "status": "compatibility_failed",
+    "meets_intent": false,
+    "partial": false,
+    "reason": "compatibility lane failed before lower-bound completion",
+    "closure_source": "failed",
+    "generation_origin": "research_short_circuit",
+    "fallback_class": null,
+    "llm_path": "not_used",
+    "research_quality": "unknown",
+    "verification_independence": "unknown",
+    "verification_trust": "unknown",
+    "required_contract": {
+      "require_research": false,
+      "require_remote_research": true,
+      "allow_degraded_fallback": false,
+      "allow_lower_bound_recovery": false,
+      "require_strict_open_world": false,
+      "require_independent_verifier": false,
+      "require_live_llm": false,
+      "allowed_closure_sources": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "allowed_execution_paths": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "intent_satisfying_paths": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "allowed_llm_paths": [
+        "live",
+        "fixture",
+        "stub"
+      ],
+      "intent_success_rule": "any_non_failed_runnable_closure"
+    }
+  },
+  "name_only_outcome": {
+    "request_kind": "name_only",
+    "mode": "compatibility",
+    "decision": "abstain",
+    "decision_reason": "semantic_support_missing",
+    "abstain_reason": "semantic_support_missing",
+    "terminal_failure_class": "semantic_support_missing",
+    "closure_source": "failed",
+    "allowed_by_execution_contract": false,
+    "satisfies_intent_contract": false,
+    "stage_ceiling": "pre_generation",
+    "fully_validated": false,
+    "next_required_step": "research",
+    "open_world_class": "unsupported_free_form_negative",
+    "strict_open_world_class": "strict_fail_closed_negative",
+    "stack_dependence_class": "explicit_requirement_locked",
+    "family_dependence_class": "precondition_failed"
+  },
+  "name_only_decision": "abstain",
+  "name_only_next_required_step": "research",
+  "completion_state": {
+    "generated": false,
+    "executed": false,
+    "run_passed": false,
+    "verified": false,
+    "verify_pass": null,
+    "reviewed": false,
+    "review_ready": false,
+    "fully_validated": false,
+    "stage_ceiling": "pre_generation",
+    "generation_origin": "research_short_circuit"
+  },
+  "stage_ceiling": "pre_generation",
+  "fully_validated": false,
+  "researcher": {
+    "shadow_mode_enabled": false,
+    "force_run": false,
+    "dynamic_eval_enabled": false,
+    "search_policy": "remote_required",
+    "report_present": false,
+    "ran": false
+  },
+  "pipeline_returncode": 1,
+  "failure": {
+    "stage": "RESEARCH",
+    "reason": "Semantic profile marks unsupported free-form family before generation:\n- name-foobar (NAME-FOOBAR): support_level=unsupported, compiler_reason=semantic family unsupported for compiler-backed generation",
+    "fix_hint": "Add compiler-backed support for this family or keep the request in inspection-only / negative regression mode.",
+    "timestamp": "2026-03-13T14:23:01.531667+00:00",
+    "terminal_failure_class": "semantic_support_missing",
+    "retry_recommended": false,
+    "metadata": {
+      "terminal_failure_class": "semantic_support_missing",
+      "retry_recommended": false,
+      "unsupported_bundles": [
+        {
+          "slug": "name-foobar",
+          "vuln_id": "NAME-FOOBAR",
+          "support_level": "unsupported",
+          "compiler_reason": "semantic family unsupported for compiler-backed generation"
+        }
+      ]
+    }
+  },
+  "bundles": [
+    {
+      "slug": "name-foobar",
+      "vuln_id": "NAME-FOOBAR",
+      "verify_pass": null,
+      "evidence": "",
+      "run_passed": null,
+      "exit_code": null,
+      "run_log": null,
+      "rule": null,
+      "promotion_eligible": false,
+      "promotion_reasons": [
+        "pipeline:run_missing",
+        "pipeline:verify_missing",
+        "pipeline:review_missing",
+        "compiler:unsupported",
+        "compiler_reason:semantic family unsupported for compiler-backed generation"
+      ],
+      "memory_promotion_eligible": false,
+      "memory_promotion_reasons": [
+        "base_promotion:ineligible",
+        "strict_open_world:strict_fail_closed_negative",
+        "artifact_quality:low",
+        "oracle_clarity:missing",
+        "topology_clarity:missing"
+      ],
+      "support_promotion_eligible": false,
+      "support_promotion_reasons": [
+        "base_promotion:ineligible",
+        "strict_open_world:strict_fail_closed_negative",
+        "open_world:unsupported_free_form_negative",
+        "artifact_quality:low",
+        "oracle_clarity:missing",
+        "topology_clarity:missing",
+        "family_evidence:candidate_unbacked",
+        "name_only_outcome:abstain"
+      ],
+      "open_world_readiness": {
+        "ready": false,
+        "blockers": [
+          "base_promotion_ineligible",
+          "strict_open_world_gate",
+          "open_world_non_positive",
+          "artifact_quality_below_high",
+          "oracle_clarity_below_high",
+          "topology_clarity_below_medium",
+          "family_candidate_evidence_missing",
+          "name_only_intent_not_met"
+        ],
+        "open_world_class": "unsupported_free_form_negative",
+        "strict_open_world_class": "strict_fail_closed_negative",
+        "name_only_decision": "abstain",
+        "stack_defaulted": false,
+        "family_evidence_backed": false
+      },
+      "open_world_ready": false,
+      "semantic_supported": false,
+      "semantic_status": "unsupported",
+      "semantic_source": "resolved_contract.semantic_contract",
+      "verification_rule_source": null,
+      "verification_trust": null,
+      "verification_independence": null,
+      "verification_trust_reason": null,
+      "compiler_supported": false,
+      "compiler_strategy": null,
+      "compiler_reason": "semantic family unsupported for compiler-backed generation",
+      "compiler_family": null,
+      "stack_scaffold_id": null,
+      "stack_scaffold_version": null,
+      "fragment_id": null,
+      "compose_mode": null,
+      "service_env": null,
+      "request_identity": {
+        "request_label": "Foobar",
+        "normalized_request_label": "foobar",
+        "resolved_vuln_id": "NAME-FOOBAR",
+        "input_mode": "free_form_name",
+        "source": "synthetic_name",
+        "match_class": "synthetic_name",
+        "confidence": "low",
+        "field": "vuln_name",
+        "synthetic_resolution": true,
+        "catalog_backed_resolution": false,
+        "token_match_resolution": false,
+        "exact_identifier_resolution": false,
+        "name_driven": true
+      },
+      "request_ir": {
+        "raw_label": "Foobar",
+        "request_label": "Foobar",
+        "normalized_request_label": "foobar",
+        "resolved_vuln_id": "NAME-FOOBAR",
+        "resolved_vuln_id_candidate": "NAME-FOOBAR",
+        "input_mode": "free_form_name",
+        "name_driven": true,
+        "resolution_state": "synthetic_name",
+        "resolution_source": "synthetic_name",
+        "resolution_match_class": "synthetic_name",
+        "resolution_confidence": "low",
+        "identifier_candidates": [
+          {
+            "vuln_id": "NAME-FOOBAR",
+            "source": "synthetic_name",
+            "confidence": "low"
+          }
+        ],
+        "catalog_backed": false,
+        "token_match_backed": false,
+        "synthetic_resolution": true,
+        "exact_identifier_resolution": false,
+        "pattern_id": "generic-web-vuln",
+        "pattern_seed_state": "genericized_unknown",
+        "stack_candidates": [
+          {
+            "language": "python",
+            "framework": "flask",
+            "stack_id": "python/flask",
+            "source": "explicit_requirement",
+            "confidence": "high"
+          }
+        ],
+        "family_candidates": [],
+        "abstain_reason": null,
+        "evidence_ids": [],
+        "name_only_mode": "compatibility",
+        "required_contract": {
+          "effective_mode": "compatibility",
+          "require_research": false,
+          "require_remote_research": true,
+          "allow_degraded_fallback": false,
+          "allow_lower_bound_recovery": false,
+          "allow_curated_lower_bound_closure": true,
+          "allow_template_closure": true,
+          "require_strict_open_world": false,
+          "require_independent_verifier": false,
+          "require_live_llm": false,
+          "allow_stub_llm": true,
+          "allow_fixture_llm": true,
+          "allowed_closure_sources": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "allowed_execution_paths": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "intent_satisfying_paths": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "allowed_llm_paths": [
+            "live",
+            "fixture",
+            "stub"
+          ],
+          "intent_success_rule": "any_non_failed_runnable_closure"
+        }
+      },
+      "name_resolution": {
+        "input": "Foobar",
+        "resolved_vuln_id": "NAME-FOOBAR",
+        "source": "synthetic_name",
+        "match_class": "synthetic_name",
+        "confidence": "low"
+      },
+      "generation_origin": "research_short_circuit",
+      "semantic_guided_selection_source": null,
+      "semantic_guided_abstain_reason": null,
+      "semantic_guided_ambiguous": null,
+      "llm_fixture_used": null,
+      "dynamicness_verdict": "pre-generation fail-closed",
+      "dynamicness_reason": "generation was skipped after semantic support precheck",
+      "family_non_remote_available": false,
+      "effective_non_remote_available": false,
+      "compiler_path_enabled": true,
+      "executor_feasibility_status": "not_required",
+      "generalization_class": "unsupported_free_form_negative",
+      "counts_as_generalization": false,
+      "generalization_reason": "name-only dynamic family is unsupported and intentionally fail-closed",
+      "generalization_confidence": "low",
+      "generalization_basis": "synthetic_name",
+      "open_world_class": "unsupported_free_form_negative",
+      "counts_as_open_world_generalization": false,
+      "open_world_reason": "free-form NAME-* family is unsupported and intentionally fail-closed",
+      "open_world_confidence": "low",
+      "open_world_basis": "synthetic_name",
+      "strict_open_world_class": "strict_fail_closed_negative",
+      "counts_as_strict_open_world_generalization": false,
+      "strict_open_world_reason": "bundle stopped before generation, so it cannot count as strict open-world evidence",
+      "researcher_quality": null,
+      "researcher_shadow_mode": false,
+      "researcher_report_present": false,
+      "runtime_recipe": {
+        "language": "python",
+        "framework": "flask",
+        "stack_source": "explicit_requirement",
+        "stack_locked": true,
+        "stack_defaulted": false,
+        "transport": "http",
+        "service_entry": "app.py",
+        "poc_entry": "poc.py",
+        "service_port": 5000,
+        "db": null,
+        "allow_external_db": false,
+        "requires_external_db": false,
+        "network_mode": "none",
+        "network_enabled": false,
+        "sidecars": [],
+        "service_env": {},
+        "seed_files": [],
+        "topology": "single_service",
+        "output_mode": "auto",
+        "source": "resolved_contract",
+        "hypothetical": true,
+        "realized": false
+      },
+      "runtime_graph": {
+        "schema_version": "runtime_graph@0.1",
+        "source": "derived_from_runtime_recipe",
+        "topology": "single_service",
+        "network": {
+          "mode": "none",
+          "enabled": false
+        },
+        "nodes": [
+          {
+            "id": "service",
+            "kind": "service",
+            "role": "primary",
+            "language": "python",
+            "framework": "flask",
+            "entry": "app.py",
+            "transport": "http",
+            "port": 5000
+          }
+        ],
+        "edges": [
+          {
+            "from": "poc",
+            "to": "service",
+            "kind": "exploit_http",
+            "transport": "http",
+            "target_port": 5000
+          }
+        ],
+        "healthchecks": [],
+        "env_contract": [],
+        "exploit_path": {
+          "entrypoint": "poc.py",
+          "target_node": "service",
+          "service_entry": "app.py",
+          "transport": "http",
+          "port": 5000,
+          "base_url": "http://127.0.0.1:5000",
+          "success_signal": null,
+          "flag_token": null
+        },
+        "hypothetical": true,
+        "realized": false
+      },
+      "evidence_graph": {},
+      "dynamic_eval": {
+        "enabled": false,
+        "attempted": false
+      },
+      "artifact_quality": {
+        "band": "low",
+        "score": 0,
+        "generation_authenticity": "native",
+        "readme_present": false,
+        "readme_substantive": false,
+        "readme_quickstart": false,
+        "readme_verification": false,
+        "readme_runtime": false,
+        "runtime_recipe_present": false,
+        "topology_clarity": "missing",
+        "oracle_clarity": "missing",
+        "oracle_rigor": "missing",
+        "negative_control_present": false,
+        "metamorphic_present": false,
+        "verification_independence": "missing",
+        "verification_trust": "missing",
+        "notes": [
+          "README missing",
+          "runtime topology clarity is incomplete",
+          "exploit oracle clarity is limited",
+          "bundle stopped before code generation; runtime recipe remains planning-only"
+        ]
+      },
+      "stack_dependence": {
+        "class": "explicit_requirement_locked",
+        "working_stack_id": "python/flask",
+        "stack_source": "explicit_requirement",
+        "stack_locked": true,
+        "stack_defaulted": false,
+        "candidate_count": 1,
+        "ambiguous": false,
+        "repo_prior_bounded": false,
+        "researcher_inferred": false,
+        "top_confidence": "high",
+        "working_stack_evidence_ids": [],
+        "working_stack_evidence_count": 0,
+        "working_stack_evidence_backed": false
+      },
+      "family_dependence": {
+        "class": "precondition_failed",
+        "name_only": true,
+        "family_bounded": false,
+        "ambiguous": false,
+        "candidate_count": 0,
+        "selection_source": null,
+        "abstain_reason": null,
+        "working_family": null,
+        "working_family_evidence_ids": [],
+        "working_family_evidence_count": 0,
+        "working_family_evidence_backed": false,
+        "candidate_evidence_ids": [],
+        "candidate_evidence_count": 0,
+        "candidate_evidence_backed": false,
+        "resolution_confidence": "low",
+        "resolution_basis": "synthetic_name",
+        "negative_hypothesis_count": 0
+      },
+      "intent_satisfaction": {
+        "request_kind": "name_only",
+        "mode": "compatibility",
+        "status": "compatibility_failed",
+        "meets_intent": false,
+        "partial": false,
+        "reason": "compatibility lane failed before lower-bound completion",
+        "closure_source": "failed",
+        "generation_origin": "research_short_circuit",
+        "fallback_class": null,
+        "llm_path": "not_used",
+        "research_quality": "unknown",
+        "verification_independence": "unknown",
+        "verification_trust": "unknown",
+        "required_contract": {
+          "require_research": false,
+          "require_remote_research": true,
+          "allow_degraded_fallback": false,
+          "allow_lower_bound_recovery": false,
+          "require_strict_open_world": false,
+          "require_independent_verifier": false,
+          "require_live_llm": false,
+          "allowed_closure_sources": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "allowed_execution_paths": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "intent_satisfying_paths": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "allowed_llm_paths": [
+            "live",
+            "fixture",
+            "stub"
+          ],
+          "intent_success_rule": "any_non_failed_runnable_closure"
+        }
+      },
+      "name_only_outcome": {
+        "request_kind": "name_only",
+        "mode": "compatibility",
+        "decision": "abstain",
+        "decision_reason": "semantic_support_missing",
+        "abstain_reason": "semantic_support_missing",
+        "terminal_failure_class": "semantic_support_missing",
+        "closure_source": "failed",
+        "allowed_by_execution_contract": false,
+        "satisfies_intent_contract": false,
+        "stage_ceiling": "pre_generation",
+        "fully_validated": false,
+        "next_required_step": "research",
+        "open_world_class": "unsupported_free_form_negative",
+        "strict_open_world_class": "strict_fail_closed_negative",
+        "stack_dependence_class": "explicit_requirement_locked",
+        "family_dependence_class": "precondition_failed"
+      },
+      "completion_state": {
+        "generated": false,
+        "executed": false,
+        "run_passed": false,
+        "verified": false,
+        "verify_pass": null,
+        "reviewed": false,
+        "review_ready": false,
+        "fully_validated": false,
+        "stage_ceiling": "pre_generation",
+        "generation_origin": "research_short_circuit"
+      },
+      "failure_reason": "Semantic profile marks unsupported free-form family before generation:\n- name-foobar (NAME-FOOBAR): support_level=unsupported, compiler_reason=semantic family unsupported for compiler-backed generation",
+      "terminal_failure_class": "semantic_support_missing"
+    }
+  ],
+  "reviewer": {
+    "blocking_bundles": [],
+    "issues_sample": []
+  },
+  "manifest_path": "/home/ysw/vulDocker/metadata/sid-f1c303cdf3c8/failure_manifest.json",
+  "manifest_file": "failure_manifest.json",
+  "reviewer_path": null
+}

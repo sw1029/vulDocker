@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List
 
 from common.logging import get_logger
 from common.paths import ensure_dir, get_metadata_dir
+from common.vuln_catalog import catalog_family_candidates_for_label
 from rag import latest_failure_context
 
 LOGGER = get_logger(__name__)
@@ -199,12 +200,14 @@ class ReactLoop:
         ).strip()
         intent = requirement.get("intent") or requirement.get("goal") or ""
         pattern_id = str(requirement.get("pattern_id") or "").strip()
+        name_driven = _is_name_driven_requirement(requirement)
         runtime = requirement.get("runtime") or {}
         db = ""
         if isinstance(runtime, dict):
             db = str(runtime.get("db") or runtime.get("database") or requirement.get("database") or "").strip()
         focus_label = request_label or (vuln_names[0] if vuln_names else (vuln_ids[0] if vuln_ids else "vulnerability"))
         family_hypotheses = _infer_family_hypotheses(requirement)
+        negative_family_hypotheses = _negative_family_hypotheses_from_requirement(requirement)
         exploit_hypotheses = _exploit_hypotheses(family_hypotheses)
         queries: List[Dict[str, Any]] = []
 
@@ -215,6 +218,7 @@ class ReactLoop:
             rationale: str,
             priority: int,
             family: str = "",
+            negative_family: bool = False,
         ) -> None:
             normalized = str(query or "").strip()
             if not normalized:
@@ -226,6 +230,7 @@ class ReactLoop:
                     "rationale": rationale,
                     "priority": priority,
                     "family": family,
+                    "negative_family": bool(negative_family),
                 }
             )
 
@@ -249,19 +254,20 @@ class ReactLoop:
                 rationale="raw vulnerability name exploit seed",
                 priority=8,
             )
-        for vuln_id in vuln_ids:
-            add_query(
-                f"{vuln_id} weakness details exploit {tech_stack}".strip(),
-                evidence_type="advisory",
-                rationale="identifier-level weakness/advisory seed",
-                priority=7,
-            )
-            add_query(
-                f"{vuln_id} vulnerability exploit analysis {tech_stack}".strip(),
-                evidence_type="writeup",
-                rationale="identifier-level exploit analysis seed",
-                priority=6,
-            )
+        if not name_driven:
+            for vuln_id in vuln_ids:
+                add_query(
+                    f"{vuln_id} weakness details exploit {tech_stack}".strip(),
+                    evidence_type="advisory",
+                    rationale="identifier-level weakness/advisory seed",
+                    priority=7,
+                )
+                add_query(
+                    f"{vuln_id} vulnerability exploit analysis {tech_stack}".strip(),
+                    evidence_type="writeup",
+                    rationale="identifier-level exploit analysis seed",
+                    priority=6,
+                )
         if pattern_id and pattern_id.lower() != "generic-web-vuln":
             add_query(
                 f"{pattern_id} vulnerable example poc {tech_stack}".strip(),
@@ -289,6 +295,19 @@ class ReactLoop:
                     priority=8,
                     family=family,
                 )
+        for hypothesis in negative_family_hypotheses[:2]:
+            family = str(hypothesis.get("family") or "").strip()
+            config = _FAMILY_HINTS.get(family) or {}
+            focus = str(config.get("query_focus") or family.replace("_", " ")).strip()
+            anchors = " ".join(config.get("anchors") or []) if isinstance(config.get("anchors"), list) else ""
+            add_query(
+                f"{focus_label} {focus} contrast indicators {anchors} {tech_stack}".strip(),
+                evidence_type="contradiction_check",
+                rationale=f"negative family contrast seed via {hypothesis.get('source') or 'request_ir_negative'}",
+                priority=6,
+                family=family,
+                negative_family=True,
+            )
         curated_intent = _curated_intent_query_seed(intent)
         if curated_intent:
             add_query(
@@ -346,6 +365,14 @@ class ReactLoop:
                 limit=limit,
                 desired_count=desired_stack_anchors,
             )
+        if negative_family_hypotheses and limit >= 4:
+            unique = self._ensure_evidence_type_queries(
+                unique,
+                ordered_entries=ordered_entries,
+                limit=limit,
+                desired_count=1,
+                target_evidence_type="contradiction_check",
+            )
 
         return {
             "request_label": focus_label,
@@ -355,6 +382,7 @@ class ReactLoop:
             "runtime_db": db or None,
             "pattern_id": pattern_id or None,
             "family_hypotheses": family_hypotheses,
+            "negative_family_hypotheses": negative_family_hypotheses,
             "exploit_hypotheses": exploit_hypotheses,
             "queries": unique,
         }
@@ -388,6 +416,23 @@ class ReactLoop:
         limit: int,
         desired_count: int,
     ) -> List[Dict[str, Any]]:
+        return ReactLoop._ensure_evidence_type_queries(
+            selected,
+            ordered_entries=ordered_entries,
+            limit=limit,
+            desired_count=desired_count,
+            target_evidence_type="stack_anchor",
+        )
+
+    @staticmethod
+    def _ensure_evidence_type_queries(
+        selected: List[Dict[str, Any]],
+        *,
+        ordered_entries: List[Dict[str, Any]],
+        limit: int,
+        desired_count: int,
+        target_evidence_type: str,
+    ) -> List[Dict[str, Any]]:
         desired = max(0, int(desired_count or 0))
         if desired == 0:
             return selected
@@ -396,39 +441,39 @@ class ReactLoop:
             for item in selected
             if isinstance(item, dict) and str(item.get("query") or "").strip()
         }
-        stack_selected = [
+        typed_selected = [
             item
             for item in selected
-            if str(item.get("evidence_type") or "").strip() == "stack_anchor"
+            if str(item.get("evidence_type") or "").strip() == target_evidence_type
         ]
-        if len(stack_selected) >= desired:
+        if len(typed_selected) >= desired:
             return selected
-        stack_candidates = [
+        typed_candidates = [
             entry
             for entry in ordered_entries
-            if str(entry.get("evidence_type") or "").strip() == "stack_anchor"
+            if str(entry.get("evidence_type") or "").strip() == target_evidence_type
             and str(entry.get("query") or "").strip()
             and str(entry.get("query") or "").strip() not in selected_queries
         ]
-        if not stack_candidates:
+        if not typed_candidates:
             return selected
         updated = list(selected)
         counts: Dict[str, int] = {}
         for entry in updated:
-            evidence_type = str(entry.get("evidence_type") or "").strip()
-            counts[evidence_type] = counts.get(evidence_type, 0) + 1
+            entry_evidence_type = str(entry.get("evidence_type") or "").strip()
+            counts[entry_evidence_type] = counts.get(entry_evidence_type, 0) + 1
 
         while len(
-            [item for item in updated if str(item.get("evidence_type") or "").strip() == "stack_anchor"]
-        ) < desired and stack_candidates:
-            candidate = stack_candidates.pop(0)
+            [item for item in updated if str(item.get("evidence_type") or "").strip() == target_evidence_type]
+        ) < desired and typed_candidates:
+            candidate = typed_candidates.pop(0)
             if len(updated) < limit:
                 updated.append(candidate)
                 continue
             replacement_index = -1
             for index in range(len(updated) - 1, -1, -1):
-                evidence_type = str(updated[index].get("evidence_type") or "").strip()
-                if counts.get(evidence_type, 0) > 1 and evidence_type != "stack_anchor":
+                entry_evidence_type = str(updated[index].get("evidence_type") or "").strip()
+                if counts.get(entry_evidence_type, 0) > 1 and entry_evidence_type != target_evidence_type:
                     replacement_index = index
                     break
             if replacement_index == -1:
@@ -436,7 +481,7 @@ class ReactLoop:
             removed_type = str(updated[replacement_index].get("evidence_type") or "").strip()
             counts[removed_type] = max(0, counts.get(removed_type, 0) - 1)
             updated[replacement_index] = candidate
-            counts["stack_anchor"] = counts.get("stack_anchor", 0) + 1
+            counts[target_evidence_type] = counts.get(target_evidence_type, 0) + 1
         return updated
 
     def rank_family_hypotheses(
@@ -626,6 +671,17 @@ def _request_label_from_requirement(requirement: Dict[str, Any]) -> str:
     return names[0] if names else ""
 
 
+def _is_name_driven_requirement(requirement: Dict[str, Any]) -> bool:
+    request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+    if isinstance(request_ir, dict) and request_ir.get("name_driven") is True:
+        return True
+    request_identity = requirement.get("request_identity") if isinstance(requirement.get("request_identity"), dict) else {}
+    if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
+        return True
+    vuln_id = str(requirement.get("vuln_id") or "").strip().upper()
+    return vuln_id.startswith("NAME-")
+
+
 def _explicit_stack_from_requirement(requirement: Dict[str, Any]) -> Dict[str, str]:
     language = str(requirement.get("language") or "").strip().lower()
     framework = str(requirement.get("framework") or "").strip().lower()
@@ -714,10 +770,24 @@ def _infer_family_hypotheses(requirement: Dict[str, Any]) -> List[Dict[str, str]
             return
         candidates.append({"family": family, "confidence": confidence, "basis": basis})
 
-    for vuln_id in vuln_ids:
-        family = _VULN_ID_FAMILY_MAP.get(vuln_id)
-        if family:
-            add_candidate(family, "high", "vuln_id")
+    request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+    name_driven = _is_name_driven_requirement(requirement)
+    if isinstance(request_ir, dict):
+        family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
+        for entry in family_candidates:
+            if not isinstance(entry, dict):
+                continue
+            add_candidate(
+                str(entry.get("family") or "").strip().lower(),
+                str(entry.get("confidence") or "").strip().lower() or "low",
+                str(entry.get("source") or "").strip().lower() or "request_ir_candidate",
+            )
+
+    if not name_driven:
+        for vuln_id in vuln_ids:
+            family = _VULN_ID_FAMILY_MAP.get(vuln_id)
+            if family:
+                add_candidate(family, "high", "vuln_id")
 
     pattern_id = str(requirement.get("pattern_id") or "").strip().lower()
     for family, config in _FAMILY_HINTS.items():
@@ -727,7 +797,41 @@ def _infer_family_hypotheses(requirement: Dict[str, Any]) -> List[Dict[str, str]
         if normalized_text and any(alias in normalized_text for alias in aliases):
             add_candidate(family, "high", "request_label")
 
+    request_label = _request_label_from_requirement(requirement)
+    resolved_vuln_id = str((request_ir or {}).get("resolved_vuln_id") or requirement.get("vuln_id") or "").strip()
+    for candidate in catalog_family_candidates_for_label(request_label, resolved_vuln_id=resolved_vuln_id):
+        if not isinstance(candidate, dict):
+            continue
+        add_candidate(
+            str(candidate.get("family") or "").strip().lower(),
+            str(candidate.get("confidence") or "").strip().lower() or "low",
+            str(candidate.get("source") or "").strip().lower() or "catalog_candidate",
+        )
+
     return candidates
+
+
+def _negative_family_hypotheses_from_requirement(requirement: Dict[str, Any]) -> List[Dict[str, str]]:
+    request_ir = requirement.get("request_ir") if isinstance(requirement.get("request_ir"), dict) else {}
+    if not isinstance(request_ir, dict):
+        return []
+    raw = request_ir.get("negative_hypotheses") if isinstance(request_ir.get("negative_hypotheses"), list) else []
+    hypotheses: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        family = str(entry.get("family") or "").strip().lower()
+        if not family or family in seen:
+            continue
+        seen.add(family)
+        hypotheses.append(
+            {
+                "family": family,
+                "source": str(entry.get("source") or "request_ir_negative").strip().lower() or "request_ir_negative",
+            }
+        )
+    return hypotheses
 
 
 def _exploit_hypotheses(family_hypotheses: List[Dict[str, str]]) -> List[str]:

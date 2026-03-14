@@ -13,14 +13,38 @@
     "generalization_class": "unsupported_free_form_negative",
     "counts_as_generalization": false,
     "provider_health_state": "not_probed",
+    "name_only_outcome_summary": {
+      "name_only_bundles": 1,
+      "abstained_bundles": 1,
+      "by_decision": {
+        "abstain": 1
+      },
+      "by_next_required_step": {
+        "research": 1
+      },
+      "by_abstain_reason": {
+        "semantic_support_missing": 1
+      },
+      "by_terminal_failure_class": {
+        "semantic_support_missing": 1
+      }
+    },
     "name_resolution": {
       "input": "Foobar",
       "resolved_vuln_id": "NAME-FOOBAR",
       "source": "synthetic_name"
     },
+    "name_only_decision": "abstain",
+    "name_only_next_required_step": "research",
     "failure": {
       "stage": "RESEARCH",
       "terminal_failure_class": "semantic_support_missing"
+    },
+    "name_only_outcome": {
+      "decision": "abstain",
+      "abstain_reason": "semantic_support_missing",
+      "next_required_step": "research",
+      "satisfies_intent_contract": false
     }
   },
   "evals": [
@@ -33,6 +57,14 @@
       "semantic_supported": false,
       "semantic_status": "unsupported",
       "semantic_source": "resolved_contract.semantic_contract",
+      "name_only_decision": "abstain",
+      "name_only_next_required_step": "research",
+      "name_only_outcome": {
+        "decision": "abstain",
+        "abstain_reason": "semantic_support_missing",
+        "next_required_step": "research",
+        "satisfies_intent_contract": false
+      },
       "terminal_failure_class": "semantic_support_missing",
       "generalization_class": "unsupported_free_form_negative",
       "counts_as_generalization": false,

@@ -16,6 +16,18 @@
       "verified_bundles": 1,
       "research_blocked_bundles": 1,
       "partial_success": true
+    },
+    "name_only_outcome_summary": {
+      "name_only_bundles": 2,
+      "intent_met_bundles": 1,
+      "abstained_bundles": 1,
+      "by_decision": {
+        "abstain": 1,
+        "intent_met": 1
+      },
+      "by_next_required_step": {
+        "research": 1
+      }
     }
   },
   "evals": [
@@ -27,6 +39,14 @@
       "compiler_supported": false,
       "generation_origin": "research_short_circuit",
       "dynamicness_verdict": "pre-generation fail-closed",
+      "name_only_decision": "abstain",
+      "name_only_next_required_step": "research",
+      "name_only_outcome": {
+        "decision": "abstain",
+        "abstain_reason": "semantic_support_missing",
+        "next_required_step": "research",
+        "satisfies_intent_contract": false
+      },
       "terminal_failure_class": "semantic_support_missing",
       "generalization_class": "unsupported_free_form_negative",
       "counts_as_generalization": false,
@@ -51,11 +71,16 @@
       "dynamicness_verdict": "compiler-first",
       "semantic_supported": true,
       "semantic_status": "aligned",
+      "name_only_decision": "intent_met",
+      "name_only_outcome": {
+        "decision": "intent_met",
+        "satisfies_intent_contract": true
+      },
       "verification_rule_source": "declared_rule",
       "verification_trust": "high",
       "verification_independence": "independent",
-      "generalization_class": "real_free_form_positive",
-      "counts_as_generalization": true
+      "generalization_class": "real_free_form_curated_lower_bound",
+      "counts_as_generalization": false
     }
   ],
   "reviewer": {

@@ -30,6 +30,7 @@ from common.guardrails import (
 )
 from common.llm import LLMClient
 from common.logging import get_logger
+from common.name_only import build_name_only_contract, is_name_driven_requirement
 from common.paths import ensure_dir, get_repo_root
 from common.plan import load_plan
 from common.prompts import build_guard_planner_prompt, build_researcher_prompt
@@ -132,6 +133,12 @@ class ResearcherService:
                 base_hypotheses=list(query_plan.get("family_hypotheses") or []),
             )
             self._family_hypothesis_summary = family_hypothesis_summary
+            evidence_graph = self._build_evidence_graph(
+                search_hits=search_hits,
+                query_plan=query_plan,
+                tech_stack_candidates=tech_stack_candidates,
+                family_hypothesis_summary=family_hypothesis_summary,
+            )
             quality, quality_reason = self._evaluate_evidence_quality(active_bundle, search_hits)
             relevance_report = self._last_evidence_relevance or {
                 "score": 0.0,
@@ -156,6 +163,7 @@ class ResearcherService:
                     "evidence_type_summary": evidence_type_summary,
                     "tech_stack_candidates": tech_stack_candidates,
                     "family_hypothesis_summary": family_hypothesis_summary,
+                    "evidence_graph": evidence_graph,
                     "semantic_signature": {},
                     "evidence_relevance": relevance_report,
                     "quality": "insufficient",
@@ -191,6 +199,7 @@ class ResearcherService:
             report["evidence_type_summary"] = evidence_type_summary
             report["tech_stack_candidates"] = tech_stack_candidates
             report["family_hypothesis_summary"] = family_hypothesis_summary
+            report["evidence_graph"] = evidence_graph
             report["evidence_relevance"] = relevance_report
             report["semantic_signature"], report["semantic_signature_source"] = self._resolve_semantic_signature(
                 report,
@@ -316,6 +325,309 @@ class ResearcherService:
                 seen_urls.add(hit.url)
                 hits.append(hit)
         return hits
+
+    def _build_evidence_graph(
+        self,
+        *,
+        search_hits: List[SearchResult],
+        query_plan: Dict[str, Any],
+        tech_stack_candidates: List[Dict[str, Any]],
+        family_hypothesis_summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        def add_edge(
+            edges: List[Dict[str, Any]],
+            *,
+            edge_from: str,
+            edge_to: str,
+            kind: str,
+            seen: set[tuple[str, str, str]],
+        ) -> None:
+            key = (edge_from, edge_to, kind)
+            if key in seen:
+                return
+            seen.add(key)
+            edges.append({"from": edge_from, "to": edge_to, "kind": kind})
+
+        request_label = str(
+            query_plan.get("request_label")
+            or self.requirement.get("vuln_name")
+            or self.requirement.get("vuln_id")
+            or ""
+        ).strip()
+        nodes: List[Dict[str, Any]] = [
+            {
+                "id": "request",
+                "kind": "request",
+                "label": request_label or None,
+                "vuln_id": str(self.requirement.get("vuln_id") or "").strip() or None,
+            }
+        ]
+        edges: List[Dict[str, Any]] = []
+        edge_seen: set[tuple[str, str, str]] = set()
+        queries = query_plan.get("queries") if isinstance(query_plan.get("queries"), list) else []
+        query_lookup: Dict[str, tuple[int, Dict[str, Any]]] = {}
+        for index, entry in enumerate(queries, start=1):
+            if not isinstance(entry, dict):
+                continue
+            query_lookup[str(entry.get("query") or "").strip()] = (index, entry)
+            node_id = f"query:{index}"
+            nodes.append(
+                {
+                    "id": node_id,
+                    "kind": "query",
+                    "query": str(entry.get("query") or "").strip() or None,
+                    "evidence_type": str(entry.get("evidence_type") or "").strip().lower() or None,
+                }
+            )
+            add_edge(edges, edge_from="request", edge_to=node_id, kind="planned_query", seen=edge_seen)
+        evidence_entries: List[Dict[str, Any]] = []
+        for index, hit in enumerate(search_hits, start=1):
+            node_id = f"evidence:{index}"
+            query_value = str(hit.query or "").strip()
+            query_meta = query_lookup.get(query_value) or (None, {})
+            query_index = query_meta[0]
+            query_entry = query_meta[1] if isinstance(query_meta[1], dict) else {}
+            evidence_type = self._classify_evidence_type(hit)
+            text = self._search_hit_text(hit)
+            nodes.append(
+                {
+                    "id": node_id,
+                    "kind": "evidence",
+                    "source": str(hit.source or "").strip().lower() or None,
+                    "provider": str(hit.provider or "").strip().lower() or None,
+                    "url": str(hit.url or "").strip() or None,
+                    "query": str(hit.query or "").strip() or None,
+                    "evidence_type": evidence_type or None,
+                }
+            )
+            if query_index is not None:
+                add_edge(
+                    edges,
+                    edge_from=f"query:{query_index}",
+                    edge_to=node_id,
+                    kind="retrieved_evidence",
+                    seen=edge_seen,
+                )
+            evidence_entries.append(
+                {
+                    "id": node_id,
+                    "text": text,
+                    "query": query_value,
+                    "query_entry": query_entry,
+                    "evidence_type": evidence_type,
+                }
+            )
+        ranked_families = (
+            family_hypothesis_summary.get("ranked_families")
+            if isinstance(family_hypothesis_summary, dict)
+            else []
+        )
+        family_entries: Dict[str, Dict[str, Any]] = {}
+
+        def ensure_family_entry(
+            family: str,
+            *,
+            confidence: str = "",
+            score: Any = None,
+            matched_aliases: Optional[List[str]] = None,
+            matched_anchors: Optional[List[str]] = None,
+        ) -> Dict[str, Any]:
+            token = str(family or "").strip().lower()
+            if not token:
+                return {}
+            existing = family_entries.get(token)
+            if isinstance(existing, dict):
+                if matched_aliases:
+                    existing_aliases = existing.setdefault("matched_aliases", [])
+                    if isinstance(existing_aliases, list):
+                        for item in matched_aliases:
+                            alias = str(item).strip().lower()
+                            if alias and alias not in existing_aliases:
+                                existing_aliases.append(alias)
+                if matched_anchors:
+                    existing_anchors = existing.setdefault("matched_anchors", [])
+                    if isinstance(existing_anchors, list):
+                        for item in matched_anchors:
+                            anchor = str(item).strip().lower()
+                            if anchor and anchor not in existing_anchors:
+                                existing_anchors.append(anchor)
+                return existing
+            node_id = f"family:{token}"
+            entry = {
+                "node_id": node_id,
+                "matched_aliases": [
+                    str(item).strip().lower()
+                    for item in (matched_aliases or [])
+                    if isinstance(item, str) and str(item).strip()
+                ],
+                "matched_anchors": [
+                    str(item).strip().lower()
+                    for item in (matched_anchors or [])
+                    if isinstance(item, str) and str(item).strip()
+                ],
+            }
+            family_entries[token] = entry
+            nodes.append(
+                {
+                    "id": node_id,
+                    "kind": "family_hypothesis",
+                    "family": token,
+                    "confidence": confidence or None,
+                    "score": score,
+                    "matched_aliases": entry["matched_aliases"],
+                    "matched_anchors": entry["matched_anchors"],
+                }
+            )
+            return entry
+
+        for entry in ranked_families if isinstance(ranked_families, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            family = str(entry.get("family") or "").strip().lower()
+            if not family:
+                continue
+            family_meta = ensure_family_entry(
+                family,
+                confidence=str(entry.get("confidence") or "").strip().lower(),
+                score=entry.get("score"),
+                matched_aliases=[
+                    str(item).strip().lower()
+                    for item in (entry.get("matched_aliases") or [])
+                    if isinstance(item, str) and str(item).strip()
+                ],
+                matched_anchors=[
+                    str(item).strip().lower()
+                    for item in (entry.get("matched_anchors") or [])
+                    if isinstance(item, str) and str(item).strip()
+                ],
+            )
+            add_edge(
+                edges,
+                edge_from="request",
+                edge_to=str(family_meta.get("node_id") or ""),
+                kind="family_hypothesis",
+                seen=edge_seen,
+            )
+        negative_family_hypotheses = (
+            query_plan.get("negative_family_hypotheses")
+            if isinstance(query_plan.get("negative_family_hypotheses"), list)
+            else []
+        )
+        negative_family_entries: Dict[str, Dict[str, Any]] = {}
+        for entry in negative_family_hypotheses if isinstance(negative_family_hypotheses, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            family = str(entry.get("family") or "").strip().lower()
+            if not family:
+                continue
+            family_meta = ensure_family_entry(
+                family,
+                confidence=str(entry.get("confidence") or "").strip().lower(),
+            )
+            negative_family_entries[family] = family_meta
+            add_edge(
+                edges,
+                edge_from="request",
+                edge_to=str(family_meta.get("node_id") or ""),
+                kind="negative_family_hypothesis",
+                seen=edge_seen,
+            )
+        stack_entries: Dict[str, Dict[str, Any]] = {}
+        for entry in tech_stack_candidates or []:
+            if not isinstance(entry, dict):
+                continue
+            stack_id = str(entry.get("stack_id") or "").strip().lower()
+            if not stack_id:
+                continue
+            node_id = f"stack:{stack_id}"
+            stack_entries[stack_id] = {
+                "node_id": node_id,
+                "framework": str(entry.get("framework") or "").strip().lower() or None,
+                "language": str(entry.get("language") or "").strip().lower() or None,
+            }
+            nodes.append(
+                {
+                    "id": node_id,
+                    "kind": "stack_hypothesis",
+                    "stack_id": stack_id,
+                    "confidence": str(entry.get("confidence") or "").strip().lower() or None,
+                    "score": entry.get("score"),
+                }
+            )
+            add_edge(edges, edge_from="request", edge_to=node_id, kind="stack_hypothesis", seen=edge_seen)
+
+        known_framework_markers = {
+            "python/flask": ["flask"],
+            "python/fastapi": ["fastapi", "uvicorn"],
+        }
+        for evidence in evidence_entries:
+            query_entry = evidence.get("query_entry") if isinstance(evidence.get("query_entry"), dict) else {}
+            query_family = str(query_entry.get("family") or "").strip().lower()
+            query_negative_family = query_entry.get("negative_family") is True
+            evidence_text = str(evidence.get("text") or "")
+            evidence_id = str(evidence.get("id") or "")
+            if not evidence_id:
+                continue
+            for family, family_meta in family_entries.items():
+                supports_family = False
+                if query_family and query_family == family:
+                    supports_family = True
+                elif any(token in evidence_text for token in family_meta.get("matched_aliases") or []):
+                    supports_family = True
+                elif any(token in evidence_text for token in family_meta.get("matched_anchors") or []):
+                    supports_family = True
+                if supports_family:
+                    add_edge(
+                        edges,
+                        edge_from=evidence_id,
+                        edge_to=str(family_meta.get("node_id") or ""),
+                        kind="supports_family_hypothesis",
+                        seen=edge_seen,
+                    )
+            for family, family_meta in negative_family_entries.items():
+                supports_negative_family = False
+                if query_negative_family and query_family and query_family == family:
+                    supports_negative_family = True
+                elif any(token in evidence_text for token in family_meta.get("matched_aliases") or []):
+                    supports_negative_family = True
+                elif any(token in evidence_text for token in family_meta.get("matched_anchors") or []):
+                    supports_negative_family = True
+                if supports_negative_family:
+                    add_edge(
+                        edges,
+                        edge_from=evidence_id,
+                        edge_to=str(family_meta.get("node_id") or ""),
+                        kind="supports_negative_family_hypothesis",
+                        seen=edge_seen,
+                    )
+            for stack_id, stack_meta in stack_entries.items():
+                supports_stack = False
+                query_value = str(evidence.get("query") or "").strip().lower()
+                query_target = str(query_entry.get("evidence_type") or "").strip().lower()
+                framework = str(stack_meta.get("framework") or "").strip().lower()
+                markers = list(known_framework_markers.get(stack_id, []))
+                if framework and framework not in markers:
+                    markers.append(framework)
+                if stack_id and query_target == "stack_anchor" and (stack_id in query_value or (framework and framework in query_value)):
+                    supports_stack = True
+                elif any(marker in evidence_text for marker in markers if marker):
+                    supports_stack = True
+                if supports_stack:
+                    add_edge(
+                        edges,
+                        edge_from=evidence_id,
+                        edge_to=str(stack_meta.get("node_id") or ""),
+                        kind="supports_stack_hypothesis",
+                        seen=edge_seen,
+                    )
+        return {
+            "schema_version": "evidence_graph@0.1",
+            "source": "researcher_derived",
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "nodes": nodes,
+            "edges": edges,
+        }
 
     def _write_search_artifacts(self, search_hits: List[SearchResult], *, policy: str) -> Dict[str, Any]:
         traces_dir = ensure_dir(self.metadata_dir / "search_traces")
@@ -658,18 +970,30 @@ class ResearcherService:
             return False
         return bool(plan_policy.get("open_world_strict"))
 
-    def _bundle_is_name_driven(self, bundle: VulnBundle | None) -> bool:
+    def _bundle_requirement_view(self, bundle: VulnBundle | None) -> Dict[str, Any]:
         if bundle is None:
-            request_identity = self.requirement.get("request_identity")
-            if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
-                return True
-            vuln_id = str(self.requirement.get("vuln_id") or "").strip().upper()
-            return vuln_id.startswith("NAME-")
-        requirement_view = bundle_requirement(self.plan["requirement"], bundle)
-        request_identity = requirement_view.get("request_identity")
-        if isinstance(request_identity, dict) and request_identity.get("name_driven") is True:
-            return True
-        return str(bundle.vuln_id or "").strip().upper().startswith("NAME-")
+            requirement_view = dict(self.requirement) if isinstance(self.requirement, dict) else {}
+        else:
+            plan = self.plan if isinstance(getattr(self, "plan", None), dict) else {}
+            base_requirement = plan.get("requirement") if isinstance(plan, dict) else {}
+            raw_view = bundle_requirement(base_requirement, bundle)
+            requirement_view = dict(raw_view) if isinstance(raw_view, dict) else {}
+        vuln_id = str(
+            requirement_view.get("vuln_id")
+            or (bundle.vuln_id if bundle is not None else (self.requirement.get("vuln_id") if isinstance(self.requirement, dict) else ""))
+            or ""
+        ).strip()
+        if vuln_id:
+            requirement_view.setdefault("vuln_id", vuln_id)
+        if "policy" not in requirement_view:
+            plan = self.plan if isinstance(getattr(self, "plan", None), dict) else {}
+            plan_policy = plan.get("policy") if isinstance(plan, dict) else {}
+            if isinstance(plan_policy, dict) and plan_policy:
+                requirement_view["policy"] = dict(plan_policy)
+        return requirement_view
+
+    def _bundle_is_name_driven(self, bundle: VulnBundle | None) -> bool:
+        return is_name_driven_requirement(self._bundle_requirement_view(bundle))
 
     def _guard_policy(self) -> Dict[str, Any]:
         plan_policy = self.plan.get("policy") or {}
@@ -1413,34 +1737,20 @@ class ResearcherService:
         return assertions
 
     def _dynamic_eval_enabled(self) -> bool:
-        requirement_policy = self.requirement.get("policy") if isinstance(self.requirement.get("policy"), dict) else {}
+        requirement_view = self._bundle_requirement_view(getattr(self, "bundle", None))
+        requirement_policy = (
+            requirement_view.get("policy") if isinstance(requirement_view.get("policy"), dict) else {}
+        )
         if isinstance(requirement_policy, dict) and bool(requirement_policy.get("dynamic_eval")):
             return True
-        request_identity = (
-            self.requirement.get("request_identity")
-            if isinstance(self.requirement.get("request_identity"), dict)
-            else {}
+        contract = build_name_only_contract(
+            requirement=requirement_view,
+            policy=requirement_policy if isinstance(requirement_policy, dict) else {},
         )
-        name_driven = bool((request_identity or {}).get("name_driven")) or str(
-            self.requirement.get("vuln_id") or ""
-        ).upper().startswith("NAME-")
-        if (
-            name_driven
-            and isinstance(requirement_policy, dict)
-            and str(requirement_policy.get("name_only_mode") or "").strip().lower() in {"dynamic", "strict_dynamic"}
-        ):
-            return True
-        plan = getattr(self, "plan", {})
-        plan_policy = plan.get("policy") if isinstance(plan, dict) else {}
-        if isinstance(plan_policy, dict) and bool(plan_policy.get("dynamic_eval")):
-            return True
-        if (
-            name_driven
-            and isinstance(plan_policy, dict)
-            and str(plan_policy.get("name_only_mode") or "").strip().lower() in {"dynamic", "strict_dynamic"}
-        ):
-            return True
-        return False
+        return bool(
+            contract.get("enabled")
+            and str(contract.get("effective_mode") or "").strip().lower() in {"dynamic", "dynamic_eval", "strict_dynamic"}
+        )
 
     def _build_and_write_guard_spec(
         self,

@@ -238,6 +238,130 @@ def test_name_only_dynamic_service_expands_query_plan_limit_for_stack_exploratio
     assert service._effective_query_plan_limit() == 4  # type: ignore[attr-defined]
 
 
+def test_evidence_graph_adds_family_and_stack_support_edges(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CWE-89",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-89",
+        "vuln_name": "SQL Injection",
+        "language": "python",
+        "framework": "flask",
+    }
+    query_plan = {
+        "request_label": "SQL Injection",
+        "queries": [
+            {
+                "query": "SQL Injection exploit writeup poc python flask",
+                "evidence_type": "writeup",
+                "priority": 10,
+                "family": "sqli",
+            },
+            {
+                "query": "SQL Injection vulnerable example python/flask",
+                "evidence_type": "stack_anchor",
+                "priority": 9,
+                "family": "",
+            },
+        ],
+    }
+    graph = service._build_evidence_graph(  # type: ignore[attr-defined]
+        search_hits=[
+            SearchResult(
+                title="SQL injection writeup",
+                url="https://example.test/sqli",
+                snippet="Flask login vulnerable to SQL injection with OR 1=1",
+                source="remote",
+                query="SQL Injection exploit writeup poc python flask",
+            ),
+            SearchResult(
+                title="Flask vulnerable example",
+                url="https://example.test/flask",
+                snippet="python/flask demo app",
+                source="remote",
+                query="SQL Injection vulnerable example python/flask",
+            ),
+        ],
+        query_plan=query_plan,
+        tech_stack_candidates=[
+            {
+                "language": "python",
+                "framework": "flask",
+                "stack_id": "python/flask",
+                "confidence": "medium",
+                "score": 0.5,
+            }
+        ],
+        family_hypothesis_summary={
+            "ranked_families": [
+                {
+                    "family": "sqli",
+                    "confidence": "high",
+                    "score": 0.83,
+                    "matched_aliases": ["sql injection", "sqli"],
+                    "matched_anchors": ["or 1=1"],
+                }
+            ]
+        },
+    )
+
+    edges = graph["edges"]
+    assert {"from": "evidence:1", "to": "family:sqli", "kind": "supports_family_hypothesis"} in edges
+    assert {"from": "evidence:1", "to": "stack:python/flask", "kind": "supports_stack_hypothesis"} in edges
+    assert {"from": "evidence:2", "to": "stack:python/flask", "kind": "supports_stack_hypothesis"} in edges
+
+
+def test_evidence_graph_preserves_negative_family_hypotheses_from_query_plan(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CWE-79",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    query_plan = {
+        "request_label": "Reflected XSS",
+        "queries": [
+            {
+                "query": "Reflected XSS server-side template injection contrast indicators render_template_string jinja2 python/flask",
+                "evidence_type": "contradiction_check",
+                "priority": 6,
+                "family": "template_injection",
+                "negative_family": True,
+            }
+        ],
+        "negative_family_hypotheses": [
+            {"family": "template_injection", "source": "researcher_contradiction"}
+        ],
+    }
+
+    graph = service._build_evidence_graph(  # type: ignore[attr-defined]
+        search_hits=[
+            SearchResult(
+                title="Template injection contrast note",
+                url="https://example.test/ssti",
+                snippet="render_template_string and jinja2 indicate server-side template injection, not reflected XSS",
+                source="remote",
+                query="Reflected XSS server-side template injection contrast indicators render_template_string jinja2 python/flask",
+            )
+        ],
+        query_plan=query_plan,
+        tech_stack_candidates=[],
+        family_hypothesis_summary={"ranked_families": []},
+    )
+
+    edges = graph["edges"]
+    nodes = graph["nodes"]
+    assert {"from": "request", "to": "family:template_injection", "kind": "negative_family_hypothesis"} in edges
+    assert {"from": "evidence:1", "to": "family:template_injection", "kind": "supports_negative_family_hypothesis"} in edges
+    assert any(
+        node.get("id") == "family:template_injection" and node.get("kind") == "family_hypothesis"
+        for node in nodes
+    )
+
+
 def test_researcher_infers_tech_stack_candidates_from_stack_anchor_hits(tmp_path: Path) -> None:
     service = _service_stub(
         tmp_path,
@@ -555,3 +679,33 @@ def test_candidate_template_skips_external_db_only_template_when_runtime_disallo
     template_path = service._generate_candidate_template(bundle)  # type: ignore[attr-defined]
 
     assert template_path is None
+
+
+def test_researcher_service_uses_request_ir_for_name_only_detection_and_dynamic_eval(
+    tmp_path: Path,
+) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CWE-89",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CWE-89",
+        "request_ir": {
+            "request_label": "SQL Injection",
+            "resolved_vuln_id": "CWE-89",
+            "name_driven": True,
+            "resolution_state": "catalog_alias",
+        },
+        "policy": {"name_only_mode": "dynamic"},
+        "researcher": {"search_policy": "remote_prefer"},
+    }
+    service.plan = {  # type: ignore[attr-defined]
+        "requirement": dict(service.requirement),  # type: ignore[attr-defined]
+        "policy": {"name_only_mode": "dynamic"},
+        "paths": {"metadata": str(tmp_path)},
+    }
+
+    assert service._bundle_is_name_driven(None) is True  # type: ignore[attr-defined]
+    assert service._dynamic_eval_enabled() is True  # type: ignore[attr-defined]

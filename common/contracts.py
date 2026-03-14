@@ -10,6 +10,7 @@ backward compatibility.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -350,7 +351,10 @@ def build_generator_contract(
         researcher_report if isinstance(researcher_report, dict) else (_load_json(metadata_dir / "researcher_report.json") or {})
     )
     guard_spec = _load_json(metadata_dir / "guard_spec.json") or {}
-    proposal = _normalize_proposed_verification_contract(report)
+    proposal = _merge_proposed_verification_contracts(
+        _normalize_proposed_verification_contract(report),
+        _manifest_proposed_verification_contract(manifest),
+    )
     semantic_contract = _resolve_semantic_contract(
         vuln_id,
         report,
@@ -523,12 +527,25 @@ def build_generator_contract(
     )
     if exploit_oracle:
         payload["exploit_oracle"] = exploit_oracle
+    evidence_graph = deepcopy(report.get("evidence_graph")) if isinstance(report.get("evidence_graph"), dict) else {}
+    if evidence_graph:
+        payload["evidence_graph"] = evidence_graph
+    enriched_request_ir = _enriched_request_ir(
+        requirement=requirement or {},
+        report=report,
+        runtime_recipe=runtime_recipe,
+        evidence_graph=evidence_graph,
+    )
+    if enriched_request_ir:
+        payload["request_ir"] = deepcopy(enriched_request_ir)
     name_only_generation_spec = _build_name_only_generation_spec(
         requirement=requirement or {},
         report=report,
         runtime_recipe=runtime_recipe,
         runtime_graph=runtime_graph,
+        evidence_graph=evidence_graph,
         exploit_oracle=exploit_oracle,
+        request_ir=enriched_request_ir,
     )
     if name_only_generation_spec:
         payload["name_only_generation_spec"] = name_only_generation_spec
@@ -598,6 +615,10 @@ def build_generator_contract(
         payload["runtime_recipe"] = deepcopy(runtime_recipe)
     if runtime_graph:
         payload["runtime_graph"] = deepcopy(runtime_graph)
+    if evidence_graph:
+        payload["evidence_graph"] = deepcopy(evidence_graph)
+    if enriched_request_ir:
+        payload["request_ir"] = deepcopy(enriched_request_ir)
     if exploit_oracle:
         payload["exploit_oracle"] = deepcopy(exploit_oracle)
     if name_only_generation_spec:
@@ -870,6 +891,66 @@ def _single_confident_stack_candidate(candidates: list[Dict[str, str]]) -> Dict[
     return top
 
 
+def _family_confidence_rank(value: Any) -> int:
+    token = str(value or "").strip().lower()
+    if token == "high":
+        return 3
+    if token == "medium":
+        return 2
+    if token == "low":
+        return 1
+    return 0
+
+
+def _is_request_resolution_family_source(value: Any) -> bool:
+    token = str(value or "").strip().lower()
+    return token in {
+        "catalog_resolution",
+        "request_resolution",
+        "request_ir",
+        "request_ir_fallback",
+        "request_identity",
+        "request_identity_fallback",
+        "label_overlap",
+    }
+
+
+def _material_family_candidates(candidates: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    if not isinstance(candidates, list) or not candidates:
+        return []
+    normalized = [entry for entry in candidates if isinstance(entry, dict)]
+    if not normalized:
+        return []
+    top = normalized[0]
+    top_source = str(top.get("source") or "").strip().lower()
+    top_confidence = _family_confidence_rank(top.get("confidence"))
+    strong_request_resolution = _is_request_resolution_family_source(top_source) and top_confidence >= _family_confidence_rank("high")
+
+    material: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(normalized):
+        family = _string_or_none(entry.get("family"))
+        if not family:
+            continue
+        family = family.lower()
+        if family in seen:
+            continue
+        include = False
+        source = str(entry.get("source") or "").strip().lower()
+        confidence_rank = _family_confidence_rank(entry.get("confidence"))
+        if index == 0:
+            include = True
+        elif strong_request_resolution:
+            include = _is_request_resolution_family_source(source) or confidence_rank >= _family_confidence_rank("high")
+        else:
+            include = _is_request_resolution_family_source(source) or confidence_rank >= _family_confidence_rank("medium")
+        if not include:
+            continue
+        seen.add(family)
+        material.append(entry)
+    return material
+
+
 def _merge_stack_candidates(*groups: list[Dict[str, str]]) -> list[Dict[str, str]]:
     merged: list[Dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -934,6 +1015,10 @@ def _stack_profile(requirement: Dict[str, Any], report: Dict[str, Any] | None = 
         framework = "flask"
         stack_source = "default_stack_profile"
         stack_locked = False
+    stack_defaulted = bool(
+        not stack_locked
+        and stack_source in {"default_stack_profile", "profile_prior", "available_skeleton"}
+    )
     return {
         "language": language,
         "framework": framework,
@@ -947,6 +1032,7 @@ def _stack_profile(requirement: Dict[str, Any], report: Dict[str, Any] | None = 
         or "synthesis",
         "stack_source": stack_source,
         "stack_locked": stack_locked,
+        "stack_defaulted": stack_defaulted,
         "stack_hypotheses": hypotheses,
     }
 
@@ -1140,6 +1226,14 @@ def _normalize_proposed_verification_contract(report: Dict[str, Any]) -> Optiona
     if not isinstance(report, dict):
         return None
     raw = extract_verification_spec(report)
+    return _normalize_verification_spec_raw(raw, source_label="researcher_report.verification_spec")
+
+
+def _normalize_verification_spec_raw(
+    raw: Any,
+    *,
+    source_label: str,
+) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict):
         return None
 
@@ -1156,7 +1250,7 @@ def _normalize_proposed_verification_contract(report: Dict[str, Any]) -> Optiona
     flag_token = _string_or_none(raw.get("flag_token"))
     assertion_program = raw.get("assertion_program")
     normalized: Dict[str, Any] = {
-        "source": "researcher_report.verification_spec",
+        "source": source_label,
         "override_static": bool(raw.get("override_static")),
     }
     success_mode = _string_or_none(raw.get("success_mode"))
@@ -1176,7 +1270,231 @@ def _normalize_proposed_verification_contract(report: Dict[str, Any]) -> Optiona
         normalized["json_flag_key"] = json_flag_key
     if isinstance(assertion_program, list) and assertion_program:
         normalized["assertion_program"] = assertion_program
+    negative_markers = _normalize_string_list(raw.get("negative_text_markers"))
+    if not negative_markers:
+        negative_markers = _negative_markers_from_assertion_program(assertion_program)
+    if negative_markers:
+        normalized["negative_text_markers"] = negative_markers
+    forbidden_markers = _normalize_string_list(raw.get("forbidden_success_markers"))
+    if not forbidden_markers:
+        forbidden_markers = list(negative_markers)
+    if forbidden_markers:
+        normalized["forbidden_success_markers"] = forbidden_markers
+    negative_controls = raw.get("negative_controls")
+    if isinstance(negative_controls, list) and negative_controls:
+        normalized["negative_controls"] = deepcopy(negative_controls)
+    metamorphic = raw.get("metamorphic")
+    if isinstance(metamorphic, dict) and metamorphic:
+        normalized["metamorphic"] = deepcopy(metamorphic)
     return normalized if len(normalized) > 2 else None
+
+
+def _manifest_role_content(manifest: Dict[str, Any], role: str) -> Optional[str]:
+    files = manifest.get("files") or []
+    if not isinstance(files, list):
+        return None
+    role_norm = (role or "").strip().lower()
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        if not role_matches(entry.get("role"), role_norm):
+            continue
+        content = entry.get("content")
+        if isinstance(content, str):
+            return content
+    return None
+
+
+def _poc_content_from_manifest(manifest: Dict[str, Any]) -> str:
+    direct = _manifest_role_content(manifest, "poc_entry")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+    files = manifest.get("files") or []
+    if not isinstance(files, list):
+        return ""
+    poc_path = _first_poc_like_path(manifest)
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        path = _string_or_none(entry.get("path"))
+        content = entry.get("content")
+        if not isinstance(content, str):
+            continue
+        if poc_path and path == poc_path:
+            return content
+    return ""
+
+
+def _negative_markers_from_poc_content(
+    content: str,
+    *,
+    success_signature: str,
+    flag_token: str,
+) -> List[str]:
+    if not isinstance(content, str) or not content.strip():
+        return []
+    markers: List[str] = []
+
+    def add_marker(value: Any) -> None:
+        token = str(value or "").strip()
+        if not token:
+            return
+        if token == success_signature or token == flag_token:
+            return
+        if success_signature and success_signature in token:
+            return
+        if flag_token and flag_token in token:
+            return
+        if token not in markers:
+            markers.append(token)
+
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Name) or func.id != "print":
+                continue
+            if not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                add_marker(first.value)
+
+    if markers:
+        return markers
+
+    for match in re.finditer(r"print\(\s*(?:f)?(['\"])(.*?)\1", content, flags=re.DOTALL):
+        add_marker(match.group(2))
+    return markers
+
+
+def _manifest_proposed_verification_contract(manifest: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(manifest, dict):
+        return None
+    explicit = manifest.get("verification_spec")
+    normalized = _normalize_verification_spec_raw(
+        explicit,
+        source_label="generator_manifest.verification_spec",
+    )
+    if normalized:
+        return normalized
+
+    poc = manifest.get("poc") if isinstance(manifest.get("poc"), dict) else {}
+    success_signature = _string_or_none(poc.get("success_signature"))
+    flag_token = _string_or_none(poc.get("flag_token"))
+    poc_content = _poc_content_from_manifest(manifest)
+    negative_markers = _negative_markers_from_poc_content(
+        poc_content,
+        success_signature=success_signature or "",
+        flag_token=flag_token or "",
+    )
+    if not success_signature and not flag_token and not negative_markers:
+        return None
+    raw: Dict[str, Any] = {}
+    if success_signature:
+        raw["success_text_markers"] = [success_signature]
+    if flag_token:
+        raw["flag_token"] = flag_token
+    if negative_markers:
+        raw["negative_text_markers"] = negative_markers
+    return _normalize_verification_spec_raw(
+        raw,
+        source_label="generator_manifest.poc_derived_verification_spec",
+    )
+
+
+def _merge_proposed_verification_contracts(
+    primary: Optional[Dict[str, Any]],
+    secondary: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(primary, dict) or not primary:
+        return deepcopy(secondary) if isinstance(secondary, dict) and secondary else None
+    if not isinstance(secondary, dict) or not secondary:
+        return deepcopy(primary)
+    merged = deepcopy(primary)
+
+    for key in (
+        "success_signature",
+        "flag_token",
+        "success_mode",
+        "json_success_key",
+        "json_success_value",
+        "json_flag_key",
+        "metamorphic",
+    ):
+        if key not in merged and key in secondary:
+            merged[key] = deepcopy(secondary.get(key))
+
+    for key in ("negative_text_markers", "forbidden_success_markers", "negative_controls"):
+        primary_values = merged.get(key)
+        secondary_values = secondary.get(key)
+        if isinstance(primary_values, list) and isinstance(secondary_values, list):
+            seen = {
+                json.dumps(item, ensure_ascii=False, sort_keys=True)
+                for item in primary_values
+            }
+            for item in secondary_values:
+                digest = json.dumps(item, ensure_ascii=False, sort_keys=True)
+                if digest in seen:
+                    continue
+                primary_values.append(deepcopy(item))
+                seen.add(digest)
+        elif key not in merged and isinstance(secondary_values, list) and secondary_values:
+            merged[key] = deepcopy(secondary_values)
+
+    primary_assertions = merged.get("assertion_program")
+    secondary_assertions = secondary.get("assertion_program")
+    if isinstance(primary_assertions, list) and isinstance(secondary_assertions, list):
+        seen = {
+            json.dumps(item, ensure_ascii=False, sort_keys=True)
+            for item in primary_assertions
+            if isinstance(item, dict)
+        }
+        for item in secondary_assertions:
+            if not isinstance(item, dict):
+                continue
+            digest = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if digest in seen:
+                continue
+            primary_assertions.append(deepcopy(item))
+            seen.add(digest)
+    elif "assertion_program" not in merged and isinstance(secondary_assertions, list) and secondary_assertions:
+        merged["assertion_program"] = deepcopy(secondary_assertions)
+
+    if merged.get("negative_text_markers") or merged.get("forbidden_success_markers") or merged.get("negative_controls"):
+        merged["negative_control_present"] = True
+    if isinstance(merged.get("metamorphic"), dict) and merged.get("metamorphic"):
+        merged["metamorphic_present"] = True
+    return merged
+
+
+def _normalize_string_list(value: Any) -> List[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if isinstance(item, str) and str(item).strip()]
+
+
+def _negative_markers_from_assertion_program(program: Any) -> List[str]:
+    if not isinstance(program, list):
+        return []
+    markers: List[str] = []
+    for item in program:
+        if not isinstance(item, dict):
+            continue
+        op = str(item.get("op") or "").strip().lower()
+        if op not in {"not_contains", "stdout_not_contains"}:
+            continue
+        marker = _string_or_none(item.get("string") or item.get("contains") or item.get("needle"))
+        if marker and marker not in markers:
+            markers.append(marker)
+    return markers
 
 
 def _resolve_semantic_contract(
@@ -1481,6 +1799,7 @@ def _build_runtime_recipe(
         "framework": _string_or_none(stack.get("framework")) or "flask",
         "stack_source": _string_or_none(stack.get("stack_source")) or "default_stack_profile",
         "stack_locked": bool(stack.get("stack_locked")),
+        "stack_defaulted": bool(stack.get("stack_defaulted")),
         "transport": "http",
         "service_entry": _string_or_none(resolved.get("service_entry")) or "app.py",
         "poc_entry": _string_or_none(resolved.get("poc_entry")) or "poc.py",
@@ -1638,6 +1957,495 @@ def _runtime_graph_summary(runtime_graph: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _evidence_graph_summary(evidence_graph: Dict[str, Any]) -> Dict[str, Any]:
+    graph = evidence_graph if isinstance(evidence_graph, dict) else {}
+    if not graph:
+        return {}
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    by_kind: Dict[str, int] = {}
+    by_edge_kind: Dict[str, int] = {}
+    for entry in nodes:
+        if not isinstance(entry, dict):
+            continue
+        kind = _string_or_none(entry.get("kind")) or "unknown"
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+    for entry in edges:
+        if not isinstance(entry, dict):
+            continue
+        kind = _string_or_none(entry.get("kind")) or "unknown"
+        by_edge_kind[kind] = by_edge_kind.get(kind, 0) + 1
+    return {
+        "node_count": int(graph.get("node_count") or len(nodes)),
+        "edge_count": int(graph.get("edge_count") or len(edges)),
+        "by_kind": by_kind,
+        "by_edge_kind": by_edge_kind,
+        "source": _string_or_none(graph.get("source")) or "unknown",
+    }
+
+
+def _evidence_graph_ids(evidence_graph: Dict[str, Any], *, kind: str) -> list[str]:
+    graph = evidence_graph if isinstance(evidence_graph, dict) else {}
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    values: list[str] = []
+    for entry in nodes:
+        if not isinstance(entry, dict):
+            continue
+        if _string_or_none(entry.get("kind")) != kind:
+            continue
+        node_id = _string_or_none(entry.get("id"))
+        if node_id and node_id not in values:
+            values.append(node_id)
+    return values
+
+
+_FAMILY_EQUIVALENCE: Dict[str, set[str]] = {
+    "sqli": {"sqli", "sql_injection", "sqlinjection"},
+    "sql_injection": {"sqli", "sql_injection", "sqlinjection"},
+    "open_redirect": {"open_redirect", "openredirect"},
+    "template_injection": {"template_injection", "templateinjection", "ssti"},
+    "ldap_injection": {"ldap_injection", "ldapinjection"},
+    "path_traversal": {"path_traversal", "pathtraversal", "directory_traversal"},
+    "xss": {"xss", "crosssitescripting"},
+    "csrf": {"csrf", "crosssiterequestforgery"},
+    "ssrf": {"ssrf", "serversiderequestforgery"},
+    "xxe": {"xxe", "xmlexternalentity"},
+    "deserialization": {"deserialization", "insecuredeserialization"},
+    "code_injection": {"code_injection", "codeinjection"},
+    "command_injection": {"command_injection", "commandinjection"},
+}
+
+
+def _normalized_family_key(value: Any) -> str:
+    token = _string_or_none(value)
+    if not token:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", token.lower())
+
+
+def _family_match_keys(value: Any) -> set[str]:
+    normalized = _normalized_family_key(value)
+    if not normalized:
+        return set()
+    aliases = set(_FAMILY_EQUIVALENCE.get(normalized) or [])
+    if not aliases:
+        return {normalized}
+    expanded = {re.sub(r"[^a-z0-9]+", "", item.lower()) for item in aliases}
+    expanded.add(normalized)
+    return expanded
+
+
+def _support_maps_from_evidence_graph(
+    evidence_graph: Dict[str, Any],
+) -> tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    graph = evidence_graph if isinstance(evidence_graph, dict) else {}
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    family_node_to_name: Dict[str, str] = {}
+    stack_node_to_id: Dict[str, str] = {}
+    for entry in nodes:
+        if not isinstance(entry, dict):
+            continue
+        node_id = _string_or_none(entry.get("id"))
+        kind = _string_or_none(entry.get("kind"))
+        if not node_id or not kind:
+            continue
+        if kind == "family_hypothesis":
+            family = _string_or_none(entry.get("family"))
+            if not family and node_id.startswith("family:"):
+                family = node_id.split(":", 1)[1]
+            if family:
+                family_node_to_name[node_id] = family
+        elif kind == "stack_hypothesis":
+            stack_id = _string_or_none(entry.get("stack_id"))
+            if not stack_id and node_id.startswith("stack:"):
+                stack_id = node_id.split(":", 1)[1]
+            if stack_id:
+                stack_node_to_id[node_id] = stack_id.lower()
+
+    family_support: Dict[str, List[str]] = {}
+    stack_support: Dict[str, List[str]] = {}
+    for entry in edges:
+        if not isinstance(entry, dict):
+            continue
+        edge_kind = _string_or_none(entry.get("kind"))
+        edge_from = _string_or_none(entry.get("from"))
+        edge_to = _string_or_none(entry.get("to"))
+        if not edge_kind or not edge_from or not edge_to or not edge_from.startswith("evidence:"):
+            continue
+        if edge_kind == "supports_family_hypothesis" and edge_to in family_node_to_name:
+            family = family_node_to_name[edge_to]
+            values = family_support.setdefault(family, [])
+            if edge_from not in values:
+                values.append(edge_from)
+        if edge_kind == "supports_stack_hypothesis" and edge_to in stack_node_to_id:
+            stack_id = stack_node_to_id[edge_to]
+            values = stack_support.setdefault(stack_id, [])
+            if edge_from not in values:
+                values.append(edge_from)
+    return family_support, stack_support
+
+
+def _attach_family_candidate_evidence(
+    candidates: list[Dict[str, Any]],
+    family_support: Dict[str, List[str]],
+) -> list[Dict[str, Any]]:
+    output: list[Dict[str, Any]] = []
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        candidate = deepcopy(entry)
+        support: List[str] = []
+        candidate_keys = _family_match_keys(candidate.get("family"))
+        for family_name, evidence_ids in family_support.items():
+            if _family_match_keys(family_name) & candidate_keys:
+                for evidence_id in evidence_ids:
+                    if evidence_id not in support:
+                        support.append(evidence_id)
+        existing = candidate.get("evidence_ids")
+        if isinstance(existing, list):
+            for evidence_id in existing:
+                token = _string_or_none(evidence_id)
+                if token and token not in support:
+                    support.append(token)
+        if support:
+            candidate["evidence_ids"] = support
+        output.append(candidate)
+    return output
+
+
+def _attach_stack_candidate_evidence(
+    candidates: list[Dict[str, Any]],
+    stack_support: Dict[str, List[str]],
+) -> list[Dict[str, Any]]:
+    output: list[Dict[str, Any]] = []
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        candidate = deepcopy(entry)
+        stack_id = _string_or_none(candidate.get("stack_id"))
+        support: List[str] = []
+        if stack_id:
+            for evidence_id in stack_support.get(stack_id.lower(), []):
+                if evidence_id not in support:
+                    support.append(evidence_id)
+        existing = candidate.get("evidence_ids")
+        if isinstance(existing, list):
+            for evidence_id in existing:
+                token = _string_or_none(evidence_id)
+                if token and token not in support:
+                    support.append(token)
+        if support:
+            candidate["evidence_ids"] = support
+        output.append(candidate)
+    return output
+
+
+def _negative_hypotheses_from_report(
+    report: Dict[str, Any],
+    family_support: Dict[str, List[str]],
+) -> list[Dict[str, Any]]:
+    family_summary = (
+        report.get("family_hypothesis_summary")
+        if isinstance(report.get("family_hypothesis_summary"), dict)
+        else {}
+    )
+    contradictory = family_summary.get("contradictory_families") if isinstance(family_summary, dict) else []
+    if not isinstance(contradictory, list):
+        return []
+    hypotheses: list[Dict[str, Any]] = []
+    for item in contradictory:
+        family = _string_or_none(item)
+        if not family:
+            continue
+        hypothesis: Dict[str, Any] = {
+            "family": family.lower(),
+            "source": "researcher_contradiction",
+        }
+        support: List[str] = []
+        for family_name, evidence_ids in family_support.items():
+            if _family_match_keys(family_name) & _family_match_keys(family):
+                for evidence_id in evidence_ids:
+                    if evidence_id not in support:
+                        support.append(evidence_id)
+        if support:
+            hypothesis["evidence_ids"] = support
+        hypotheses.append(hypothesis)
+    return hypotheses
+
+
+def _family_candidates_from_report(report: Dict[str, Any]) -> list[Dict[str, Any]]:
+    family_summary = (
+        report.get("family_hypothesis_summary")
+        if isinstance(report.get("family_hypothesis_summary"), dict)
+        else {}
+    )
+    ranked = family_summary.get("ranked_families") if isinstance(family_summary, dict) else []
+    candidates: list[Dict[str, Any]] = []
+    if not isinstance(ranked, list):
+        return candidates
+    for entry in ranked:
+        if not isinstance(entry, dict):
+            continue
+        family = _string_or_none(entry.get("family"))
+        if not family:
+            continue
+        candidate: Dict[str, Any] = {
+            "family": family.lower(),
+            "source": "researcher_hypothesis",
+        }
+        confidence = _string_or_none(entry.get("confidence"))
+        if confidence:
+            candidate["confidence"] = confidence.lower()
+        score = entry.get("score")
+        if isinstance(score, (int, float)):
+            candidate["score"] = round(float(score), 3)
+        signal_hits = entry.get("signal_hits")
+        if isinstance(signal_hits, int):
+            candidate["signal_hits"] = signal_hits
+        candidates.append(candidate)
+    return candidates
+
+
+def _stack_candidates_from_runtime_and_report(
+    *,
+    runtime_recipe: Dict[str, Any],
+    report: Dict[str, Any],
+) -> list[Dict[str, Any]]:
+    raw_candidates = (
+        runtime_recipe.get("stack_hypotheses")
+        if isinstance(runtime_recipe.get("stack_hypotheses"), list)
+        else report.get("tech_stack_candidates")
+        if isinstance(report.get("tech_stack_candidates"), list)
+        else []
+    )
+    candidates: list[Dict[str, Any]] = []
+    if not isinstance(raw_candidates, list):
+        return candidates
+    for entry in raw_candidates:
+        if not isinstance(entry, dict):
+            continue
+        language = _string_or_none(entry.get("language"))
+        framework = _string_or_none(entry.get("framework"))
+        stack_id = _string_or_none(entry.get("stack_id"))
+        if not stack_id and language and framework:
+            stack_id = f"{language.lower()}/{framework.lower()}"
+        if not stack_id:
+            continue
+        candidate: Dict[str, Any] = {
+            "stack_id": stack_id.lower(),
+            "source": _string_or_none(entry.get("source"))
+            or (
+                entry.get("sources")[0]
+                if isinstance(entry.get("sources"), list)
+                and entry.get("sources")
+                and isinstance(entry.get("sources")[0], str)
+                else None
+            )
+            or "researcher_candidate",
+        }
+        if language:
+            candidate["language"] = language.lower()
+        if framework:
+            candidate["framework"] = framework.lower()
+        confidence = _string_or_none(entry.get("confidence"))
+        if confidence:
+            candidate["confidence"] = confidence.lower()
+        score = entry.get("score")
+        if isinstance(score, (int, float)):
+            candidate["score"] = round(float(score), 3)
+        sources = entry.get("sources")
+        if isinstance(sources, list):
+            candidate["sources"] = [
+                str(item).strip().lower()
+                for item in sources
+                if isinstance(item, str) and str(item).strip()
+            ]
+        candidates.append(candidate)
+    return candidates
+
+
+def _merge_family_candidates(
+    existing: list[Dict[str, Any]],
+    researcher: list[Dict[str, Any]],
+    *,
+    resolution_confidence: str,
+) -> list[Dict[str, Any]]:
+    filtered_researcher = list(researcher)
+    if resolution_confidence in {"high"} and isinstance(existing, list) and existing:
+        authoritative_existing = _material_family_candidates(existing)
+        top_existing = authoritative_existing[0] if authoritative_existing else {}
+        top_source = str(top_existing.get("source") or "").strip().lower()
+        top_confidence = _family_confidence_rank(top_existing.get("confidence"))
+        if _is_request_resolution_family_source(top_source) and top_confidence >= _family_confidence_rank("high"):
+            filtered_researcher = []
+            seen_background: set[str] = set()
+            for entry in researcher:
+                if not isinstance(entry, dict):
+                    continue
+                family = _string_or_none(entry.get("family"))
+                if not family:
+                    continue
+                family = family.lower()
+                if family in seen_background:
+                    continue
+                source = str(entry.get("source") or "").strip().lower()
+                confidence_rank = _family_confidence_rank(entry.get("confidence"))
+                if not (_is_request_resolution_family_source(source) or confidence_rank >= _family_confidence_rank("high")):
+                    continue
+                seen_background.add(family)
+                filtered_researcher.append(entry)
+    prioritize_researcher = not existing or resolution_confidence not in {"high"}
+    ordered = (filtered_researcher, existing) if prioritize_researcher else (existing, filtered_researcher)
+    merged: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for source_list in ordered:
+        for entry in source_list:
+            if not isinstance(entry, dict):
+                continue
+            family = _string_or_none(entry.get("family"))
+            if not family:
+                continue
+            family = family.lower()
+            if family in seen:
+                continue
+            seen.add(family)
+            candidate = deepcopy(entry)
+            candidate["family"] = family
+            merged.append(candidate)
+    return merged
+
+
+def _merge_stack_candidates(
+    existing: list[Dict[str, Any]],
+    inferred: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    merged: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for source_list in (inferred, existing):
+        for entry in source_list:
+            if not isinstance(entry, dict):
+                continue
+            stack_id = _string_or_none(entry.get("stack_id"))
+            if not stack_id:
+                language = _string_or_none(entry.get("language"))
+                framework = _string_or_none(entry.get("framework"))
+                if language and framework:
+                    stack_id = f"{language.lower()}/{framework.lower()}"
+            if not stack_id:
+                continue
+            stack_id = stack_id.lower()
+            if stack_id in seen:
+                continue
+            seen.add(stack_id)
+            candidate = deepcopy(entry)
+            candidate["stack_id"] = stack_id
+            if _string_or_none(candidate.get("language")):
+                candidate["language"] = str(candidate["language"]).strip().lower()
+            if _string_or_none(candidate.get("framework")):
+                candidate["framework"] = str(candidate["framework"]).strip().lower()
+            source = _string_or_none(candidate.get("source"))
+            if source:
+                candidate["source"] = source.lower()
+            confidence = _string_or_none(candidate.get("confidence"))
+            if confidence:
+                candidate["confidence"] = confidence.lower()
+            merged.append(candidate)
+    return merged
+
+
+def _derived_request_ir_abstain_reason(
+    request_ir: Dict[str, Any],
+    *,
+    report: Dict[str, Any],
+    evidence_graph: Dict[str, Any],
+) -> Optional[str]:
+    explicit = _string_or_none(request_ir.get("abstain_reason"))
+    if explicit:
+        return explicit
+    quality = _string_or_none(report.get("quality"))
+    quality_reason = _string_or_none(report.get("quality_reason"))
+    family_summary = (
+        report.get("family_hypothesis_summary")
+        if isinstance(report.get("family_hypothesis_summary"), dict)
+        else {}
+    )
+    top_family = _string_or_none(family_summary.get("top_family"))
+    top_confidence = _string_or_none(family_summary.get("top_confidence"))
+    ambiguous = bool(family_summary.get("ambiguous"))
+    evidence_ids = _evidence_graph_ids(evidence_graph, kind="evidence")
+    if quality == "insufficient":
+        return quality_reason or "insufficient_research_evidence"
+    if ambiguous and top_family and top_confidence not in {"high"}:
+        return "ambiguous_family_hypothesis"
+    if not top_family and evidence_ids:
+        return "no_family_hypothesis"
+    return None
+
+
+def _enriched_request_ir(
+    *,
+    requirement: Dict[str, Any],
+    report: Dict[str, Any],
+    runtime_recipe: Dict[str, Any],
+    evidence_graph: Dict[str, Any],
+) -> Dict[str, Any]:
+    request_ir = (
+        deepcopy(requirement.get("request_ir"))
+        if isinstance(requirement.get("request_ir"), dict)
+        else {}
+    )
+    if not request_ir:
+        return {}
+    family_support, stack_support = _support_maps_from_evidence_graph(evidence_graph)
+    resolution_confidence = _string_or_none(request_ir.get("resolution_confidence")) or "unknown"
+    existing_family_candidates = (
+        deepcopy(request_ir.get("family_candidates"))
+        if isinstance(request_ir.get("family_candidates"), list)
+        else []
+    )
+    existing_stack_candidates = (
+        deepcopy(request_ir.get("stack_candidates"))
+        if isinstance(request_ir.get("stack_candidates"), list)
+        else []
+    )
+    merged_family_candidates = _merge_family_candidates(
+        existing_family_candidates,
+        _family_candidates_from_report(report),
+        resolution_confidence=resolution_confidence.lower(),
+    )
+    merged_family_candidates = _attach_family_candidate_evidence(merged_family_candidates, family_support)
+    if merged_family_candidates:
+        request_ir["family_candidates"] = merged_family_candidates
+    merged_stack_candidates = _merge_stack_candidates(
+        existing_stack_candidates,
+        _stack_candidates_from_runtime_and_report(runtime_recipe=runtime_recipe, report=report),
+    )
+    merged_stack_candidates = _attach_stack_candidate_evidence(merged_stack_candidates, stack_support)
+    if merged_stack_candidates:
+        request_ir["stack_candidates"] = merged_stack_candidates
+    existing_evidence_ids = [
+        str(item).strip()
+        for item in (request_ir.get("evidence_ids") or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    evidence_ids = list(existing_evidence_ids)
+    for node_id in _evidence_graph_ids(evidence_graph, kind="evidence"):
+        if node_id not in evidence_ids:
+            evidence_ids.append(node_id)
+    request_ir["evidence_ids"] = evidence_ids
+    negative_hypotheses = _negative_hypotheses_from_report(report, family_support)
+    if negative_hypotheses:
+        request_ir["negative_hypotheses"] = negative_hypotheses
+    abstain_reason = _derived_request_ir_abstain_reason(
+        request_ir,
+        report=report,
+        evidence_graph=evidence_graph,
+    )
+    request_ir["abstain_reason"] = abstain_reason
+    return request_ir
+
+
 def _build_exploit_oracle(
     *,
     resolved: Dict[str, Any],
@@ -1662,14 +2470,41 @@ def _build_exploit_oracle(
     for key in ("success_mode", "json_success_key", "json_success_value", "json_flag_key"):
         if key in proposal:
             payload[key] = deepcopy(proposal.get(key))
+    negative_text_markers = _normalize_string_list(proposal.get("negative_text_markers"))
+    if not negative_text_markers:
+        negative_text_markers = _negative_markers_from_assertion_program(assertions)
+    forbidden_success_markers = _normalize_string_list(proposal.get("forbidden_success_markers"))
+    if not forbidden_success_markers:
+        forbidden_success_markers = list(negative_text_markers)
+    negative_controls = proposal.get("negative_controls")
+    metamorphic = proposal.get("metamorphic")
     if success_signature and not _oracle_assertion_contains(assertions, success_signature):
         assertions.append({"op": "contains", "string": success_signature})
     if flag_token and not _oracle_assertion_contains(assertions, flag_token):
         assertions.append({"op": "contains", "string": flag_token})
+    for marker in list(negative_text_markers) + [item for item in forbidden_success_markers if item not in negative_text_markers]:
+        if marker and not _oracle_assertion_not_contains(assertions, marker):
+            assertions.append({"op": "not_contains", "string": marker})
     if assertions:
         payload["assertion_program"] = assertions
+    if negative_text_markers:
+        payload["negative_text_markers"] = negative_text_markers
+    if forbidden_success_markers:
+        payload["forbidden_success_markers"] = forbidden_success_markers
+    if isinstance(negative_controls, list) and negative_controls:
+        payload["negative_controls"] = deepcopy(negative_controls)
+    if isinstance(metamorphic, dict) and metamorphic:
+        payload["metamorphic"] = deepcopy(metamorphic)
+    if negative_text_markers or forbidden_success_markers or (isinstance(negative_controls, list) and negative_controls):
+        payload["negative_control_present"] = True
+    if isinstance(metamorphic, dict) and metamorphic:
+        payload["metamorphic_present"] = True
     if proposal:
-        payload["source"] = "researcher_verification_spec"
+        proposal_source = _string_or_none(proposal.get("source")) or "proposed_verification_spec"
+        if proposal_source == "researcher_report.verification_spec":
+            payload["source"] = "researcher_verification_spec"
+        else:
+            payload["source"] = proposal_source
     else:
         payload["source"] = "resolved_contract"
     payload["source_fields"] = {
@@ -1701,19 +2536,142 @@ def _oracle_assertion_contains(assertions: list[Any], needle: str) -> bool:
     return False
 
 
+def _oracle_assertion_not_contains(assertions: list[Any], needle: str) -> bool:
+    target = str(needle or "").strip()
+    if not target:
+        return False
+    for item in assertions:
+        if not isinstance(item, dict):
+            continue
+        op = str(item.get("op") or "").strip().lower()
+        if op not in {"not_contains", "stdout_not_contains"}:
+            continue
+        candidate = str(item.get("string") or item.get("contains") or item.get("needle") or "").strip()
+        if candidate == target:
+            return True
+    return False
+
+
+def _request_ir_candidate_evidence_ids(request_ir: Dict[str, Any]) -> list[str]:
+    evidence_ids: list[str] = []
+    seen: set[str] = set()
+
+    def _push(raw: Any) -> None:
+        token = str(raw or "").strip()
+        if not token or token in seen:
+            return
+        seen.add(token)
+        evidence_ids.append(token)
+
+    for item in (request_ir.get("evidence_ids") or []) if isinstance(request_ir, dict) else []:
+        _push(item)
+    for key in ("family_candidates", "stack_candidates", "identifier_candidates"):
+        group = request_ir.get(key) if isinstance(request_ir.get(key), list) else []
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            for item in entry.get("evidence_ids") or []:
+                _push(item)
+    return evidence_ids
+
+
+def _name_only_planning_focus_summary(
+    *,
+    name_only_contract: Dict[str, Any],
+    request_ir: Dict[str, Any],
+    family_candidate_summary: Dict[str, Any],
+    stack_candidate_summary: Dict[str, Any],
+    exploit_oracle: Dict[str, Any],
+) -> Dict[str, Any]:
+    ordered_focuses: list[str] = []
+    by_focus: Dict[str, list[str]] = {}
+
+    def _add_focus(focus: str, reason: str) -> None:
+        token = str(focus or "").strip().lower()
+        reason_token = str(reason or "").strip().lower()
+        if not token or not reason_token:
+            return
+        reasons = by_focus.setdefault(token, [])
+        if token not in ordered_focuses:
+            ordered_focuses.append(token)
+        if reason_token not in reasons:
+            reasons.append(reason_token)
+
+    candidate_count = family_candidate_summary.get("candidate_count")
+    material_candidate_count = family_candidate_summary.get("material_candidate_count")
+    family_ambiguous = family_candidate_summary.get("material_ambiguous")
+    working_family = str(family_candidate_summary.get("working_family") or "").strip().lower()
+    if not working_family and not isinstance(candidate_count, int):
+        candidate_count = 0
+    if not isinstance(material_candidate_count, int):
+        material_candidate_count = candidate_count if isinstance(candidate_count, int) else 0
+    if not isinstance(family_ambiguous, bool):
+        family_ambiguous = bool(family_candidate_summary.get("ambiguous")) or (
+            isinstance(material_candidate_count, int) and material_candidate_count > 1
+        )
+    if not working_family:
+        _add_focus("family_disambiguation", "family_unresolved")
+    if family_ambiguous:
+        _add_focus("family_disambiguation", "family_ambiguous")
+
+    working_stack_id = str(stack_candidate_summary.get("working_stack_id") or "").strip().lower()
+    if not working_stack_id:
+        _add_focus("stack_or_runtime_design", "stack_unresolved")
+    if stack_candidate_summary.get("working_stack_defaulted") is True:
+        _add_focus("stack_or_runtime_design", "stack_defaulted")
+    if stack_candidate_summary.get("ambiguous") is True:
+        _add_focus("stack_or_runtime_design", "stack_ambiguous")
+
+    if not _request_ir_candidate_evidence_ids(request_ir):
+        _add_focus("evidence_authority", "family_candidate_evidence_missing")
+
+    effective_mode = str(name_only_contract.get("effective_mode") or "").strip().lower()
+    require_open_world_oracle = effective_mode in {"dynamic", "dynamic_eval", "strict_dynamic"}
+    if require_open_world_oracle:
+        if exploit_oracle.get("negative_control_present") is not True:
+            _add_focus("oracle_realism", "negative_control_missing")
+        if exploit_oracle.get("metamorphic_present") is not True:
+            _add_focus("oracle_realism", "metamorphic_missing")
+    if name_only_contract.get("require_independent_verifier") is True:
+        _add_focus("independent_verification", "independent_verifier_required")
+    if name_only_contract.get("require_remote_research") is True and not _request_ir_candidate_evidence_ids(request_ir):
+        _add_focus("evidence_authority", "remote_research_evidence_missing")
+
+    if not ordered_focuses:
+        ordered_focuses.append("generation_execution")
+        by_focus["generation_execution"] = ["generation_ready"]
+
+    reason_tokens: list[str] = []
+    for focus in ordered_focuses:
+        for reason in by_focus.get(focus, []):
+            if reason not in reason_tokens:
+                reason_tokens.append(reason)
+
+    return {
+        "primary_focus": ordered_focuses[0],
+        "focuses": ordered_focuses,
+        "by_focus": by_focus,
+        "reason_tokens": reason_tokens,
+    }
+
+
 def _build_name_only_generation_spec(
     *,
     requirement: Dict[str, Any],
     report: Dict[str, Any],
     runtime_recipe: Dict[str, Any],
     runtime_graph: Dict[str, Any],
+    evidence_graph: Dict[str, Any],
     exploit_oracle: Dict[str, Any],
+    request_ir: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     name_only_contract = build_name_only_contract(requirement=requirement)
     if name_only_contract.get("enabled") is not True:
         return {}
     request_ir = (
-        deepcopy(requirement.get("request_ir"))
+        deepcopy(request_ir)
+        if isinstance(request_ir, dict)
+        else deepcopy(requirement.get("request_ir"))
         if isinstance(requirement.get("request_ir"), dict)
         else {}
     )
@@ -1784,6 +2742,8 @@ def _build_name_only_generation_spec(
         "working_family": working_family or None,
         "working_family_source": working_family_source or None,
         "ambiguous": bool((family_summary or {}).get("ambiguous")),
+        "material_candidate_count": 0,
+        "material_ambiguous": bool((family_summary or {}).get("ambiguous")),
     }
     if isinstance(family_candidates, list) and family_candidates:
         unique_families = []
@@ -1797,14 +2757,35 @@ def _build_name_only_generation_spec(
             seen_families.add(family)
             unique_families.append(entry)
         if unique_families:
+            background_family_candidates: list[Dict[str, Any]] = []
+            background_seen: set[str] = set(seen_families)
+            for entry in _family_candidates_from_report(report):
+                if not isinstance(entry, dict):
+                    continue
+                family = str(entry.get("family") or "").strip().lower()
+                if not family or family in background_seen:
+                    continue
+                background_seen.add(family)
+                background_family_candidates.append(entry)
             top_family = unique_families[0]
+            material_families = _material_family_candidates(unique_families)
+            material_top_family = material_families[0] if material_families else top_family
             family_candidate_summary.update(
                 {
-                    "candidate_count": len(unique_families),
+                    "candidate_count": len(unique_families) + len(background_family_candidates),
                     "top_family": str(top_family.get("family") or "").strip().lower() or None,
                     "top_source": str(top_family.get("source") or "").strip().lower() or None,
                     "top_confidence": str(top_family.get("confidence") or "").strip().lower() or None,
-                    "ambiguous": family_candidate_summary["ambiguous"] or len(unique_families) > 1,
+                    "material_candidate_count": len(material_families),
+                    "material_top_family": str(material_top_family.get("family") or "").strip().lower() or None,
+                    "material_top_source": str(material_top_family.get("source") or "").strip().lower() or None,
+                    "material_top_confidence": str(material_top_family.get("confidence") or "").strip().lower() or None,
+                    "deprioritized_candidate_count": max(
+                        len(background_family_candidates) + len(unique_families) - len(material_families),
+                        0,
+                    ),
+                    "ambiguous": family_candidate_summary["ambiguous"] or len(material_families) > 1,
+                    "material_ambiguous": family_candidate_summary["material_ambiguous"] or len(material_families) > 1,
                 }
             )
     elif request_identity_family:
@@ -1814,8 +2795,34 @@ def _build_name_only_generation_spec(
                 "top_family": request_identity_family,
                 "top_source": "request_resolution",
                 "top_confidence": resolution_confidence or None,
+                "material_candidate_count": 1,
+                "material_top_family": request_identity_family,
+                "material_top_source": "request_resolution",
+                "material_top_confidence": resolution_confidence or None,
             }
         )
+    raw_negative_hypotheses = request_ir.get("negative_hypotheses") if isinstance(request_ir.get("negative_hypotheses"), list) else []
+    negative_hypotheses = [
+        deepcopy(item)
+        for item in raw_negative_hypotheses
+        if isinstance(item, dict)
+    ]
+    if not negative_hypotheses:
+        contradictory_families = []
+        raw_contradictory = family_summary.get("contradictory_families") if isinstance(family_summary, dict) else []
+        if isinstance(raw_contradictory, list):
+            contradictory_families = [
+                str(item).strip().lower()
+                for item in raw_contradictory
+                if isinstance(item, str) and str(item).strip()
+            ]
+        negative_hypotheses = [
+            {
+                "family": family,
+                "source": "researcher_contradiction",
+            }
+            for family in contradictory_families
+        ]
     working_stack_id = None
     language = str(runtime_recipe.get("language") or "").strip().lower()
     framework = str(runtime_recipe.get("framework") or "").strip().lower()
@@ -1826,6 +2833,7 @@ def _build_name_only_generation_spec(
         "working_stack_id": working_stack_id or None,
         "working_stack_source": str(runtime_recipe.get("stack_source") or "").strip().lower() or None,
         "working_stack_locked": bool(runtime_recipe.get("stack_locked")),
+        "working_stack_defaulted": bool(runtime_recipe.get("stack_defaulted")),
         "ambiguous": False,
     }
     if isinstance(stack_hypotheses, list) and stack_hypotheses:
@@ -1870,12 +2878,25 @@ def _build_name_only_generation_spec(
         "request_identity_family": request_identity_family or None,
         "family_hypothesis_summary": family_summary,
         "family_candidate_summary": family_candidate_summary,
+        "negative_hypotheses": negative_hypotheses,
+        "identifier_candidate_summary": {
+            "candidate_count": len(
+                request_ir.get("identifier_candidates")
+                if isinstance(request_ir.get("identifier_candidates"), list)
+                else []
+            ),
+            "resolved_vuln_id_candidate": _string_or_none(request_ir.get("resolved_vuln_id_candidate"))
+            if isinstance(request_ir, dict)
+            else None,
+            "abstain_reason": _string_or_none(request_ir.get("abstain_reason")) if isinstance(request_ir, dict) else None,
+        },
         "runtime_recipe_summary": {
             key: deepcopy(runtime_recipe.get(key))
             for key in (
                 "language",
                 "framework",
                 "stack_locked",
+                "stack_defaulted",
                 "stack_source",
                 "topology",
                 "service_port",
@@ -1885,6 +2906,7 @@ def _build_name_only_generation_spec(
             if key in runtime_recipe
         },
         "runtime_graph_summary": _runtime_graph_summary(runtime_graph),
+        "evidence_graph_summary": _evidence_graph_summary(evidence_graph),
         "stack_hypotheses": deepcopy(stack_hypotheses),
         "stack_candidate_summary": stack_candidate_summary,
         "exploit_oracle_summary": {
@@ -1892,6 +2914,12 @@ def _build_name_only_generation_spec(
             for key in (
                 "success_signature",
                 "flag_token",
+                "negative_text_markers",
+                "forbidden_success_markers",
+                "negative_controls",
+                "negative_control_present",
+                "metamorphic",
+                "metamorphic_present",
                 "poc_cmd",
                 "output_mode",
                 "source",
@@ -1903,6 +2931,13 @@ def _build_name_only_generation_spec(
             if key in exploit_oracle
         },
     }
+    payload["planning_focus_summary"] = _name_only_planning_focus_summary(
+        name_only_contract=name_only_contract,
+        request_ir=request_ir,
+        family_candidate_summary=family_candidate_summary,
+        stack_candidate_summary=stack_candidate_summary,
+        exploit_oracle=exploit_oracle,
+    )
     return payload
 
 

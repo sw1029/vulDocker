@@ -26,18 +26,38 @@
         "strict_dynamic_failed": 1
       }
     },
+    "name_only_outcome_summary": {
+      "name_only_bundles": 1,
+      "fail_closed_bundles": 1,
+      "by_decision": {
+        "fail_closed": 1
+      },
+      "by_next_required_step": {
+        "capability_or_research": 1
+      },
+      "by_terminal_failure_class": {
+        "strict_dynamic_live_llm_unavailable": 1
+      }
+    },
     "failure": {
       "stage": "CAPABILITY_CHECK",
       "terminal_failure_class": "strict_dynamic_live_llm_unavailable"
     },
     "open_world_class": "name_driven_capability_gate_failed",
     "strict_open_world_class": "strict_dynamic_capability_unavailable",
+    "name_only_decision": "fail_closed",
+    "name_only_next_required_step": "capability_or_research",
     "generalization_class": "real_free_form_precondition_failed",
     "counts_as_generalization": false,
     "intent_satisfaction": {
       "mode": "strict_dynamic",
       "status": "strict_dynamic_failed",
       "meets_intent": false
+    },
+    "name_only_outcome": {
+      "decision": "fail_closed",
+      "next_required_step": "capability_or_research",
+      "satisfies_intent_contract": false
     }
   },
   "evals": [
@@ -56,6 +76,13 @@
         "mode": "strict_dynamic",
         "status": "strict_dynamic_failed",
         "meets_intent": false
+      },
+      "name_only_decision": "fail_closed",
+      "name_only_next_required_step": "capability_or_research",
+      "name_only_outcome": {
+        "decision": "fail_closed",
+        "next_required_step": "capability_or_research",
+        "satisfies_intent_contract": false
       },
       "generalization_class": "real_free_form_precondition_failed",
       "counts_as_generalization": false,

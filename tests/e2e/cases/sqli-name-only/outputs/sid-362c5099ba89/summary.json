@@ -1,5 +1,5 @@
 {
-  "sid": "sid-4599d566cf6e",
+  "sid": "sid-362c5099ba89",
   "overall_pass": true,
   "pipeline_result": "success",
   "promotion_eligible": true,
@@ -7,8 +7,8 @@
   "memory_promotion": {
     "eligible": false,
     "reasons": [
-      "strict_open_world:strict_fixture_backed_dynamic",
-      "artifact_quality:low",
+      "strict_open_world:strict_curated_lower_bound",
+      "artifact_quality:medium",
       "oracle_clarity:medium"
     ]
   },
@@ -16,33 +16,83 @@
   "support_promotion": {
     "eligible": false,
     "reasons": [
-      "strict_open_world:strict_fixture_backed_dynamic",
-      "open_world:known_family_regression",
-      "artifact_quality:low",
+      "strict_open_world:strict_curated_lower_bound",
+      "open_world:catalog_resolved_lower_bound",
+      "artifact_quality:medium",
       "oracle_clarity:medium",
-      "family_evidence:candidate_unbacked",
-      "name_only_outcome:not_applicable"
+      "family_evidence:candidate_unbacked"
     ]
   },
   "support_promotion_eligible": false,
+  "open_world_readiness_summary": {
+    "bundle_count": 1,
+    "ready_bundles": 0,
+    "not_ready_bundles": 1,
+    "all_ready": false,
+    "by_blocker": {
+      "strict_open_world_gate": 1,
+      "open_world_non_positive": 1,
+      "artifact_quality_below_high": 1,
+      "oracle_clarity_below_high": 1,
+      "family_candidate_evidence_missing": 1
+    }
+  },
+  "boundedness_summary": {
+    "catalog_entries": 12,
+    "catalog_families": 12,
+    "family_hint_families": 12,
+    "template_count": 3,
+    "scaffold_stack_pool": 2,
+    "compiler_strategy_count": 13,
+    "semantic_guided_family_builders": 12,
+    "executor_topology_classes": [
+      "single_service",
+      "service_plus_sidecar"
+    ],
+    "executor_multi_primary_supported": false,
+    "closed_vocabulary_family_discovery": true,
+    "stack_pool_bounded": true,
+    "compiler_registry_bounded": true,
+    "executor_topology_bounded": true
+  },
+  "open_world_readiness": {
+    "ready": false,
+    "blockers": [
+      "strict_open_world_gate",
+      "open_world_non_positive",
+      "artifact_quality_below_high",
+      "oracle_clarity_below_high",
+      "family_candidate_evidence_missing"
+    ],
+    "open_world_class": "catalog_resolved_lower_bound",
+    "strict_open_world_class": "strict_curated_lower_bound",
+    "name_only_decision": "intent_met",
+    "stack_defaulted": false,
+    "family_evidence_backed": false
+  },
+  "open_world_ready": false,
   "generation_summary": {
     "bundle_count": 1,
     "by_origin": {
-      "llm_manifest": 1
+      "compiler_generated": 1
     },
     "by_dynamicness_verdict": {
-      "trusted dynamic": 1
+      "compiler-first": 1
     },
-    "by_compose_mode": {},
-    "by_stack_scaffold_id": {},
+    "by_compose_mode": {
+      "registry": 1
+    },
+    "by_stack_scaffold_id": {
+      "python/flask": 1
+    },
     "llm_stub_bundles": 0,
-    "llm_fixture_bundles": 1,
+    "llm_fixture_bundles": 0,
     "fallback_bundles": 0,
     "family_override_bundles": 0,
     "template_origin_bundles": 0,
     "template_assisted_bundles": 0,
-    "registry_compose_bundles": 0,
-    "scaffolded_bundles": 0,
+    "registry_compose_bundles": 1,
+    "scaffolded_bundles": 1,
     "dynamic_eval_attempted_bundles": 0,
     "dynamic_eval_recovered_bundles": 0
   },
@@ -89,10 +139,10 @@
   },
   "request_identity_summary": {
     "bundle_count": 1,
-    "name_driven_bundles": 0,
+    "name_driven_bundles": 1,
     "synthetic_resolution_bundles": 0,
     "by_input_mode": {
-      "explicit_identifier": 1
+      "free_form_name": 1
     },
     "by_match_class": {
       "catalog_alias": 1
@@ -103,7 +153,7 @@
   },
   "request_ir_summary": {
     "bundle_count": 1,
-    "name_driven_bundles": 0,
+    "name_driven_bundles": 1,
     "evidence_backed_bundles": 0,
     "abstain_signaled_bundles": 0,
     "multi_identifier_candidate_bundles": 1,
@@ -163,10 +213,14 @@
     "lower_bound_dependent_bundles": 1,
     "template_dependent_bundles": 0,
     "by_class": {
-      "known_family_regression": 1
+      "catalog_resolved_lower_bound": 1
     },
-    "by_confidence": {},
-    "by_basis": {}
+    "by_confidence": {
+      "high": 1
+    },
+    "by_basis": {
+      "catalog_alias": 1
+    }
   },
   "strict_open_world_summary": {
     "bundle_count": 1,
@@ -178,12 +232,12 @@
     "fully_validated_positive_strict_open_world_bundles": 0,
     "lower_bound_dependent_bundles": 1,
     "template_dependent_bundles": 0,
-    "fixture_backed_bundles": 1,
+    "fixture_backed_bundles": 0,
     "stub_backed_bundles": 0,
     "research_degraded_bundles": 0,
     "verifier_coupled_bundles": 0,
     "by_class": {
-      "strict_fixture_backed_dynamic": 1
+      "strict_curated_lower_bound": 1
     }
   },
   "dynamic_eval_summary": {
@@ -196,9 +250,9 @@
   },
   "artifact_quality_summary": {
     "bundle_count": 1,
-    "average_score": 5.0,
+    "average_score": 8.0,
     "by_band": {
-      "low": 1
+      "medium": 1
     },
     "readme_present_bundles": 1,
     "runtime_recipe_bundles": 1,
@@ -217,14 +271,14 @@
     "template_assisted_bundles": 0,
     "template_dependent_bundles": 0,
     "lower_bound_dependent_bundles": 1,
-    "name_only_lower_bound_bundles": 0,
+    "name_only_lower_bound_bundles": 1,
     "open_world_positive_bundles": 0,
     "minimal_dynamic_bundles": 0,
     "realized_minimal_dynamic_bundles": 0,
     "fully_validated_minimal_dynamic_bundles": 0,
     "hypothetical_lower_bound_bundles": 0,
     "by_open_world_class": {
-      "known_family_regression": 1
+      "catalog_resolved_lower_bound": 1
     }
   },
   "runtime_surface_summary": {
@@ -254,44 +308,62 @@
   },
   "family_dependence_summary": {
     "bundle_count": 1,
-    "name_only_bundles": 0,
-    "family_bounded_bundles": 0,
+    "name_only_bundles": 1,
+    "family_bounded_bundles": 1,
     "ambiguous_bundles": 0,
     "evidence_backed_bundles": 0,
     "candidate_evidence_backed_bundles": 0,
     "negative_hypothesis_bundles": 0,
     "by_class": {
-      "not_name_only": 1
+      "curated_family_asset": 1
     },
-    "by_selection_source": {},
+    "by_selection_source": {
+      "catalog_resolution": 1
+    },
     "by_abstain_reason": {},
-    "by_resolution_confidence": {},
-    "by_resolution_basis": {}
+    "by_resolution_confidence": {
+      "high": 1
+    },
+    "by_resolution_basis": {
+      "catalog_alias": 1
+    }
   },
   "intent_satisfaction_summary": {
     "bundle_count": 1,
-    "name_only_bundles": 0,
-    "meets_intent_bundles": 0,
+    "name_only_bundles": 1,
+    "meets_intent_bundles": 1,
     "partial_bundles": 0,
-    "all_name_only_meet_intent": false,
-    "by_status": {},
-    "by_closure_source": {},
-    "by_llm_path": {},
-    "by_research_quality": {}
+    "all_name_only_meet_intent": true,
+    "by_status": {
+      "compatibility_lower_bound": 1
+    },
+    "by_closure_source": {
+      "curated_lower_bound": 1
+    },
+    "by_llm_path": {
+      "not_used": 1
+    },
+    "by_research_quality": {
+      "skipped": 1
+    }
   },
   "name_only_outcome_summary": {
     "bundle_count": 1,
-    "name_only_bundles": 0,
-    "intent_met_bundles": 0,
+    "name_only_bundles": 1,
+    "intent_met_bundles": 1,
     "partial_bundles": 0,
     "abstained_bundles": 0,
     "fail_closed_bundles": 0,
     "failed_bundles": 0,
-    "by_decision": {},
+    "by_decision": {
+      "intent_met": 1
+    },
     "by_next_required_step": {},
     "by_abstain_reason": {},
     "by_terminal_failure_class": {},
-    "by_stage_ceiling": {}
+    "by_stage_ceiling": {
+      "fully_validated": 1
+    }
   },
   "partial_progress_summary": {
     "bundle_count": 1,
@@ -316,35 +388,35 @@
   "compiler_supported": true,
   "compiler_strategy": "sqli_string_concat",
   "compiler_reason": "compiler strategy and scaffold are available",
-  "compiler_family": null,
-  "stack_scaffold_id": null,
-  "stack_scaffold_version": null,
-  "fragment_id": null,
-  "compose_mode": null,
+  "compiler_family": "sql_injection",
+  "stack_scaffold_id": "python/flask",
+  "stack_scaffold_version": "1.0",
+  "fragment_id": "login_query_concat_route",
+  "compose_mode": "registry",
   "service_env": null,
   "request_identity": {
-    "request_label": "CWE-89",
-    "normalized_request_label": "cwe 89",
+    "request_label": "SQL injection",
+    "normalized_request_label": "sql injection",
     "resolved_vuln_id": "CWE-89",
-    "input_mode": "explicit_identifier",
+    "input_mode": "free_form_name",
     "source": "alias",
     "match_class": "catalog_alias",
     "confidence": "high",
-    "field": "vuln_ids[0]",
+    "field": "vuln_name",
     "synthetic_resolution": false,
     "catalog_backed_resolution": true,
     "token_match_resolution": false,
     "exact_identifier_resolution": false,
-    "name_driven": false
+    "name_driven": true
   },
   "request_ir": {
-    "raw_label": "CWE-89",
-    "request_label": "CWE-89",
-    "normalized_request_label": "cwe 89",
+    "raw_label": "SQL injection",
+    "request_label": "SQL injection",
+    "normalized_request_label": "sql injection",
     "resolved_vuln_id": "CWE-89",
     "resolved_vuln_id_candidate": "CWE-89",
-    "input_mode": "explicit_identifier",
-    "name_driven": false,
+    "input_mode": "free_form_name",
+    "name_driven": true,
     "resolution_state": "catalog_alias",
     "resolution_source": "alias",
     "resolution_match_class": "catalog_alias",
@@ -356,7 +428,7 @@
         "confidence": "high"
       },
       {
-        "vuln_id": "NAME-CWE-89",
+        "vuln_id": "NAME-SQL-INJECTION",
         "source": "synthetic_name_preview",
         "confidence": "low"
       }
@@ -380,7 +452,8 @@
       {
         "family": "sql_injection",
         "source": "catalog_resolution",
-        "confidence": "high"
+        "confidence": "high",
+        "matched_vuln_id": "CWE-89"
       }
     ],
     "abstain_reason": null,
@@ -392,8 +465,8 @@
       "require_remote_research": false,
       "allow_degraded_fallback": false,
       "allow_lower_bound_recovery": false,
-      "allow_curated_lower_bound_closure": false,
-      "allow_template_closure": false,
+      "allow_curated_lower_bound_closure": true,
+      "allow_template_closure": true,
       "require_strict_open_world": false,
       "require_independent_verifier": false,
       "require_live_llm": false,
@@ -429,14 +502,14 @@
     }
   },
   "name_resolution": {
-    "field": "vuln_ids[0]",
-    "input": "CWE-89",
+    "field": "vuln_name",
+    "input": "SQL injection",
     "resolved_vuln_id": "CWE-89",
     "source": "alias",
     "match_class": "catalog_alias",
     "confidence": "high"
   },
-  "generation_origin": "llm_manifest",
+  "generation_origin": "compiler_generated",
   "semantic_guided_selection_source": null,
   "semantic_guided_abstain_reason": null,
   "semantic_guided_ambiguous": null,
@@ -446,9 +519,9 @@
   "semantic_supported": true,
   "semantic_status": "aligned",
   "semantic_source": "generator_manifest",
-  "llm_fixture_used": true,
-  "provider_health_state": "llm_fixture",
-  "total_duration_s": 10.371,
+  "llm_fixture_used": false,
+  "provider_health_state": "not_probed",
+  "total_duration_s": 7.726,
   "performance_retry_count": 0,
   "performance_by_stage": {
     "RESEARCH": {
@@ -458,59 +531,59 @@
     },
     "GENERATOR": {
       "count": 1,
-      "duration_s": 5.132,
+      "duration_s": 1.444,
       "skipped": 0
     },
     "EXECUTOR_BUILD": {
       "count": 1,
-      "duration_s": 0.816,
+      "duration_s": 1.711,
       "skipped": 0
     },
     "EXECUTOR_RUN": {
       "count": 1,
-      "duration_s": 1.623,
+      "duration_s": 1.583,
       "skipped": 0
     },
     "VERIFY": {
       "count": 1,
-      "duration_s": 1.327,
+      "duration_s": 1.458,
       "skipped": 0
     },
     "REVIEW": {
       "count": 1,
-      "duration_s": 1.368,
+      "duration_s": 1.419,
       "skipped": 0
     },
     "DIVERSITY": {
       "count": 1,
-      "duration_s": 0.028,
+      "duration_s": 0.027,
       "skipped": 0
     },
     "PACK": {
       "count": 1,
-      "duration_s": 0.077,
+      "duration_s": 0.084,
       "skipped": 0
     }
   },
-  "dynamicness_verdict": "trusted dynamic",
-  "dynamicness_reason": "llm_manifest provenance recorded without fallback/template override",
+  "dynamicness_verdict": "compiler-first",
+  "dynamicness_reason": "compiler-generated scaffold/fragment path was used",
   "family_non_remote_available": true,
   "effective_non_remote_available": true,
-  "compiler_path_enabled": false,
+  "compiler_path_enabled": true,
   "executor_feasibility_status": "not_required",
   "generalization_class": "known_family_regression",
   "counts_as_generalization": false,
   "generalization_reason": "compiler-supported or builtin-supported known family regression lane",
   "generalization_confidence": null,
   "generalization_basis": null,
-  "open_world_class": "known_family_regression",
+  "open_world_class": "catalog_resolved_lower_bound",
   "counts_as_open_world_generalization": false,
-  "open_world_reason": "known family or curated lower-bound regression lane",
-  "open_world_confidence": null,
-  "open_world_basis": null,
-  "strict_open_world_class": "strict_fixture_backed_dynamic",
+  "open_world_reason": "name-only lane resolved via catalog_alias and closed by compiler-first; this remains curated lower-bound evidence, not open-world generation",
+  "open_world_confidence": "high",
+  "open_world_basis": "catalog_alias",
+  "strict_open_world_class": "strict_curated_lower_bound",
   "counts_as_strict_open_world_generalization": false,
-  "strict_open_world_reason": "bundle used an LLM fixture and does not count as live strict open-world evidence",
+  "strict_open_world_reason": "bundle closed through an existing curated lower bound and is excluded from strict open-world evidence",
   "runtime_recipe": {
     "language": "python",
     "framework": "flask",
@@ -596,14 +669,14 @@
     "attempted": false
   },
   "artifact_quality": {
-    "band": "low",
-    "score": 5,
+    "band": "medium",
+    "score": 8,
     "generation_authenticity": "native",
     "readme_present": true,
-    "readme_substantive": false,
-    "readme_quickstart": false,
+    "readme_substantive": true,
+    "readme_quickstart": true,
     "readme_verification": false,
-    "readme_runtime": false,
+    "readme_runtime": true,
     "runtime_recipe_present": true,
     "topology_clarity": "medium",
     "oracle_clarity": "medium",
@@ -613,7 +686,7 @@
     "verification_independence": "independent",
     "verification_trust": "high",
     "notes": [
-      "README is too thin for operator-facing use",
+      "README does not clearly surface verification/oracle contract",
       "oracle contract lacks metamorphic checks"
     ]
   },
@@ -633,28 +706,94 @@
     "working_stack_evidence_backed": false
   },
   "family_dependence": {
-    "class": "not_name_only",
-    "name_only": false,
-    "family_bounded": false,
+    "class": "curated_family_asset",
+    "name_only": true,
+    "family_bounded": true,
     "ambiguous": false,
-    "candidate_count": 0,
-    "selection_source": null,
-    "abstain_reason": null
+    "candidate_count": 1,
+    "selection_source": "catalog_resolution",
+    "abstain_reason": null,
+    "working_family": "sql_injection",
+    "working_family_evidence_ids": [],
+    "working_family_evidence_count": 0,
+    "working_family_evidence_backed": false,
+    "candidate_evidence_ids": [],
+    "candidate_evidence_count": 0,
+    "candidate_evidence_backed": false,
+    "resolution_confidence": "high",
+    "resolution_basis": "catalog_alias",
+    "negative_hypothesis_count": 0
   },
   "intent_satisfaction": {
-    "request_kind": "other",
-    "mode": "not_applicable",
-    "status": "not_applicable",
+    "request_kind": "name_only",
+    "mode": "compatibility",
+    "status": "compatibility_lower_bound",
     "meets_intent": true,
     "partial": false,
-    "reason": "bundle is not a name-only lane"
+    "reason": "compatibility mode allows curated lower-bound/template-backed closure",
+    "closure_source": "curated_lower_bound",
+    "generation_origin": "compiler_generated",
+    "fallback_class": null,
+    "llm_path": "not_used",
+    "research_quality": "skipped",
+    "verification_independence": "independent",
+    "verification_trust": "high",
+    "required_contract": {
+      "require_research": false,
+      "require_remote_research": false,
+      "allow_degraded_fallback": false,
+      "allow_lower_bound_recovery": false,
+      "require_strict_open_world": false,
+      "require_independent_verifier": false,
+      "require_live_llm": false,
+      "allowed_closure_sources": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "allowed_execution_paths": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "intent_satisfying_paths": [
+        "curated_lower_bound",
+        "template_assisted",
+        "trusted_dynamic",
+        "strict_open_world_positive",
+        "degraded_deterministic_fallback"
+      ],
+      "allowed_llm_paths": [
+        "live",
+        "fixture",
+        "stub"
+      ],
+      "intent_success_rule": "any_non_failed_runnable_closure"
+    }
   },
   "name_only_outcome": {
-    "request_kind": "other",
-    "decision": "not_applicable",
-    "decision_reason": "bundle is not a name-only lane"
+    "request_kind": "name_only",
+    "mode": "compatibility",
+    "decision": "intent_met",
+    "decision_reason": "compatibility_lower_bound",
+    "abstain_reason": null,
+    "terminal_failure_class": null,
+    "closure_source": "curated_lower_bound",
+    "allowed_by_execution_contract": true,
+    "satisfies_intent_contract": true,
+    "stage_ceiling": "fully_validated",
+    "fully_validated": true,
+    "next_required_step": null,
+    "open_world_class": "catalog_resolved_lower_bound",
+    "strict_open_world_class": "strict_curated_lower_bound",
+    "stack_dependence_class": "explicit_requirement_locked",
+    "family_dependence_class": "curated_family_asset"
   },
-  "name_only_decision": "not_applicable",
+  "name_only_decision": "intent_met",
   "name_only_next_required_step": null,
   "completion_state": {
     "generated": true,
@@ -666,7 +805,7 @@
     "review_ready": true,
     "fully_validated": true,
     "stage_ceiling": "fully_validated",
-    "generation_origin": "llm_manifest"
+    "generation_origin": "compiler_generated"
   },
   "stage_ceiling": "fully_validated",
   "fully_validated": true,
@@ -686,7 +825,7 @@
       "heuristic"
     ],
     "query_plan_present": true,
-    "query_plan_family_hypothesis_count": 1
+    "query_plan_family_hypothesis_count": 2
   },
   "pipeline_returncode": 0,
   "failure": {},
@@ -698,25 +837,40 @@
       "evidence": "Found signature: SQLi SUCCESS, Found flag token: FLAG-sqli-demo-token, app.py contains 'SELECT', poc.py contains 'SQLi SUCCESS', Semantic consistency check passed",
       "run_passed": true,
       "exit_code": 0,
-      "run_log": "/home/ysw/vulDocker/artifacts/sid-4599d566cf6e/run/run.log",
+      "run_log": "/home/ysw/vulDocker/artifacts/sid-362c5099ba89/run/run.log",
       "rule": "CWE-89",
       "promotion_eligible": true,
       "promotion_reasons": [],
       "memory_promotion_eligible": false,
       "memory_promotion_reasons": [
-        "strict_open_world:strict_fixture_backed_dynamic",
-        "artifact_quality:low",
+        "strict_open_world:strict_curated_lower_bound",
+        "artifact_quality:medium",
         "oracle_clarity:medium"
       ],
       "support_promotion_eligible": false,
       "support_promotion_reasons": [
-        "strict_open_world:strict_fixture_backed_dynamic",
-        "open_world:known_family_regression",
-        "artifact_quality:low",
+        "strict_open_world:strict_curated_lower_bound",
+        "open_world:catalog_resolved_lower_bound",
+        "artifact_quality:medium",
         "oracle_clarity:medium",
-        "family_evidence:candidate_unbacked",
-        "name_only_outcome:not_applicable"
+        "family_evidence:candidate_unbacked"
       ],
+      "open_world_readiness": {
+        "ready": false,
+        "blockers": [
+          "strict_open_world_gate",
+          "open_world_non_positive",
+          "artifact_quality_below_high",
+          "oracle_clarity_below_high",
+          "family_candidate_evidence_missing"
+        ],
+        "open_world_class": "catalog_resolved_lower_bound",
+        "strict_open_world_class": "strict_curated_lower_bound",
+        "name_only_decision": "intent_met",
+        "stack_defaulted": false,
+        "family_evidence_backed": false
+      },
+      "open_world_ready": false,
       "semantic_supported": true,
       "semantic_status": "aligned",
       "semantic_source": "generator_manifest",
@@ -727,35 +881,35 @@
       "compiler_supported": true,
       "compiler_strategy": "sqli_string_concat",
       "compiler_reason": "compiler strategy and scaffold are available",
-      "compiler_family": null,
-      "stack_scaffold_id": null,
-      "stack_scaffold_version": null,
-      "fragment_id": null,
-      "compose_mode": null,
+      "compiler_family": "sql_injection",
+      "stack_scaffold_id": "python/flask",
+      "stack_scaffold_version": "1.0",
+      "fragment_id": "login_query_concat_route",
+      "compose_mode": "registry",
       "service_env": null,
       "request_identity": {
-        "request_label": "CWE-89",
-        "normalized_request_label": "cwe 89",
+        "request_label": "SQL injection",
+        "normalized_request_label": "sql injection",
         "resolved_vuln_id": "CWE-89",
-        "input_mode": "explicit_identifier",
+        "input_mode": "free_form_name",
         "source": "alias",
         "match_class": "catalog_alias",
         "confidence": "high",
-        "field": "vuln_ids[0]",
+        "field": "vuln_name",
         "synthetic_resolution": false,
         "catalog_backed_resolution": true,
         "token_match_resolution": false,
         "exact_identifier_resolution": false,
-        "name_driven": false
+        "name_driven": true
       },
       "request_ir": {
-        "raw_label": "CWE-89",
-        "request_label": "CWE-89",
-        "normalized_request_label": "cwe 89",
+        "raw_label": "SQL injection",
+        "request_label": "SQL injection",
+        "normalized_request_label": "sql injection",
         "resolved_vuln_id": "CWE-89",
         "resolved_vuln_id_candidate": "CWE-89",
-        "input_mode": "explicit_identifier",
-        "name_driven": false,
+        "input_mode": "free_form_name",
+        "name_driven": true,
         "resolution_state": "catalog_alias",
         "resolution_source": "alias",
         "resolution_match_class": "catalog_alias",
@@ -767,7 +921,7 @@
             "confidence": "high"
           },
           {
-            "vuln_id": "NAME-CWE-89",
+            "vuln_id": "NAME-SQL-INJECTION",
             "source": "synthetic_name_preview",
             "confidence": "low"
           }
@@ -791,7 +945,8 @@
           {
             "family": "sql_injection",
             "source": "catalog_resolution",
-            "confidence": "high"
+            "confidence": "high",
+            "matched_vuln_id": "CWE-89"
           }
         ],
         "abstain_reason": null,
@@ -803,8 +958,8 @@
           "require_remote_research": false,
           "allow_degraded_fallback": false,
           "allow_lower_bound_recovery": false,
-          "allow_curated_lower_bound_closure": false,
-          "allow_template_closure": false,
+          "allow_curated_lower_bound_closure": true,
+          "allow_template_closure": true,
           "require_strict_open_world": false,
           "require_independent_verifier": false,
           "require_live_llm": false,
@@ -840,36 +995,36 @@
         }
       },
       "name_resolution": {
-        "input": "CWE-89",
+        "input": "SQL injection",
         "resolved_vuln_id": "CWE-89",
         "source": "alias",
         "match_class": "catalog_alias",
         "confidence": "high"
       },
-      "generation_origin": "llm_manifest",
+      "generation_origin": "compiler_generated",
       "semantic_guided_selection_source": null,
       "semantic_guided_abstain_reason": null,
       "semantic_guided_ambiguous": null,
-      "llm_fixture_used": true,
-      "dynamicness_verdict": "trusted dynamic",
-      "dynamicness_reason": "llm_manifest provenance recorded without fallback/template override",
+      "llm_fixture_used": false,
+      "dynamicness_verdict": "compiler-first",
+      "dynamicness_reason": "compiler-generated scaffold/fragment path was used",
       "family_non_remote_available": true,
       "effective_non_remote_available": true,
-      "compiler_path_enabled": false,
+      "compiler_path_enabled": true,
       "executor_feasibility_status": "not_required",
       "generalization_class": "known_family_regression",
       "counts_as_generalization": false,
       "generalization_reason": "compiler-supported or builtin-supported known family regression lane",
       "generalization_confidence": null,
       "generalization_basis": null,
-      "open_world_class": "known_family_regression",
+      "open_world_class": "catalog_resolved_lower_bound",
       "counts_as_open_world_generalization": false,
-      "open_world_reason": "known family or curated lower-bound regression lane",
-      "open_world_confidence": null,
-      "open_world_basis": null,
-      "strict_open_world_class": "strict_fixture_backed_dynamic",
+      "open_world_reason": "name-only lane resolved via catalog_alias and closed by compiler-first; this remains curated lower-bound evidence, not open-world generation",
+      "open_world_confidence": "high",
+      "open_world_basis": "catalog_alias",
+      "strict_open_world_class": "strict_curated_lower_bound",
       "counts_as_strict_open_world_generalization": false,
-      "strict_open_world_reason": "bundle used an LLM fixture and does not count as live strict open-world evidence",
+      "strict_open_world_reason": "bundle closed through an existing curated lower bound and is excluded from strict open-world evidence",
       "researcher_quality": "skipped",
       "researcher_shadow_mode": false,
       "researcher_report_present": true,
@@ -956,14 +1111,14 @@
         "attempted": false
       },
       "artifact_quality": {
-        "band": "low",
-        "score": 5,
+        "band": "medium",
+        "score": 8,
         "generation_authenticity": "native",
         "readme_present": true,
-        "readme_substantive": false,
-        "readme_quickstart": false,
+        "readme_substantive": true,
+        "readme_quickstart": true,
         "readme_verification": false,
-        "readme_runtime": false,
+        "readme_runtime": true,
         "runtime_recipe_present": true,
         "topology_clarity": "medium",
         "oracle_clarity": "medium",
@@ -973,7 +1128,7 @@
         "verification_independence": "independent",
         "verification_trust": "high",
         "notes": [
-          "README is too thin for operator-facing use",
+          "README does not clearly surface verification/oracle contract",
           "oracle contract lacks metamorphic checks"
         ]
       },
@@ -993,26 +1148,92 @@
         "working_stack_evidence_backed": false
       },
       "family_dependence": {
-        "class": "not_name_only",
-        "name_only": false,
-        "family_bounded": false,
+        "class": "curated_family_asset",
+        "name_only": true,
+        "family_bounded": true,
         "ambiguous": false,
-        "candidate_count": 0,
-        "selection_source": null,
-        "abstain_reason": null
+        "candidate_count": 1,
+        "selection_source": "catalog_resolution",
+        "abstain_reason": null,
+        "working_family": "sql_injection",
+        "working_family_evidence_ids": [],
+        "working_family_evidence_count": 0,
+        "working_family_evidence_backed": false,
+        "candidate_evidence_ids": [],
+        "candidate_evidence_count": 0,
+        "candidate_evidence_backed": false,
+        "resolution_confidence": "high",
+        "resolution_basis": "catalog_alias",
+        "negative_hypothesis_count": 0
       },
       "intent_satisfaction": {
-        "request_kind": "other",
-        "mode": "not_applicable",
-        "status": "not_applicable",
+        "request_kind": "name_only",
+        "mode": "compatibility",
+        "status": "compatibility_lower_bound",
         "meets_intent": true,
         "partial": false,
-        "reason": "bundle is not a name-only lane"
+        "reason": "compatibility mode allows curated lower-bound/template-backed closure",
+        "closure_source": "curated_lower_bound",
+        "generation_origin": "compiler_generated",
+        "fallback_class": null,
+        "llm_path": "not_used",
+        "research_quality": "skipped",
+        "verification_independence": "independent",
+        "verification_trust": "high",
+        "required_contract": {
+          "require_research": false,
+          "require_remote_research": false,
+          "allow_degraded_fallback": false,
+          "allow_lower_bound_recovery": false,
+          "require_strict_open_world": false,
+          "require_independent_verifier": false,
+          "require_live_llm": false,
+          "allowed_closure_sources": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "allowed_execution_paths": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "intent_satisfying_paths": [
+            "curated_lower_bound",
+            "template_assisted",
+            "trusted_dynamic",
+            "strict_open_world_positive",
+            "degraded_deterministic_fallback"
+          ],
+          "allowed_llm_paths": [
+            "live",
+            "fixture",
+            "stub"
+          ],
+          "intent_success_rule": "any_non_failed_runnable_closure"
+        }
       },
       "name_only_outcome": {
-        "request_kind": "other",
-        "decision": "not_applicable",
-        "decision_reason": "bundle is not a name-only lane"
+        "request_kind": "name_only",
+        "mode": "compatibility",
+        "decision": "intent_met",
+        "decision_reason": "compatibility_lower_bound",
+        "abstain_reason": null,
+        "terminal_failure_class": null,
+        "closure_source": "curated_lower_bound",
+        "allowed_by_execution_contract": true,
+        "satisfies_intent_contract": true,
+        "stage_ceiling": "fully_validated",
+        "fully_validated": true,
+        "next_required_step": null,
+        "open_world_class": "catalog_resolved_lower_bound",
+        "strict_open_world_class": "strict_curated_lower_bound",
+        "stack_dependence_class": "explicit_requirement_locked",
+        "family_dependence_class": "curated_family_asset"
       },
       "completion_state": {
         "generated": true,
@@ -1024,7 +1245,7 @@
         "review_ready": true,
         "fully_validated": true,
         "stage_ceiling": "fully_validated",
-        "generation_origin": "llm_manifest"
+        "generation_origin": "compiler_generated"
       },
       "failure_reason": null,
       "terminal_failure_class": null
@@ -1034,7 +1255,7 @@
     "blocking_bundles": [],
     "issues_sample": []
   },
-  "manifest_path": "/home/ysw/vulDocker/metadata/sid-4599d566cf6e/manifest.json",
+  "manifest_path": "/home/ysw/vulDocker/metadata/sid-362c5099ba89/manifest.json",
   "manifest_file": "manifest.json",
-  "reviewer_path": "/home/ysw/vulDocker/metadata/sid-4599d566cf6e/reviewer_report.json"
+  "reviewer_path": "/home/ysw/vulDocker/metadata/sid-362c5099ba89/reviewer_report.json"
 }

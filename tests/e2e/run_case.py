@@ -155,6 +155,19 @@ def _ensure_docker_ready(env: Dict[str, str]) -> None:
         raise CaseError("docker daemon is not reachable") from exc
 
 
+def _case_requires_docker(expectations: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(expectations, dict):
+        return True
+    manifest_expect = expectations.get("manifest")
+    if not isinstance(manifest_expect, dict):
+        return True
+    failure_expect = manifest_expect.get("failure")
+    if not isinstance(failure_expect, dict):
+        return True
+    stage = str(failure_expect.get("stage") or "").strip().upper()
+    return stage not in {"CAPABILITY_CHECK", "RESEARCH"}
+
+
 def _run_command(command: Sequence[str], env: Dict[str, str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=REPO_ROOT, env=env, check=check, text=True, capture_output=True)
 
@@ -205,6 +218,20 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "promotion_reasons": (bundle.get("promotion") or {}).get("reasons") or [],
                 "memory_promotion_eligible": (bundle.get("memory_promotion") or {}).get("eligible"),
                 "memory_promotion_reasons": (bundle.get("memory_promotion") or {}).get("reasons") or [],
+                "support_promotion_eligible": (bundle.get("support_promotion") or {}).get("eligible"),
+                "support_promotion_reasons": (bundle.get("support_promotion") or {}).get("reasons") or [],
+                "open_world_readiness": bundle.get("open_world_readiness") or {},
+                "open_world_ready": (bundle.get("open_world_readiness") or {}).get("ready"),
+                "name_only_planning_focus": (
+                    ((bundle.get("name_only_generation_spec") or {}).get("planning_focus_summary"))
+                    if isinstance(bundle.get("name_only_generation_spec"), dict)
+                    else {}
+                ),
+                "name_only_primary_focus": (
+                    (((bundle.get("name_only_generation_spec") or {}).get("planning_focus_summary")) or {}).get("primary_focus")
+                    if isinstance(bundle.get("name_only_generation_spec"), dict)
+                    else None
+                ),
                 "semantic_supported": (
                     eval_result.get("semantic_supported")
                     if isinstance(eval_result, dict) and eval_result.get("semantic_supported") is not None
@@ -267,11 +294,14 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "researcher_report_present": (bundle.get("researcher") or {}).get("report_present"),
                 "runtime_recipe": bundle.get("runtime_recipe") or {},
                 "runtime_graph": bundle.get("runtime_graph") or {},
+                "evidence_graph": bundle.get("evidence_graph") or {},
                 "dynamic_eval": bundle.get("dynamic_eval") or {},
                 "artifact_quality": bundle.get("artifact_quality") or {},
                 "stack_dependence": bundle.get("stack_dependence") or {},
                 "family_dependence": bundle.get("family_dependence") or {},
                 "intent_satisfaction": bundle.get("intent_satisfaction") or {},
+                "name_only_outcome": bundle.get("name_only_outcome") or {},
+                "completion_state": bundle.get("completion_state") or {},
                 "failure_reason": (bundle.get("failure") or {}).get("reason"),
                 "terminal_failure_class": (bundle.get("failure") or {}).get("terminal_failure_class"),
             }
@@ -284,22 +314,34 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "promotion_reasons": (manifest.get("promotion") or {}).get("reasons") or [],
         "memory_promotion": manifest.get("memory_promotion") or {},
         "memory_promotion_eligible": manifest.get("memory_promotion_eligible"),
+        "support_promotion": manifest.get("support_promotion") or {},
+        "support_promotion_eligible": manifest.get("support_promotion_eligible"),
+        "open_world_readiness_summary": manifest.get("open_world_readiness_summary") or {},
+        "boundedness_summary": manifest.get("boundedness_summary") or {},
+        "open_world_readiness": manifest.get("open_world_readiness") or {},
+        "open_world_ready": manifest.get("open_world_ready"),
         "generation_summary": manifest.get("generation_summary") or {},
         "compiler_contract_summary": manifest.get("compiler_contract_summary") or {},
         "verification_summary": manifest.get("verification_summary") or {},
         "researcher_summary": manifest.get("researcher_summary") or {},
         "request_identity_summary": manifest.get("request_identity_summary") or {},
+        "request_ir_summary": manifest.get("request_ir_summary") or {},
         "name_resolution_summary": manifest.get("name_resolution_summary") or {},
         "generalization_summary": manifest.get("generalization_summary") or {},
         "open_world_summary": manifest.get("open_world_summary") or {},
         "strict_open_world_summary": manifest.get("strict_open_world_summary") or {},
         "dynamic_eval_summary": manifest.get("dynamic_eval_summary") or {},
         "artifact_quality_summary": manifest.get("artifact_quality_summary") or {},
+        "evidence_graph_summary": manifest.get("evidence_graph_summary") or {},
         "template_dependence_summary": manifest.get("template_dependence_summary") or {},
+        "runtime_surface_summary": manifest.get("runtime_surface_summary") or {},
         "stack_dependence_summary": manifest.get("stack_dependence_summary") or {},
         "family_dependence_summary": manifest.get("family_dependence_summary") or {},
         "intent_satisfaction_summary": manifest.get("intent_satisfaction_summary") or {},
+        "name_only_outcome_summary": manifest.get("name_only_outcome_summary") or {},
+        "name_only_planning_summary": manifest.get("name_only_planning_summary") or {},
         "partial_progress_summary": manifest.get("partial_progress_summary") or {},
+        "completion_summary": manifest.get("completion_summary") or {},
         "compiler_supported": manifest.get("compiler_supported"),
         "compiler_strategy": manifest.get("compiler_strategy"),
         "compiler_reason": manifest.get("compiler_reason"),
@@ -329,6 +371,8 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         ),
         "provider_health_state": (manifest.get("performance") or {}).get("provider_health_state"),
         "total_duration_s": (manifest.get("performance") or {}).get("total_duration_s"),
+        "performance_retry_count": (manifest.get("performance") or {}).get("retry_count"),
+        "performance_by_stage": (manifest.get("performance") or {}).get("by_stage") or {},
         "dynamicness_verdict": manifest.get("dynamicness_verdict"),
         "dynamicness_reason": manifest.get("dynamicness_reason"),
         "family_non_remote_available": manifest.get("family_non_remote_available"),
@@ -349,12 +393,23 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "counts_as_strict_open_world_generalization": manifest.get("counts_as_strict_open_world_generalization"),
         "strict_open_world_reason": manifest.get("strict_open_world_reason"),
         "runtime_recipe": manifest.get("runtime_recipe") or {},
+        "runtime_recipe_hypothetical": ((manifest.get("runtime_recipe") or {}).get("hypothetical")),
         "runtime_graph": manifest.get("runtime_graph") or {},
+        "runtime_graph_hypothetical": ((manifest.get("runtime_graph") or {}).get("hypothetical")),
+        "evidence_graph": manifest.get("evidence_graph") or {},
         "dynamic_eval": manifest.get("dynamic_eval") or {},
         "artifact_quality": manifest.get("artifact_quality") or {},
         "stack_dependence": manifest.get("stack_dependence") or {},
         "family_dependence": manifest.get("family_dependence") or {},
         "intent_satisfaction": manifest.get("intent_satisfaction") or {},
+        "name_only_outcome": manifest.get("name_only_outcome") or {},
+        "name_only_decision": manifest.get("name_only_decision"),
+        "name_only_next_required_step": manifest.get("name_only_next_required_step"),
+        "name_only_planning_focus": manifest.get("name_only_planning_focus") or {},
+        "name_only_primary_focus": manifest.get("name_only_primary_focus"),
+        "completion_state": manifest.get("completion_state") or {},
+        "stage_ceiling": manifest.get("stage_ceiling"),
+        "fully_validated": manifest.get("fully_validated"),
         "researcher": manifest.get("researcher") or {},
         "pipeline_returncode": pipeline_returncode,
         "failure": manifest.get("failure") or {},
@@ -491,12 +546,27 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
     for key in ("family_non_remote_available", "effective_non_remote_available", "compiler_path_enabled"):
         if key in manifest_expect and bool(summary.get(key)) != bool(manifest_expect[key]):
             errors.append(f"{key} expected {manifest_expect[key]!r} but observed {summary.get(key)!r}")
+    if "fully_validated" in manifest_expect and bool(summary.get("fully_validated")) != bool(manifest_expect["fully_validated"]):
+        errors.append(
+            f"fully_validated expected {manifest_expect['fully_validated']!r} but observed {summary.get('fully_validated')!r}"
+        )
     if "executor_feasibility_status" in manifest_expect:
         actual = str(summary.get("executor_feasibility_status") or "")
         if actual != str(manifest_expect["executor_feasibility_status"]):
             errors.append(
                 f"executor_feasibility_status expected {manifest_expect['executor_feasibility_status']!r} but observed {summary.get('executor_feasibility_status')!r}"
             )
+    if "stage_ceiling" in manifest_expect:
+        actual = str(summary.get("stage_ceiling") or "")
+        if actual != str(manifest_expect["stage_ceiling"]):
+            errors.append(
+                f"stage_ceiling expected {manifest_expect['stage_ceiling']!r} but observed {summary.get('stage_ceiling')!r}"
+            )
+    for key in ("name_only_decision", "name_only_next_required_step"):
+        if key in manifest_expect:
+            actual = str(summary.get(key) or "")
+            if actual != str(manifest_expect[key]):
+                errors.append(f"{key} expected {manifest_expect[key]!r} but observed {summary.get(key)!r}")
     if "service_env" in manifest_expect:
         actual = summary.get("service_env") or {}
         if actual != manifest_expect["service_env"]:
@@ -511,7 +581,19 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
                 errors.append(
                     f"name_resolution.{key} expected {expected!r} but observed {actual.get(key)!r}"
                 )
-    for key in ("request_ir", "runtime_recipe", "runtime_graph", "dynamic_eval", "artifact_quality", "stack_dependence", "family_dependence", "intent_satisfaction"):
+    for key in (
+        "request_ir",
+        "runtime_recipe",
+        "runtime_graph",
+        "evidence_graph",
+        "dynamic_eval",
+        "artifact_quality",
+        "stack_dependence",
+        "family_dependence",
+        "intent_satisfaction",
+        "name_only_outcome",
+        "completion_state",
+    ):
         expected_payload = manifest_expect.get(key)
         if isinstance(expected_payload, dict):
             _validate_partial_mapping(
@@ -563,8 +645,11 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
     for key in (
         "dynamic_eval_summary",
         "artifact_quality_summary",
+        "evidence_graph_summary",
         "template_dependence_summary",
         "intent_satisfaction_summary",
+        "name_only_outcome_summary",
+        "completion_summary",
     ):
         expected_payload = manifest_expect.get(key)
         if isinstance(expected_payload, dict):
@@ -638,9 +723,25 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
                 errors.append(
                     f"bundle {bundle['slug']}: {key} expected {entry[key]!r} but was {bundle.get(key)!r}"
                 )
+        if "fully_validated" in entry and bool(bundle.get("completion_state", {}).get("fully_validated")) != bool(entry["fully_validated"]):
+            errors.append(
+                f"bundle {bundle['slug']}: fully_validated expected {entry['fully_validated']!r} but was {bundle.get('completion_state', {}).get('fully_validated')!r}"
+            )
         if "executor_feasibility_status" in entry and str(bundle.get("executor_feasibility_status") or "") != str(entry["executor_feasibility_status"]):
             errors.append(
                 f"bundle {bundle['slug']}: executor_feasibility_status expected {entry['executor_feasibility_status']!r} but was {bundle.get('executor_feasibility_status')!r}"
+            )
+        if "stage_ceiling" in entry and str(bundle.get("completion_state", {}).get("stage_ceiling") or "") != str(entry["stage_ceiling"]):
+            errors.append(
+                f"bundle {bundle['slug']}: stage_ceiling expected {entry['stage_ceiling']!r} but was {bundle.get('completion_state', {}).get('stage_ceiling')!r}"
+            )
+        if "name_only_decision" in entry and str(bundle.get("name_only_outcome", {}).get("decision") or "") != str(entry["name_only_decision"]):
+            errors.append(
+                f"bundle {bundle['slug']}: name_only_decision expected {entry['name_only_decision']!r} but was {bundle.get('name_only_outcome', {}).get('decision')!r}"
+            )
+        if "name_only_next_required_step" in entry and str(bundle.get("name_only_outcome", {}).get("next_required_step") or "") != str(entry["name_only_next_required_step"]):
+            errors.append(
+                f"bundle {bundle['slug']}: name_only_next_required_step expected {entry['name_only_next_required_step']!r} but was {bundle.get('name_only_outcome', {}).get('next_required_step')!r}"
             )
         if "service_env" in entry and (bundle.get("service_env") or {}) != entry["service_env"]:
             errors.append(
@@ -665,7 +766,19 @@ def _validate_expectations(summary: Dict[str, Any], expectations: Dict[str, Any]
             errors.append(
                 f"bundle {bundle['slug']}: semantic_source expected {entry['semantic_source']!r} but was {bundle.get('semantic_source')!r}"
             )
-        for key in ("request_ir", "runtime_recipe", "runtime_graph", "dynamic_eval", "artifact_quality", "stack_dependence", "family_dependence", "intent_satisfaction"):
+        for key in (
+            "request_ir",
+            "runtime_recipe",
+            "runtime_graph",
+            "evidence_graph",
+            "dynamic_eval",
+            "artifact_quality",
+            "stack_dependence",
+            "family_dependence",
+            "intent_satisfaction",
+            "name_only_outcome",
+            "completion_state",
+        ):
             expected_payload = entry.get(key)
             if isinstance(expected_payload, dict):
                 _validate_partial_mapping(
@@ -766,17 +879,19 @@ def execute_case(case_dir: Path, *, requirement_path: Optional[Path], expectatio
     for key, value in custom_env.items():
         env[str(key)] = str(value)
     _materialize_runtime_assets(sid, case_spec.runtime_assets)
-    _ensure_docker_ready(env)
+    expectations_data: Optional[Dict[str, Any]] = None
+    resolved_expectations_path = expectations_path or (case_dir / "expectations.json")
+    if resolved_expectations_path and resolved_expectations_path.exists():
+        expectations_data = json.loads(resolved_expectations_path.read_text(encoding="utf-8"))
+    if _case_requires_docker(expectations_data):
+        _ensure_docker_ready(env)
     proc = _execute_pipeline(sid, mode, env)
     summary = _load_manifest_summary(sid, pipeline_returncode=proc.returncode)
     destination = output_dir or (case_dir / "outputs" / sid)
     summary_path = _write_summary(summary, plan.get("requirement", case_spec.requirement), destination)
     if snapshot:
         _snapshot_outputs(sid, destination)
-    expectations_data: Optional[Dict[str, Any]] = None
-    resolved_expectations_path = expectations_path or (case_dir / "expectations.json")
-    if resolved_expectations_path and resolved_expectations_path.exists():
-        expectations_data = json.loads(resolved_expectations_path.read_text(encoding="utf-8"))
+    if expectations_data is not None:
         _validate_expectations(summary, expectations_data)
     elif proc.returncode != 0:
         stderr = (proc.stderr or "").strip()

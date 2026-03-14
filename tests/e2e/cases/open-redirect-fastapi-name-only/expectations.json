@@ -18,8 +18,8 @@
     "semantic_supported": true,
     "semantic_status": "aligned",
     "semantic_source": "generator_manifest",
-    "generalization_class": "real_free_form_positive",
-    "counts_as_generalization": true
+    "generalization_class": "real_free_form_curated_lower_bound",
+    "counts_as_generalization": false
   },
   "evals": [
     {
@@ -43,8 +43,8 @@
       "semantic_supported": true,
       "semantic_status": "aligned",
       "semantic_source": "generator_manifest",
-      "generalization_class": "real_free_form_positive",
-      "counts_as_generalization": true
+      "generalization_class": "real_free_form_curated_lower_bound",
+      "counts_as_generalization": false
     }
   ],
   "reviewer": {

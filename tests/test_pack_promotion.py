@@ -9,21 +9,33 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from orchestrator.pack import (
+    _boundedness_summary,
     _bundle_generation_provenance,
     _bundle_dynamicness_verdict,
     _bundle_dynamic_eval_summary,
+    _bundle_completion_state,
+    _bundle_open_world_readiness,
+    _completion_summary,
+    _evidence_graph_summary,
     _bundle_generalization_verdict,
     _bundle_intent_satisfaction,
+    _bundle_name_only_outcome,
     _bundle_open_world_verdict,
     _bundle_researcher_summary,
     _bundle_strict_open_world_verdict,
     _dynamic_eval_summary,
     _bundle_memory_promotion_status,
+    _bundle_support_promotion_status,
     _generation_summary,
     _generalization_summary,
     _intent_satisfaction_summary,
+    _name_only_outcome_summary,
     _memory_promotion_summary,
+    _name_only_planning_summary,
+    _open_world_readiness_summary,
+    _support_promotion_summary,
     _open_world_summary,
+    _rollup_multibundle_name_only_outcome_field,
     _request_identity_summary,
     _strict_open_world_summary,
     _bundle_promotion_status,
@@ -54,6 +66,128 @@ def test_bundle_promotion_is_blocked_by_semantic_contradiction(tmp_path: Path) -
 
     assert promotion["eligible"] is False
     assert any("semantic_contract" in reason for reason in promotion["reasons"])
+
+
+def test_evidence_graph_summary_rolls_up_node_counts() -> None:
+    summary = _evidence_graph_summary(
+        [
+            {
+                "evidence_graph": {
+                    "node_count": 4,
+                    "edge_count": 3,
+                    "nodes": [
+                        {"id": "request", "kind": "request"},
+                        {"id": "query:1", "kind": "query"},
+                        {"id": "evidence:1", "kind": "evidence"},
+                        {"id": "family:xss", "kind": "family_hypothesis"},
+                    ],
+                    "edges": [
+                        {"from": "request", "to": "query:1", "kind": "planned_query"},
+                        {"from": "query:1", "to": "evidence:1", "kind": "retrieved_evidence"},
+                        {"from": "evidence:1", "to": "family:xss", "kind": "supports_family_hypothesis"},
+                    ],
+                }
+            },
+            {
+                "evidence_graph": {
+                    "node_count": 2,
+                    "edge_count": 1,
+                    "nodes": [
+                        {"id": "request", "kind": "request"},
+                        {"id": "stack:python/flask", "kind": "stack_hypothesis"},
+                    ],
+                    "edges": [
+                        {"from": "request", "to": "stack:python/flask", "kind": "stack_hypothesis"},
+                    ],
+                }
+            },
+        ]
+    )
+
+    assert summary["bundle_count"] == 2
+    assert summary["graph_present_bundles"] == 2
+    assert summary["average_node_count"] == 3.0
+    assert summary["average_edge_count"] == 2.0
+    assert summary["by_node_kind"]["request"] == 2
+    assert summary["by_node_kind"]["evidence"] == 1
+    assert summary["by_edge_kind"]["supports_family_hypothesis"] == 1
+
+
+def test_bundle_completion_state_distinguishes_generated_from_fully_validated() -> None:
+    generated_only = _bundle_completion_state(
+        {
+            "artifacts": {
+                "run_summary": {"executed": False, "run_passed": False},
+                "eval_result": {},
+            },
+            "provenance": {"generation_origin": "deterministic_fallback"},
+            "promotion": {"reasons": ["pipeline:run_missing", "pipeline:verify_missing", "pipeline:review_missing"]},
+            "reviewer_report": False,
+        }
+    )
+    fully_validated = _bundle_completion_state(
+        {
+            "artifacts": {
+                "run_summary": {"executed": True, "run_passed": True},
+                "eval_result": {"verify_pass": True},
+            },
+            "provenance": {"generation_origin": "compiler_generated"},
+            "promotion": {"reasons": []},
+            "reviewer_report": True,
+        }
+    )
+
+    assert generated_only["generated"] is True
+    assert generated_only["stage_ceiling"] == "generated"
+    assert generated_only["fully_validated"] is False
+    assert fully_validated["generated"] is True
+    assert fully_validated["executed"] is True
+    assert fully_validated["verified"] is True
+    assert fully_validated["review_ready"] is True
+    assert fully_validated["stage_ceiling"] == "fully_validated"
+    assert fully_validated["fully_validated"] is True
+
+
+def test_bundle_completion_state_keeps_pre_generation_lanes_honest_even_with_eval_and_review_artifacts() -> None:
+    payload = _bundle_completion_state(
+        {
+            "artifacts": {
+                "run_summary": {"executed": False, "run_passed": False},
+                "eval_result": {"verify_pass": False},
+            },
+            "provenance": {"generation_origin": "research_short_circuit"},
+            "promotion": {"reasons": ["pipeline:run_missing", "pipeline:verify_failed"]},
+            "reviewer_report": True,
+        }
+    )
+
+    assert payload["generated"] is False
+    assert payload["executed"] is False
+    assert payload["verified"] is False
+    assert payload["reviewed"] is False
+    assert payload["stage_ceiling"] == "pre_generation"
+
+
+def test_completion_summary_rolls_up_stage_ceiling_counts() -> None:
+    summary = _completion_summary(
+        [
+            {"completion_state": {"generated": True, "executed": False, "verified": False, "reviewed": False, "fully_validated": False, "stage_ceiling": "generated"}},
+            {"completion_state": {"generated": True, "executed": True, "verified": True, "reviewed": True, "fully_validated": True, "stage_ceiling": "fully_validated"}},
+            {"completion_state": {"generated": False, "executed": False, "verified": False, "reviewed": False, "fully_validated": False, "stage_ceiling": "pre_generation"}},
+        ]
+    )
+
+    assert summary["bundle_count"] == 3
+    assert summary["generated_bundles"] == 2
+    assert summary["executed_bundles"] == 1
+    assert summary["verified_bundles"] == 1
+    assert summary["reviewed_bundles"] == 1
+    assert summary["fully_validated_bundles"] == 1
+    assert summary["by_stage_ceiling"] == {
+        "generated": 1,
+        "fully_validated": 1,
+        "pre_generation": 1,
+    }
 
 
 def test_bundle_generation_provenance_reads_materializer_from_generator_manifest(tmp_path: Path) -> None:
@@ -507,7 +641,7 @@ def test_generation_summary_surfaces_template_and_registry_dependency_mix() -> N
     assert summary["scaffolded_bundles"] == 1
 
 
-def test_bundle_generalization_marks_real_free_form_compiler_first_bundle_as_positive() -> None:
+def test_bundle_generalization_marks_real_free_form_compiler_first_bundle_as_curated_lower_bound() -> None:
     bundle = VulnBundle(vuln_id="NAME-OPEN-REDIRECT", slug="name-open-redirect", workspace_subdir="app")
 
     verdict = _bundle_generalization_verdict(
@@ -521,13 +655,17 @@ def test_bundle_generalization_marks_real_free_form_compiler_first_bundle_as_pos
     )
     summary = _generalization_summary([{"generalization": verdict}])
 
-    assert verdict["class"] == "real_free_form_positive"
-    assert verdict["counts_as_generalization"] is True
+    assert verdict["class"] == "real_free_form_curated_lower_bound"
+    assert verdict["counts_as_generalization"] is False
     assert verdict["confidence"] == "high"
     assert verdict["basis"] == "catalog_alias"
-    assert "compiler-first" in verdict["reason"]
-    assert summary["positive_generalization_bundles"] == 1
-    assert summary["by_class"]["real_free_form_positive"] == 1
+    assert verdict["lower_bound_dependent"] is True
+    assert "curated lower-bound support" in verdict["reason"]
+    assert summary["positive_generalization_bundles"] == 0
+    assert summary["realized_bundles"] == 1
+    assert summary["hypothetical_bundles"] == 0
+    assert summary["lower_bound_dependent_bundles"] == 1
+    assert summary["by_class"]["real_free_form_curated_lower_bound"] == 1
     assert summary["by_confidence"]["high"] == 1
     assert summary["by_basis"]["catalog_alias"] == 1
 
@@ -548,6 +686,35 @@ def test_bundle_generalization_surfaces_medium_confidence_token_match_for_free_f
     assert verdict["class"] == "real_free_form_non_generalizing"
     assert verdict["counts_as_generalization"] is False
     assert verdict["confidence"] == "medium"
+    assert verdict["lower_bound_dependent"] is True
+
+
+def test_bundle_generalization_keeps_trusted_dynamic_name_only_lane_as_positive() -> None:
+    bundle = VulnBundle(vuln_id="NAME-CUSTOM-DYNAMIC", slug="name-custom-dynamic", workspace_subdir="app")
+
+    verdict = _bundle_generalization_verdict(
+        bundle,
+        pattern_id="custom-dynamic",
+        promotion={"eligible": True},
+        dynamicness={"verdict": "trusted dynamic"},
+        compiler_contract={},
+        provenance={"generation_origin": "llm_manifest"},
+        name_resolution={"confidence": "high", "match_class": "exact_identifier"},
+    )
+    summary = _generalization_summary(
+        [
+            {
+                "generalization": verdict,
+                "completion_state": {"fully_validated": True},
+            }
+        ]
+    )
+
+    assert verdict["class"] == "real_free_form_positive"
+    assert verdict["counts_as_generalization"] is True
+    assert summary["positive_generalization_bundles"] == 1
+    assert summary["realized_positive_generalization_bundles"] == 1
+    assert summary["fully_validated_positive_generalization_bundles"] == 1
 
 
 def test_bundle_generalization_uses_request_ir_for_alias_resolved_dynamic_name_only_lane() -> None:
@@ -609,6 +776,8 @@ def test_bundle_open_world_marks_catalog_resolved_name_only_lane_as_lower_bound_
     assert verdict["basis"] == "catalog_alias"
     assert "curated lower-bound evidence" in verdict["reason"]
     assert summary["positive_open_world_bundles"] == 0
+    assert summary["realized_bundles"] == 1
+    assert summary["hypothetical_bundles"] == 0
     assert summary["lower_bound_dependent_bundles"] == 1
     assert summary["by_class"]["catalog_resolved_lower_bound"] == 1
 
@@ -760,6 +929,8 @@ def test_bundle_strict_open_world_excludes_curated_lower_bound_lane() -> None:
     assert verdict["counts_as_generalization"] is False
     assert verdict["lower_bound_dependent"] is True
     assert summary["positive_strict_open_world_bundles"] == 0
+    assert summary["realized_bundles"] == 1
+    assert summary["hypothetical_bundles"] == 0
     assert summary["lower_bound_dependent_bundles"] == 1
     assert summary["by_class"]["strict_curated_lower_bound"] == 1
 
@@ -869,6 +1040,30 @@ def test_bundle_strict_open_world_excludes_fixture_backed_dynamic_lane() -> None
     assert verdict["counts_as_generalization"] is False
     assert summary["fixture_backed_bundles"] == 1
     assert summary["positive_strict_open_world_bundles"] == 0
+
+
+def test_strict_open_world_summary_tracks_realized_and_validated_positive_counts() -> None:
+    summary = _strict_open_world_summary(
+        [
+            {
+                "strict_open_world": {"class": "strict_open_world_positive", "counts_as_generalization": True},
+                "runtime_recipe": {"hypothetical": False},
+                "completion_state": {"fully_validated": True},
+            },
+            {
+                "strict_open_world": {"class": "strict_fail_closed_negative", "counts_as_generalization": False},
+                "runtime_recipe": {"hypothetical": True},
+                "completion_state": {"fully_validated": False},
+            },
+        ]
+    )
+
+    assert summary["positive_strict_open_world_bundles"] == 1
+    assert summary["realized_bundles"] == 1
+    assert summary["hypothetical_bundles"] == 1
+    assert summary["fully_validated_bundles"] == 1
+    assert summary["realized_positive_strict_open_world_bundles"] == 1
+    assert summary["fully_validated_positive_strict_open_world_bundles"] == 1
 
 
 def test_bundle_strict_open_world_prefers_template_specific_exclusion() -> None:
@@ -1118,6 +1313,160 @@ def test_bundle_memory_promotion_accepts_high_quality_strict_open_world_bundle()
     assert summary["all_eligible"] is True
 
 
+def test_bundle_support_promotion_rejects_degraded_dynamic_bundle_even_when_base_promotion_passes() -> None:
+    status = _bundle_support_promotion_status(
+        {
+            "promotion": {"eligible": True, "reasons": []},
+            "open_world": {"class": "semantic_guided_minimal_dynamic", "counts_as_generalization": False},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback", "counts_as_generalization": False},
+            "artifact_quality": {"band": "high", "oracle_clarity": "high", "topology_clarity": "high"},
+            "stack_dependence": {"stack_defaulted": True, "repo_prior_bounded": True},
+            "family_dependence": {"candidate_evidence_backed": True},
+            "name_only_outcome": {"decision": "partial"},
+        }
+    )
+    summary = _support_promotion_summary([{"slug": "name-open-redirect", "support_promotion": status}])
+
+    assert status["eligible"] is False
+    assert "strict_open_world:strict_minimal_dynamic_fallback" in status["reasons"]
+    assert "open_world:semantic_guided_minimal_dynamic" in status["reasons"]
+    assert "stack_selection:defaulted" in status["reasons"]
+    assert "name_only_outcome:partial" in status["reasons"]
+    assert summary["eligible_bundles"] == 0
+
+
+def test_bundle_support_promotion_accepts_high_quality_strict_open_world_bundle() -> None:
+    status = _bundle_support_promotion_status(
+        {
+            "promotion": {"eligible": True, "reasons": []},
+            "open_world": {"class": "open_world_positive", "counts_as_generalization": True},
+            "strict_open_world": {"class": "strict_open_world_positive", "counts_as_generalization": True},
+            "artifact_quality": {"band": "high", "oracle_clarity": "high", "topology_clarity": "high"},
+            "stack_dependence": {"stack_defaulted": False, "repo_prior_bounded": False},
+            "family_dependence": {"candidate_evidence_backed": True},
+            "name_only_outcome": {"decision": "intent_met"},
+        }
+    )
+    summary = _support_promotion_summary([{"slug": "cwe-unknown", "support_promotion": status}])
+
+    assert status["eligible"] is True
+    assert status["reasons"] == []
+    assert summary["eligible_bundles"] == 1
+    assert summary["all_eligible"] is True
+
+
+def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
+    readiness = _bundle_open_world_readiness(
+        {
+            "support_promotion": {
+                "eligible": False,
+                "reasons": [
+                    "strict_open_world:strict_minimal_dynamic_fallback",
+                    "open_world:semantic_guided_minimal_dynamic",
+                    "artifact_quality:medium",
+                    "stack_selection:defaulted",
+                    "name_only_outcome:partial",
+                ],
+            },
+            "stack_dependence": {"stack_defaulted": True},
+            "family_dependence": {"candidate_evidence_backed": True},
+            "name_only_outcome": {"decision": "partial"},
+            "open_world": {"class": "semantic_guided_minimal_dynamic"},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
+        }
+    )
+
+    assert readiness["ready"] is False
+    assert "strict_open_world_gate" in readiness["blockers"]
+    assert "open_world_non_positive" in readiness["blockers"]
+    assert "stack_defaulted" in readiness["blockers"]
+    assert "name_only_intent_not_met" in readiness["blockers"]
+
+
+def test_open_world_readiness_summary_rolls_up_blockers() -> None:
+    summary = _open_world_readiness_summary(
+        [
+            {
+                "open_world_readiness": {
+                    "ready": False,
+                    "blockers": ["strict_open_world_gate", "stack_defaulted"],
+                }
+            },
+            {
+                "open_world_readiness": {
+                    "ready": True,
+                    "blockers": [],
+                }
+            },
+        ]
+    )
+
+    assert summary["bundle_count"] == 2
+    assert summary["ready_bundles"] == 1
+    assert summary["not_ready_bundles"] == 1
+    assert summary["by_blocker"] == {
+        "strict_open_world_gate": 1,
+        "stack_defaulted": 1,
+    }
+
+
+def test_boundedness_summary_surfaces_repo_inventory_limits() -> None:
+    summary = _boundedness_summary()
+
+    assert summary["catalog_entries"] >= 12
+    assert summary["family_hint_families"] >= 12
+    assert summary["scaffold_stack_pool"] >= 2
+    assert summary["compiler_strategy_count"] >= 13
+    assert summary["closed_vocabulary_family_discovery"] is True
+    assert summary["executor_multi_primary_supported"] is False
+
+
+def test_name_only_planning_summary_rolls_up_primary_focus_and_reasons() -> None:
+    summary = _name_only_planning_summary(
+        [
+            {
+                "name_only_generation_spec": {
+                    "required_contract": {"require_research": True},
+                    "planning_focus_summary": {
+                        "primary_focus": "stack_or_runtime_design",
+                        "focuses": ["stack_or_runtime_design", "evidence_authority"],
+                        "reason_tokens": [
+                            "stack_defaulted",
+                            "stack_ambiguous",
+                            "family_candidate_evidence_missing",
+                        ],
+                    },
+                }
+            },
+            {
+                "name_only_generation_spec": {
+                    "required_contract": {"require_research": True},
+                    "planning_focus_summary": {
+                        "primary_focus": "family_disambiguation",
+                        "focuses": ["family_disambiguation"],
+                        "reason_tokens": ["family_ambiguous"],
+                    },
+                }
+            },
+        ]
+    )
+
+    assert summary["bundle_count"] == 2
+    assert summary["name_only_bundles"] == 2
+    assert summary["with_planning_focus_bundles"] == 2
+    assert summary["by_primary_focus"] == {
+        "stack_or_runtime_design": 1,
+        "family_disambiguation": 1,
+    }
+    assert summary["by_focus"] == {
+        "stack_or_runtime_design": 1,
+        "evidence_authority": 1,
+        "family_disambiguation": 1,
+    }
+    assert summary["by_reason_token"]["stack_defaulted"] == 1
+    assert summary["by_reason_token"]["family_ambiguous"] == 1
+
+
 def test_request_identity_summary_tracks_input_modes_and_resolution_classes() -> None:
     summary = _request_identity_summary(
         [
@@ -1330,12 +1679,16 @@ def test_template_dependence_summary_tracks_minimal_dynamic_materializers() -> N
                 "dynamicness": {"verdict": "deterministic fallback dependent"},
                 "provenance": {"materializer": "minimal_dynamic"},
                 "open_world": {"class": "semantic_guided_minimal_dynamic", "lower_bound_dependent": True},
+                "runtime_recipe": {"hypothetical": False},
+                "completion_state": {"fully_validated": True},
                 "vuln_id": "NAME-OPEN-REDIRECT",
             }
         ]
     )
 
     assert summary["minimal_dynamic_bundles"] == 1
+    assert summary["realized_minimal_dynamic_bundles"] == 1
+    assert summary["fully_validated_minimal_dynamic_bundles"] == 1
     assert summary["by_open_world_class"]["semantic_guided_minimal_dynamic"] == 1
 
 
@@ -1346,6 +1699,8 @@ def test_template_dependence_summary_counts_request_ir_name_only_lower_bound_bun
                 "dynamicness": {"verdict": "deterministic fallback dependent"},
                 "provenance": {"materializer": "minimal_dynamic"},
                 "open_world": {"class": "semantic_guided_minimal_dynamic", "lower_bound_dependent": True},
+                "runtime_recipe": {"hypothetical": True},
+                "completion_state": {"fully_validated": False},
                 "vuln_id": "CWE-89",
                 "request_ir": {"name_driven": True},
             }
@@ -1354,6 +1709,31 @@ def test_template_dependence_summary_counts_request_ir_name_only_lower_bound_bun
 
     assert summary["name_only_lower_bound_bundles"] == 1
     assert summary["minimal_dynamic_bundles"] == 1
+    assert summary["hypothetical_lower_bound_bundles"] == 1
+
+
+def test_open_world_summary_tracks_realized_and_fully_validated_positive_counts() -> None:
+    summary = _open_world_summary(
+        [
+            {
+                "open_world": {"class": "open_world_positive", "counts_as_generalization": True},
+                "runtime_recipe": {"hypothetical": False},
+                "completion_state": {"fully_validated": True},
+            },
+            {
+                "open_world": {"class": "unsupported_free_form_negative", "counts_as_generalization": False},
+                "runtime_recipe": {"hypothetical": True},
+                "completion_state": {"fully_validated": False},
+            },
+        ]
+    )
+
+    assert summary["positive_open_world_bundles"] == 1
+    assert summary["realized_bundles"] == 1
+    assert summary["hypothetical_bundles"] == 1
+    assert summary["fully_validated_bundles"] == 1
+    assert summary["realized_positive_open_world_bundles"] == 1
+    assert summary["fully_validated_positive_open_world_bundles"] == 1
 
 
 def test_stack_dependence_summary_tracks_repo_prior_and_researcher_sources() -> None:
@@ -1363,30 +1743,94 @@ def test_stack_dependence_summary_tracks_repo_prior_and_researcher_sources() -> 
                 "stack_dependence": {
                     "class": "repo_prior_bounded",
                     "stack_source": "profile_prior",
+                    "stack_defaulted": True,
                     "repo_prior_bounded": True,
                     "researcher_inferred": False,
                     "ambiguous": True,
                     "stack_locked": False,
+                    "working_stack_evidence_backed": True,
                 }
             },
             {
                 "stack_dependence": {
                     "class": "researcher_inferred",
                     "stack_source": "researcher_candidate",
+                    "stack_defaulted": False,
                     "repo_prior_bounded": False,
                     "researcher_inferred": True,
                     "ambiguous": False,
                     "stack_locked": False,
+                    "working_stack_evidence_backed": False,
                 }
             },
         ]
     )
 
     assert summary["repo_prior_bounded_bundles"] == 1
+    assert summary["stack_defaulted_bundles"] == 1
     assert summary["researcher_inferred_bundles"] == 1
     assert summary["ambiguous_bundles"] == 1
+    assert summary["evidence_backed_bundles"] == 1
     assert summary["by_class"] == {"repo_prior_bounded": 1, "researcher_inferred": 1}
     assert summary["by_stack_source"] == {"profile_prior": 1, "researcher_candidate": 1}
+
+
+def test_request_ir_summary_tracks_candidate_ambiguity_evidence_and_negative_hypotheses() -> None:
+    summary = pack_mod._request_ir_summary(
+        [
+            {
+                "vuln_id": "CWE-79",
+                "request_ir": {
+                    "name_driven": True,
+                    "resolution_state": "token_match",
+                    "resolution_match_class": "token_match",
+                    "resolution_confidence": "medium",
+                    "abstain_reason": "ambiguous_family_hypothesis",
+                    "evidence_ids": ["evidence:1"],
+                    "identifier_candidates": [
+                        {"vuln_id": "CWE-79", "confidence": "medium"},
+                        {"vuln_id": "NAME-REFLECTED-XSS", "confidence": "low"},
+                    ],
+                    "family_candidates": [
+                        {"family": "xss", "confidence": "medium", "evidence_ids": ["evidence:1"]},
+                        {"family": "template_injection", "confidence": "low"},
+                    ],
+                    "stack_candidates": [
+                        {"stack_id": "python/flask", "confidence": "medium"},
+                        {"stack_id": "python/fastapi", "confidence": "low"},
+                    ],
+                    "negative_hypotheses": [{"family": "template_injection", "source": "researcher_contradiction"}],
+                },
+            },
+            {
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "request_ir": {
+                    "name_driven": True,
+                    "resolution_state": "catalog_alias",
+                    "resolution_match_class": "catalog_alias",
+                    "resolution_confidence": "high",
+                    "identifier_candidates": [{"vuln_id": "NAME-OPEN-REDIRECT", "confidence": "high"}],
+                    "family_candidates": [{"family": "open_redirect", "confidence": "high"}],
+                    "stack_candidates": [{"stack_id": "python/flask", "confidence": "low"}],
+                },
+            },
+        ]
+    )
+
+    assert summary["name_driven_bundles"] == 2
+    assert summary["evidence_backed_bundles"] == 1
+    assert summary["abstain_signaled_bundles"] == 1
+    assert summary["multi_identifier_candidate_bundles"] == 1
+    assert summary["ambiguous_family_candidate_bundles"] == 1
+    assert summary["ambiguous_stack_candidate_bundles"] == 1
+    assert summary["negative_hypothesis_bundles"] == 1
+    assert summary["avg_identifier_candidate_count"] == 1.5
+    assert summary["avg_family_candidate_count"] == 1.5
+    assert summary["avg_stack_candidate_count"] == 1.5
+    assert summary["avg_negative_hypothesis_count"] == 0.5
+    assert summary["by_resolution_state"] == {"token_match": 1, "catalog_alias": 1}
+    assert summary["by_resolution_match_class"] == {"token_match": 1, "catalog_alias": 1}
+    assert summary["by_resolution_confidence"] == {"medium": 1, "high": 1}
 
 
 def test_family_dependence_summary_tracks_semantic_signature_and_unresolved_fallbacks() -> None:
@@ -1400,6 +1844,11 @@ def test_family_dependence_summary_tracks_semantic_signature_and_unresolved_fall
                     "ambiguous": False,
                     "selection_source": "semantic_signature",
                     "abstain_reason": None,
+                    "working_family_evidence_backed": True,
+                    "candidate_evidence_backed": True,
+                    "negative_hypothesis_count": 0,
+                    "resolution_confidence": "high",
+                    "resolution_basis": "catalog_alias",
                 }
             },
             {
@@ -1410,6 +1859,11 @@ def test_family_dependence_summary_tracks_semantic_signature_and_unresolved_fall
                     "ambiguous": True,
                     "selection_source": None,
                     "abstain_reason": "ambiguous_semantic_family_match",
+                    "working_family_evidence_backed": False,
+                    "candidate_evidence_backed": False,
+                    "negative_hypothesis_count": 1,
+                    "resolution_confidence": "medium",
+                    "resolution_basis": "token_match",
                 }
             },
         ]
@@ -1418,12 +1872,154 @@ def test_family_dependence_summary_tracks_semantic_signature_and_unresolved_fall
     assert summary["name_only_bundles"] == 2
     assert summary["family_bounded_bundles"] == 1
     assert summary["ambiguous_bundles"] == 1
+    assert summary["evidence_backed_bundles"] == 1
+    assert summary["candidate_evidence_backed_bundles"] == 1
+    assert summary["negative_hypothesis_bundles"] == 1
     assert summary["by_class"] == {
         "semantic_signature_bounded": 1,
         "family_unresolved_generic_fallback": 1,
     }
     assert summary["by_selection_source"] == {"semantic_signature": 1}
     assert summary["by_abstain_reason"] == {"ambiguous_semantic_family_match": 1}
+    assert summary["by_resolution_confidence"] == {"high": 1, "medium": 1}
+    assert summary["by_resolution_basis"] == {"catalog_alias": 1, "token_match": 1}
+
+
+def test_bundle_dependence_surfaces_candidate_evidence_backing() -> None:
+    entry = {
+        "runtime_recipe": {
+            "language": "python",
+            "framework": "flask",
+            "stack_source": "profile_prior",
+            "stack_locked": False,
+        },
+        "request_ir": {
+            "name_driven": True,
+            "stack_candidates": [
+                {
+                    "stack_id": "python/flask",
+                    "source": "profile_prior",
+                    "confidence": "low",
+                    "evidence_ids": ["evidence:1"],
+                }
+            ],
+            "family_candidates": [
+                {
+                    "family": "sql_injection",
+                    "source": "catalog_resolution",
+                    "confidence": "high",
+                    "evidence_ids": ["evidence:1"],
+                }
+            ],
+        },
+        "vuln_id": "CWE-89",
+        "request_identity": {},
+        "provenance": {
+            "generation_origin": "deterministic_fallback",
+            "fallback_class": "semantic_guided",
+            "semantic_guided_selection_source": "semantic_signature",
+        },
+        "name_only_generation_spec": {
+            "family_working_hypothesis": "sqli",
+            "family_hypothesis_source": "researcher_family_hypothesis",
+            "family_candidate_summary": {"candidate_count": 1},
+            "required_contract": {"require_research": True},
+        },
+    }
+
+    stack_dependence = pack_mod._bundle_stack_dependence(entry)
+    family_dependence = pack_mod._bundle_family_dependence(entry)
+
+    assert stack_dependence["working_stack_evidence_backed"] is True
+    assert stack_dependence["working_stack_evidence_ids"] == ["evidence:1"]
+    assert family_dependence["working_family"] == "sqli"
+    assert family_dependence["working_family_evidence_backed"] is True
+    assert family_dependence["working_family_evidence_ids"] == ["evidence:1"]
+    assert family_dependence["candidate_evidence_backed"] is True
+    assert family_dependence["selection_source"] == "semantic_signature"
+    assert family_dependence["resolution_confidence"] is None
+
+
+def test_bundle_family_dependence_falls_back_to_request_ir_candidates_without_generation_spec() -> None:
+    entry = {
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "request_identity": {},
+        "request_ir": {
+            "name_driven": True,
+            "resolution_confidence": "high",
+            "resolution_match_class": "catalog_alias",
+            "abstain_reason": "ambiguous_family_hypothesis",
+            "negative_hypotheses": [{"family": "xss", "source": "researcher_contradiction"}],
+            "family_candidates": [
+                {
+                    "family": "open_redirect",
+                    "source": "catalog_resolution",
+                    "confidence": "high",
+                    "evidence_ids": ["evidence:redirect:1"],
+                },
+                {
+                    "family": "xss",
+                    "source": "researcher_family_hypothesis",
+                    "confidence": "low",
+                },
+            ],
+        },
+        "provenance": {
+            "generation_origin": "research_short_circuit",
+            "semantic_guided_abstain_reason": "ambiguous_semantic_family_match",
+        },
+    }
+
+    family_dependence = pack_mod._bundle_family_dependence(entry)
+
+    assert family_dependence["class"] == "precondition_failed"
+    assert family_dependence["candidate_count"] == 2
+    assert family_dependence["ambiguous"] is True
+    assert family_dependence["selection_source"] == "catalog_resolution"
+    assert family_dependence["abstain_reason"] == "ambiguous_family_hypothesis"
+    assert family_dependence["candidate_evidence_backed"] is True
+    assert family_dependence["candidate_evidence_ids"] == ["evidence:redirect:1"]
+    assert family_dependence["negative_hypothesis_count"] == 1
+    assert family_dependence["resolution_confidence"] == "high"
+    assert family_dependence["resolution_basis"] == "catalog_alias"
+
+
+def test_bundle_family_dependence_uses_material_candidate_ambiguity_when_generation_spec_is_present() -> None:
+    entry = {
+        "vuln_id": "NAME-OPEN-REDIRECT",
+        "request_identity": {},
+        "request_ir": {
+            "name_driven": True,
+            "resolution_confidence": "high",
+            "resolution_match_class": "catalog_alias",
+            "family_candidates": [
+                {"family": "open_redirect", "source": "catalog_resolution", "confidence": "high"},
+                {"family": "xss", "source": "researcher_hypothesis", "confidence": "medium"},
+                {"family": "ssrf", "source": "researcher_hypothesis", "confidence": "low"},
+            ],
+        },
+        "provenance": {
+            "generation_origin": "deterministic_fallback",
+            "fallback_class": "semantic_guided",
+            "semantic_guided_selection_source": "request_resolution",
+        },
+        "name_only_generation_spec": {
+            "family_working_hypothesis": "open_redirect",
+            "family_hypothesis_source": "request_ir",
+            "family_candidate_summary": {
+                "candidate_count": 3,
+                "material_candidate_count": 1,
+                "material_ambiguous": False,
+            },
+            "required_contract": {"require_research": True},
+        },
+    }
+
+    family_dependence = pack_mod._bundle_family_dependence(entry)
+
+    assert family_dependence["candidate_count"] == 3
+    assert family_dependence["material_candidate_count"] == 1
+    assert family_dependence["ambiguous"] is False
 
 
 def test_bundle_artifact_quality_uses_exploit_oracle_when_verification_is_missing(tmp_path: Path) -> None:
@@ -1455,13 +2051,23 @@ def test_bundle_artifact_quality_uses_exploit_oracle_when_verification_is_missin
             "exploit_oracle": {
                 "success_signature": "Exploit SUCCESS",
                 "flag_token": "FLAG{PATH_TRAVERSAL_OK}",
+                "negative_text_markers": ["Exploit FAILED"],
+                "negative_controls": [{"name": "benign-path", "expect_success": False}],
                 "poc_cmd": "python poc.py --base-url {{base_url}}",
             },
         }
     )
 
-    assert quality["oracle_clarity"] == "high"
+    assert quality["oracle_clarity"] == "medium"
+    assert quality["oracle_rigor"] == "medium"
+    assert quality["negative_control_present"] is True
+    assert quality["metamorphic_present"] is False
+    assert quality["verification_trust"] == "missing"
+    assert quality["verification_independence"] == "missing"
+    assert quality["band"] == "low"
     assert any("deterministic fallback bundle" in note for note in quality["notes"])
+    assert any("independent high-trust verification" in note for note in quality["notes"])
+    assert any("metamorphic checks" in note for note in quality["notes"])
 
 
 def test_bundle_dynamic_eval_summary_reads_status_file(tmp_path: Path) -> None:
@@ -1556,6 +2162,85 @@ def test_bundle_intent_satisfaction_marks_dynamic_degraded_success_as_partial() 
     assert payload["research_quality"] == "sufficient"
 
 
+def test_bundle_name_only_outcome_marks_dynamic_degraded_success_as_partial() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "dynamic",
+                "status": "degraded_dynamic_success",
+                "meets_intent": False,
+                "partial": True,
+                "closure_source": "degraded_deterministic_fallback",
+                "required_contract": {
+                    "allowed_execution_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                        "degraded_deterministic_fallback",
+                    ],
+                    "intent_satisfying_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                    ],
+                },
+            },
+            "completion_state": {
+                "stage_ceiling": "generated",
+                "fully_validated": False,
+            },
+            "open_world": {"class": "semantic_guided_minimal_dynamic"},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
+            "stack_dependence": {"class": "repo_prior_bounded"},
+            "family_dependence": {"class": "semantic_signature_bounded"},
+        }
+    )
+
+    assert payload["decision"] == "partial"
+    assert payload["allowed_by_execution_contract"] is True
+    assert payload["satisfies_intent_contract"] is False
+    assert payload["next_required_step"] == "execution"
+    assert payload["stage_ceiling"] == "generated"
+
+
+def test_bundle_name_only_outcome_surfaces_runtime_design_step_for_fully_validated_partial_defaulted_stack() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "dynamic",
+                "status": "degraded_dynamic_success",
+                "meets_intent": False,
+                "partial": True,
+                "closure_source": "degraded_deterministic_fallback",
+                "required_contract": {
+                    "allowed_execution_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                        "degraded_deterministic_fallback",
+                    ],
+                    "intent_satisfying_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                    ],
+                },
+            },
+            "completion_state": {
+                "stage_ceiling": "fully_validated",
+                "fully_validated": True,
+            },
+            "dynamic_eval": {"enabled": True, "status": "degraded_success"},
+            "open_world": {"class": "semantic_guided_minimal_dynamic", "lower_bound_dependent": True},
+            "strict_open_world": {"class": "strict_minimal_dynamic_fallback"},
+            "stack_dependence": {"class": "repo_prior_bounded", "stack_defaulted": True},
+            "family_dependence": {"class": "semantic_signature_bounded", "candidate_evidence_backed": True},
+        }
+    )
+
+    assert payload["decision"] == "partial"
+    assert payload["fully_validated"] is True
+    assert payload["next_required_step"] == "stack_or_runtime_design"
+
+
 def test_bundle_intent_satisfaction_preserves_generation_closure_source_when_executor_fails() -> None:
     payload = _bundle_intent_satisfaction(
         {
@@ -1616,6 +2301,171 @@ def test_bundle_intent_satisfaction_marks_strict_dynamic_failure() -> None:
     assert payload["partial"] is False
 
 
+def test_bundle_name_only_outcome_marks_research_short_circuit_as_abstain() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "dynamic",
+                "status": "dynamic_failed",
+                "meets_intent": False,
+                "partial": False,
+                "closure_source": "failed",
+                "required_contract": {
+                    "allowed_execution_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                        "degraded_deterministic_fallback",
+                    ],
+                    "intent_satisfying_paths": [
+                        "trusted_dynamic",
+                        "strict_open_world_positive",
+                    ],
+                },
+            },
+            "request_ir": {"abstain_reason": "ambiguous_semantic_family_match"},
+            "completion_state": {
+                "stage_ceiling": "pre_generation",
+                "fully_validated": False,
+            },
+            "provenance": {"generation_origin": "research_short_circuit"},
+            "failure": {"stage": "RESEARCH", "terminal_failure_class": "evidence_low_relevance"},
+            "family_dependence": {"class": "name_only_unresolved", "abstain_reason": "ambiguous_semantic_family_match"},
+        }
+    )
+
+    assert payload["decision"] == "abstain"
+    assert payload["abstain_reason"] == "ambiguous_semantic_family_match"
+    assert payload["next_required_step"] == "research"
+
+
+def test_bundle_name_only_outcome_uses_terminal_failure_class_as_abstain_reason_fallback() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "compatibility",
+                "status": "compatibility_failed",
+                "meets_intent": False,
+                "partial": False,
+                "closure_source": "failed",
+                "required_contract": {
+                    "allowed_execution_paths": ["curated_lower_bound"],
+                    "intent_satisfying_paths": ["curated_lower_bound"],
+                },
+            },
+            "completion_state": {
+                "stage_ceiling": "pre_generation",
+                "fully_validated": False,
+            },
+            "provenance": {"generation_origin": "research_short_circuit"},
+            "failure": {"stage": "RESEARCH", "terminal_failure_class": "semantic_support_missing"},
+            "family_dependence": {"class": "precondition_failed"},
+        }
+    )
+
+    assert payload["decision"] == "abstain"
+    assert payload["abstain_reason"] == "semantic_support_missing"
+    assert payload["decision_reason"] == "semantic_support_missing"
+
+
+def test_bundle_name_only_outcome_prefers_stable_abstain_reason_token_over_verbose_reason() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "compatibility",
+                "status": "compatibility_failed",
+                "meets_intent": False,
+                "partial": False,
+                "closure_source": "failed",
+                "required_contract": {
+                    "allowed_execution_paths": ["curated_lower_bound"],
+                    "intent_satisfying_paths": ["curated_lower_bound"],
+                },
+            },
+            "request_ir": {
+                "abstain_reason": "Semantic profile marks unsupported free-form family before generation"
+            },
+            "completion_state": {
+                "stage_ceiling": "pre_generation",
+                "fully_validated": False,
+            },
+            "provenance": {"generation_origin": "research_short_circuit"},
+            "failure": {"stage": "RESEARCH", "terminal_failure_class": "semantic_support_missing"},
+            "family_dependence": {"class": "precondition_failed"},
+        }
+    )
+
+    assert payload["decision"] == "abstain"
+    assert payload["abstain_reason"] == "semantic_support_missing"
+    assert payload["decision_reason"] == "semantic_support_missing"
+
+
+def test_bundle_name_only_outcome_requires_full_validation_for_intent_met() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "compatibility",
+                "status": "compatibility_lower_bound",
+                "meets_intent": True,
+                "partial": False,
+                "closure_source": "curated_lower_bound",
+                "required_contract": {
+                    "allowed_execution_paths": ["curated_lower_bound"],
+                    "intent_satisfying_paths": ["curated_lower_bound"],
+                },
+            },
+            "completion_state": {
+                "stage_ceiling": "generated",
+                "fully_validated": False,
+            },
+            "failure": {},
+            "provenance": {"generation_origin": "compiler_generated"},
+            "stack_dependence": {"class": "explicit_requirement_locked"},
+            "family_dependence": {"class": "curated_family_asset"},
+            "open_world": {"class": "catalog_resolved_lower_bound"},
+            "strict_open_world": {"class": "strict_curated_lower_bound"},
+        }
+    )
+
+    assert payload["decision"] == "partial"
+    assert payload["decision_reason"] == "intent_not_fully_validated"
+
+
+def test_bundle_name_only_outcome_marks_strict_capability_gate_as_fail_closed() -> None:
+    payload = _bundle_name_only_outcome(
+        {
+            "intent_satisfaction": {
+                "request_kind": "name_only",
+                "mode": "strict_dynamic",
+                "status": "strict_dynamic_failed",
+                "meets_intent": False,
+                "partial": False,
+                "closure_source": "failed",
+                "required_contract": {
+                    "allowed_execution_paths": ["strict_open_world_positive"],
+                    "intent_satisfying_paths": ["strict_open_world_positive"],
+                },
+            },
+            "completion_state": {
+                "stage_ceiling": "pre_generation",
+                "fully_validated": False,
+            },
+            "failure": {
+                "stage": "CAPABILITY_CHECK",
+                "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+            },
+            "strict_open_world": {"class": "strict_dynamic_capability_unavailable"},
+        }
+    )
+
+    assert payload["decision"] == "fail_closed"
+    assert payload["decision_reason"] == "strict_dynamic_remote_research_unavailable"
+    assert payload["next_required_step"] == "capability_or_research"
+
+
 def test_bundle_intent_satisfaction_uses_request_ir_for_canonicalized_name_driven_lane() -> None:
     payload = _bundle_intent_satisfaction(
         {
@@ -1653,6 +2503,88 @@ def test_bundle_intent_satisfaction_uses_request_ir_for_canonicalized_name_drive
     assert payload["mode"] == "dynamic"
     assert payload["status"] == "degraded_dynamic_success"
     assert payload["meets_intent"] is False
+
+
+def test_name_only_outcome_summary_counts_partial_abstain_and_fail_closed_lanes() -> None:
+    summary = _name_only_outcome_summary(
+        [
+            {
+                "name_only_outcome": {
+                    "request_kind": "name_only",
+                    "decision": "partial",
+                    "stage_ceiling": "generated",
+                    "next_required_step": "execution",
+                }
+            },
+            {
+                "name_only_outcome": {
+                    "request_kind": "name_only",
+                    "decision": "abstain",
+                    "abstain_reason": "ambiguous_semantic_family_match",
+                    "stage_ceiling": "pre_generation",
+                    "next_required_step": "research",
+                    "terminal_failure_class": "evidence_low_relevance",
+                }
+            },
+            {
+                "name_only_outcome": {
+                    "request_kind": "name_only",
+                    "decision": "fail_closed",
+                    "stage_ceiling": "pre_generation",
+                    "next_required_step": "capability_or_research",
+                    "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                }
+            },
+        ]
+    )
+
+    assert summary["name_only_bundles"] == 3
+    assert summary["partial_bundles"] == 1
+    assert summary["abstained_bundles"] == 1
+    assert summary["fail_closed_bundles"] == 1
+    assert summary["by_decision"] == {
+        "partial": 1,
+        "abstain": 1,
+        "fail_closed": 1,
+    }
+    assert summary["by_abstain_reason"] == {"ambiguous_semantic_family_match": 1}
+    assert summary["by_next_required_step"] == {
+        "execution": 1,
+        "research": 1,
+        "capability_or_research": 1,
+    }
+
+
+def test_rollup_multibundle_name_only_outcome_field_returns_mixed_for_different_decisions() -> None:
+    decision = _rollup_multibundle_name_only_outcome_field(
+        [
+            {"name_only_outcome": {"request_kind": "name_only", "decision": "intent_met"}},
+            {"name_only_outcome": {"request_kind": "name_only", "decision": "abstain"}},
+        ],
+        key="decision",
+    )
+    next_step = _rollup_multibundle_name_only_outcome_field(
+        [
+            {"name_only_outcome": {"request_kind": "name_only", "next_required_step": "research"}},
+            {"name_only_outcome": {"request_kind": "name_only", "next_required_step": "execution"}},
+        ],
+        key="next_required_step",
+    )
+
+    assert decision == "mixed"
+    assert next_step == "mixed"
+
+
+def test_rollup_multibundle_name_only_outcome_field_returns_uniform_value_when_aligned() -> None:
+    decision = _rollup_multibundle_name_only_outcome_field(
+        [
+            {"name_only_outcome": {"request_kind": "name_only", "decision": "intent_met"}},
+            {"name_only_outcome": {"request_kind": "name_only", "decision": "intent_met"}},
+        ],
+        key="decision",
+    )
+
+    assert decision == "intent_met"
 
 
 def test_intent_satisfaction_summary_counts_partial_and_failed_name_only_lanes() -> None:
@@ -1960,6 +2892,69 @@ def test_write_manifest_records_failure_pipeline_result(tmp_path: Path, monkeypa
 
     assert manifest["status"] == "failure"
     assert manifest["pipeline_result"] == "failure"
+
+
+def test_write_manifest_infers_failure_pipeline_result_without_loop_state_from_bundle_completion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-pack-status-inferred"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_id": "NAME-FOOBAR"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "NAME-FOOBAR", "slug": "name-foobar", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+    monkeypatch.setattr(
+        pack_mod,
+        "_collect_bundle_records",
+        lambda incoming_plan, incoming_sid: [
+            {
+                "slug": "name-foobar",
+                "vuln_id": "NAME-FOOBAR",
+                "completion_state": {
+                    "generated": False,
+                    "executed": False,
+                    "run_passed": False,
+                    "verified": False,
+                    "verify_pass": None,
+                    "reviewed": False,
+                    "review_ready": False,
+                    "fully_validated": False,
+                    "stage_ceiling": "pre_generation",
+                    "generation_origin": "research_short_circuit",
+                },
+                "runtime_recipe": {"topology": "single_service", "hypothetical": True, "realized": False},
+                "name_only_outcome": {
+                    "request_kind": "name_only",
+                    "decision": "abstain",
+                    "abstain_reason": "semantic_support_missing",
+                    "stage_ceiling": "pre_generation",
+                },
+            }
+        ],
+    )
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest_path.name == "failure_manifest.json"
+    assert manifest["pipeline_result"] == "failure"
+    assert manifest["runtime_surface_summary"]["hypothetical_bundles"] == 1
+    assert manifest["runtime_surface_summary"]["realized_bundles"] == 0
 
 
 def test_write_manifest_flattens_top_level_failure_fields(tmp_path: Path, monkeypatch) -> None:
@@ -3132,6 +4127,9 @@ def test_bundle_scoped_research_failure_does_not_poison_other_multi_vuln_bundle(
     assert bundles["name-open-redirect"].get("failure") == {}
     assert bundles["name-open-redirect"]["generalization"]["class"] != "unsupported_free_form_negative"
     assert manifest["partial_progress_summary"]["partial_success"] is False
+    assert manifest["name_only_decision"] == "mixed"
+    assert manifest["name_only_next_required_step"] == "mixed"
+    assert manifest["meets_name_only_intent"] is False
     assert manifest["generation_origin"] == "mixed"
     assert manifest["dynamicness_verdict"] == "mixed"
 
@@ -3286,6 +4284,10 @@ def test_write_manifest_rolls_up_multibundle_top_level_provenance_when_uniform(
             ),
             encoding="utf-8",
         )
+        (bundle_dir / "reviewer_report.json").write_text(
+            json.dumps({"success": True, "blocking_bundles": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
     (metadata_dir / "loop_state.json").write_text(
         json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
         encoding="utf-8",
@@ -3354,6 +4356,8 @@ def test_write_manifest_rolls_up_multibundle_top_level_provenance_when_uniform(
 
     assert manifest["generation_origin"] == "compiler_generated"
     assert manifest["dynamicness_verdict"] == "compiler-first"
+    assert manifest["name_only_decision"] == "intent_met"
+    assert manifest["meets_name_only_intent"] is True
     assert manifest["verification_rule_source"] == "compiler_runtime_rule"
     assert manifest["verification_trust"] == "medium"
     assert manifest["stack_scaffold_id"] == "python/flask"

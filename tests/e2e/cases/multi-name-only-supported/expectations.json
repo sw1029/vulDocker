@@ -32,8 +32,8 @@
       "verification_rule_source": "declared_rule",
       "verification_trust": "high",
       "verification_independence": "independent",
-      "generalization_class": "real_free_form_positive",
-      "counts_as_generalization": true
+      "generalization_class": "real_free_form_curated_lower_bound",
+      "counts_as_generalization": false
     },
     {
       "slug": "name-open-redirect",
@@ -55,8 +55,8 @@
       "verification_rule_source": "declared_rule",
       "verification_trust": "high",
       "verification_independence": "independent",
-      "generalization_class": "real_free_form_positive",
-      "counts_as_generalization": true
+      "generalization_class": "real_free_form_curated_lower_bound",
+      "counts_as_generalization": false
     }
   ],
   "reviewer": {
