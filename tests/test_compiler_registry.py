@@ -127,8 +127,9 @@ def test_open_redirect_registry_manifest_records_scaffold_and_fragment_metadata(
     assert metadata["compose_mode"] == "registry"
     assert result.manifest["build"]["command"] == "pip install --no-cache-dir -r requirements.txt"
     assert result.manifest["run"]["command"] == "python app.py"
-    assert result.manifest["poc"]["cmd"] == "python poc.py --base-url {{base_url}}"
+    assert result.manifest["poc"]["cmd"] == "python poc.py --base-url {{base_url}} --payload {{payload}}"
     assert result.manifest["poc"]["flag_token"] == "FLAG{OPEN_REDIRECT_OK}"
+    verification_spec = result.manifest["verification_spec"]
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
     readme = next(item for item in result.manifest["files"] if item["path"] == "README.md")
     assert "next_url = request.args.get('next'" in service_main["content"]
@@ -136,6 +137,12 @@ def test_open_redirect_registry_manifest_records_scaffold_and_fragment_metadata(
     assert "redirect_next_route" in readme["content"]
     assert "Service behavior: python/flask registry-backed open redirect service." in readme["content"]
     assert "Exploit contract: Registry-backed open redirect PoC." in readme["content"]
+    assert verification_spec["negative_controls"] == [
+        {"name": "same-origin-local", "expect_success": False, "payload": "/local"}
+    ]
+    assert verification_spec["metamorphic"]["cases"] == [
+        {"name": "same-origin-profile", "expect_success": False, "payload": "/profile"}
+    ]
 
 
 def test_csrf_registry_manifest_records_scaffold_and_fragment_metadata() -> None:
@@ -283,14 +290,25 @@ def test_mysql_sqli_registry_manifest_records_external_db_metadata() -> None:
     assert result.manifest["run"]["env"]["DB_USER"] == "sqli"
     requirements_txt = next(item for item in result.manifest["files"] if item["path"] == "requirements.txt")
     readme = next(item for item in result.manifest["files"] if item["path"] == "README.md")
+    schema_sql = next(item for item in result.manifest["files"] if item["path"] == "schema.sql")
+    verification_spec = result.manifest["verification_spec"]
     assert "mysql-connector-python==8.1.0" in requirements_txt["content"]
     service_main = next(item for item in result.manifest["files"] if item["role"] == "service_main")
+    assert schema_sql["role"] == "schema"
+    assert "CREATE TABLE IF NOT EXISTS users" in schema_sql["content"]
     assert "mysql.connector.connect" in service_main["content"]
+    assert "Path(__file__).with_name('schema.sql')" in service_main["content"]
     assert "missing-db-host" in service_main["content"]
     assert "compromised = any(str(row.get('username', '')) == 'admin' for row in rows if isinstance(row, dict))" in service_main["content"]
     assert "'flag': 'FLAG-sqli-demo-token' if compromised else None" in service_main["content"]
     assert "Runtime assumptions: external service dependency with env contract" in readme["content"]
     assert "DB_HOST" in readme["content"]
+    assert verification_spec["negative_controls"] == [
+        {"name": "literal-admin", "expect_success": False, "payload": "admin"}
+    ]
+    assert verification_spec["metamorphic"]["cases"] == [
+        {"name": "guest-user", "expect_success": False, "payload": "guest"}
+    ]
 
 
 def test_mysql_sqli_registry_manifest_uses_catalog_runtime_surface_with_custom_sidecar_values() -> None:

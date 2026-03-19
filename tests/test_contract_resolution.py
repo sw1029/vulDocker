@@ -11,12 +11,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.contracts import (
+    _build_executor_plan,
+    _build_runtime_graph,
+    _runtime_seed_files,
     build_generator_contract,
     load_generator_contract,
     requires_semantic_support,
     requires_semantic_support_for_requirement,
     write_generator_contract,
 )
+from agents.generator.compiler import compile_manifest
 
 
 def test_contract_uses_rule_defined_success_markers(tmp_path: Path) -> None:
@@ -121,21 +125,32 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
                     {"op": "not_contains", "string": "Exploit FAILED"},
                 ],
                 "negative_text_markers": ["Exploit FAILED"],
-                "negative_controls": [{"name": "benign-next", "expect_success": False}],
-                "metamorphic": {"total": 1, "passed": 1, "rationale": "same-origin redirect stays non-exploit"},
+                "negative_controls": [{"name": "benign-next", "expect_success": False, "payload": "/local"}],
+                "metamorphic": {
+                    "total": 1,
+                    "passed": 1,
+                    "rationale": "same-origin redirect stays non-exploit",
+                    "cases": [{"name": "same-origin", "payload": "/local", "expect_success": False}],
+                },
             },
         },
     )
 
     oracle = payload["exploit_oracle"]
     spec = payload["name_only_generation_spec"]
+    staged = payload["staged_synthesis"]
 
     assert oracle["success_signature"] == "Exploit SUCCESS"
     assert oracle["flag_token"] == "FLAG{OPEN_REDIRECT_OK}"
     assert oracle["source"] == "researcher_verification_spec"
     assert oracle["negative_text_markers"] == ["Exploit FAILED"]
-    assert oracle["negative_controls"] == [{"name": "benign-next", "expect_success": False}]
-    assert oracle["metamorphic"] == {"total": 1, "passed": 1, "rationale": "same-origin redirect stays non-exploit"}
+    assert oracle["negative_controls"] == [{"name": "benign-next", "expect_success": False, "payload": "/local"}]
+    assert oracle["metamorphic"] == {
+        "total": 1,
+        "passed": 1,
+        "rationale": "same-origin redirect stays non-exploit",
+        "cases": [{"name": "same-origin", "payload": "/local", "expect_success": False}],
+    }
     assert oracle["assertion_program"] == [
         {"op": "contains", "string": "Exploit SUCCESS"},
         {"op": "not_contains", "string": "Exploit FAILED"},
@@ -148,6 +163,19 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
     assert spec["request_identity_family"] == "open_redirect"
     assert spec["family_candidate_summary"]["top_family"] == "open_redirect"
     assert spec["family_candidate_summary"]["candidate_count"] == 1
+    assert spec["primitive_hypotheses"] == []
+    assert spec["runtime_dependency_hypotheses"] == []
+    assert spec["topology_hypotheses"][0]["topology"] == "single_service"
+    assert spec["scenario_candidate_summary"]["candidate_count"] == 2
+    assert spec["scenario_candidate_summary"]["selected_candidate_count"] == 1
+    assert spec["scenario_candidate_summary"]["top_family"] == "open_redirect"
+    assert spec["scenario_candidate_summary"]["top_oracle_mode"] == "stateful_text"
+    assert spec["scenario_candidate_summary"]["selected_oracle_mode"] == "stateful_text"
+    assert spec["request_ir"]["selection_decision"]["scenario"]["selected"] is False
+    assert spec["request_ir"]["selection_decision"]["scenario"]["selected_scenario_id"] == (
+        "family=open_redirect|stack=python/flask|topology=single_service"
+    )
+    assert spec["request_ir"]["selection_decision"]["scenario"]["top_oracle_mode"] == "stateful_text"
     assert spec["stack_candidate_summary"]["working_stack_id"] == "python/flask"
     assert spec["stack_candidate_summary"]["candidate_count"] == 2
     assert spec["stack_candidate_summary"]["ambiguous"] is True
@@ -160,20 +188,108 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
     ]
     assert spec["planning_focus_summary"]["by_focus"]["evidence_authority"] == [
         "family_candidate_evidence_missing",
+        "selected_family_support_missing",
+        "selected_family_authority_thin",
     ]
     assert spec["exploit_oracle_summary"]["success_signature"] == "Exploit SUCCESS"
     assert spec["exploit_oracle_summary"]["negative_text_markers"] == ["Exploit FAILED"]
-    assert spec["exploit_oracle_summary"]["negative_controls"] == [{"name": "benign-next", "expect_success": False}]
+    assert spec["exploit_oracle_summary"]["negative_controls"] == [{"name": "benign-next", "expect_success": False, "payload": "/local"}]
     assert spec["exploit_oracle_summary"]["metamorphic"] == {
         "total": 1,
         "passed": 1,
         "rationale": "same-origin redirect stays non-exploit",
+        "cases": [{"name": "same-origin", "payload": "/local", "expect_success": False}],
     }
     assert spec["exploit_oracle_summary"]["assertion_program"] == [
         {"op": "contains", "string": "Exploit SUCCESS"},
         {"op": "not_contains", "string": "Exploit FAILED"},
         {"op": "contains", "string": "FLAG{OPEN_REDIRECT_OK}"},
     ]
+    assert staged["schema_version"] == "staged_synthesis@0.1"
+    assert staged["stage_order"] == [
+        "candidate_resolution",
+        "design_brief",
+        "runtime_plan",
+        "oracle_contract",
+    ]
+    assert staged["candidate_resolution"]["selected_family"] == "open_redirect"
+    assert staged["candidate_resolution"]["selected_topology"] == "single_service"
+    assert staged["design_brief"]["working_family"] == "open_redirect"
+    assert staged["design_brief"]["selected_topology"] == "single_service"
+    assert staged["design_brief"]["selected_oracle_mode"] == "stateful_text"
+    assert staged["design_brief"]["selected_oracle_source"] == "researcher_report.verification_spec"
+    assert staged["design_brief"]["dependency_set"] == ["service"]
+    assert staged["design_brief"]["required_roles"] == [
+        "service_main",
+        "poc_entry",
+        "oracle_state_checks",
+        "negative_control_cases",
+        "metamorphic_cases",
+    ]
+    assert staged["design_brief"]["primary_focus"] == "stack_or_runtime_design"
+    assert staged["runtime_plan"]["topology"] == "single_service"
+    assert staged["oracle_contract"]["success_signature"] == "Exploit SUCCESS"
+
+
+def test_contract_enriched_request_ir_surfaces_provisional_and_joint_candidates(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-CUSTOM-THING",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-custom-thing",
+        requirement={
+            "vuln_id": "NAME-CUSTOM-THING",
+            "vuln_name": "Custom Thing",
+            "request_ir": {
+                "request_label": "Custom Thing",
+                "resolved_vuln_id": "NAME-CUSTOM-THING",
+                "resolution_state": "synthetic_name",
+                "pattern_seed_state": "preserved",
+                "family_candidates": [
+                    {"family": "template_injection", "source": "synthetic_name_preview", "confidence": "low"},
+                    {"family": "xss", "source": "synthetic_name_preview", "confidence": "low"},
+                ],
+                "stack_candidates": [
+                    {"stack_id": "python/flask", "source": "profile_prior", "confidence": "low"},
+                ],
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "semantic_signature": {
+                "input_vector": ["query parameter"],
+                "sink": ["template rendering"],
+                "exploit_precondition": ["server-side evaluation"],
+            },
+            "family_hypothesis_summary": {
+                "top_family": "template_injection",
+                "top_confidence": "low",
+                "contradiction_count": 1,
+                "contradictory_families": ["xss"],
+                "ambiguous": True,
+            },
+        },
+    )
+
+    request_ir = payload["request_ir"]
+    spec = payload["name_only_generation_spec"]
+
+    assert request_ir["provisional_family"] == "template_injection"
+    assert request_ir["primitive_hypotheses"] == [
+        {"kind": "input_vector", "value": "query parameter", "source": "semantic_signature"},
+        {"kind": "sink", "value": "template rendering", "source": "semantic_signature"},
+        {"kind": "exploit_precondition", "value": "server-side evaluation", "source": "semantic_signature"},
+    ]
+    assert request_ir["topology_hypotheses"][0]["topology"] == "single_service"
+    assert request_ir["scenario_candidates"][0]["scenario_id"].startswith("family=template_injection|stack=python/flask|")
+    assert spec["provisional_family"] == "template_injection"
+    assert spec["primitive_hypotheses"][0]["kind"] == "input_vector"
+    assert spec["scenario_candidate_summary"]["candidate_count"] == 2
+    assert spec["scenario_candidate_summary"]["top_family"] == "template_injection"
+    assert spec["scenario_candidate_summary"]["top_stack_id"] == "python/flask"
 
 
 def test_contract_name_only_generation_spec_can_fall_back_to_request_identity_family(tmp_path: Path) -> None:
@@ -219,6 +335,452 @@ def test_contract_name_only_generation_spec_can_fall_back_to_request_identity_fa
     assert spec["request_identity_family"] == "open_redirect"
     assert spec["family_working_hypothesis"] == "open_redirect"
     assert spec["family_hypothesis_source"] == "request_identity_fallback"
+
+
+def test_contract_name_only_generation_spec_derives_provisional_family_from_primitive_signature(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-CUSTOM-THING",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-custom-thing",
+        requirement={
+            "vuln_id": "NAME-CUSTOM-THING",
+            "vuln_name": "Custom Thing",
+            "language": "python",
+            "framework": "flask",
+            "request_ir": {
+                "request_label": "Custom Thing",
+                "resolved_vuln_id": "NAME-CUSTOM-THING",
+                "resolution_state": "synthetic_name",
+                "pattern_seed_state": "preserved",
+                "stack_candidates": [
+                    {"stack_id": "python/flask", "source": "explicit_requirement", "confidence": "high"},
+                ],
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "semantic_signature": {
+                "input_vector": ["next parameter"],
+                "sink": ["redirect("],
+                "exploit_precondition": ["external redirect"],
+            },
+        },
+    )
+
+    request_ir = payload["request_ir"]
+    spec = payload["name_only_generation_spec"]
+
+    assert request_ir["family_candidates"][0]["family"] == "open_redirect"
+    assert request_ir["family_candidates"][0]["source"] == "primitive_signature"
+    assert request_ir["family_candidates"][0]["confidence"] == "medium"
+    assert request_ir["provisional_family"] == "open_redirect"
+    assert request_ir["selection_decision"]["family"]["selected"] is False
+    assert request_ir["selection_decision"]["family"]["source"] == "primitive_signature"
+    assert request_ir["selection_decision"]["ready_for_materialization"] is False
+    assert request_ir["scenario_candidates"][0]["family"] == "open_redirect"
+    assert spec["provisional_family"] == "open_redirect"
+    assert spec["family_candidate_summary"]["top_family"] == "open_redirect"
+    assert spec["family_candidate_summary"]["top_source"] == "primitive_signature"
+
+
+def test_contract_name_only_generation_spec_derives_runtime_dependency_from_primitive_family(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-CUSTOM-THING",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-custom-thing",
+        requirement={
+            "vuln_id": "NAME-CUSTOM-THING",
+            "vuln_name": "Custom Thing",
+            "language": "python",
+            "framework": "flask",
+            "request_ir": {
+                "request_label": "Custom Thing",
+                "resolved_vuln_id": "NAME-CUSTOM-THING",
+                "resolution_state": "synthetic_name",
+                "pattern_seed_state": "preserved",
+                "stack_candidates": [
+                    {"stack_id": "python/flask", "source": "explicit_requirement", "confidence": "high"},
+                ],
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "semantic_signature": {
+                "input_vector": ["query parameter"],
+                "sink": ["SQL query execution"],
+                "exploit_precondition": ["input concatenated into SQL sink"],
+            },
+        },
+    )
+
+    request_ir = payload["request_ir"]
+    spec = payload["name_only_generation_spec"]
+
+    assert request_ir["family_candidates"][0]["family"] == "sql_injection"
+    assert request_ir["provisional_family"] == "sql_injection"
+    assert request_ir["runtime_dependency_hypotheses"] == [
+        {
+            "kind": "db",
+            "value": "sqlite",
+            "source": "primitive_family_inference",
+            "confidence": "low",
+        }
+    ]
+    assert request_ir["oracle_hypotheses"] == [
+        {
+            "mode": "text_markers",
+            "output_mode": "auto",
+            "negative_control_present": True,
+            "metamorphic_present": False,
+            "source": "primitive_family_inference",
+            "confidence": "low",
+        }
+    ]
+    assert "db:sqlite" in request_ir["scenario_candidates"][0]["dependency_set"]
+    assert request_ir["scenario_candidates"][0]["oracle_profile"]["source"] == "primitive_family_inference"
+    assert request_ir["scenario_candidates"][0]["oracle_profile"]["mode"] == "text_markers"
+    assert spec["runtime_dependency_hypotheses"] == [
+        {
+            "kind": "db",
+            "value": "sqlite",
+            "source": "primitive_family_inference",
+            "confidence": "low",
+        }
+    ]
+    assert spec["oracle_hypotheses"] == [
+        {
+            "mode": "text_markers",
+            "output_mode": "auto",
+            "negative_control_present": True,
+            "metamorphic_present": False,
+            "source": "primitive_family_inference",
+            "confidence": "low",
+        }
+    ]
+    assert payload["staged_synthesis"]["candidate_resolution"]["selected_topology"] == "single_service"
+    assert payload["runtime_recipe"]["db"] == "sqlite"
+    assert payload["runtime_recipe"]["db_source"] == "primitive_family_inference"
+    assert payload["runtime_recipe"]["topology"] == "single_service"
+    assert payload["runtime_recipe"]["topology_source"] == "primitive_family_inference"
+    assert payload["executor_plan"]["db"] == "sqlite"
+    assert payload["executor_plan"]["db_source"] == "primitive_family_inference"
+    assert payload["executor_plan"]["topology"] == "single_service"
+    assert payload["executor_plan"]["topology_source"] == "primitive_family_inference"
+    assert payload["staged_synthesis"]["runtime_plan"]["db"] == "sqlite"
+    assert payload["staged_synthesis"]["runtime_plan"]["db_source"] == "primitive_family_inference"
+    assert payload["staged_synthesis"]["runtime_plan"]["topology"] == "single_service"
+    assert payload["staged_synthesis"]["runtime_plan"]["topology_source"] == "primitive_family_inference"
+    assert payload["staged_synthesis"]["design_brief"]["selected_topology"] == "single_service"
+    assert payload["staged_synthesis"]["design_brief"]["selected_oracle_mode"] == "text_markers"
+    assert payload["staged_synthesis"]["design_brief"]["selected_oracle_source"] == "primitive_family_inference"
+    assert payload["staged_synthesis"]["design_brief"]["dependency_set"] == ["service", "db:sqlite"]
+    assert payload["staged_synthesis"]["design_brief"]["required_roles"] == [
+        "service_main",
+        "poc_entry",
+        "dependency_db",
+        "negative_control_cases",
+    ]
+    assert payload["staged_synthesis"]["oracle_contract"]["source"] == "primitive_family_inference"
+    assert payload["staged_synthesis"]["oracle_contract"]["mode"] == "text_markers"
+    assert payload["staged_synthesis"]["oracle_contract"]["confidence"] == "low"
+    assert payload["staged_synthesis"]["oracle_contract"]["negative_control_present"] is True
+    assert payload["staged_synthesis"]["oracle_contract"]["metamorphic_present"] is False
+
+
+def test_executor_plan_preserves_seed_files_from_runtime_graph() -> None:
+    plan = _build_executor_plan(
+        runtime_recipe={
+            "topology": "single_service",
+            "service_port": 8000,
+            "network_mode": "none",
+            "network_enabled": False,
+            "requires_external_db": False,
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "seed_strategy": "sqlite_service_init",
+            "seed_strategy_source": "runtime_recipe.seed_files+db",
+        },
+        runtime_graph={
+            "healthchecks": [],
+            "seed_files": ["schema.sql", "seed_data.sql"],
+            "seed_strategy": "sqlite_service_init",
+            "seed_strategy_source": "runtime_recipe.seed_files+db",
+        },
+        resolved={},
+    )
+
+    assert plan["seed_files"] == ["schema.sql", "seed_data.sql"]
+    assert plan["seed_strategy"] == "sqlite_service_init"
+    assert plan["seed_strategy_source"] == "runtime_recipe.seed_files+db"
+
+
+def test_runtime_seed_files_detects_schema_role_entries() -> None:
+    manifest = {
+        "files": [
+            {"path": "app.py", "role": "service_main", "content": "print('app')\n"},
+            {"path": "schema.sql", "role": "schema", "content": "create table demo(id integer);\n"},
+            {"path": "seed_data.sql", "role": "seed_data", "content": "insert into demo values (1);\n"},
+        ]
+    }
+
+    assert _runtime_seed_files(manifest) == ["schema.sql", "seed_data.sql"]
+
+
+def test_executor_plan_preserves_env_contract_from_runtime_graph() -> None:
+    plan = _build_executor_plan(
+        runtime_recipe={
+            "topology": "single_service",
+            "service_port": 8000,
+            "network_mode": "none",
+            "network_enabled": False,
+            "requires_external_db": False,
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+        },
+        runtime_graph={
+            "healthchecks": [],
+            "env_contract": [
+                {"scope": "service", "name": "APP_PORT", "value": "8000"},
+                {"scope": "service", "name": "DB_HOST", "value": "db-internal"},
+            ],
+        },
+        resolved={},
+    )
+
+    assert plan["env_contract"] == [
+        {"scope": "service", "name": "APP_PORT", "value": "8000"},
+        {"scope": "service", "name": "DB_HOST", "value": "db-internal"},
+    ]
+
+
+def test_executor_plan_preserves_volume_contract_from_runtime_graph() -> None:
+    plan = _build_executor_plan(
+        runtime_recipe={
+            "topology": "service_plus_sidecar",
+            "service_port": 8000,
+            "network_mode": "bridge",
+            "network_enabled": True,
+            "requires_external_db": True,
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+        },
+        runtime_graph={
+            "healthchecks": [],
+            "volume_contract": [
+                {
+                    "scope": "sidecar:mysql-main",
+                    "source": "workspace",
+                    "target": "/seed-input",
+                    "mode": "ro",
+                }
+            ],
+            "volume_contract_source": "runtime_recipe.seed_files+seed_strategy",
+        },
+        resolved={},
+    )
+
+    assert plan["volume_contract"] == [
+        {
+            "scope": "sidecar:mysql-main",
+            "source": "workspace",
+            "target": "/seed-input",
+            "mode": "ro",
+        }
+    ]
+    assert plan["volume_contract_source"] == "runtime_recipe.seed_files+seed_strategy"
+
+
+def test_executor_plan_preserves_network_contract_from_runtime_graph() -> None:
+    plan = _build_executor_plan(
+        runtime_recipe={
+            "topology": "service_plus_sidecar",
+            "service_port": 8000,
+            "network_mode": "bridge",
+            "network_enabled": True,
+            "requires_external_db": True,
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+        },
+        runtime_graph={
+            "healthchecks": [],
+            "network_contract": [
+                {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+                {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+            ],
+            "network_contract_source": "runtime_recipe.service_env+sidecars",
+        },
+        resolved={},
+    )
+
+    assert plan["network_contract"] == [
+        {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+        {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+    ]
+    assert plan["network_contract_source"] == "runtime_recipe.service_env+sidecars"
+
+
+def test_runtime_graph_includes_sidecar_env_contract_entries() -> None:
+    graph = _build_runtime_graph(
+        runtime_recipe={
+            "topology": "service_plus_sidecar",
+            "service_port": 8000,
+            "network_mode": "bridge",
+            "network_enabled": True,
+            "requires_external_db": True,
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_env": {"APP_PORT": "8000"},
+            "sidecars": [
+                {
+                    "name": "mysql-main",
+                    "type": "mysql",
+                    "image": "mysql:8.0",
+                    "env": {"MYSQL_DATABASE": "appdb", "MYSQL_USER": "appuser"},
+                }
+            ],
+        },
+        resolved={},
+    )
+
+    assert {"scope": "sidecar:mysql-main", "name": "MYSQL_DATABASE", "value": "appdb"} in graph["env_contract"]
+    assert {"scope": "sidecar:mysql-main", "name": "MYSQL_USER", "value": "appuser"} in graph["env_contract"]
+
+
+def test_runtime_graph_includes_network_contract_entries_for_sidecar_aliases() -> None:
+    graph = _build_runtime_graph(
+        runtime_recipe={
+            "topology": "service_plus_sidecar",
+            "service_port": 8000,
+            "network_mode": "bridge",
+            "network_enabled": True,
+            "requires_external_db": True,
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_env": {"APP_PORT": "8000", "DB_HOST": "db-internal"},
+            "sidecars": [
+                {
+                    "name": "mysql-main",
+                    "type": "mysql",
+                    "image": "mysql:8.0",
+                    "aliases": ["db-internal"],
+                }
+            ],
+        },
+        resolved={},
+    )
+
+    assert {"scope": "service", "name": "DB_HOST", "alias": "db-internal"} in graph["network_contract"]
+    assert {"scope": "sidecar:mysql-main", "alias": "db-internal"} in graph["network_contract"]
+    assert graph["network_contract_source"] == "runtime_recipe.service_env+sidecars"
+
+
+def test_runtime_graph_includes_volume_contract_entries_for_sidecar_sql_apply() -> None:
+    graph = _build_runtime_graph(
+        runtime_recipe={
+            "topology": "service_plus_sidecar",
+            "service_port": 8000,
+            "network_mode": "bridge",
+            "network_enabled": True,
+            "requires_external_db": True,
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "seed_strategy": "sidecar_sql_apply",
+            "seed_strategy_source": "runtime_recipe.seed_files+topology",
+            "volume_contract": [
+                {
+                    "scope": "sidecar:mysql-main",
+                    "source": "workspace",
+                    "target": "/seed-input",
+                    "mode": "ro",
+                }
+            ],
+            "volume_contract_source": "runtime_recipe.seed_files+seed_strategy",
+        },
+        resolved={},
+    )
+
+    assert graph["volume_contract"] == [
+        {
+            "scope": "sidecar:mysql-main",
+            "source": "workspace",
+            "target": "/seed-input",
+            "mode": "ro",
+        }
+    ]
+    assert graph["volume_contract_source"] == "runtime_recipe.seed_files+seed_strategy"
+
+
+def test_contract_name_only_generation_spec_keeps_primitive_family_background_when_request_resolution_is_authoritative(
+    tmp_path: Path,
+) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "request_ir": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "resolution_state": "catalog_alias",
+                "resolution_match_class": "catalog_alias",
+                "resolution_confidence": "high",
+                "pattern_seed_state": "preserved",
+                "family_candidates": [
+                    {"family": "open_redirect", "source": "request_resolution", "confidence": "high"},
+                ],
+                "stack_candidates": [
+                    {"stack_id": "python/flask", "source": "profile_prior", "confidence": "low"},
+                ],
+            },
+            "request_identity": {
+                "request_label": "Open Redirect",
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "input_mode": "free_form_name",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+                "name_driven": True,
+            },
+            "name_resolution": {
+                "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                "match_class": "catalog_alias",
+                "confidence": "high",
+            },
+            "policy": {"name_only_mode": "dynamic"},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "semantic_signature": {
+                "input_vector": ["query parameter"],
+                "sink": ["render_template_string"],
+                "exploit_precondition": ["unescaped reflection"],
+            },
+        },
+    )
+
+    request_ir = payload["request_ir"]
+
+    assert request_ir["family_candidates"][0]["family"] == "open_redirect"
+    assert request_ir["family_candidates"][0]["source"] == "request_resolution"
+    assert all(
+        str(entry.get("source") or "").strip().lower() != "primitive_signature"
+        for entry in request_ir["family_candidates"]
+        if isinstance(entry, dict)
+    )
+    assert request_ir["selection_decision"]["family"]["selected"] is True
+    assert request_ir["provisional_family"] is None
 
 
 def test_contract_name_only_generation_spec_prefers_request_ir_source_label(tmp_path: Path) -> None:
@@ -622,6 +1184,93 @@ def test_contract_uses_catalog_driven_mysql_service_env_with_custom_sidecar_valu
     assert payload["resolved"]["service_env"]["DB_HOST"] == "db-internal"
 
 
+def test_contract_reads_seed_surface_from_mysql_compiler_manifest(tmp_path: Path) -> None:
+    result = compile_manifest(
+        sid="sid-registry-sqli-mysql-seed",
+        requirement={
+            "vuln_id": "CWE-89",
+            "vuln_name": "SQL Injection",
+            "pattern_id": "sqli-union-mysql",
+            "runtime": {"db": "mysql", "allow_external_db": True},
+            "executor": {
+                "allow_network": True,
+                "network_mode": "bridge",
+                "sidecars": [
+                    {
+                        "name": "mysql-main",
+                        "type": "mysql",
+                        "aliases": ["db-internal"],
+                        "env": {
+                            "MYSQL_ROOT_PASSWORD": "rootpw",
+                            "MYSQL_DATABASE": "sqliapp",
+                            "MYSQL_USER": "sqli",
+                            "MYSQL_PASSWORD": "sqli_pw",
+                        },
+                    }
+                ],
+            },
+        },
+        semantic_profile={
+            "requested_name": "SQL Injection",
+            "normalized_vuln_id": "CWE-89",
+            "compiler_strategy": "sqli_string_concat_mysql",
+            "compiler_supported": True,
+            "scenario_shape": {"service_port": 5000},
+            "stack_profile": {"language": "python", "framework": "flask"},
+        },
+    )
+    assert result is not None
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps({"manifest": result.manifest}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-89",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-89",
+        requirement={
+            "vuln_name": "SQL Injection",
+            "vuln_id": "CWE-89",
+            "pattern_id": "sqli-union-mysql",
+            "language": "python",
+            "framework": "flask",
+            "runtime": {"db": "mysql", "allow_external_db": True},
+            "executor": {
+                "allow_network": True,
+                "network_mode": "bridge",
+                "sidecars": [
+                    {
+                        "name": "mysql-main",
+                        "type": "mysql",
+                        "aliases": ["db-internal"],
+                        "env": {
+                            "MYSQL_ROOT_PASSWORD": "rootpw",
+                            "MYSQL_DATABASE": "sqliapp",
+                            "MYSQL_USER": "sqli",
+                            "MYSQL_PASSWORD": "sqli_pw",
+                        },
+                    }
+                ],
+            },
+        },
+    )
+
+    assert payload["runtime_recipe"]["seed_files"] == ["schema.sql"]
+    assert payload["runtime_recipe"]["seed_strategy"] == "sidecar_sql_apply"
+    assert payload["executor_plan"]["seed_files"] == ["schema.sql"]
+    assert payload["executor_plan"]["seed_strategy"] == "sidecar_sql_apply"
+    assert payload["exploit_oracle"]["negative_controls"] == [
+        {"name": "literal-admin", "expect_success": False, "payload": "admin"}
+    ]
+    assert payload["exploit_oracle"]["metamorphic"]["cases"] == [
+        {"name": "guest-user", "expect_success": False, "payload": "guest"}
+    ]
+
+
 def test_contract_surfaces_runtime_recipe_for_sidecar_backed_lane(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
@@ -679,6 +1328,294 @@ def test_contract_surfaces_runtime_recipe_for_sidecar_backed_lane(tmp_path: Path
     assert any(edge["from"] == "service" and edge["to"] == "sidecar:mysql-main" for edge in graph["edges"])
     assert graph["env_contract"][0]["scope"] == "service"
     assert graph["exploit_path"]["target_node"] == "service"
+
+
+def test_contract_runtime_recipe_preserves_sidecar_env_and_ready_probe(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-89",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-89",
+        requirement={
+            "vuln_name": "SQL Injection",
+            "vuln_id": "CWE-89",
+            "pattern_id": "sqli-union-mysql",
+            "language": "python",
+            "framework": "flask",
+            "runtime": {"db": "mysql", "allow_external_db": True},
+            "executor": {
+                "allow_network": True,
+                "network_mode": "bridge",
+                "sidecars": [
+                    {
+                        "name": "mysql-main",
+                        "type": "mysql",
+                        "image": "mysql:8.0",
+                        "aliases": ["db-internal"],
+                        "env": {
+                            "MYSQL_USER": "app_user",
+                            "MYSQL_PASSWORD": "app_pw",
+                        },
+                        "ready_probe": {"type": "mysql", "retries": 5},
+                    }
+                ],
+            },
+        },
+    )
+
+    assert payload["runtime_recipe"]["sidecars"] == [
+        {
+            "name": "mysql-main",
+            "type": "mysql",
+            "image": "mysql:8.0",
+            "aliases": ["db-internal"],
+            "env": {
+                "MYSQL_USER": "app_user",
+                "MYSQL_PASSWORD": "app_pw",
+            },
+            "ready_probe": {"type": "mysql", "retries": 5},
+        }
+    ]
+    assert payload["executor_plan"]["sidecars"] == payload["runtime_recipe"]["sidecars"]
+
+
+def test_contract_runtime_recipe_can_synthesize_sidecars_from_manifest_target_hints(tmp_path: Path) -> None:
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": "print('app')\n"},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('poc')\n"},
+                        {"path": "schema.sql", "role": "schema", "content": "create table demo(id integer);\n"},
+                    ],
+                    "run": {
+                        "command": "python app.py",
+                        "port": 5000,
+                        "env": {
+                            "DB_HOST": "db-internal",
+                        },
+                    },
+                    "metadata": {
+                        "target_db": "mysql",
+                        "target_sidecars": ["mysql"],
+                        "target_topology": "service_plus_sidecar",
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-CUSTOM-SQLI",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="name-custom-sqli",
+        requirement={
+            "vuln_id": "NAME-CUSTOM-SQLI",
+            "vuln_name": "Custom SQLi",
+            "policy": {"name_only_mode": "dynamic"},
+        },
+    )
+
+    recipe = payload["runtime_recipe"]
+    assert recipe["db"] == "mysql"
+    assert recipe["requires_external_db"] is True
+    assert recipe["topology"] == "service_plus_sidecar"
+    assert recipe["network_enabled"] is True
+    assert recipe["network_mode"] == "bridge"
+    assert recipe["network_enabled_source"] == "runtime_topology_requires_network"
+    assert recipe["network_mode_source"] == "runtime_topology_requires_network"
+    assert recipe["sidecars_source"] == "generator_manifest.metadata.target_sidecars"
+    assert recipe["sidecar_start_order"] == ["mysql-main"]
+    assert recipe["sidecar_start_order_source"] == "generator_manifest.metadata.target_sidecars"
+    assert recipe["service_env_source"] == "runtime_hint_sidecar_defaults"
+    assert recipe["service_env"] == {
+        "DB_HOST": "db-internal",
+        "DB_PORT": "3306",
+        "DB_USER": "sqli",
+        "DB_PASSWORD": "sqli_pw",
+        "DB_NAME": "sqliapp",
+        "APP_PORT": "5000",
+    }
+    assert recipe["seed_files"] == ["schema.sql"]
+    assert recipe["seed_strategy"] == "sidecar_sql_apply"
+    assert recipe["seed_strategy_source"] == "runtime_recipe.seed_files+topology"
+    assert recipe["sidecars"] == [
+        {
+            "name": "mysql-main",
+            "type": "mysql",
+            "image": "mysql:8.0",
+            "aliases": ["db-internal"],
+            "env": {
+                "MYSQL_ROOT_PASSWORD": "sqli_root_pw",
+                "MYSQL_DATABASE": "sqliapp",
+                "MYSQL_USER": "sqli",
+                "MYSQL_PASSWORD": "sqli_pw",
+            },
+            "ready_probe": {"type": "mysql", "retries": 10},
+        }
+    ]
+    graph = payload["runtime_graph"]
+    assert graph["topology"] == "service_plus_sidecar"
+    assert graph["network"]["enabled"] is True
+    assert graph["network"]["mode"] == "bridge"
+    assert graph["seed_strategy"] == "sidecar_sql_apply"
+    assert graph["seed_strategy_source"] == "runtime_recipe.seed_files+topology"
+    assert any(node["id"] == "sidecar:mysql-main" for node in graph["nodes"])
+    sidecar_node = next(node for node in graph["nodes"] if node["id"] == "sidecar:mysql-main")
+    assert sidecar_node["startup_order_index"] == 1
+    assert sidecar_node["env"] == {
+        "MYSQL_ROOT_PASSWORD": "sqli_root_pw",
+        "MYSQL_DATABASE": "sqliapp",
+        "MYSQL_USER": "sqli",
+        "MYSQL_PASSWORD": "sqli_pw",
+    }
+    assert sidecar_node["ready_probe"] == {"type": "mysql", "retries": 10}
+    sidecar_edge = next(edge for edge in graph["edges"] if edge["to"] == "sidecar:mysql-main")
+    assert sidecar_edge["startup_order_index"] == 1
+    assert sidecar_edge["startup_after"] is None
+    assert graph["sidecars_source"] == "generator_manifest.metadata.target_sidecars"
+    assert graph["sidecar_start_order"] == ["mysql-main"]
+    assert graph["sidecar_start_order_source"] == "generator_manifest.metadata.target_sidecars"
+    assert graph["service_env_source"] == "runtime_hint_sidecar_defaults"
+    assert graph["network_enabled_source"] == "runtime_topology_requires_network"
+    assert graph["network_mode_source"] == "runtime_topology_requires_network"
+    plan = payload["executor_plan"]
+    assert plan["requires_external_db"] is True
+    assert plan["sidecars"] == recipe["sidecars"]
+    assert plan["seed_files"] == ["schema.sql"]
+    assert plan["seed_strategy"] == "sidecar_sql_apply"
+    assert plan["seed_strategy_source"] == "runtime_recipe.seed_files+topology"
+    assert plan["network_enabled"] is True
+    assert plan["network_mode"] == "bridge"
+    assert plan["sidecars_source"] == "generator_manifest.metadata.target_sidecars"
+    assert plan["sidecar_start_order"] == ["mysql-main"]
+    assert plan["sidecar_start_order_source"] == "generator_manifest.metadata.target_sidecars"
+    assert plan["service_env_source"] == "runtime_hint_sidecar_defaults"
+    assert plan["network_enabled_source"] == "runtime_topology_requires_network"
+    assert plan["network_mode_source"] == "runtime_topology_requires_network"
+    assert payload["service_env"] == recipe["service_env"]
+    assert payload["resolved"]["service_env"] == recipe["service_env"]
+
+
+def test_contract_runtime_recipe_keeps_explicit_network_cap_when_executor_disables_network(tmp_path: Path) -> None:
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": "print('app')\n"},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('poc')\n"},
+                    ],
+                    "run": {"command": "python app.py", "port": 5000, "env": {"DB_HOST": "db-internal"}},
+                    "metadata": {
+                        "target_db": "postgres",
+                        "target_sidecars": ["postgres"],
+                        "target_topology": "service_plus_sidecar",
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="NAME-CUSTOM-SQLI",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="name-custom-sqli",
+        requirement={
+            "vuln_id": "NAME-CUSTOM-SQLI",
+            "vuln_name": "Custom SQLi",
+            "executor": {"allow_network": False, "network_mode": "none"},
+        },
+    )
+
+    recipe = payload["runtime_recipe"]
+    assert recipe["network_enabled"] is False
+    assert recipe["network_mode"] == "none"
+    assert recipe["network_enabled_source"] == "requirement.executor.allow_network"
+    assert recipe["network_mode_source"] == "requirement.executor.network_mode"
+
+
+def test_contract_runtime_recipe_marks_sqlite_seed_strategy(tmp_path: Path) -> None:
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {
+                            "path": "app.py",
+                            "role": "service_main",
+                            "content": "import sqlite3\nconn = sqlite3.connect('/tmp/app.db')\n",
+                        },
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('poc')\n"},
+                        {"path": "schema.sql", "role": "schema", "content": "create table demo(id integer);\n"},
+                    ],
+                    "run": {"command": "python app.py", "port": 5000},
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CWE-89",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="synthesis",
+        bundle_slug="cwe-89",
+        requirement={"runtime": {"db": "sqlite"}},
+    )
+
+    assert payload["runtime_recipe"]["seed_strategy"] == "sqlite_service_init"
+    assert payload["runtime_graph"]["seed_strategy"] == "sqlite_service_init"
+    assert payload["executor_plan"]["seed_strategy"] == "sqlite_service_init"
+
+
+def test_runtime_graph_surfaces_startup_after_for_multiple_sidecars() -> None:
+    graph = _build_runtime_graph(
+        runtime_recipe={
+            "language": "python",
+            "framework": "flask",
+            "transport": "http",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 8000,
+            "topology": "service_plus_sidecar",
+            "network_mode": "bridge",
+            "network_enabled": True,
+            "sidecars": [
+                {"name": "mysql-main", "type": "mysql", "image": "mysql:8.0"},
+                {"name": "redis-main", "type": "redis", "image": "redis:7"},
+            ],
+            "sidecar_start_order": ["mysql-main", "redis-main"],
+        },
+        resolved={"service_port": 8000},
+    )
+
+    mysql_node = next(node for node in graph["nodes"] if node["id"] == "sidecar:mysql-main")
+    redis_node = next(node for node in graph["nodes"] if node["id"] == "sidecar:redis-main")
+    assert mysql_node["startup_order_index"] == 1
+    assert redis_node["startup_order_index"] == 2
+    mysql_edge = next(edge for edge in graph["edges"] if edge["to"] == "sidecar:mysql-main")
+    redis_edge = next(edge for edge in graph["edges"] if edge["to"] == "sidecar:redis-main")
+    assert mysql_edge["startup_order_index"] == 1
+    assert mysql_edge["startup_after"] is None
+    assert redis_edge["startup_order_index"] == 2
+    assert redis_edge["startup_after"] == "sidecar:mysql-main"
 
 
 def test_contract_runtime_recipe_surfaces_soft_stack_hypotheses_for_name_only_lane(tmp_path: Path) -> None:
@@ -934,6 +1871,9 @@ def test_contract_name_only_generation_spec_keeps_evidence_authority_focus_witho
     assert request_ir["selection_decision"]["family"]["selected_family"] == "open_redirect"
     assert "support_count" in request_ir["selection_decision"]["family"]
     assert isinstance(request_ir["selection_decision"]["family"]["support_by_source_authority"], dict)
+    assert request_ir["selection_decision"]["scenario"]["selected"] is True
+    assert request_ir["selection_decision"]["scenario"]["selected_topology"] == "single_service"
+    assert request_ir["selection_decision"]["scenario"]["selected_oracle_mode"] == "stateful_text"
     assert request_ir["selection_decision"]["ready_for_materialization"] is True
     assert request_ir["selection_decision"]["open_world_evidence_ready"] is False
     assert executor_plan["service_port"] == 5000
@@ -953,6 +1893,8 @@ def test_contract_name_only_generation_spec_keeps_evidence_authority_focus_witho
         "selected_stack_support_missing",
         "selected_family_authority_thin",
         "selected_stack_authority_thin",
+        "selected_scenario_support_missing",
+        "selected_scenario_authority_thin",
     ]
 
 

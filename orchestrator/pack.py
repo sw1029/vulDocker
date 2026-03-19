@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import re
 import shutil
@@ -15,7 +16,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.logging import get_logger
-from common.name_only import build_name_only_contract
+from common.name_only import (
+    build_name_only_contract,
+    classify_name_only_intent,
+    closure_source_allowed_by_contract,
+    closure_source_satisfies_intent,
+    resolve_name_only_closure_source,
+)
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.plan import load_plan
 from common.vuln_catalog import vuln_catalog_entries
@@ -215,6 +222,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
     lower_bound_rollup = _lower_bound_rollup(bundles)
     executor_feasibility_rollup = _executor_feasibility_rollup(bundles)
     artifact_quality_summary = _artifact_quality_summary(bundles)
+    bundle_verdict_rollup = _bundle_verdict_rollup(bundles)
     evidence_graph_summary = _evidence_graph_summary(bundles)
     template_dependence_summary = _template_dependence_summary(bundles)
     stack_dependence_summary = _stack_dependence_summary(bundles)
@@ -225,6 +233,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
     intent_satisfaction_summary = _intent_satisfaction_summary(bundles)
     name_only_outcome_summary = _name_only_outcome_summary(bundles)
     name_only_planning_summary = _name_only_planning_summary(bundles)
+    staged_synthesis_summary = _staged_synthesis_summary(bundles)
     failure = _failure_summary(sid)
     pipeline_result = _pipeline_result(sid, bundles=bundles, failure=failure)
     if not filename:
@@ -263,6 +272,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         "lower_bound_summary": lower_bound_rollup,
         "executor_feasibility_summary": executor_feasibility_rollup,
         "artifact_quality_summary": artifact_quality_summary,
+        "bundle_verdict_rollup": bundle_verdict_rollup,
         "evidence_graph_summary": evidence_graph_summary,
         "template_dependence_summary": template_dependence_summary,
         "stack_dependence_summary": stack_dependence_summary,
@@ -273,6 +283,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         "intent_satisfaction_summary": intent_satisfaction_summary,
         "name_only_outcome_summary": name_only_outcome_summary,
         "name_only_planning_summary": name_only_planning_summary,
+        "staged_synthesis_summary": staged_synthesis_summary,
         "performance": performance,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {
@@ -434,12 +445,32 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
                 primary_focus = planning_focus_summary.get("primary_focus")
                 if isinstance(primary_focus, str) and primary_focus.strip():
                     manifest["name_only_primary_focus"] = primary_focus.strip()
+        staged_synthesis = bundles[0].get("staged_synthesis") or {}
+        if isinstance(staged_synthesis, dict) and staged_synthesis:
+            manifest["staged_synthesis"] = staged_synthesis
+        staged_recovery = bundles[0].get("staged_recovery") or {}
+        if isinstance(staged_recovery, dict) and staged_recovery:
+            manifest["staged_recovery"] = staged_recovery
+            for source_key, target_key in (
+                ("recovery_strategy", "staged_recovery_strategy"),
+                ("failure_stage", "staged_failure_stage"),
+                ("failure_stage_reason", "staged_failure_stage_reason"),
+            ):
+                value = staged_recovery.get(source_key)
+                if isinstance(value, str) and value.strip():
+                    manifest[target_key] = value.strip()
         dynamic_eval = bundles[0].get("dynamic_eval") or {}
         if isinstance(dynamic_eval, dict) and dynamic_eval:
             manifest["dynamic_eval"] = dynamic_eval
         artifact_quality = bundles[0].get("artifact_quality") or {}
         if isinstance(artifact_quality, dict) and artifact_quality:
             manifest["artifact_quality"] = artifact_quality
+            oracle_execution_parity = artifact_quality.get("oracle_execution_parity")
+            if isinstance(oracle_execution_parity, str) and oracle_execution_parity.strip():
+                manifest["oracle_execution_parity"] = oracle_execution_parity.strip()
+            oracle_execution_attempted = artifact_quality.get("oracle_execution_attempted")
+            if isinstance(oracle_execution_attempted, bool):
+                manifest["oracle_execution_attempted"] = oracle_execution_attempted
         stack_dependence = bundles[0].get("stack_dependence") or {}
         if isinstance(stack_dependence, dict) and stack_dependence:
             manifest["stack_dependence"] = stack_dependence
@@ -462,6 +493,10 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
             next_required_step = name_only_outcome.get("next_required_step")
             if isinstance(next_required_step, str) and next_required_step.strip():
                 manifest["name_only_next_required_step"] = next_required_step.strip()
+            if not str(manifest.get("terminal_failure_class") or "").strip():
+                nested_terminal_failure_class = name_only_outcome.get("terminal_failure_class")
+                if isinstance(nested_terminal_failure_class, str) and nested_terminal_failure_class.strip():
+                    manifest["terminal_failure_class"] = nested_terminal_failure_class.strip()
         researcher = bundles[0].get("researcher") or {}
         if isinstance(researcher, dict) and researcher:
             manifest["researcher"] = researcher
@@ -501,6 +536,64 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
             status = executor_feasibility.get("status")
             if isinstance(status, str) and status.strip():
                 manifest["executor_feasibility_status"] = status.strip()
+        artifacts_payload = bundles[0].get("artifacts") or {}
+        run_summary_payload = artifacts_payload.get("run_summary") if isinstance(artifacts_payload, dict) else {}
+        if isinstance(run_summary_payload, dict) and run_summary_payload:
+            run_passed = run_summary_payload.get("run_passed")
+            if isinstance(run_passed, bool):
+                manifest["run_passed"] = run_passed
+            for key in (
+                "service_port",
+                "service_base_url",
+                "service_port_source",
+                "service_entry_source",
+                "poc_entry",
+                "poc_entry_source",
+                "poc_cmd",
+                "poc_cmd_source",
+                "base_url_source",
+                "health_path_source",
+                "healthchecks",
+                "healthchecks_source",
+                "service_env_runtime",
+                "service_env_source",
+                "sidecars_source",
+                "sidecar_start_order",
+                "sidecar_start_order_source",
+                "allow_network",
+                "allow_network_source",
+                "network_mode",
+                "network_mode_source",
+                "network_contract",
+                "network_contract_source",
+                "seed_strategy",
+                "seed_strategy_source",
+                "seed_files",
+                "seed_files_source",
+                "volume_contract",
+                "volume_contract_source",
+                "seed_apply_attempted",
+                "seed_apply_completed",
+                "seed_files_applied_total",
+                "seed_mount_targets",
+            ):
+                value = run_summary_payload.get(key)
+                if value not in (None, "", [], {}):
+                    manifest[key] = deepcopy(value)
+            executed_sidecars = run_summary_payload.get("sidecars")
+            if isinstance(executed_sidecars, list) and executed_sidecars:
+                manifest["executed_sidecars"] = deepcopy(executed_sidecars)
+        eval_result_payload = artifacts_payload.get("eval_result") if isinstance(artifacts_payload, dict) else {}
+        if isinstance(eval_result_payload, dict) and "verify_pass" in eval_result_payload:
+            verify_pass = eval_result_payload.get("verify_pass")
+            if isinstance(verify_pass, bool) or verify_pass is None:
+                manifest["verify_pass"] = verify_pass
+        if "run_passed" not in manifest and isinstance(completion_state.get("run_passed"), bool):
+            manifest["run_passed"] = completion_state["run_passed"]
+        if "verify_pass" not in manifest and (
+            isinstance(completion_state.get("verify_pass"), bool) or completion_state.get("verify_pass") is None
+        ):
+            manifest["verify_pass"] = completion_state.get("verify_pass")
         service_env = compiler_contract.get("service_env")
         if isinstance(service_env, dict) and service_env:
             manifest["service_env"] = {
@@ -510,6 +603,7 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
             }
     else:
         _apply_multibundle_top_level_rollups(manifest, bundles)
+    manifest["verdict_authority"] = _verdict_authority_payload(manifest, bundles)
     manifest_path = metadata_dir / filename
     stale_name = "failure_manifest.json" if filename == "manifest.json" else "manifest.json"
     stale_path = metadata_dir / stale_name
@@ -640,6 +734,8 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             if isinstance(contract.get("name_only_generation_spec"), dict)
             else {}
         )
+        staged_synthesis = _bundle_staged_synthesis(metadata_dir)
+        staged_recovery = _bundle_staged_recovery(metadata_dir)
         dynamic_eval = _bundle_dynamic_eval_summary(
             requirement=requirement_view,
             metadata_dir=metadata_dir,
@@ -775,6 +871,8 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "exploit_oracle": exploit_oracle,
             "evidence_graph": evidence_graph,
             "name_only_generation_spec": name_only_generation_spec,
+            "staged_synthesis": staged_synthesis,
+            "staged_recovery": staged_recovery,
             "dynamic_eval": dynamic_eval,
             "researcher": researcher,
             "semantic": semantic_surface,
@@ -807,7 +905,22 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
                 "trust_reason": (eval_record or {}).get("verification_trust_reason")
                 if isinstance(eval_record, dict)
                 else None,
+                "oracle_execution_parity": (eval_record or {}).get("oracle_execution_parity")
+                if isinstance(eval_record, dict)
+                else None,
+                "oracle_execution_attempted": (eval_record or {}).get("oracle_execution_attempted")
+                if isinstance(eval_record, dict)
+                else None,
+                "oracle_negative_controls_pass": (eval_record or {}).get("oracle_negative_controls_pass")
+                if isinstance(eval_record, dict)
+                else None,
+                "oracle_metamorphic_pass": (eval_record or {}).get("oracle_metamorphic_pass")
+                if isinstance(eval_record, dict)
+                else None,
             },
+            "oracle_execution": (eval_record or {}).get("oracle_execution")
+            if isinstance((eval_record or {}).get("oracle_execution"), dict)
+            else {},
             "semantic_supported": semantic_surface.get("supported"),
             "semantic_status": semantic_surface.get("status"),
             "semantic_source": semantic_surface.get("source"),
@@ -996,6 +1109,9 @@ def _bundle_support_promotion_status(bundle_entry: Dict[str, Any]) -> Dict[str, 
     oracle_clarity = str((artifact_quality or {}).get("oracle_clarity") or "").strip().lower() or "missing"
     if oracle_clarity != "high":
         reasons.append(f"oracle_clarity:{oracle_clarity}")
+    oracle_execution_parity = str((artifact_quality or {}).get("oracle_execution_parity") or "").strip().lower() or "missing"
+    if oracle_execution_parity != "high":
+        reasons.append(f"oracle_execution_parity:{oracle_execution_parity}")
 
     topology_clarity = str((artifact_quality or {}).get("topology_clarity") or "").strip().lower() or "missing"
     if topology_clarity not in {"high", "medium"}:
@@ -1202,6 +1318,10 @@ def _open_world_readiness_blockers(bundle_entry: Dict[str, Any]) -> List[str]:
             blockers.append("artifact_quality_below_high")
         elif token.startswith("oracle_clarity:"):
             blockers.append("oracle_clarity_below_high")
+        elif token == "oracle_execution_parity:missing":
+            blockers.append("oracle_execution_parity_missing")
+        elif token.startswith("oracle_execution_parity:"):
+            blockers.append("oracle_execution_parity_partial")
         elif token.startswith("topology_clarity:"):
             blockers.append("topology_clarity_below_medium")
         elif token == "stack_selection:defaulted":
@@ -1355,11 +1475,10 @@ def _bundle_generation_provenance(
     return payload
 
 
-def _latest_failure_provenance(metadata_dir: Path) -> Dict[str, Any]:
+def _latest_generator_failure_entry(metadata_dir: Path) -> Dict[str, Any]:
     failure_path = metadata_dir / "generator_failures.jsonl"
     if not failure_path.exists():
         return {}
-    latest: Dict[str, Any] = {}
     lines = [line for line in failure_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     for line in reversed(lines):
         try:
@@ -1367,8 +1486,12 @@ def _latest_failure_provenance(metadata_dir: Path) -> Dict[str, Any]:
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict):
-            latest = payload
-            break
+            return payload
+    return {}
+
+
+def _latest_failure_provenance(metadata_dir: Path) -> Dict[str, Any]:
+    latest = _latest_generator_failure_entry(metadata_dir)
     if not latest:
         return {}
     provenance: Dict[str, Any] = {"source": "generator_failure_record"}
@@ -1386,6 +1509,53 @@ def _latest_failure_provenance(metadata_dir: Path) -> Dict[str, Any]:
     if latest.get("llm_fixture_used") is True:
         provenance["llm_fixture_used"] = True
     return provenance
+
+
+def _bundle_staged_synthesis(metadata_dir: Path) -> Dict[str, Any]:
+    contract = load_generator_contract(metadata_dir) or {}
+    staged = contract.get("staged_synthesis") if isinstance(contract, dict) else {}
+    if isinstance(staged, dict) and staged:
+        return dict(staged)
+    generator_manifest = _load_json(metadata_dir / "generator_manifest.json") or {}
+    staged = generator_manifest.get("staged_synthesis") if isinstance(generator_manifest, dict) else {}
+    if isinstance(staged, dict) and staged:
+        return dict(staged)
+    return {}
+
+
+def _bundle_staged_recovery(metadata_dir: Path) -> Dict[str, Any]:
+    generator_manifest_payload = _load_json(metadata_dir / "generator_manifest.json") or {}
+    generator_manifest = (
+        generator_manifest_payload.get("manifest")
+        if isinstance(generator_manifest_payload.get("manifest"), dict)
+        else generator_manifest_payload
+    )
+    generator_meta = generator_manifest.get("metadata") if isinstance(generator_manifest, dict) else {}
+    if not isinstance(generator_meta, dict):
+        generator_meta = {}
+    latest_failure = _latest_generator_failure_entry(metadata_dir)
+    payload: Dict[str, Any] = {}
+    recovery_strategy = str(generator_meta.get("recovery_strategy") or "").strip()
+    if recovery_strategy:
+        payload["recovery_strategy"] = recovery_strategy
+        payload["source"] = "generator_manifest"
+    failure_stage = str((generator_manifest_payload.get("failure_stage") if isinstance(generator_manifest_payload, dict) else "") or "").strip()
+    failure_stage_reason = str((generator_manifest_payload.get("failure_stage_reason") if isinstance(generator_manifest_payload, dict) else "") or "").strip()
+    if not failure_stage:
+        failure_stage = str(latest_failure.get("failure_stage") or "").strip()
+    if not failure_stage_reason:
+        failure_stage_reason = str(latest_failure.get("failure_stage_reason") or "").strip()
+    if failure_stage:
+        payload["failure_stage"] = failure_stage
+    if failure_stage_reason:
+        payload["failure_stage_reason"] = failure_stage_reason
+    if not payload:
+        return {}
+    payload["stage_aware_recovery_used"] = str(payload.get("recovery_strategy") or "").strip().lower() in {
+        "runtime_plan",
+        "oracle_contract",
+    }
+    return payload
 
 
 def _load_loop_state(sid: str) -> Dict[str, Any]:
@@ -1654,6 +1824,35 @@ def _dynamic_eval_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _apply_multibundle_top_level_rollups(manifest: Dict[str, Any], bundles: List[Dict[str, Any]]) -> None:
     if not isinstance(manifest, dict) or not isinstance(bundles, list) or not bundles:
         return
+    verdict_rollup = manifest.get("bundle_verdict_rollup") if isinstance(manifest.get("bundle_verdict_rollup"), dict) else {}
+    for source_key, target_key in (
+        ("run_passed_consensus", "run_passed_rollup"),
+        ("verify_pass_consensus", "verify_pass_rollup"),
+        ("oracle_execution_attempted_consensus", "oracle_execution_attempted_rollup"),
+        ("oracle_execution_parity_consensus", "oracle_execution_parity_rollup"),
+        ("qualitative_tier_consensus", "qualitative_tier_rollup"),
+        ("stage_ceiling_consensus", "stage_ceiling_rollup"),
+        ("terminal_failure_class_consensus", "terminal_failure_class_rollup"),
+    ):
+        value = str(verdict_rollup.get(source_key) or "").strip()
+        if value:
+            manifest[target_key] = value
+    run_passed = _rollup_multibundle_bool_field(bundles, section="completion_state", key="run_passed")
+    if run_passed is not None:
+        manifest["run_passed"] = run_passed
+    verify_pass_resolved, verify_pass = _rollup_multibundle_nullable_bool_field(
+        bundles,
+        section="completion_state",
+        key="verify_pass",
+    )
+    if verify_pass_resolved:
+        manifest["verify_pass"] = verify_pass
+    stage_ceiling = _rollup_multibundle_string_field(bundles, section="completion_state", key="stage_ceiling")
+    if stage_ceiling:
+        manifest["stage_ceiling"] = stage_ceiling
+    terminal_failure_class = _rollup_multibundle_terminal_failure_class(bundles)
+    if terminal_failure_class:
+        manifest["terminal_failure_class"] = terminal_failure_class
     name_only_decision = _rollup_multibundle_name_only_outcome_field(bundles, key="decision")
     if name_only_decision:
         manifest["name_only_decision"] = name_only_decision
@@ -1744,6 +1943,20 @@ def _apply_multibundle_top_level_rollups(manifest: Dict[str, Any], bundles: List
         value = _rollup_multibundle_string_field(bundles, section="compiler_contract", key=key)
         if value:
             manifest[key] = value
+    oracle_execution_parity = _rollup_multibundle_string_field(
+        bundles,
+        section="artifact_quality",
+        key="oracle_execution_parity",
+    )
+    if oracle_execution_parity:
+        manifest["oracle_execution_parity"] = oracle_execution_parity
+    oracle_execution_attempted = _rollup_multibundle_bool_field(
+        bundles,
+        section="artifact_quality",
+        key="oracle_execution_attempted",
+    )
+    if oracle_execution_attempted is not None:
+        manifest["oracle_execution_attempted"] = oracle_execution_attempted
 
 
 def _rollup_multibundle_string_field(
@@ -1794,6 +2007,54 @@ def _rollup_multibundle_bool_field(
     if len(unique) == 1 and not saw_missing:
         return values[0]
     return None
+
+
+def _rollup_multibundle_nullable_bool_field(
+    bundles: List[Dict[str, Any]],
+    *,
+    section: str,
+    key: str,
+) -> tuple[bool, bool | None]:
+    values: List[bool | None] = []
+    saw_missing = False
+    for entry in bundles:
+        scoped = entry.get(section) or {}
+        if not isinstance(scoped, dict):
+            scoped = {}
+        raw = scoped.get(key)
+        if raw is None:
+            values.append(None)
+        elif isinstance(raw, bool):
+            values.append(raw)
+        else:
+            saw_missing = True
+    if not values:
+        return False, None
+    unique = set(values)
+    if len(unique) == 1 and not saw_missing:
+        return True, values[0]
+    return False, None
+
+
+def _rollup_multibundle_terminal_failure_class(bundles: List[Dict[str, Any]]) -> str:
+    values: List[str] = []
+    saw_missing = False
+    for entry in bundles:
+        failure = entry.get("failure") if isinstance(entry.get("failure"), dict) else {}
+        name_only_outcome = entry.get("name_only_outcome") if isinstance(entry.get("name_only_outcome"), dict) else {}
+        raw = str(failure.get("terminal_failure_class") or "").strip() or str(
+            name_only_outcome.get("terminal_failure_class") or ""
+        ).strip()
+        if raw:
+            values.append(raw)
+        else:
+            saw_missing = True
+    if not values:
+        return ""
+    unique = sorted(set(values))
+    if len(unique) == 1 and not saw_missing:
+        return unique[0]
+    return "mixed"
 
 
 def _rollup_multibundle_name_only_outcome_field(
@@ -2924,6 +3185,8 @@ def _bundle_artifact_quality(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
     rule_source = verification.get("rule_source")
     trust = verification.get("trust")
     independence = str(verification.get("independence") or "").strip().lower()
+    oracle_execution_parity = str(verification.get("oracle_execution_parity") or "").strip().lower() or "missing"
+    oracle_execution_attempted = verification.get("oracle_execution_attempted") is True
     has_rule_source = isinstance(rule_source, str) and rule_source.strip()
     has_trust = isinstance(trust, str) and trust.strip()
     has_oracle_contract = False
@@ -2944,7 +3207,7 @@ def _bundle_artifact_quality(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
         metamorphic_present = isinstance(exploit_oracle.get("metamorphic"), dict) and bool(exploit_oracle.get("metamorphic"))
     if has_rule_source and has_trust:
         trust_token = str(trust or "").strip().lower()
-        if trust_token == "high" and independence == "independent":
+        if trust_token == "high" and independence == "independent" and oracle_execution_parity == "high":
             oracle_clarity = "high" if readme_verification else "medium"
         elif trust_token == "high":
             oracle_clarity = "medium" if readme_verification else "low"
@@ -2956,9 +3219,9 @@ def _bundle_artifact_quality(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
         oracle_clarity = "medium" if readme_verification else "low"
     oracle_rigor = "missing"
     if has_oracle_contract:
-        if negative_control_present and metamorphic_present:
+        if oracle_execution_parity == "high":
             oracle_rigor = "high"
-        elif negative_control_present or metamorphic_present or exploit_oracle.get("assertion_program"):
+        elif oracle_execution_attempted or negative_control_present or metamorphic_present or exploit_oracle.get("assertion_program"):
             oracle_rigor = "medium"
         else:
             oracle_rigor = "low"
@@ -2984,6 +3247,62 @@ def _bundle_artifact_quality(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
     else:
         band = "low"
 
+    qualitative_signals: List[str] = []
+    if pre_generation_fail_closed:
+        qualitative_signals.append("planning_only")
+    qualitative_signals.append("degraded_fallback" if degraded_fallback else "native_generation")
+    if runtime_recipe_present:
+        qualitative_signals.append("runtime_recipe_present")
+    if topology == "service_plus_sidecar" and topology_clarity in {"medium", "high"}:
+        qualitative_signals.append("sidecar_topology")
+    if readme_substantive:
+        qualitative_signals.append("operator_readme")
+    if readme_verification:
+        qualitative_signals.append("verification_readme")
+    if readme_runtime:
+        qualitative_signals.append("runtime_readme")
+    if oracle_execution_parity == "high":
+        qualitative_signals.append("executed_oracle_high")
+    elif oracle_execution_parity == "partial":
+        qualitative_signals.append("executed_oracle_partial")
+    if oracle_rigor == "high":
+        qualitative_signals.append("oracle_rigor_high")
+    if band == "high":
+        qualitative_signals.append("artifact_band_high")
+    elif band == "medium":
+        qualitative_signals.append("artifact_band_medium")
+    else:
+        qualitative_signals.append("artifact_band_low")
+
+    qualitative_tier = "thin_or_incomplete"
+    qualitative_review = "artifact remains thin or incomplete for operator-facing use"
+    if pre_generation_fail_closed:
+        qualitative_tier = "planning_only"
+        qualitative_review = "planning-only or fail-closed surface; no generated operator artifact is available"
+    elif (
+        generation_authenticity == "native"
+        and band == "high"
+        and oracle_execution_parity == "high"
+        and readme_verification
+        and readme_runtime
+    ):
+        qualitative_tier = "native_operator_ready"
+        qualitative_review = "bounded native/compiler artifact with strong runtime clarity and executed oracle closure"
+    elif (
+        generation_authenticity == "native"
+        and topology == "service_plus_sidecar"
+        and topology_clarity == "high"
+        and oracle_execution_parity == "high"
+    ):
+        qualitative_tier = "bounded_sidecar_parity_success"
+        qualitative_review = "bounded sidecar/runtime artifact executes correctly with aligned wiring, but remains below native high-quality tier"
+    elif degraded_fallback and oracle_execution_parity == "high":
+        qualitative_tier = "thin_fallback_demo"
+        qualitative_review = "thin deterministic fallback demo: runnable and replayable, but intentionally capped below native/operator-ready quality"
+    elif band == "medium":
+        qualitative_tier = "bounded_runtime_demo"
+        qualitative_review = "bounded runnable demo with useful runtime/oracle surface, but operator-facing realism remains limited"
+
     notes: List[str] = []
     if not readme_present:
         notes.append("README missing")
@@ -2995,6 +3314,10 @@ def _bundle_artifact_quality(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
         notes.append("runtime topology clarity is incomplete")
     if oracle_clarity in {"missing", "low"}:
         notes.append("exploit oracle clarity is limited")
+    if has_oracle_contract and oracle_execution_parity == "missing":
+        notes.append("oracle execution parity is missing")
+    elif has_oracle_contract and oracle_execution_parity == "partial":
+        notes.append("oracle execution parity is partial")
     if pre_generation_fail_closed:
         notes.append("bundle stopped before code generation; runtime recipe remains planning-only")
     elif degraded_fallback:
@@ -3026,6 +3349,11 @@ def _bundle_artifact_quality(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
         "metamorphic_present": metamorphic_present,
         "verification_independence": independence or "missing",
         "verification_trust": str(trust or "").strip().lower() or "missing",
+        "oracle_execution_parity": oracle_execution_parity,
+        "oracle_execution_attempted": oracle_execution_attempted,
+        "qualitative_tier": qualitative_tier,
+        "qualitative_review": qualitative_review,
+        "qualitative_signals": qualitative_signals,
         "notes": notes,
     }
 
@@ -3142,11 +3470,15 @@ def _generalization_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _artifact_quality_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_band: Dict[str, int] = {}
+    by_qualitative_tier: Dict[str, int] = {}
     total_score = 0
     bundle_count = 0
     readme_present_bundles = 0
     runtime_recipe_bundles = 0
     stack_defaulted_bundles = 0
+    oracle_high_nonhigh_band_bundles = 0
+    thin_fallback_demo_bundles = 0
+    native_operator_ready_bundles = 0
     for entry in bundles:
         quality = entry.get("artifact_quality") or {}
         if not isinstance(quality, dict):
@@ -3160,6 +3492,18 @@ def _artifact_quality_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
             readme_present_bundles += 1
         if quality.get("runtime_recipe_present") is True:
             runtime_recipe_bundles += 1
+        qualitative_tier = str(quality.get("qualitative_tier") or "").strip()
+        if qualitative_tier:
+            by_qualitative_tier[qualitative_tier] = by_qualitative_tier.get(qualitative_tier, 0) + 1
+            if qualitative_tier == "thin_fallback_demo":
+                thin_fallback_demo_bundles += 1
+            elif qualitative_tier == "native_operator_ready":
+                native_operator_ready_bundles += 1
+        if (
+            str(quality.get("oracle_execution_parity") or "").strip().lower() == "high"
+            and str(quality.get("band") or "").strip().lower() != "high"
+        ):
+            oracle_high_nonhigh_band_bundles += 1
         stack_dependence = entry.get("stack_dependence") or {}
         if isinstance(stack_dependence, dict) and stack_dependence.get("stack_defaulted") is True:
             stack_defaulted_bundles += 1
@@ -3168,9 +3512,13 @@ def _artifact_quality_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "bundle_count": bundle_count,
         "average_score": average_score,
         "by_band": by_band,
+        "by_qualitative_tier": by_qualitative_tier,
         "readme_present_bundles": readme_present_bundles,
         "runtime_recipe_bundles": runtime_recipe_bundles,
         "stack_defaulted_bundles": stack_defaulted_bundles,
+        "oracle_high_nonhigh_band_bundles": oracle_high_nonhigh_band_bundles,
+        "thin_fallback_demo_bundles": thin_fallback_demo_bundles,
+        "native_operator_ready_bundles": native_operator_ready_bundles,
     }
 
 
@@ -3358,10 +3706,18 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     unresolved_ambiguous_family_candidate_bundles = 0
     unresolved_ambiguous_stack_candidate_bundles = 0
     negative_hypothesis_bundles = 0
+    provisional_family_bundles = 0
+    primitive_hypothesis_bundles = 0
+    runtime_dependency_hypothesis_bundles = 0
+    topology_hypothesis_bundles = 0
+    scenario_candidate_bundles = 0
+    selected_scenario_candidate_bundles = 0
     identifier_candidate_counts: List[int] = []
     family_candidate_counts: List[int] = []
     stack_candidate_counts: List[int] = []
     negative_hypothesis_counts: List[int] = []
+    primitive_hypothesis_counts: List[int] = []
+    scenario_candidate_counts: List[int] = []
     for entry in bundles:
         request_ir = entry.get("request_ir")
         if not isinstance(request_ir, dict) or not request_ir:
@@ -3383,11 +3739,21 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
         stack_candidates = request_ir.get("stack_candidates") if isinstance(request_ir.get("stack_candidates"), list) else []
         negative_hypotheses = request_ir.get("negative_hypotheses") if isinstance(request_ir.get("negative_hypotheses"), list) else []
+        primitive_hypotheses = request_ir.get("primitive_hypotheses") if isinstance(request_ir.get("primitive_hypotheses"), list) else []
+        runtime_dependency_hypotheses = (
+            request_ir.get("runtime_dependency_hypotheses")
+            if isinstance(request_ir.get("runtime_dependency_hypotheses"), list)
+            else []
+        )
+        topology_hypotheses = request_ir.get("topology_hypotheses") if isinstance(request_ir.get("topology_hypotheses"), list) else []
+        scenario_candidates = request_ir.get("scenario_candidates") if isinstance(request_ir.get("scenario_candidates"), list) else []
 
         identifier_candidate_counts.append(len(identifier_candidates))
         family_candidate_counts.append(len(family_candidates))
         stack_candidate_counts.append(len(stack_candidates))
         negative_hypothesis_counts.append(len(negative_hypotheses))
+        primitive_hypothesis_counts.append(len(primitive_hypotheses))
+        scenario_candidate_counts.append(len(scenario_candidates))
 
         selection_state = _selection_decision_state(request_ir)
         family_selected = selection_state.get("family_selected") is True
@@ -3408,6 +3774,18 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
                 unresolved_ambiguous_stack_candidate_bundles += 1
         if negative_hypotheses:
             negative_hypothesis_bundles += 1
+        if str(request_ir.get("provisional_family") or "").strip():
+            provisional_family_bundles += 1
+        if primitive_hypotheses:
+            primitive_hypothesis_bundles += 1
+        if runtime_dependency_hypotheses:
+            runtime_dependency_hypothesis_bundles += 1
+        if topology_hypotheses:
+            topology_hypothesis_bundles += 1
+        if scenario_candidates:
+            scenario_candidate_bundles += 1
+            if any(isinstance(item, dict) and item.get("selected") is True for item in scenario_candidates):
+                selected_scenario_candidate_bundles += 1
         if _stable_reason_token(request_ir.get("abstain_reason")):
             abstain_signaled_bundles += 1
         if selection_state.get("ready_for_materialization") is True:
@@ -3424,7 +3802,7 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         ]
         candidate_evidence_backed = bool(request_evidence_ids)
         if not candidate_evidence_backed:
-            for candidate_group in (family_candidates, stack_candidates, identifier_candidates):
+            for candidate_group in (family_candidates, stack_candidates, identifier_candidates, scenario_candidates):
                 for candidate in candidate_group:
                     if not isinstance(candidate, dict):
                         continue
@@ -3462,10 +3840,18 @@ def _request_ir_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
         "unresolved_ambiguous_family_candidate_bundles": unresolved_ambiguous_family_candidate_bundles,
         "unresolved_ambiguous_stack_candidate_bundles": unresolved_ambiguous_stack_candidate_bundles,
         "negative_hypothesis_bundles": negative_hypothesis_bundles,
+        "provisional_family_bundles": provisional_family_bundles,
+        "primitive_hypothesis_bundles": primitive_hypothesis_bundles,
+        "runtime_dependency_hypothesis_bundles": runtime_dependency_hypothesis_bundles,
+        "topology_hypothesis_bundles": topology_hypothesis_bundles,
+        "scenario_candidate_bundles": scenario_candidate_bundles,
+        "selected_scenario_candidate_bundles": selected_scenario_candidate_bundles,
         "avg_identifier_candidate_count": _avg(identifier_candidate_counts),
         "avg_family_candidate_count": _avg(family_candidate_counts),
         "avg_stack_candidate_count": _avg(stack_candidate_counts),
         "avg_negative_hypothesis_count": _avg(negative_hypothesis_counts),
+        "avg_primitive_hypothesis_count": _avg(primitive_hypothesis_counts),
+        "avg_scenario_candidate_count": _avg(scenario_candidate_counts),
         "by_resolution_state": by_resolution_state,
         "by_resolution_match_class": by_resolution_match_class,
         "by_resolution_confidence": by_resolution_confidence,
@@ -3477,24 +3863,37 @@ def _selection_decision_state(request_ir: Dict[str, Any]) -> Dict[str, Any]:
     selection_decision = ir.get("selection_decision") if isinstance(ir.get("selection_decision"), dict) else {}
     family_decision = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
     stack_decision = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+    scenario_decision = selection_decision.get("scenario") if isinstance(selection_decision.get("scenario"), dict) else {}
     family_selected = bool(family_decision.get("selected"))
     stack_selected = bool(stack_decision.get("selected"))
+    scenario_selected = bool(scenario_decision.get("selected"))
     return {
         "family_selected": family_selected,
         "stack_selected": stack_selected,
+        "scenario_selected": scenario_selected,
         "selected_family": str(family_decision.get("selected_family") or "").strip().lower() or None,
         "selected_stack_id": str(stack_decision.get("selected_stack_id") or "").strip().lower() or None,
+        "selected_scenario_id": str(scenario_decision.get("selected_scenario_id") or "").strip().lower() or None,
+        "scenario_topology": str(
+            scenario_decision.get("selected_topology")
+            or scenario_decision.get("topology")
+            or ""
+        ).strip().lower() or None,
         "family_source": str(family_decision.get("source") or "").strip().lower() or None,
         "stack_source": str(stack_decision.get("source") or "").strip().lower() or None,
+        "scenario_source": str(scenario_decision.get("source") or "").strip().lower() or None,
         "family_confidence": str(family_decision.get("confidence") or "").strip().lower() or None,
         "stack_confidence": str(stack_decision.get("confidence") or "").strip().lower() or None,
         "stack_basis": str(stack_decision.get("basis") or "").strip().lower() or None,
         "family_evidence_backed": family_decision.get("evidence_backed") is True,
         "stack_evidence_backed": stack_decision.get("evidence_backed") is True,
+        "scenario_evidence_backed": scenario_decision.get("evidence_backed") is True,
         "family_support_count": int(family_decision.get("support_count") or 0),
         "stack_support_count": int(stack_decision.get("support_count") or 0),
+        "scenario_support_count": int(scenario_decision.get("support_count") or 0),
         "family_high_or_medium_authority_support": family_decision.get("high_or_medium_authority_support") is True,
         "stack_high_or_medium_authority_support": stack_decision.get("high_or_medium_authority_support") is True,
+        "scenario_high_or_medium_authority_support": scenario_decision.get("high_or_medium_authority_support") is True,
         "family_support_by_source_authority": (
             dict(family_decision.get("support_by_source_authority"))
             if isinstance(family_decision.get("support_by_source_authority"), dict)
@@ -3503,6 +3902,11 @@ def _selection_decision_state(request_ir: Dict[str, Any]) -> Dict[str, Any]:
         "stack_support_by_source_authority": (
             dict(stack_decision.get("support_by_source_authority"))
             if isinstance(stack_decision.get("support_by_source_authority"), dict)
+            else {}
+        ),
+        "scenario_support_by_source_authority": (
+            dict(scenario_decision.get("support_by_source_authority"))
+            if isinstance(scenario_decision.get("support_by_source_authority"), dict)
             else {}
         ),
         "ready_for_materialization": bool(selection_decision.get("ready_for_materialization"))
@@ -3514,6 +3918,7 @@ def _selection_decision_state(request_ir: Dict[str, Any]) -> Dict[str, Any]:
 def _selection_readiness_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     family_selected_bundles = 0
     stack_selected_bundles = 0
+    scenario_selected_bundles = 0
     ready_for_materialization_bundles = 0
     open_world_evidence_ready_bundles = 0
     resolved_ambiguous_family_bundles = 0
@@ -3522,15 +3927,20 @@ def _selection_readiness_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any
     unresolved_ambiguous_stack_bundles = 0
     by_family_source: Dict[str, int] = {}
     by_stack_source: Dict[str, int] = {}
+    by_scenario_source: Dict[str, int] = {}
     by_family_confidence: Dict[str, int] = {}
     by_stack_confidence: Dict[str, int] = {}
     by_stack_basis: Dict[str, int] = {}
+    by_scenario_topology: Dict[str, int] = {}
     family_evidence_backed_bundles = 0
     stack_evidence_backed_bundles = 0
+    scenario_evidence_backed_bundles = 0
     family_high_or_medium_authority_support_bundles = 0
     stack_high_or_medium_authority_support_bundles = 0
+    scenario_high_or_medium_authority_support_bundles = 0
     by_family_support_authority: Dict[str, int] = {}
     by_stack_support_authority: Dict[str, int] = {}
+    by_scenario_support_authority: Dict[str, int] = {}
 
     for entry in bundles:
         request_ir = entry.get("request_ir") if isinstance(entry.get("request_ir"), dict) else {}
@@ -3539,10 +3949,13 @@ def _selection_readiness_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any
         selection_state = _selection_decision_state(request_ir)
         family_selected = selection_state.get("family_selected") is True
         stack_selected = selection_state.get("stack_selected") is True
+        scenario_selected = selection_state.get("scenario_selected") is True
         if family_selected:
             family_selected_bundles += 1
         if stack_selected:
             stack_selected_bundles += 1
+        if scenario_selected:
+            scenario_selected_bundles += 1
         if selection_state.get("ready_for_materialization") is True:
             ready_for_materialization_bundles += 1
         if selection_state.get("open_world_evidence_ready") is True:
@@ -3551,10 +3964,14 @@ def _selection_readiness_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any
             family_evidence_backed_bundles += 1
         if selection_state.get("stack_evidence_backed") is True:
             stack_evidence_backed_bundles += 1
+        if selection_state.get("scenario_evidence_backed") is True:
+            scenario_evidence_backed_bundles += 1
         if selection_state.get("family_high_or_medium_authority_support") is True:
             family_high_or_medium_authority_support_bundles += 1
         if selection_state.get("stack_high_or_medium_authority_support") is True:
             stack_high_or_medium_authority_support_bundles += 1
+        if selection_state.get("scenario_high_or_medium_authority_support") is True:
+            scenario_high_or_medium_authority_support_bundles += 1
 
         family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
         stack_candidates = request_ir.get("stack_candidates") if isinstance(request_ir.get("stack_candidates"), list) else []
@@ -3575,6 +3992,9 @@ def _selection_readiness_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any
         stack_source = selection_state.get("stack_source")
         if stack_source:
             by_stack_source[stack_source] = by_stack_source.get(stack_source, 0) + 1
+        scenario_source = selection_state.get("scenario_source")
+        if scenario_source:
+            by_scenario_source[scenario_source] = by_scenario_source.get(scenario_source, 0) + 1
         family_confidence = selection_state.get("family_confidence")
         if family_confidence:
             by_family_confidence[family_confidence] = by_family_confidence.get(family_confidence, 0) + 1
@@ -3584,6 +4004,9 @@ def _selection_readiness_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any
         stack_basis = selection_state.get("stack_basis")
         if stack_basis:
             by_stack_basis[stack_basis] = by_stack_basis.get(stack_basis, 0) + 1
+        scenario_topology = selection_state.get("scenario_topology")
+        if scenario_topology:
+            by_scenario_topology[scenario_topology] = by_scenario_topology.get(scenario_topology, 0) + 1
         family_support_authority = selection_state.get("family_support_by_source_authority")
         if isinstance(family_support_authority, dict):
             for key, value in family_support_authority.items():
@@ -3596,28 +4019,40 @@ def _selection_readiness_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any
                 token = str(key).strip().lower()
                 if token:
                     by_stack_support_authority[token] = by_stack_support_authority.get(token, 0) + int(value)
+        scenario_support_authority = selection_state.get("scenario_support_by_source_authority")
+        if isinstance(scenario_support_authority, dict):
+            for key, value in scenario_support_authority.items():
+                token = str(key).strip().lower()
+                if token:
+                    by_scenario_support_authority[token] = by_scenario_support_authority.get(token, 0) + int(value)
 
     return {
         "bundle_count": len(bundles),
         "family_selected_bundles": family_selected_bundles,
         "stack_selected_bundles": stack_selected_bundles,
+        "scenario_selected_bundles": scenario_selected_bundles,
         "ready_for_materialization_bundles": ready_for_materialization_bundles,
         "open_world_evidence_ready_bundles": open_world_evidence_ready_bundles,
         "family_evidence_backed_bundles": family_evidence_backed_bundles,
         "stack_evidence_backed_bundles": stack_evidence_backed_bundles,
+        "scenario_evidence_backed_bundles": scenario_evidence_backed_bundles,
         "family_high_or_medium_authority_support_bundles": family_high_or_medium_authority_support_bundles,
         "stack_high_or_medium_authority_support_bundles": stack_high_or_medium_authority_support_bundles,
+        "scenario_high_or_medium_authority_support_bundles": scenario_high_or_medium_authority_support_bundles,
         "resolved_ambiguous_family_bundles": resolved_ambiguous_family_bundles,
         "resolved_ambiguous_stack_bundles": resolved_ambiguous_stack_bundles,
         "unresolved_ambiguous_family_bundles": unresolved_ambiguous_family_bundles,
         "unresolved_ambiguous_stack_bundles": unresolved_ambiguous_stack_bundles,
         "by_family_source": by_family_source,
         "by_stack_source": by_stack_source,
+        "by_scenario_source": by_scenario_source,
         "by_family_confidence": by_family_confidence,
         "by_stack_confidence": by_stack_confidence,
         "by_stack_basis": by_stack_basis,
+        "by_scenario_topology": by_scenario_topology,
         "by_family_support_authority": by_family_support_authority,
         "by_stack_support_authority": by_stack_support_authority,
+        "by_scenario_support_authority": by_scenario_support_authority,
     }
 
 
@@ -4080,32 +4515,173 @@ def _family_dependence_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _runtime_surface_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _summary_source(recipe: Dict[str, Any], run_summary: Dict[str, Any], key: str) -> str:
+        return str(recipe.get(key) or run_summary.get(key) or "").strip() or "missing"
+
+    def _summary_value(recipe: Dict[str, Any], run_summary: Dict[str, Any], key: str, *, default: str = "missing") -> str:
+        return str(recipe.get(key) or run_summary.get(key) or "").strip() or default
+
     realized_bundles = 0
     hypothetical_bundles = 0
     network_enabled_bundles = 0
     sidecar_bundles = 0
+    seed_apply_attempted_bundles = 0
+    seed_apply_completed_bundles = 0
+    seed_files_applied_total = 0
+    executed_sidecar_bundles = 0
+    executed_sidecar_count = 0
+    seed_mount_target_bundles = 0
+    custom_seed_mount_target_bundles = 0
+    volume_contract_bundles = 0
     by_topology: Dict[str, int] = {}
+    by_seed_strategy: Dict[str, int] = {}
+    by_service_port_source: Dict[str, int] = {}
+    by_service_entry_source: Dict[str, int] = {}
+    by_poc_entry_source: Dict[str, int] = {}
+    by_poc_cmd_source: Dict[str, int] = {}
+    by_base_url_source: Dict[str, int] = {}
+    by_health_path_source: Dict[str, int] = {}
+    by_sidecars_source: Dict[str, int] = {}
+    by_service_env_source: Dict[str, int] = {}
+    by_network_mode_source: Dict[str, int] = {}
+    by_volume_contract_source: Dict[str, int] = {}
+    by_network_contract_source: Dict[str, int] = {}
+    by_seed_mount_target: Dict[str, int] = {}
+    by_executed_sidecar_type: Dict[str, int] = {}
+    explicit_sidecar_order_bundles = 0
+    network_contract_bundles = 0
     for entry in bundles:
         recipe = entry.get("runtime_recipe") if isinstance(entry.get("runtime_recipe"), dict) else {}
-        if not recipe:
+        artifacts = entry.get("artifacts") if isinstance(entry.get("artifacts"), dict) else {}
+        run_summary = artifacts.get("run_summary") if isinstance(artifacts.get("run_summary"), dict) else {}
+        if not recipe and not run_summary:
             continue
         if recipe.get("hypothetical") is True:
             hypothetical_bundles += 1
         else:
             realized_bundles += 1
-        if recipe.get("network_enabled") is True:
+        network_mode_value = str(run_summary.get("network_mode") or "").strip().lower()
+        if recipe.get("network_enabled") is True or (network_mode_value and network_mode_value != "none"):
             network_enabled_bundles += 1
-        if isinstance(recipe.get("sidecars"), list) and recipe.get("sidecars"):
+        recipe_sidecars = recipe.get("sidecars") if isinstance(recipe.get("sidecars"), list) else []
+        run_sidecars = run_summary.get("sidecars") if isinstance(run_summary.get("sidecars"), list) else []
+        if recipe_sidecars or run_sidecars:
             sidecar_bundles += 1
-        topology = str(recipe.get("topology") or "").strip() or "unknown"
+        topology = str(recipe.get("topology") or "").strip()
+        if not topology:
+            if run_sidecars:
+                topology = "service_plus_sidecar"
+            elif run_summary.get("service_port") or str(run_summary.get("service_base_url") or "").strip():
+                topology = "single_service"
+            else:
+                topology = "unknown"
         by_topology[topology] = by_topology.get(topology, 0) + 1
+        seed_strategy = _summary_value(recipe, run_summary, "seed_strategy")
+        by_seed_strategy[seed_strategy] = by_seed_strategy.get(seed_strategy, 0) + 1
+        service_port_source = _summary_source(recipe, run_summary, "service_port_source")
+        by_service_port_source[service_port_source] = by_service_port_source.get(service_port_source, 0) + 1
+        service_entry_source = _summary_source(recipe, run_summary, "service_entry_source")
+        by_service_entry_source[service_entry_source] = by_service_entry_source.get(service_entry_source, 0) + 1
+        poc_entry_source = _summary_source(recipe, run_summary, "poc_entry_source")
+        by_poc_entry_source[poc_entry_source] = by_poc_entry_source.get(poc_entry_source, 0) + 1
+        poc_cmd_source = _summary_source(recipe, run_summary, "poc_cmd_source")
+        by_poc_cmd_source[poc_cmd_source] = by_poc_cmd_source.get(poc_cmd_source, 0) + 1
+        base_url_source = _summary_source(recipe, run_summary, "base_url_source")
+        by_base_url_source[base_url_source] = by_base_url_source.get(base_url_source, 0) + 1
+        health_path_source = _summary_source(recipe, run_summary, "health_path_source")
+        by_health_path_source[health_path_source] = by_health_path_source.get(health_path_source, 0) + 1
+        sidecars_source = _summary_source(recipe, run_summary, "sidecars_source")
+        by_sidecars_source[sidecars_source] = by_sidecars_source.get(sidecars_source, 0) + 1
+        service_env_source = _summary_source(recipe, run_summary, "service_env_source")
+        by_service_env_source[service_env_source] = by_service_env_source.get(service_env_source, 0) + 1
+        network_mode_source = _summary_source(recipe, run_summary, "network_mode_source")
+        by_network_mode_source[network_mode_source] = by_network_mode_source.get(network_mode_source, 0) + 1
+        volume_contract = (
+            recipe.get("volume_contract")
+            if isinstance(recipe.get("volume_contract"), list)
+            else run_summary.get("volume_contract")
+            if isinstance(run_summary.get("volume_contract"), list)
+            else []
+        )
+        if volume_contract:
+            volume_contract_bundles += 1
+        volume_contract_source = _summary_source(recipe, run_summary, "volume_contract_source")
+        by_volume_contract_source[volume_contract_source] = by_volume_contract_source.get(volume_contract_source, 0) + 1
+        network_contract = (
+            recipe.get("network_contract")
+            if isinstance(recipe.get("network_contract"), list)
+            else run_summary.get("network_contract")
+            if isinstance(run_summary.get("network_contract"), list)
+            else []
+        )
+        if network_contract:
+            network_contract_bundles += 1
+        network_contract_source = _summary_source(recipe, run_summary, "network_contract_source")
+        by_network_contract_source[network_contract_source] = by_network_contract_source.get(network_contract_source, 0) + 1
+        recipe_sidecar_start_order = recipe.get("sidecar_start_order") if isinstance(recipe.get("sidecar_start_order"), list) else []
+        run_sidecar_start_order = run_summary.get("sidecar_start_order") if isinstance(run_summary.get("sidecar_start_order"), list) else []
+        if recipe_sidecar_start_order or run_sidecar_start_order:
+            explicit_sidecar_order_bundles += 1
+        if run_summary.get("seed_apply_attempted") is True:
+            seed_apply_attempted_bundles += 1
+        if run_summary.get("seed_apply_completed") is True:
+            seed_apply_completed_bundles += 1
+        executed_sidecars = run_summary.get("sidecars") if isinstance(run_summary.get("sidecars"), list) else []
+        if executed_sidecars:
+            executed_sidecar_bundles += 1
+            executed_sidecar_count += len(executed_sidecars)
+            for sidecar in executed_sidecars:
+                if not isinstance(sidecar, dict):
+                    continue
+                sidecar_type = str(sidecar.get("type") or "").strip() or "unknown"
+                by_executed_sidecar_type[sidecar_type] = by_executed_sidecar_type.get(sidecar_type, 0) + 1
+        try:
+            seed_files_applied_total += int(run_summary.get("seed_files_applied_total") or 0)
+        except Exception:
+            pass
+        seed_mount_targets = run_summary.get("seed_mount_targets") if isinstance(run_summary.get("seed_mount_targets"), list) else []
+        normalized_seed_mount_targets = [
+            str(item).strip()
+            for item in seed_mount_targets
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized_seed_mount_targets:
+            seed_mount_target_bundles += 1
+            if any(target != "/seed-input" for target in normalized_seed_mount_targets):
+                custom_seed_mount_target_bundles += 1
+            for target in normalized_seed_mount_targets:
+                by_seed_mount_target[target] = by_seed_mount_target.get(target, 0) + 1
     return {
         "bundle_count": len(bundles),
         "realized_bundles": realized_bundles,
         "hypothetical_bundles": hypothetical_bundles,
         "network_enabled_bundles": network_enabled_bundles,
         "sidecar_bundles": sidecar_bundles,
+        "seed_apply_attempted_bundles": seed_apply_attempted_bundles,
+        "seed_apply_completed_bundles": seed_apply_completed_bundles,
+        "seed_files_applied_total": seed_files_applied_total,
+        "executed_sidecar_bundles": executed_sidecar_bundles,
+        "executed_sidecar_count": executed_sidecar_count,
+        "seed_mount_target_bundles": seed_mount_target_bundles,
+        "custom_seed_mount_target_bundles": custom_seed_mount_target_bundles,
+        "volume_contract_bundles": volume_contract_bundles,
+        "network_contract_bundles": network_contract_bundles,
         "by_topology": by_topology,
+        "by_seed_strategy": by_seed_strategy,
+        "by_service_port_source": by_service_port_source,
+        "by_service_entry_source": by_service_entry_source,
+        "by_poc_entry_source": by_poc_entry_source,
+        "by_poc_cmd_source": by_poc_cmd_source,
+        "by_base_url_source": by_base_url_source,
+        "by_health_path_source": by_health_path_source,
+        "by_sidecars_source": by_sidecars_source,
+        "by_service_env_source": by_service_env_source,
+        "by_network_mode_source": by_network_mode_source,
+        "by_volume_contract_source": by_volume_contract_source,
+        "by_network_contract_source": by_network_contract_source,
+        "by_seed_mount_target": by_seed_mount_target,
+        "by_executed_sidecar_type": by_executed_sidecar_type,
+        "explicit_sidecar_order_bundles": explicit_sidecar_order_bundles,
     }
 
 
@@ -4366,6 +4942,235 @@ def _completion_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _bundle_verdict_rollup(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    run_passed_bundles = 0
+    run_failed_bundles = 0
+    run_unknown_bundles = 0
+    verify_pass_bundles = 0
+    verify_failed_bundles = 0
+    verify_unknown_bundles = 0
+    oracle_execution_attempted_bundles = 0
+    by_oracle_execution_parity: Dict[str, int] = {}
+    by_qualitative_tier: Dict[str, int] = {}
+    by_stage_ceiling: Dict[str, int] = {}
+    by_terminal_failure_class: Dict[str, int] = {}
+
+    for entry in bundles:
+        artifacts = entry.get("artifacts") if isinstance(entry.get("artifacts"), dict) else {}
+        run_summary = artifacts.get("run_summary") if isinstance(artifacts.get("run_summary"), dict) else {}
+        eval_result = artifacts.get("eval_result") if isinstance(artifacts.get("eval_result"), dict) else {}
+        quality = entry.get("artifact_quality") if isinstance(entry.get("artifact_quality"), dict) else {}
+        completion = entry.get("completion_state") if isinstance(entry.get("completion_state"), dict) else {}
+        failure = entry.get("failure") if isinstance(entry.get("failure"), dict) else {}
+        name_only_outcome = entry.get("name_only_outcome") if isinstance(entry.get("name_only_outcome"), dict) else {}
+
+        run_passed = run_summary.get("run_passed")
+        if not isinstance(run_passed, bool):
+            run_passed = completion.get("run_passed")
+        if isinstance(run_passed, bool):
+            if run_passed:
+                run_passed_bundles += 1
+            else:
+                run_failed_bundles += 1
+        else:
+            run_unknown_bundles += 1
+
+        verify_pass = eval_result.get("verify_pass")
+        if not isinstance(verify_pass, bool):
+            verify_pass = completion.get("verify_pass")
+        if isinstance(verify_pass, bool):
+            if verify_pass:
+                verify_pass_bundles += 1
+            else:
+                verify_failed_bundles += 1
+        else:
+            verify_unknown_bundles += 1
+
+        if quality.get("oracle_execution_attempted") is True:
+            oracle_execution_attempted_bundles += 1
+
+        oracle_execution_parity = str(quality.get("oracle_execution_parity") or "").strip().lower() or "missing"
+        by_oracle_execution_parity[oracle_execution_parity] = (
+            by_oracle_execution_parity.get(oracle_execution_parity, 0) + 1
+        )
+
+        qualitative_tier = str(quality.get("qualitative_tier") or "").strip() or "unknown"
+        by_qualitative_tier[qualitative_tier] = by_qualitative_tier.get(qualitative_tier, 0) + 1
+
+        stage_ceiling = str(completion.get("stage_ceiling") or "").strip() or "unknown"
+        by_stage_ceiling[stage_ceiling] = by_stage_ceiling.get(stage_ceiling, 0) + 1
+
+        terminal_failure_class = str(failure.get("terminal_failure_class") or "").strip() or str(
+            name_only_outcome.get("terminal_failure_class") or ""
+        ).strip()
+        if terminal_failure_class:
+            by_terminal_failure_class[terminal_failure_class] = (
+                by_terminal_failure_class.get(terminal_failure_class, 0) + 1
+            )
+
+    return {
+        "bundle_count": len(bundles),
+        "run_passed_bundles": run_passed_bundles,
+        "run_failed_bundles": run_failed_bundles,
+        "run_unknown_bundles": run_unknown_bundles,
+        "run_passed_consensus": _verdict_bool_consensus(
+            true_count=run_passed_bundles,
+            false_count=run_failed_bundles,
+            unknown_count=run_unknown_bundles,
+        ),
+        "verify_pass_bundles": verify_pass_bundles,
+        "verify_failed_bundles": verify_failed_bundles,
+        "verify_unknown_bundles": verify_unknown_bundles,
+        "verify_pass_consensus": _verdict_bool_consensus(
+            true_count=verify_pass_bundles,
+            false_count=verify_failed_bundles,
+            unknown_count=verify_unknown_bundles,
+        ),
+        "oracle_execution_attempted_bundles": oracle_execution_attempted_bundles,
+        "oracle_execution_attempted_consensus": _verdict_bool_consensus(
+            true_count=oracle_execution_attempted_bundles,
+            false_count=max(len(bundles) - oracle_execution_attempted_bundles, 0),
+            unknown_count=0,
+        ),
+        "by_oracle_execution_parity": by_oracle_execution_parity,
+        "oracle_execution_parity_consensus": _verdict_string_consensus(
+            by_oracle_execution_parity,
+            total=len(bundles),
+            empty_token="missing",
+        ),
+        "by_qualitative_tier": by_qualitative_tier,
+        "qualitative_tier_consensus": _verdict_string_consensus(
+            by_qualitative_tier,
+            total=len(bundles),
+            empty_token="unknown",
+        ),
+        "by_stage_ceiling": by_stage_ceiling,
+        "stage_ceiling_consensus": _verdict_string_consensus(
+            by_stage_ceiling,
+            total=len(bundles),
+            empty_token="unknown",
+        ),
+        "by_terminal_failure_class": by_terminal_failure_class,
+        "terminal_failure_class_consensus": _verdict_string_consensus(
+            by_terminal_failure_class,
+            total=len(bundles),
+            empty_token="none",
+        ),
+    }
+
+
+def _verdict_bool_consensus(*, true_count: int, false_count: int, unknown_count: int) -> str:
+    total = max(true_count, 0) + max(false_count, 0) + max(unknown_count, 0)
+    if total <= 0 or unknown_count >= total:
+        return "unknown"
+    if true_count == total:
+        return "all_true"
+    if false_count == total:
+        return "all_false"
+    return "mixed"
+
+
+def _verdict_string_consensus(counts: Dict[str, int], *, total: int, empty_token: str) -> str:
+    if total <= 0:
+        return empty_token
+    if not counts:
+        return empty_token
+    if len(counts) == 1:
+        token, count = next(iter(counts.items()))
+        if count == total:
+            return token
+    return "mixed"
+
+
+def _verdict_authority_payload(manifest: Dict[str, Any], bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    bundle_count = len(bundles) if isinstance(bundles, list) else 0
+    mode = "single_bundle" if bundle_count == 1 else "multi_bundle"
+    fields = {
+        "run_passed": _verdict_authority_field(
+            manifest,
+            exact_key="run_passed",
+            rollup_key="run_passed_rollup",
+            canonical_source="bundles[].completion_state.run_passed",
+            bundle_count=bundle_count,
+        ),
+        "verify_pass": _verdict_authority_field(
+            manifest,
+            exact_key="verify_pass",
+            rollup_key="verify_pass_rollup",
+            canonical_source="bundles[].completion_state.verify_pass",
+            bundle_count=bundle_count,
+        ),
+        "stage_ceiling": _verdict_authority_field(
+            manifest,
+            exact_key="stage_ceiling",
+            rollup_key="stage_ceiling_rollup",
+            canonical_source="bundles[].completion_state.stage_ceiling",
+            bundle_count=bundle_count,
+        ),
+        "terminal_failure_class": _verdict_authority_field(
+            manifest,
+            exact_key="terminal_failure_class",
+            rollup_key="terminal_failure_class_rollup",
+            canonical_source="bundles[].failure.terminal_failure_class|bundles[].name_only_outcome.terminal_failure_class",
+            bundle_count=bundle_count,
+        ),
+        "oracle_execution_parity": _verdict_authority_field(
+            manifest,
+            exact_key="oracle_execution_parity",
+            rollup_key="oracle_execution_parity_rollup",
+            canonical_source="bundles[].artifact_quality.oracle_execution_parity",
+            bundle_count=bundle_count,
+        ),
+        "oracle_execution_attempted": _verdict_authority_field(
+            manifest,
+            exact_key="oracle_execution_attempted",
+            rollup_key="oracle_execution_attempted_rollup",
+            canonical_source="bundles[].artifact_quality.oracle_execution_attempted",
+            bundle_count=bundle_count,
+        ),
+    }
+    return {
+        "canonical_surface": "bundles",
+        "top_level_role": "convenience_projection",
+        "mode": mode,
+        "fields": fields,
+    }
+
+
+def _verdict_authority_field(
+    manifest: Dict[str, Any],
+    *,
+    exact_key: str,
+    rollup_key: str,
+    canonical_source: str,
+    bundle_count: int,
+) -> Dict[str, Any]:
+    exact_value = manifest.get(exact_key)
+    has_exact = exact_key in manifest and not (
+        isinstance(exact_value, str) and exact_value.strip().lower() == "mixed"
+    )
+    rollup_value = manifest.get(rollup_key)
+    has_rollup = isinstance(rollup_value, str) and str(rollup_value).strip()
+    if bundle_count == 1 and has_exact:
+        projection_mode = "single_bundle_exact"
+    elif bundle_count > 1 and has_exact:
+        projection_mode = "uniform_multibundle_exact"
+    elif bundle_count > 1 and has_rollup:
+        projection_mode = "multibundle_rollup"
+    else:
+        projection_mode = "bundle_truth_only"
+    payload: Dict[str, Any] = {
+        "canonical_source": canonical_source,
+        "canonical_precedence": "bundle_truth",
+        "projection_mode": projection_mode,
+    }
+    if has_rollup:
+        payload["rollup_key"] = rollup_key
+    if has_exact:
+        payload["exact_key"] = exact_key
+    return payload
+
+
 def _bundle_intent_satisfaction(bundle_entry: Dict[str, Any], requirement_view: Dict[str, Any]) -> Dict[str, Any]:
     request_identity = bundle_entry.get("request_identity") if isinstance(bundle_entry.get("request_identity"), dict) else {}
     request_ir = bundle_entry.get("request_ir") if isinstance(bundle_entry.get("request_ir"), dict) else {}
@@ -4424,81 +5229,29 @@ def _bundle_intent_satisfaction(bundle_entry: Dict[str, Any], requirement_view: 
         llm_path = "live"
     else:
         llm_path = "not_used"
-    if failure_stage in {"CAPABILITY_CHECK", "RESEARCH", "GENERATOR", "NAME_ONLY_GATE"}:
-        closure_source = "failed"
-    elif generation_origin == "compiler_generated":
-        closure_source = "curated_lower_bound"
-    elif generation_origin == "built_in_template":
-        closure_source = "template_assisted"
-    elif generation_origin == "deterministic_fallback":
-        closure_source = "degraded_deterministic_fallback"
-    elif generation_origin == "llm_manifest" and strict_open_world.get("counts_as_generalization") is True:
-        closure_source = "strict_open_world_positive"
-    elif generation_origin == "llm_manifest":
-        closure_source = "trusted_dynamic"
-    else:
-        closure_source = generation_origin or "unknown"
-
-    status = "compatibility_lower_bound"
-    meets_intent = False
-    partial = False
-    reason = ""
-
-    if mode == "compatibility":
-        if failure_stage:
-            status = "compatibility_failed"
-            reason = "compatibility lane failed before lower-bound completion"
-        else:
-            status = "compatibility_lower_bound"
-            meets_intent = True
-            reason = "compatibility mode allows curated lower-bound/template-backed closure"
-    elif mode in {"dynamic", "dynamic_eval"}:
-        if strict_open_world.get("counts_as_generalization") is True or open_world_class == "open_world_positive":
-            status = "dynamic_success"
-            meets_intent = True
-            reason = "name-only dynamic lane closed without relying on degraded lower-bound recovery"
-        elif dynamic_eval_status == "degraded_success" or open_world_class in {
-            "semantic_guided_minimal_dynamic",
-            "semantic_guided_degraded",
-        }:
-            status = "degraded_dynamic_success"
-            partial = True
-            reason = "dynamic lane remained runnable, but closure still relied on degraded deterministic fallback"
-        elif dynamic_eval_status == "lower_bound_recovered":
-            status = "lower_bound_recovered"
-            reason = "dynamic lane fell back to an existing curated lower-bound path"
-        else:
-            status = "dynamic_failed"
-            reason = "dynamic lane did not produce an acceptable runnable bundle"
-    else:  # strict_dynamic
-        if strict_open_world.get("counts_as_generalization") is True:
-            status = "strict_dynamic_success"
-            meets_intent = True
-            reason = "strict dynamic lane achieved strict open-world positive evidence"
-        elif strict_class in {
-            "strict_dynamic_generation_failed",
-            "strict_dynamic_live_llm_required",
-            "strict_dynamic_capability_unavailable",
-        } or dynamic_eval_status == "dynamic_failed":
-            status = "strict_dynamic_failed"
-            reason = "strict dynamic lane failed before acceptable materialization"
-        elif dynamic_eval_status == "degraded_success" or strict_class in {
-            "strict_minimal_dynamic_fallback",
-            "strict_semantic_guided_fallback",
-        }:
-            status = "strict_dynamic_rejected_degraded"
-            reason = "strict dynamic lane produced only degraded deterministic fallback and does not meet intent"
-        else:
-            status = "strict_dynamic_not_satisfied"
-            reason = "strict dynamic lane did not reach strict open-world positive evidence"
+    closure_source = resolve_name_only_closure_source(
+        failure_stage=failure_stage,
+        generation_origin=generation_origin,
+        strict_counts_as_generalization=strict_open_world.get("counts_as_generalization") is True,
+    )
+    intent_resolution = classify_name_only_intent(
+        mode=mode,
+        contract=name_only_contract,
+        closure_source=closure_source,
+        failure_stage=failure_stage,
+        dynamic_eval_status=dynamic_eval_status,
+        open_world_class=open_world_class,
+        strict_open_world_class=strict_class,
+        strict_counts_as_generalization=strict_open_world.get("counts_as_generalization") is True,
+    )
 
     return {
         "request_kind": "name_only",
         "mode": mode,
-        "status": status,
-        "meets_intent": meets_intent,
-        "partial": partial,
-        "reason": reason,
+        "status": str(intent_resolution.get("status") or "").strip() or "compatibility_lower_bound",
+        "meets_intent": bool(intent_resolution.get("meets_intent")),
+        "partial": bool(intent_resolution.get("partial")),
+        "reason": str(intent_resolution.get("reason") or "").strip() or "name_only_intent_unclassified",
         "closure_source": closure_source,
         "generation_origin": generation_origin or "unknown",
         "fallback_class": fallback_class or None,
@@ -4680,18 +5433,8 @@ def _bundle_name_only_outcome(bundle_entry: Dict[str, Any]) -> Dict[str, Any]:
     )
     closure_source = str(intent.get("closure_source") or "").strip().lower() or None
     required_contract = intent.get("required_contract") if isinstance(intent.get("required_contract"), dict) else {}
-    allowed_execution_paths = {
-        str(item).strip().lower()
-        for item in (required_contract.get("allowed_execution_paths") or [])
-        if isinstance(item, str) and str(item).strip()
-    }
-    intent_satisfying_paths = {
-        str(item).strip().lower()
-        for item in (required_contract.get("intent_satisfying_paths") or [])
-        if isinstance(item, str) and str(item).strip()
-    }
-    allowed_by_execution_contract = closure_source in allowed_execution_paths if closure_source else False
-    satisfies_intent_contract = closure_source in intent_satisfying_paths if closure_source else False
+    allowed_by_execution_contract = closure_source_allowed_by_contract(required_contract, closure_source)
+    satisfies_intent_contract = closure_source_satisfies_intent(required_contract, closure_source)
     next_required_step = _name_only_next_required_step(completion_state, failure_stage=failure_stage)
 
     decision = "failed"
@@ -4845,6 +5588,56 @@ def _name_only_planning_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]
         "by_primary_focus": by_primary_focus,
         "by_focus": by_focus,
         "by_reason_token": by_reason_token,
+    }
+
+
+def _staged_synthesis_summary(bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    staged_bundles = 0
+    with_failure_stage_bundles = 0
+    stage_aware_recovery_bundles = 0
+    by_failure_stage: Dict[str, int] = {}
+    by_failure_stage_reason: Dict[str, int] = {}
+    by_recovery_strategy: Dict[str, int] = {}
+    by_selected_topology: Dict[str, int] = {}
+    for entry in bundles:
+        staged = entry.get("staged_synthesis") if isinstance(entry.get("staged_synthesis"), dict) else {}
+        staged_recovery = entry.get("staged_recovery") if isinstance(entry.get("staged_recovery"), dict) else {}
+        if staged:
+            staged_bundles += 1
+            candidate_resolution = (
+                staged.get("candidate_resolution")
+                if isinstance(staged.get("candidate_resolution"), dict)
+                else {}
+            )
+            runtime_plan = staged.get("runtime_plan") if isinstance(staged.get("runtime_plan"), dict) else {}
+            selected_topology = str(
+                (candidate_resolution or {}).get("selected_topology")
+                or (runtime_plan or {}).get("topology")
+                or ""
+            ).strip()
+            if selected_topology:
+                by_selected_topology[selected_topology] = by_selected_topology.get(selected_topology, 0) + 1
+        failure_stage = str((staged_recovery or {}).get("failure_stage") or "").strip()
+        if failure_stage:
+            with_failure_stage_bundles += 1
+            by_failure_stage[failure_stage] = by_failure_stage.get(failure_stage, 0) + 1
+        failure_stage_reason = str((staged_recovery or {}).get("failure_stage_reason") or "").strip()
+        if failure_stage_reason:
+            by_failure_stage_reason[failure_stage_reason] = by_failure_stage_reason.get(failure_stage_reason, 0) + 1
+        recovery_strategy = str((staged_recovery or {}).get("recovery_strategy") or "").strip()
+        if recovery_strategy:
+            by_recovery_strategy[recovery_strategy] = by_recovery_strategy.get(recovery_strategy, 0) + 1
+        if (staged_recovery or {}).get("stage_aware_recovery_used") is True:
+            stage_aware_recovery_bundles += 1
+    return {
+        "bundle_count": len(bundles),
+        "staged_bundles": staged_bundles,
+        "with_failure_stage_bundles": with_failure_stage_bundles,
+        "stage_aware_recovery_bundles": stage_aware_recovery_bundles,
+        "by_failure_stage": by_failure_stage,
+        "by_failure_stage_reason": by_failure_stage_reason,
+        "by_recovery_strategy": by_recovery_strategy,
+        "by_selected_topology": by_selected_topology,
     }
 
 

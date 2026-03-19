@@ -308,6 +308,11 @@ def _exploit_oracle_contract(requirement: Dict[str, object]) -> str:
     negative_controls = oracle.get("negative_controls") if isinstance(oracle.get("negative_controls"), list) else []
     if negative_controls:
         lines.append(f"- Negative control cases: `{len(negative_controls)}`.")
+        runnable_negative_controls = [
+            item for item in negative_controls if isinstance(item, dict) and str(item.get("payload") or "").strip()
+        ]
+        if runnable_negative_controls:
+            lines.append(f"- Runnable negative control payloads: `{len(runnable_negative_controls)}`.")
     metamorphic = oracle.get("metamorphic") if isinstance(oracle.get("metamorphic"), dict) else {}
     if metamorphic:
         total = metamorphic.get("total")
@@ -320,6 +325,12 @@ def _exploit_oracle_contract(requirement: Dict[str, object]) -> str:
             detail.append(f"passed=`{passed}`")
         if rationale:
             detail.append(f"rationale=`{rationale}`")
+        cases = metamorphic.get("cases") if isinstance(metamorphic.get("cases"), list) else []
+        runnable_cases = [
+            item for item in cases if isinstance(item, dict) and str(item.get("payload") or "").strip()
+        ]
+        if runnable_cases:
+            detail.append(f"runnable_cases=`{len(runnable_cases)}`")
         if detail:
             lines.append("- Metamorphic oracle context: " + ", ".join(detail) + ".")
     poc_cmd = str(oracle.get("poc_cmd") or "").strip()
@@ -352,6 +363,7 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
         if isinstance(selection_decision, dict) and selection_decision:
             family_decision = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
             stack_decision = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+            scenario_decision = selection_decision.get("scenario") if isinstance(selection_decision.get("scenario"), dict) else {}
             if family_decision.get("selected") is True:
                 selected_family = str(family_decision.get("selected_family") or family_decision.get("top_family") or "").strip()
                 detail: List[str] = []
@@ -394,6 +406,39 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
                         detail.append(f"support_authority=`{compact}`")
                 if detail:
                     lines.append("- Request IR selected stack: " + ", ".join(detail) + ".")
+            if scenario_decision.get("selected") is True:
+                detail = []
+                selected_scenario = str(scenario_decision.get("selected_scenario_id") or scenario_decision.get("top_scenario_id") or "").strip()
+                selected_topology = str(scenario_decision.get("selected_topology") or scenario_decision.get("topology") or "").strip()
+                selected_oracle_mode = str(
+                    scenario_decision.get("selected_oracle_mode") or scenario_decision.get("top_oracle_mode") or ""
+                ).strip()
+                selected_oracle_source = str(
+                    scenario_decision.get("selected_oracle_source") or scenario_decision.get("top_oracle_source") or ""
+                ).strip()
+                if selected_scenario:
+                    detail.append(f"scenario=`{selected_scenario}`")
+                if selected_topology:
+                    detail.append(f"topology=`{selected_topology}`")
+                if selected_oracle_mode:
+                    oracle_detail = f"oracle_mode=`{selected_oracle_mode}`"
+                    if selected_oracle_source:
+                        oracle_detail += f" ({selected_oracle_source})"
+                    detail.append(oracle_detail)
+                support_count = scenario_decision.get("support_count")
+                if isinstance(support_count, int):
+                    detail.append(f"support_count=`{support_count}`")
+                support_by_authority = scenario_decision.get("support_by_source_authority")
+                if isinstance(support_by_authority, dict) and support_by_authority:
+                    compact = ",".join(
+                        f"{str(key).strip().lower()}:{int(value)}"
+                        for key, value in support_by_authority.items()
+                        if str(key).strip()
+                    )
+                    if compact:
+                        detail.append(f"support_authority=`{compact}`")
+                if detail:
+                    lines.append("- Request IR selected scenario: " + ", ".join(detail) + ".")
     identifier_candidate_summary = (
         spec.get("identifier_candidate_summary")
         if isinstance(spec.get("identifier_candidate_summary"), dict)
@@ -461,6 +506,103 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
         ]
         if normalized:
             lines.append("- Negative family hypotheses: `" + "`, `".join(normalized) + "`.")
+    provisional_family = str(spec.get("provisional_family") or "").strip()
+    if provisional_family:
+        lines.append(f"- Provisional family hypothesis remains open: `{provisional_family}`.")
+    primitive_hypotheses = spec.get("primitive_hypotheses") if isinstance(spec.get("primitive_hypotheses"), list) else []
+    if primitive_hypotheses:
+        preview = []
+        for item in primitive_hypotheses[:3]:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").strip()
+            value = str(item.get("value") or "").strip()
+            if kind and value:
+                preview.append(f"{kind}:{value}")
+        if preview:
+            lines.append("- Primitive hypothesis preview: `" + "`, `".join(preview) + "`.")
+    runtime_dependency_hypotheses = (
+        spec.get("runtime_dependency_hypotheses")
+        if isinstance(spec.get("runtime_dependency_hypotheses"), list)
+        else {}
+    )
+    if isinstance(runtime_dependency_hypotheses, list) and runtime_dependency_hypotheses:
+        preview = []
+        for item in runtime_dependency_hypotheses[:3]:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").strip()
+            value = str(item.get("value") or "").strip()
+            if kind and value:
+                preview.append(f"{kind}:{value}")
+        if preview:
+            lines.append("- Runtime dependency hypotheses: `" + "`, `".join(preview) + "`.")
+    oracle_hypotheses = spec.get("oracle_hypotheses") if isinstance(spec.get("oracle_hypotheses"), list) else []
+    if oracle_hypotheses:
+        preview = []
+        for item in oracle_hypotheses[:3]:
+            if not isinstance(item, dict):
+                continue
+            mode = str(item.get("mode") or "").strip()
+            source = str(item.get("source") or "").strip()
+            confidence = str(item.get("confidence") or "").strip()
+            if not mode:
+                continue
+            detail = mode
+            if source or confidence:
+                suffix = ", ".join(part for part in (source, confidence) if part)
+                detail = f"{detail} ({suffix})"
+            preview.append(detail)
+        if preview:
+            lines.append("- Oracle hypotheses: `" + "`, `".join(preview) + "`.")
+    topology_hypotheses = spec.get("topology_hypotheses") if isinstance(spec.get("topology_hypotheses"), list) else []
+    if topology_hypotheses:
+        preview = []
+        for item in topology_hypotheses[:3]:
+            if not isinstance(item, dict):
+                continue
+            topology = str(item.get("topology") or "").strip()
+            source = str(item.get("source") or "").strip()
+            confidence = str(item.get("confidence") or "").strip()
+            if not topology:
+                continue
+            detail = topology
+            if source or confidence:
+                suffix = ", ".join(part for part in (source, confidence) if part)
+                detail = f"{detail} ({suffix})"
+            preview.append(detail)
+        if preview:
+            lines.append("- Topology hypotheses: `" + "`, `".join(preview) + "`.")
+    scenario_candidate_summary = (
+        spec.get("scenario_candidate_summary")
+        if isinstance(spec.get("scenario_candidate_summary"), dict)
+        else {}
+    )
+    if isinstance(scenario_candidate_summary, dict) and scenario_candidate_summary:
+        detail = []
+        candidate_count = scenario_candidate_summary.get("candidate_count")
+        selected_candidate_count = scenario_candidate_summary.get("selected_candidate_count")
+        evidence_backed_candidate_count = scenario_candidate_summary.get("evidence_backed_candidate_count")
+        if isinstance(candidate_count, int):
+            detail.append(f"count=`{candidate_count}`")
+        if isinstance(selected_candidate_count, int):
+            detail.append(f"selected_count=`{selected_candidate_count}`")
+        if isinstance(evidence_backed_candidate_count, int):
+            detail.append(f"evidence_backed_count=`{evidence_backed_candidate_count}`")
+        top_scenario_id = str(scenario_candidate_summary.get("top_scenario_id") or "").strip()
+        if top_scenario_id:
+            detail.append(f"top=`{top_scenario_id}`")
+        top_oracle_mode = str(scenario_candidate_summary.get("top_oracle_mode") or "").strip()
+        if top_oracle_mode:
+            detail.append(f"top_oracle=`{top_oracle_mode}`")
+        selected_scenario_id = str(scenario_candidate_summary.get("selected_scenario_id") or "").strip()
+        if selected_scenario_id:
+            detail.append(f"selected=`{selected_scenario_id}`")
+        selected_oracle_mode = str(scenario_candidate_summary.get("selected_oracle_mode") or "").strip()
+        if selected_oracle_mode:
+            detail.append(f"selected_oracle=`{selected_oracle_mode}`")
+        if detail:
+            lines.append("- Scenario candidate preview: " + ", ".join(detail) + ".")
     runtime_recipe_summary = (
         spec.get("runtime_recipe_summary")
         if isinstance(spec.get("runtime_recipe_summary"), dict)
@@ -622,6 +764,105 @@ def _name_only_generation_spec_contract(requirement: Dict[str, object]) -> str:
     return "\n".join(lines) if lines else "- No name-only generation spec was provided."
 
 
+def _staged_synthesis_contract(requirement: Dict[str, object]) -> str:
+    req = requirement if isinstance(requirement, dict) else {}
+    staged = req.get("staged_synthesis") if isinstance(req.get("staged_synthesis"), dict) else {}
+    if not isinstance(staged, dict) or not staged:
+        return "- No staged synthesis control-plane was provided."
+    lines: List[str] = []
+    stage_order = staged.get("stage_order") if isinstance(staged.get("stage_order"), list) else []
+    if stage_order:
+        normalized = [str(item).strip() for item in stage_order if isinstance(item, str) and str(item).strip()]
+        if normalized:
+            lines.append("- Stage order: `" + "`, `".join(normalized) + "`.")
+    candidate_resolution = staged.get("candidate_resolution") if isinstance(staged.get("candidate_resolution"), dict) else {}
+    if candidate_resolution:
+        detail: List[str] = []
+        for key in (
+            "request_label",
+            "resolved_vuln_id",
+            "effective_mode",
+            "selected_family",
+            "selected_stack_id",
+            "selected_topology",
+            "selected_oracle_mode",
+            "selected_oracle_source",
+        ):
+            value = str(candidate_resolution.get(key) or "").strip()
+            if value:
+                detail.append(f"{key}=`{value}`")
+        for key in ("ready_for_materialization", "open_world_evidence_ready"):
+            if key in candidate_resolution:
+                detail.append(f"{key}=`{bool(candidate_resolution.get(key))}`")
+        if detail:
+            lines.append("- Candidate resolution: " + ", ".join(detail) + ".")
+    design_brief = staged.get("design_brief") if isinstance(staged.get("design_brief"), dict) else {}
+    if design_brief:
+        detail = []
+        for key in (
+            "working_family",
+            "selected_scenario_id",
+            "selected_topology",
+            "selected_oracle_mode",
+            "selected_oracle_source",
+            "primary_focus",
+        ):
+            value = str(design_brief.get(key) or "").strip()
+            if value:
+                detail.append(f"{key}=`{value}`")
+        focuses = design_brief.get("focuses") if isinstance(design_brief.get("focuses"), list) else []
+        normalized_focuses = [str(item).strip() for item in focuses if isinstance(item, str) and str(item).strip()]
+        if normalized_focuses:
+            detail.append("focuses=`" + ",".join(normalized_focuses) + "`")
+        dependency_set = design_brief.get("dependency_set") if isinstance(design_brief.get("dependency_set"), list) else []
+        normalized_dependencies = [
+            str(item).strip() for item in dependency_set if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized_dependencies:
+            detail.append("dependency_set=`" + ",".join(normalized_dependencies) + "`")
+        required_roles = design_brief.get("required_roles") if isinstance(design_brief.get("required_roles"), list) else []
+        normalized_roles = [str(item).strip() for item in required_roles if isinstance(item, str) and str(item).strip()]
+        if normalized_roles:
+            detail.append("required_roles=`" + ",".join(normalized_roles) + "`")
+        if detail:
+            lines.append("- Design brief: " + ", ".join(detail) + ".")
+    runtime_plan = staged.get("runtime_plan") if isinstance(staged.get("runtime_plan"), dict) else {}
+    if runtime_plan:
+        detail = []
+        for key in ("stack_id", "topology", "topology_source", "network_mode", "db", "db_source", "executor_health_path"):
+            value = str(runtime_plan.get(key) or "").strip()
+            if value:
+                detail.append(f"{key}=`{value}`")
+        service_port = runtime_plan.get("service_port")
+        if isinstance(service_port, int):
+            detail.append(f"service_port=`{service_port}`")
+        sidecars = runtime_plan.get("sidecars") if isinstance(runtime_plan.get("sidecars"), list) else []
+        compact_sidecars = []
+        for item in sidecars:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("type") or "").strip()
+            if name:
+                compact_sidecars.append(name)
+        if compact_sidecars:
+            detail.append("sidecars=`" + ",".join(compact_sidecars) + "`")
+        if detail:
+            lines.append("- Runtime plan: " + ", ".join(detail) + ".")
+    oracle_contract = staged.get("oracle_contract") if isinstance(staged.get("oracle_contract"), dict) else {}
+    if oracle_contract:
+        detail = []
+        for key in ("success_signature", "flag_token", "output_mode", "source", "mode", "confidence"):
+            value = str(oracle_contract.get(key) or "").strip()
+            if value:
+                detail.append(f"{key}=`{value}`")
+        for key in ("negative_control_present", "metamorphic_present"):
+            if key in oracle_contract:
+                detail.append(f"{key}=`{bool(oracle_contract.get(key))}`")
+        if detail:
+            lines.append("- Oracle contract: " + ", ".join(detail) + ".")
+    return "\n".join(lines) if lines else "- No staged synthesis control-plane was provided."
+
+
 def build_generator_prompt(
     requirement: Dict[str, object],
     rag_context: str,
@@ -685,6 +926,7 @@ def build_synthesis_prompt(
     family_hypothesis_contract = _family_hypothesis_contract(researcher_report)
     exploit_oracle_contract = _exploit_oracle_contract(requirement)
     name_only_generation_spec_contract = _name_only_generation_spec_contract(requirement)
+    staged_synthesis_contract = _staged_synthesis_contract(requirement)
     if guard_spec:
         semantic_contract = (
             "- Primary semantic contract is defined by Guard Spec semantic_signature.\n"
@@ -732,6 +974,7 @@ def build_synthesis_prompt(
         "\n\n# Resolved Contract (MUST)\n{contract_block}"
         "\n\n# Runtime Recipe (Prefer over guessing)\n{runtime_recipe_contract}"
         "\n\n# Name-Only Generation Spec\n{name_only_generation_spec_contract}"
+        "\n\n# Staged Synthesis Control-Plane\n{staged_synthesis_contract}"
         "\n\n# Exploit Oracle\n{exploit_oracle_contract}"
         "\n\n# Generation Posture\n{generation_posture}"
         "\n\n# Researcher Family Hypothesis\n{family_hypothesis_contract}"
@@ -747,6 +990,7 @@ def build_synthesis_prompt(
             contract_block=contract_block,
             runtime_recipe_contract=runtime_recipe_contract,
             name_only_generation_spec_contract=name_only_generation_spec_contract,
+            staged_synthesis_contract=staged_synthesis_contract,
             exploit_oracle_contract=exploit_oracle_contract,
             generation_posture=generation_posture,
             family_hypothesis_contract=family_hypothesis_contract,

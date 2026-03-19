@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -30,6 +31,7 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
             {
                 "sid": sid,
                 "pipeline_result": "success",
+                "sid_inputs": {"components": {"execution_salt": "salt-summary-surface"}},
                 "request_ir": {
                     "request_label": "Open Redirect",
                     "resolution_state": "catalog_alias",
@@ -70,7 +72,14 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                         "open_world_evidence_ready": True,
                     },
                 },
-                "artifact_quality_summary": {"bundle_count": 1, "average_score": 8.0},
+                "artifact_quality_summary": {
+                    "bundle_count": 1,
+                    "average_score": 8.0,
+                    "by_qualitative_tier": {"thin_or_incomplete": 1},
+                    "oracle_high_nonhigh_band_bundles": 0,
+                    "thin_fallback_demo_bundles": 0,
+                    "native_operator_ready_bundles": 0,
+                },
                 "support_promotion": {
                     "eligible_bundles": 0,
                     "all_eligible": False,
@@ -147,6 +156,12 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                 "performance": {
                     "total_duration_s": 7.3,
                     "retry_count": 1,
+                    "search_cache_hit_count": 2,
+                    "search_cache_miss_count": 1,
+                    "search_cache_reuse_ratio": 0.667,
+                    "search_planned_query_count": 4,
+                    "search_executed_query_count": 3,
+                    "search_early_stop_triggered": True,
                     "by_stage": {
                         "RESEARCH": {"count": 1, "duration_s": 3.2, "skipped": 0},
                         "GENERATOR": {"count": 1, "duration_s": 1.4, "skipped": 0},
@@ -244,6 +259,16 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                         "family_candidate_evidence_missing": 1,
                     },
                 },
+                "staged_synthesis_summary": {
+                    "bundle_count": 1,
+                    "staged_bundles": 1,
+                    "with_failure_stage_bundles": 1,
+                    "stage_aware_recovery_bundles": 1,
+                    "by_failure_stage": {"runtime_plan": 1},
+                    "by_failure_stage_reason": {"runtime_plan_mismatch": 1},
+                    "by_recovery_strategy": {"runtime_plan": 1},
+                    "by_selected_topology": {"single_service": 1},
+                },
                 "dynamic_eval_summary": {"bundle_count": 1, "attempted_bundles": 1},
                 "completion_summary": {
                     "bundle_count": 1,
@@ -256,6 +281,68 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                 },
                 "semantic_guided_selection_source": "request_resolution",
                 "semantic_guided_ambiguous": True,
+                "service_port": 9000,
+                "service_base_url": "http://127.0.0.1:9000",
+                "service_port_source": "executor_plan.service_port",
+                "service_entry_source": "executor_plan.service_entry",
+                "poc_entry": "poc.py",
+                "poc_entry_source": "executor_plan.poc_entry",
+                "poc_cmd": "python poc.py --base-url {{base_url}}",
+                "poc_cmd_source": "resolved_contract.poc_cmd",
+                "base_url_source": "executor_plan.base_url",
+                "health_path_source": "runtime_graph.healthchecks[service]",
+                "healthchecks": [{"node": "service", "path": "/ready", "port": 9000, "transport": "http"}],
+                "healthchecks_source": "runtime_graph.healthchecks",
+                "service_env_runtime": {
+                    "APP_PORT": "9000",
+                    "DB_HOST": "db-internal",
+                    "DB_NAME": "sqliapp",
+                    "DB_USER": "sqli",
+                    "DB_PASSWORD": "sqli_pw",
+                    "DB_PORT": "3306",
+                },
+                "allow_network": True,
+                "service_env_source": "runtime_hint_sidecar_defaults",
+                "sidecars_source": "generator_manifest.metadata.target_sidecars",
+                "network_mode": "bridge",
+                "allow_network_source": "runtime_topology_requires_network",
+                "network_mode_source": "runtime_topology_requires_network",
+                "executed_sidecars": [
+                    {
+                        "name": "mysql-main",
+                        "type": "mysql",
+                        "container": "sid-summary-surface-name-open-redirect-mysql-main",
+                        "image": "mysql:8.0",
+                        "aliases": ["db-internal"],
+                        "start_order_index": 1,
+                        "seed_mount_target": "/seed-input",
+                        "seed_files_applied": ["schema.sql"],
+                    }
+                ],
+                "sidecar_start_order": ["mysql-main"],
+                "sidecar_start_order_source": "generator_manifest.metadata.target_sidecars",
+                "network_contract": [
+                    {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+                    {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+                ],
+                "network_contract_source": "runtime_recipe.service_env+sidecars",
+                "seed_strategy": "sidecar_sql_apply",
+                "seed_strategy_source": "runtime_recipe.seed_files+topology",
+                "seed_files": ["schema.sql"],
+                "seed_files_source": "executor_plan.seed_files",
+                "volume_contract": [
+                    {
+                        "scope": "sidecar:mysql-main",
+                        "source": "workspace",
+                        "target": "/seed-input",
+                        "mode": "ro",
+                    }
+                ],
+                "volume_contract_source": "runtime_recipe.seed_files+seed_strategy",
+                "seed_apply_attempted": True,
+                "seed_apply_completed": True,
+                "seed_files_applied_total": 1,
+                "seed_mount_targets": ["/seed-input"],
                 "runtime_recipe": {"language": "python", "framework": "flask", "hypothetical": False},
                 "runtime_graph": {"topology": "single_service", "nodes": [{"id": "service"}], "hypothetical": False},
                 "executor_plan": {"service_port": 5000, "health_path": "/health", "topology": "single_service"},
@@ -265,7 +352,13 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                     "edge_count": 2,
                     "nodes": [{"id": "evidence:1", "kind": "evidence", "source_authority": "high"}],
                 },
-                "artifact_quality": {"band": "medium"},
+                "artifact_quality": {
+                    "band": "medium",
+                    "oracle_execution_parity": "partial",
+                    "oracle_execution_attempted": True,
+                    "qualitative_tier": "thin_or_incomplete",
+                    "qualitative_review": "artifact remains thin or incomplete for operator-facing use",
+                },
                 "stack_dependence": {
                     "class": "repo_prior_bounded",
                     "stack_source": "profile_prior",
@@ -342,6 +435,20 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                         "family_candidate_evidence_missing",
                     ],
                 },
+                "staged_synthesis": {
+                    "schema_version": "staged_synthesis@0.1",
+                    "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+                    "candidate_resolution": {"selected_topology": "single_service"},
+                },
+                "staged_recovery": {
+                    "recovery_strategy": "runtime_plan",
+                    "failure_stage": "runtime_plan",
+                    "failure_stage_reason": "runtime_plan_mismatch",
+                    "stage_aware_recovery_used": True,
+                },
+                "staged_recovery_strategy": "runtime_plan",
+                "staged_failure_stage": "runtime_plan",
+                "staged_failure_stage_reason": "runtime_plan_mismatch",
                 "bundles": [
                     {
                         "slug": "name-open-redirect",
@@ -391,7 +498,13 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                             "nodes": [{"id": "evidence:1", "kind": "evidence", "source_authority": "high"}],
                         },
                         "dynamic_eval": {"enabled": True, "status": "degraded_success"},
-                        "artifact_quality": {"band": "medium"},
+                        "artifact_quality": {
+                            "band": "medium",
+                            "oracle_execution_parity": "partial",
+                            "oracle_execution_attempted": True,
+                            "qualitative_tier": "thin_or_incomplete",
+                            "qualitative_review": "artifact remains thin or incomplete for operator-facing use",
+                        },
                         "stack_dependence": {
                             "class": "repo_prior_bounded",
                             "stack_source": "profile_prior",
@@ -460,6 +573,17 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                                 ],
                             }
                         },
+                        "staged_synthesis": {
+                            "schema_version": "staged_synthesis@0.1",
+                            "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+                            "candidate_resolution": {"selected_topology": "single_service"},
+                        },
+                        "staged_recovery": {
+                            "recovery_strategy": "runtime_plan",
+                            "failure_stage": "runtime_plan",
+                            "failure_stage_reason": "runtime_plan_mismatch",
+                            "stage_aware_recovery_used": True,
+                        },
                         "completion_state": {
                             "generated": True,
                             "executed": False,
@@ -473,7 +597,69 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                             "generation_origin": "deterministic_fallback",
                         },
                         "artifacts": {
-                            "run_summary": {"run_passed": True, "exit_code": 0},
+                            "run_summary": {
+                                "run_passed": True,
+                                "exit_code": 0,
+                                "service_port_source": "executor_plan.service_port",
+                                "service_entry_source": "executor_plan.service_entry",
+                                "poc_entry": "poc.py",
+                                "poc_entry_source": "executor_plan.poc_entry",
+                                "poc_cmd": "python poc.py --base-url {{base_url}}",
+                                "poc_cmd_source": "resolved_contract.poc_cmd",
+                                "base_url_source": "executor_plan.base_url",
+                                "health_path_source": "runtime_graph.healthchecks[service]",
+                                "healthchecks": [{"node": "service", "path": "/ready", "port": 9000, "transport": "http"}],
+                                "healthchecks_source": "runtime_graph.healthchecks",
+                                "service_env_runtime": {
+                                    "APP_PORT": "9000",
+                                    "DB_HOST": "db-internal",
+                                    "DB_NAME": "sqliapp",
+                                    "DB_USER": "sqli",
+                                    "DB_PASSWORD": "sqli_pw",
+                                    "DB_PORT": "3306",
+                                },
+                                "service_env_source": "runtime_hint_sidecar_defaults",
+                                "sidecars_source": "generator_manifest.metadata.target_sidecars",
+                                "sidecars": [
+                                    {
+                                        "name": "mysql-main",
+                                        "type": "mysql",
+                                        "container": "sid-summary-surface-name-open-redirect-mysql-main",
+                                        "image": "mysql:8.0",
+                                        "aliases": ["db-internal"],
+                                        "start_order_index": 1,
+                                        "seed_mount_target": "/seed-input",
+                                        "seed_files_applied": ["schema.sql"],
+                                    }
+                                ],
+                                "sidecar_start_order": ["mysql-main"],
+                                "sidecar_start_order_source": "generator_manifest.metadata.target_sidecars",
+                                "allow_network": True,
+                                "allow_network_source": "runtime_topology_requires_network",
+                                "network_mode_source": "runtime_topology_requires_network",
+                                "network_contract": [
+                                    {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+                                    {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+                                ],
+                                "network_contract_source": "runtime_recipe.service_env+sidecars",
+                                "seed_strategy": "sidecar_sql_apply",
+                                "seed_strategy_source": "runtime_recipe.seed_files+topology",
+                                "seed_files": ["schema.sql"],
+                                "seed_files_source": "executor_plan.seed_files",
+                                "volume_contract": [
+                                    {
+                                        "scope": "sidecar:mysql-main",
+                                        "source": "workspace",
+                                        "target": "/seed-input",
+                                        "mode": "ro",
+                                    }
+                                ],
+                                "volume_contract_source": "runtime_recipe.seed_files+seed_strategy",
+                                "seed_apply_attempted": True,
+                                "seed_apply_completed": True,
+                                "seed_files_applied_total": 1,
+                                "seed_mount_targets": ["/seed-input"],
+                            },
                             "eval_result": {"verify_pass": True},
                         },
                     }
@@ -489,6 +675,7 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     summary = run_case._load_manifest_summary(sid, pipeline_returncode=0)
 
     assert summary["request_ir"]["resolution_state"] == "catalog_alias"
+    assert summary["execution_salt"] == "salt-summary-surface"
     assert summary["request_ir_summary"]["ambiguous_family_candidate_bundles"] == 1
     assert summary["request_ir_summary"]["negative_hypothesis_bundles"] == 1
     assert summary["request_ir_summary"]["selection_ready_bundles"] == 1
@@ -502,6 +689,7 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["selection_readiness_summary"]["stack_evidence_backed_bundles"] == 1
     assert summary["selection_readiness_summary"]["resolved_ambiguous_family_bundles"] == 1
     assert summary["artifact_quality_summary"]["average_score"] == 8.0
+    assert summary["artifact_quality_summary"]["by_qualitative_tier"] == {"thin_or_incomplete": 1}
     assert summary["support_promotion"]["eligible_bundles"] == 0
     assert summary["open_world_readiness_summary"]["ready_bundles"] == 0
     assert summary["open_world_readiness_summary"]["by_blocker"]["stack_defaulted"] == 1
@@ -530,12 +718,86 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["name_only_outcome_summary"]["by_decision"] == {"partial": 1}
     assert summary["name_only_planning_summary"]["by_primary_focus"] == {"stack_or_runtime_design": 1}
     assert summary["name_only_planning_summary"]["by_reason_token"]["stack_defaulted"] == 1
+    assert summary["staged_synthesis_summary"]["stage_aware_recovery_bundles"] == 1
+    assert summary["staged_synthesis_summary"]["by_recovery_strategy"] == {"runtime_plan": 1}
     assert summary["dynamic_eval_summary"]["attempted_bundles"] == 1
     assert summary["completion_summary"]["by_stage_ceiling"] == {"generated": 1}
     assert summary["semantic_guided_selection_source"] == "request_resolution"
     assert summary["semantic_guided_ambiguous"] is True
+    assert summary["service_port"] == 9000
+    assert summary["service_base_url"] == "http://127.0.0.1:9000"
+    assert summary["run_passed"] is True
+    assert summary["verify_pass"] is True
+    assert summary["service_port_source"] == "executor_plan.service_port"
+    assert summary["service_entry_source"] == "executor_plan.service_entry"
+    assert summary["poc_entry"] == "poc.py"
+    assert summary["poc_entry_source"] == "executor_plan.poc_entry"
+    assert summary["poc_cmd"] == "python poc.py --base-url {{base_url}}"
+    assert summary["poc_cmd_source"] == "resolved_contract.poc_cmd"
+    assert summary["base_url_source"] == "executor_plan.base_url"
+    assert summary["health_path_source"] == "runtime_graph.healthchecks[service]"
+    assert summary["healthchecks"] == [{"node": "service", "path": "/ready", "port": 9000, "transport": "http"}]
+    assert summary["healthchecks_source"] == "runtime_graph.healthchecks"
+    assert summary["runtime_service_env"] == {
+        "APP_PORT": "9000",
+        "DB_HOST": "db-internal",
+        "DB_NAME": "sqliapp",
+        "DB_USER": "sqli",
+        "DB_PASSWORD": "sqli_pw",
+        "DB_PORT": "3306",
+    }
+    assert summary["allow_network"] is True
+    assert summary["service_env_source"] == "runtime_hint_sidecar_defaults"
+    assert summary["sidecars_source"] == "generator_manifest.metadata.target_sidecars"
+    assert summary["network_mode"] == "bridge"
+    assert summary["oracle_execution_parity"] == "partial"
+    assert summary["oracle_execution_attempted"] is True
+    assert summary["allow_network_source"] == "runtime_topology_requires_network"
+    assert summary["network_mode_source"] == "runtime_topology_requires_network"
+    assert summary["executed_sidecars"] == [
+        {
+            "name": "mysql-main",
+            "type": "mysql",
+            "container": "sid-summary-surface-name-open-redirect-mysql-main",
+            "image": "mysql:8.0",
+            "aliases": ["db-internal"],
+            "start_order_index": 1,
+            "seed_mount_target": "/seed-input",
+            "seed_files_applied": ["schema.sql"],
+        }
+    ]
+    assert summary["sidecar_start_order"] == ["mysql-main"]
+    assert summary["sidecar_start_order_source"] == "generator_manifest.metadata.target_sidecars"
+    assert summary["network_contract"] == [
+        {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+        {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+    ]
+    assert summary["network_contract_source"] == "runtime_recipe.service_env+sidecars"
+    assert summary["seed_strategy"] == "sidecar_sql_apply"
+    assert summary["seed_strategy_source"] == "runtime_recipe.seed_files+topology"
+    assert summary["seed_files"] == ["schema.sql"]
+    assert summary["seed_files_source"] == "executor_plan.seed_files"
+    assert summary["volume_contract"] == [
+        {
+            "scope": "sidecar:mysql-main",
+            "source": "workspace",
+            "target": "/seed-input",
+            "mode": "ro",
+        }
+    ]
+    assert summary["volume_contract_source"] == "runtime_recipe.seed_files+seed_strategy"
+    assert summary["seed_apply_attempted"] is True
+    assert summary["seed_apply_completed"] is True
+    assert summary["seed_files_applied_total"] == 1
+    assert summary["seed_mount_targets"] == ["/seed-input"]
     assert summary["performance_retry_count"] == 1
     assert summary["performance_by_stage"]["RESEARCH"]["duration_s"] == 3.2
+    assert summary["search_cache_hit_count"] == 2
+    assert summary["search_cache_miss_count"] == 1
+    assert summary["search_cache_reuse_ratio"] == 0.667
+    assert summary["search_planned_query_count"] == 4
+    assert summary["search_executed_query_count"] == 3
+    assert summary["search_early_stop_triggered"] is True
     assert summary["runtime_recipe"]["framework"] == "flask"
     assert summary["runtime_recipe_hypothetical"] is False
     assert summary["runtime_graph"]["topology"] == "single_service"
@@ -543,6 +805,7 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["executor_plan"]["health_path"] == "/health"
     assert summary["evidence_graph"]["schema_version"] == "evidence_graph@0.1"
     assert summary["artifact_quality"]["band"] == "medium"
+    assert summary["artifact_quality"]["qualitative_tier"] == "thin_or_incomplete"
     assert summary["stack_dependence"]["class"] == "repo_prior_bounded"
     assert summary["stack_dependence"]["stack_defaulted"] is True
     assert summary["stack_dependence"]["working_stack_evidence_backed"] is True
@@ -566,6 +829,9 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["name_only_planning_focus"]["by_focus"]["evidence_authority"] == [
         "family_candidate_evidence_missing"
     ]
+    assert summary["staged_recovery_strategy"] == "runtime_plan"
+    assert summary["staged_failure_stage"] == "runtime_plan"
+    assert summary["staged_failure_stage_reason"] == "runtime_plan_mismatch"
     assert summary["completion_state"]["stage_ceiling"] == "generated"
     assert summary["stage_ceiling"] == "generated"
     assert summary["fully_validated"] is False
@@ -576,6 +842,26 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["bundles"][0]["runtime_graph"]["topology"] == "single_service"
     assert summary["bundles"][0]["executor_plan"]["health_path"] == "/health"
     assert summary["bundles"][0]["evidence_graph"]["node_count"] == 3
+    assert summary["bundles"][0]["service_port_source"] == "executor_plan.service_port"
+    assert summary["bundles"][0]["service_entry_source"] == "executor_plan.service_entry"
+    assert summary["bundles"][0]["poc_entry"] == "poc.py"
+    assert summary["bundles"][0]["poc_entry_source"] == "executor_plan.poc_entry"
+    assert summary["bundles"][0]["poc_cmd"] == "python poc.py --base-url {{base_url}}"
+    assert summary["bundles"][0]["poc_cmd_source"] == "resolved_contract.poc_cmd"
+    assert summary["bundles"][0]["base_url_source"] == "executor_plan.base_url"
+    assert summary["bundles"][0]["health_path_source"] == "runtime_graph.healthchecks[service]"
+    assert summary["bundles"][0]["healthchecks"] == [
+        {"node": "service", "path": "/ready", "port": 9000, "transport": "http"}
+    ]
+    assert summary["bundles"][0]["healthchecks_source"] == "runtime_graph.healthchecks"
+    assert summary["bundles"][0]["runtime_service_env"] == {
+        "APP_PORT": "9000",
+        "DB_HOST": "db-internal",
+        "DB_NAME": "sqliapp",
+        "DB_USER": "sqli",
+        "DB_PASSWORD": "sqli_pw",
+        "DB_PORT": "3306",
+    }
     assert summary["bundles"][0]["stack_dependence"]["stack_source"] == "profile_prior"
     assert summary["bundles"][0]["stack_dependence"]["stack_defaulted"] is True
     assert summary["bundles"][0]["support_promotion_eligible"] is False
@@ -584,6 +870,53 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["bundles"][0]["open_world_selection_evidence_ready"] is True
     assert summary["bundles"][0]["name_only_primary_focus"] == "stack_or_runtime_design"
     assert summary["bundles"][0]["name_only_outcome"]["selected_family"] == "open_redirect"
+    assert summary["bundles"][0]["staged_recovery_strategy"] == "runtime_plan"
+    assert summary["bundles"][0]["staged_failure_stage"] == "runtime_plan"
+    assert summary["bundles"][0]["service_env_source"] == "runtime_hint_sidecar_defaults"
+    assert summary["bundles"][0]["sidecars_source"] == "generator_manifest.metadata.target_sidecars"
+    assert summary["bundles"][0]["executed_sidecars"] == [
+        {
+            "name": "mysql-main",
+            "type": "mysql",
+            "container": "sid-summary-surface-name-open-redirect-mysql-main",
+            "image": "mysql:8.0",
+            "aliases": ["db-internal"],
+            "start_order_index": 1,
+            "seed_mount_target": "/seed-input",
+            "seed_files_applied": ["schema.sql"],
+        }
+    ]
+    assert summary["bundles"][0]["sidecar_start_order"] == ["mysql-main"]
+    assert summary["bundles"][0]["sidecar_start_order_source"] == "generator_manifest.metadata.target_sidecars"
+    assert summary["bundles"][0]["allow_network"] is True
+    assert summary["bundles"][0]["allow_network_source"] == "runtime_topology_requires_network"
+    assert summary["bundles"][0]["network_mode_source"] == "runtime_topology_requires_network"
+    assert summary["bundles"][0]["network_contract"] == [
+        {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+        {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+    ]
+    assert summary["bundles"][0]["network_contract_source"] == "runtime_recipe.service_env+sidecars"
+    assert summary["bundles"][0]["seed_strategy"] == "sidecar_sql_apply"
+    assert summary["bundles"][0]["seed_strategy_source"] == "runtime_recipe.seed_files+topology"
+    assert summary["bundles"][0]["seed_files"] == ["schema.sql"]
+    assert summary["bundles"][0]["seed_files_source"] == "executor_plan.seed_files"
+    assert summary["bundles"][0]["oracle_execution_parity"] == "partial"
+    assert summary["bundles"][0]["oracle_execution_attempted"] is True
+    assert summary["bundles"][0]["artifact_quality"]["qualitative_tier"] == "thin_or_incomplete"
+    assert summary["bundles"][0]["volume_contract"] == [
+        {
+            "scope": "sidecar:mysql-main",
+            "source": "workspace",
+            "target": "/seed-input",
+            "mode": "ro",
+        }
+    ]
+    assert summary["bundles"][0]["volume_contract_source"] == "runtime_recipe.seed_files+seed_strategy"
+    assert summary["bundles"][0]["seed_apply_attempted"] is True
+    assert summary["bundles"][0]["seed_apply_completed"] is True
+    assert summary["bundles"][0]["seed_files_applied_total"] == 1
+    assert summary["bundles"][0]["seed_mount_targets"] == ["/seed-input"]
+    assert summary["bundles"][0]["staged_recovery"]["stage_aware_recovery_used"] is True
     assert summary["bundles"][0]["name_only_planning_focus"]["by_focus"]["stack_or_runtime_design"] == [
         "stack_defaulted",
         "stack_ambiguous",
@@ -591,3 +924,516 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["bundles"][0]["family_dependence"]["selection_source"] == "semantic_signature"
     assert summary["bundles"][0]["name_only_outcome"]["next_required_step"] == "execution"
     assert summary["bundles"][0]["completion_state"]["stage_ceiling"] == "generated"
+
+
+def test_load_manifest_summary_surfaces_top_level_terminal_failure_class_from_nested_name_only_outcome(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sid = "sid-summary-failure-class"
+    metadata_dir = tmp_path / "metadata" / sid
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking_bundles": [], "issues_sample": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "pipeline_result": "failure",
+                "name_only_outcome": {
+                    "request_kind": "name_only",
+                    "mode": "strict_dynamic",
+                    "decision": "fail_closed",
+                    "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                    "stage_ceiling": "pre_generation",
+                },
+                "bundles": [
+                    {
+                        "slug": "name-open-redirect",
+                        "vuln_id": "NAME-OPEN-REDIRECT",
+                        "name_only_outcome": {
+                            "request_kind": "name_only",
+                            "mode": "strict_dynamic",
+                            "decision": "fail_closed",
+                            "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                            "stage_ceiling": "pre_generation",
+                        },
+                        "failure": {
+                            "stage": "CAPABILITY_CHECK",
+                            "reason": "remote research unavailable",
+                            "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                        },
+                    }
+                ],
+                "reports": {"evals": {"overall_pass": False}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_case, "REPO_ROOT", tmp_path)
+
+    summary = run_case._load_manifest_summary(sid, pipeline_returncode=1)
+
+    assert summary["terminal_failure_class"] == "strict_dynamic_remote_research_unavailable"
+    assert summary["bundles"][0]["terminal_failure_class"] == "strict_dynamic_remote_research_unavailable"
+
+
+def test_load_manifest_summary_surfaces_multibundle_bundle_verdict_rollup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sid = "sid-summary-multibundle-verdict-rollup"
+    metadata_dir = tmp_path / "metadata" / sid
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking_bundles": [], "issues_sample": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "pipeline_result": "failure",
+                "run_passed_rollup": "mixed",
+                "verify_pass_rollup": "mixed",
+                "oracle_execution_parity_rollup": "mixed",
+                "oracle_execution_attempted_rollup": "mixed",
+                "qualitative_tier_rollup": "mixed",
+                "stage_ceiling_rollup": "mixed",
+                "terminal_failure_class_rollup": "mixed",
+                "verdict_authority": {
+                    "canonical_surface": "bundles",
+                    "top_level_role": "convenience_projection",
+                    "mode": "multi_bundle",
+                    "fields": {
+                        "run_passed": {
+                            "canonical_source": "bundles[].completion_state.run_passed",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "multibundle_rollup",
+                            "rollup_key": "run_passed_rollup",
+                        },
+                        "verify_pass": {
+                            "canonical_source": "bundles[].completion_state.verify_pass",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "multibundle_rollup",
+                            "rollup_key": "verify_pass_rollup",
+                        },
+                        "stage_ceiling": {
+                            "canonical_source": "bundles[].completion_state.stage_ceiling",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "multibundle_rollup",
+                            "rollup_key": "stage_ceiling_rollup",
+                        },
+                        "terminal_failure_class": {
+                            "canonical_source": "bundles[].failure.terminal_failure_class|bundles[].name_only_outcome.terminal_failure_class",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "multibundle_rollup",
+                            "rollup_key": "terminal_failure_class_rollup",
+                        },
+                        "oracle_execution_parity": {
+                            "canonical_source": "bundles[].artifact_quality.oracle_execution_parity",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "multibundle_rollup",
+                            "rollup_key": "oracle_execution_parity_rollup",
+                        },
+                        "oracle_execution_attempted": {
+                            "canonical_source": "bundles[].artifact_quality.oracle_execution_attempted",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "multibundle_rollup",
+                            "rollup_key": "oracle_execution_attempted_rollup",
+                        },
+                    },
+                },
+                "bundle_verdict_rollup": {
+                    "bundle_count": 2,
+                    "run_passed_bundles": 1,
+                    "run_failed_bundles": 0,
+                    "run_unknown_bundles": 1,
+                    "run_passed_consensus": "mixed",
+                    "verify_pass_bundles": 1,
+                    "verify_failed_bundles": 0,
+                    "verify_unknown_bundles": 1,
+                    "verify_pass_consensus": "mixed",
+                    "oracle_execution_attempted_bundles": 1,
+                    "oracle_execution_attempted_consensus": "mixed",
+                    "by_oracle_execution_parity": {"high": 1, "missing": 1},
+                    "oracle_execution_parity_consensus": "mixed",
+                    "by_qualitative_tier": {"thin_fallback_demo": 1, "planning_only": 1},
+                    "qualitative_tier_consensus": "mixed",
+                    "by_stage_ceiling": {"generated": 1, "pre_generation": 1},
+                    "stage_ceiling_consensus": "mixed",
+                    "by_terminal_failure_class": {"strict_dynamic_remote_research_unavailable": 1},
+                    "terminal_failure_class_consensus": "mixed",
+                },
+                "bundles": [
+                    {
+                        "slug": "name-template-injection",
+                        "vuln_id": "NAME-TEMPLATE-INJECTION",
+                        "artifacts": {
+                            "run_summary": {"run_passed": True},
+                            "eval_result": {"verify_pass": True},
+                        },
+                        "artifact_quality": {
+                            "oracle_execution_parity": "high",
+                            "oracle_execution_attempted": True,
+                            "qualitative_tier": "thin_fallback_demo",
+                        },
+                        "completion_state": {"stage_ceiling": "generated"},
+                    },
+                    {
+                        "slug": "name-custom-weird-vuln",
+                        "vuln_id": "NAME-CUSTOM-WEIRD-VULN",
+                        "name_only_outcome": {
+                            "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                        },
+                        "artifact_quality": {
+                            "oracle_execution_parity": "missing",
+                            "oracle_execution_attempted": False,
+                            "qualitative_tier": "planning_only",
+                        },
+                        "completion_state": {"stage_ceiling": "pre_generation"},
+                    },
+                ],
+                "reports": {"evals": {"overall_pass": False}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_case, "REPO_ROOT", tmp_path)
+
+    summary = run_case._load_manifest_summary(sid, pipeline_returncode=1)
+
+    assert summary["bundle_verdict_rollup"] == {
+        "bundle_count": 2,
+        "run_passed_bundles": 1,
+        "run_failed_bundles": 0,
+        "run_unknown_bundles": 1,
+        "run_passed_consensus": "mixed",
+        "verify_pass_bundles": 1,
+        "verify_failed_bundles": 0,
+        "verify_unknown_bundles": 1,
+        "verify_pass_consensus": "mixed",
+        "oracle_execution_attempted_bundles": 1,
+        "oracle_execution_attempted_consensus": "mixed",
+        "by_oracle_execution_parity": {"high": 1, "missing": 1},
+        "oracle_execution_parity_consensus": "mixed",
+        "by_qualitative_tier": {"thin_fallback_demo": 1, "planning_only": 1},
+        "qualitative_tier_consensus": "mixed",
+        "by_stage_ceiling": {"generated": 1, "pre_generation": 1},
+        "stage_ceiling_consensus": "mixed",
+        "by_terminal_failure_class": {"strict_dynamic_remote_research_unavailable": 1},
+        "terminal_failure_class_consensus": "mixed",
+    }
+    assert summary["run_passed_rollup"] == "mixed"
+    assert summary["verify_pass_rollup"] == "mixed"
+    assert summary["oracle_execution_parity_rollup"] == "mixed"
+    assert summary["oracle_execution_attempted_rollup"] == "mixed"
+    assert summary["qualitative_tier_rollup"] == "mixed"
+    assert summary["stage_ceiling_rollup"] == "mixed"
+    assert summary["terminal_failure_class_rollup"] == "mixed"
+    assert summary["verdict_authority"] == {
+        "canonical_surface": "bundles",
+        "top_level_role": "convenience_projection",
+        "mode": "multi_bundle",
+        "fields": {
+            "run_passed": {
+                "canonical_source": "bundles[].completion_state.run_passed",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "run_passed_rollup",
+            },
+            "verify_pass": {
+                "canonical_source": "bundles[].completion_state.verify_pass",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "verify_pass_rollup",
+            },
+            "stage_ceiling": {
+                "canonical_source": "bundles[].completion_state.stage_ceiling",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "stage_ceiling_rollup",
+            },
+            "terminal_failure_class": {
+                "canonical_source": "bundles[].failure.terminal_failure_class|bundles[].name_only_outcome.terminal_failure_class",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "terminal_failure_class_rollup",
+            },
+            "oracle_execution_parity": {
+                "canonical_source": "bundles[].artifact_quality.oracle_execution_parity",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "oracle_execution_parity_rollup",
+            },
+            "oracle_execution_attempted": {
+                "canonical_source": "bundles[].artifact_quality.oracle_execution_attempted",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "oracle_execution_attempted_rollup",
+            },
+        },
+    }
+
+
+def test_load_manifest_summary_surfaces_uniform_multibundle_top_level_verdict_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sid = "sid-summary-uniform-multibundle-top-level-verdicts"
+    metadata_dir = tmp_path / "metadata" / sid
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "reviewer_report.json").write_text(
+        json.dumps({"blocking_bundles": [], "issues_sample": []}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (metadata_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "sid": sid,
+                "pipeline_result": "failure",
+                "run_passed": False,
+                "run_passed_rollup": "all_false",
+                "verify_pass": None,
+                "verify_pass_rollup": "unknown",
+                "stage_ceiling": "pre_generation",
+                "stage_ceiling_rollup": "pre_generation",
+                "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                "terminal_failure_class_rollup": "strict_dynamic_remote_research_unavailable",
+                "oracle_execution_parity": "missing",
+                "oracle_execution_parity_rollup": "missing",
+                "oracle_execution_attempted": False,
+                "oracle_execution_attempted_rollup": "all_false",
+                "verdict_authority": {
+                    "canonical_surface": "bundles",
+                    "top_level_role": "convenience_projection",
+                    "mode": "multi_bundle",
+                    "fields": {
+                        "run_passed": {
+                            "canonical_source": "bundles[].completion_state.run_passed",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "uniform_multibundle_exact",
+                            "rollup_key": "run_passed_rollup",
+                            "exact_key": "run_passed",
+                        },
+                        "verify_pass": {
+                            "canonical_source": "bundles[].completion_state.verify_pass",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "uniform_multibundle_exact",
+                            "rollup_key": "verify_pass_rollup",
+                            "exact_key": "verify_pass",
+                        },
+                        "stage_ceiling": {
+                            "canonical_source": "bundles[].completion_state.stage_ceiling",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "uniform_multibundle_exact",
+                            "rollup_key": "stage_ceiling_rollup",
+                            "exact_key": "stage_ceiling",
+                        },
+                        "terminal_failure_class": {
+                            "canonical_source": "bundles[].failure.terminal_failure_class|bundles[].name_only_outcome.terminal_failure_class",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "uniform_multibundle_exact",
+                            "rollup_key": "terminal_failure_class_rollup",
+                            "exact_key": "terminal_failure_class",
+                        },
+                        "oracle_execution_parity": {
+                            "canonical_source": "bundles[].artifact_quality.oracle_execution_parity",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "uniform_multibundle_exact",
+                            "rollup_key": "oracle_execution_parity_rollup",
+                            "exact_key": "oracle_execution_parity",
+                        },
+                        "oracle_execution_attempted": {
+                            "canonical_source": "bundles[].artifact_quality.oracle_execution_attempted",
+                            "canonical_precedence": "bundle_truth",
+                            "projection_mode": "uniform_multibundle_exact",
+                            "rollup_key": "oracle_execution_attempted_rollup",
+                            "exact_key": "oracle_execution_attempted",
+                        },
+                    },
+                },
+                "bundles": [
+                    {
+                        "slug": "name-a",
+                        "vuln_id": "NAME-A",
+                        "completion_state": {"stage_ceiling": "pre_generation"},
+                        "failure": {"terminal_failure_class": "strict_dynamic_remote_research_unavailable"},
+                    },
+                    {
+                        "slug": "name-b",
+                        "vuln_id": "NAME-B",
+                        "completion_state": {"stage_ceiling": "pre_generation"},
+                        "failure": {"terminal_failure_class": "strict_dynamic_remote_research_unavailable"},
+                    },
+                ],
+                "reports": {"evals": {"overall_pass": False}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_case, "REPO_ROOT", tmp_path)
+
+    summary = run_case._load_manifest_summary(sid, pipeline_returncode=1)
+
+    assert summary["run_passed"] is False
+    assert summary["run_passed_rollup"] == "all_false"
+    assert summary["verify_pass"] is None
+    assert summary["verify_pass_rollup"] == "unknown"
+    assert summary["stage_ceiling"] == "pre_generation"
+    assert summary["stage_ceiling_rollup"] == "pre_generation"
+    assert summary["terminal_failure_class"] == "strict_dynamic_remote_research_unavailable"
+    assert summary["terminal_failure_class_rollup"] == "strict_dynamic_remote_research_unavailable"
+    assert summary["oracle_execution_parity"] == "missing"
+    assert summary["oracle_execution_parity_rollup"] == "missing"
+    assert summary["oracle_execution_attempted"] is False
+    assert summary["oracle_execution_attempted_rollup"] == "all_false"
+    assert summary["verdict_authority"] == {
+        "canonical_surface": "bundles",
+        "top_level_role": "convenience_projection",
+        "mode": "multi_bundle",
+        "fields": {
+            "run_passed": {
+                "canonical_source": "bundles[].completion_state.run_passed",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "run_passed_rollup",
+                "exact_key": "run_passed",
+            },
+            "verify_pass": {
+                "canonical_source": "bundles[].completion_state.verify_pass",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "verify_pass_rollup",
+                "exact_key": "verify_pass",
+            },
+            "stage_ceiling": {
+                "canonical_source": "bundles[].completion_state.stage_ceiling",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "stage_ceiling_rollup",
+                "exact_key": "stage_ceiling",
+            },
+            "terminal_failure_class": {
+                "canonical_source": "bundles[].failure.terminal_failure_class|bundles[].name_only_outcome.terminal_failure_class",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "terminal_failure_class_rollup",
+                "exact_key": "terminal_failure_class",
+            },
+            "oracle_execution_parity": {
+                "canonical_source": "bundles[].artifact_quality.oracle_execution_parity",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "oracle_execution_parity_rollup",
+                "exact_key": "oracle_execution_parity",
+            },
+            "oracle_execution_attempted": {
+                "canonical_source": "bundles[].artifact_quality.oracle_execution_attempted",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "oracle_execution_attempted_rollup",
+                "exact_key": "oracle_execution_attempted",
+            },
+        },
+    }
+
+
+def test_execute_case_annotates_case_matrix_and_writes_summary(tmp_path: Path, monkeypatch) -> None:
+    case_dir = tmp_path / "case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = tmp_path / "output"
+    written: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        run_case,
+        "_load_case_spec",
+        lambda _case_dir, _requirement_path=None: run_case.CaseSpec(
+            name="cwe-89-basic",
+            requirement={"target": {}},
+            runtime_assets={},
+            options={},
+        ),
+    )
+    monkeypatch.setattr(
+        run_case,
+        "_write_plan",
+        lambda requirement, *, multi_vuln_opt_in=False, sid_salt="": {
+            "sid": "sid-case-matrix",
+            "requirement": requirement,
+            "sid_salt": sid_salt,
+        },
+    )
+    monkeypatch.setattr(run_case, "_materialize_runtime_assets", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_case, "_case_requires_docker", lambda _expectations: False)
+    monkeypatch.setattr(
+        run_case,
+        "_execute_pipeline",
+        lambda _sid, _mode, _env: SimpleNamespace(returncode=0, stderr=""),
+    )
+    monkeypatch.setattr(
+        run_case,
+        "_load_manifest_summary",
+        lambda _sid, *, pipeline_returncode=None: {
+            "overall_pass": True,
+            "pipeline_result": "success",
+            "search_cache_hit_count": 2,
+            "search_cache_miss_count": 1,
+            "search_cache_reuse_ratio": 0.667,
+            "search_planned_query_count": 4,
+            "search_executed_query_count": 3,
+            "search_early_stop_triggered": True,
+        },
+    )
+
+    def _fake_write_summary(summary: dict, requirement: dict, destination: Path) -> Path:
+        written["summary"] = dict(summary)
+        written["requirement"] = dict(requirement)
+        destination.mkdir(parents=True, exist_ok=True)
+        path = destination / "summary.json"
+        path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(run_case, "_write_summary", _fake_write_summary)
+
+    summary = run_case.execute_case(
+        case_dir,
+        requirement_path=None,
+        expectations_path=None,
+        mode="deterministic",
+        snapshot=False,
+        output_dir=output_dir,
+    )
+
+    assert summary["case_name"] == "cwe-89-basic"
+    assert summary["matrix_axes"]["family_known"] == "known"
+    assert summary["case_matrix_exempt"] is False
+    assert summary["search_cache_hit_count"] == 2
+    assert summary["search_executed_query_count"] == 3
+    assert written["summary"] == summary
+
+
+def test_apply_execution_salt_rewrites_sid_and_paths(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(run_case, "REPO_ROOT", tmp_path)
+
+    salted = run_case._apply_execution_salt(
+        {
+            "sid": "sid-original",
+            "sid_inputs": {"components": {"seed": "0"}},
+            "paths": {
+                "metadata": "/tmp/metadata/sid-original",
+                "workspace": "/tmp/workspaces/sid-original/app",
+                "artifacts": "/tmp/artifacts/sid-original",
+            },
+        },
+        "salt-123",
+    )
+
+    assert salted["sid"] != "sid-original"
+    assert salted["sid"].startswith("sid-")
+    assert salted["sid_inputs"]["components"]["execution_salt"] == "salt-123"
+    assert salted["paths"]["metadata"] == str(tmp_path / "metadata" / salted["sid"])
+    assert salted["paths"]["workspace"] == str(tmp_path / "workspaces" / salted["sid"] / "app")
+    assert salted["paths"]["artifacts"] == str(tmp_path / "artifacts" / salted["sid"])

@@ -1243,6 +1243,11 @@ def test_write_perf_summary_records_retry_and_provider_health(tmp_path: Path, mo
                 "configured": True,
                 "degraded": False,
                 "remote_result_count": 3,
+                "cache_hit_count": 2,
+                "cache_miss_count": 1,
+                "planned_query_count": 4,
+                "executed_query_count": 3,
+                "early_stop_triggered": True,
             },
             ensure_ascii=False,
         ),
@@ -1277,6 +1282,12 @@ def test_write_perf_summary_records_retry_and_provider_health(tmp_path: Path, mo
     assert payload["retry_count"] == 1
     assert payload["provider_health_state"] == "llm_degraded"
     assert payload["llm_stub_used"] is True
+    assert payload["search_cache_hit_count"] == 2
+    assert payload["search_cache_miss_count"] == 1
+    assert payload["search_cache_reuse_ratio"] == 0.667
+    assert payload["search_planned_query_count"] == 4
+    assert payload["search_executed_query_count"] == 3
+    assert payload["search_early_stop_triggered"] is True
     assert payload["compiler_supported"] is False
     assert payload["compiler_strategy"] == "sqli_string_concat"
     assert payload["compiler_reason"] == "compiler scaffold registry not implemented"
@@ -1588,6 +1599,12 @@ def test_write_perf_summary_surfaces_strict_dynamic_remote_capability_gate_failu
 
     payload = json.loads((metadata_root / "performance_summary.json").read_text(encoding="utf-8"))
     assert payload["provider_health_state"] == "strict_dynamic_remote_research_unavailable"
+    assert payload["search_cache_hit_count"] == 0
+    assert payload["search_cache_miss_count"] == 0
+    assert payload["search_cache_reuse_ratio"] == 0.0
+    assert payload["search_planned_query_count"] == 0
+    assert payload["search_executed_query_count"] == 0
+    assert payload["search_early_stop_triggered"] is False
 
 
 def test_write_perf_summary_uses_bundle_scoped_research_failure_classes_for_provider_state(

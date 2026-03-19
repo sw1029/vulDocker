@@ -1130,7 +1130,48 @@ def _write_perf_summary(sid: str, events: List[Dict[str, Any]]) -> None:
         "lower_bounds": lower_bounds,
         "executor_feasibility": executor_feasibility,
         "total_duration_s": round(total, 3),
+        "search_cache_hit_count": 0,
+        "search_cache_miss_count": 0,
+        "search_cache_reuse_ratio": 0.0,
+        "search_planned_query_count": 0,
+        "search_executed_query_count": 0,
+        "search_early_stop_triggered": False,
     }
+    search_health_payloads = _search_health_payloads(sid)
+    if search_health_payloads:
+        cache_hit_count = sum(
+            int(item.get("cache_hit_count") or 0)
+            for item in search_health_payloads
+            if isinstance(item, dict)
+        )
+        cache_miss_count = sum(
+            int(item.get("cache_miss_count") or 0)
+            for item in search_health_payloads
+            if isinstance(item, dict)
+        )
+        planned_query_count = sum(
+            int(item.get("planned_query_count") or 0)
+            for item in search_health_payloads
+            if isinstance(item, dict)
+        )
+        executed_query_count = sum(
+            int(item.get("executed_query_count") or 0)
+            for item in search_health_payloads
+            if isinstance(item, dict)
+        )
+        payload["search_cache_hit_count"] = cache_hit_count
+        payload["search_cache_miss_count"] = cache_miss_count
+        payload["search_cache_reuse_ratio"] = round(
+            cache_hit_count / max(1, cache_hit_count + cache_miss_count),
+            3,
+        )
+        payload["search_planned_query_count"] = planned_query_count
+        payload["search_executed_query_count"] = executed_query_count
+        payload["search_early_stop_triggered"] = any(
+            bool(item.get("early_stop_triggered"))
+            for item in search_health_payloads
+            if isinstance(item, dict)
+        )
     if len(compiler_contracts) == 1:
         contract = compiler_contracts[0]
         if isinstance(contract.get("compiler_supported"), bool):

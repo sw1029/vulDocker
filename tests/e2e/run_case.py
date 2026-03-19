@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -29,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 from common.schema import normalize_requirement
 from common.runtime_assets import ensure_runtime_asset_seed_manifest, record_runtime_asset_seed
 from orchestrator import plan as plan_module
+from tests.e2e.case_matrix import case_matrix_axes, case_matrix_entry
 
 
 class CaseError(RuntimeError):
@@ -103,9 +105,40 @@ def _cleanup_sid_dirs(sid: str) -> None:
             shutil.rmtree(target)
 
 
-def _write_plan(requirement: Dict[str, Any], *, multi_vuln_opt_in: bool) -> Dict[str, Any]:
+def _execution_salt(*, output_dir: Optional[Path], case_name: str, attempt: int | None = None) -> str:
+    if output_dir is None:
+        return ""
+    payload = f"{case_name}|{output_dir.resolve()}"
+    if attempt is not None:
+        payload += f"|attempt={attempt}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _apply_execution_salt(plan: Dict[str, Any], sid_salt: str) -> Dict[str, Any]:
+    if not sid_salt:
+        return plan
+    base_sid = str(plan.get("sid") or "").strip()
+    salted_digest = hashlib.sha256(f"{base_sid}::{sid_salt}".encode("utf-8")).hexdigest()[:12]
+    salted_sid = f"sid-{salted_digest}"
+    salted = dict(plan)
+    salted["sid"] = salted_sid
+    sid_inputs = dict(salted.get("sid_inputs") or {})
+    components = dict(sid_inputs.get("components") or {})
+    components["execution_salt"] = sid_salt
+    sid_inputs["components"] = components
+    salted["sid_inputs"] = sid_inputs
+    salted["paths"] = {
+        "metadata": str(REPO_ROOT / "metadata" / salted_sid),
+        "workspace": str(REPO_ROOT / "workspaces" / salted_sid / "app"),
+        "artifacts": str(REPO_ROOT / "artifacts" / salted_sid),
+    }
+    return salted
+
+
+def _write_plan(requirement: Dict[str, Any], *, multi_vuln_opt_in: bool, sid_salt: str = "") -> Dict[str, Any]:
     normalization = normalize_requirement(requirement, multi_vuln_opt_in=multi_vuln_opt_in)
     plan = plan_module.build_plan(normalization)
+    plan = _apply_execution_salt(plan, sid_salt)
     sid = plan["sid"]
     _cleanup_sid_dirs(sid)
     plan_module.write_plan(plan)
@@ -196,10 +229,14 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
     manifest_path = _manifest_path_for_sid(sid)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     reports = (manifest.get("reports") or {}).get("evals") or {}
+    performance = manifest.get("performance") or {}
     reviewer_path = REPO_ROOT / "metadata" / sid / "reviewer_report.json"
     reviewer = json.loads(reviewer_path.read_text(encoding="utf-8")) if reviewer_path.exists() else {}
+    manifest_bundles = manifest.get("bundles") if isinstance(manifest.get("bundles"), list) else []
+    sid_inputs = manifest.get("sid_inputs") if isinstance(manifest.get("sid_inputs"), dict) else {}
+    sid_input_components = sid_inputs.get("components") if isinstance(sid_inputs.get("components"), dict) else {}
     bundles: List[Dict[str, Any]] = []
-    for bundle in manifest.get("bundles", []):
+    for bundle in manifest_bundles:
         artifacts = bundle.get("artifacts") or {}
         eval_result = artifacts.get("eval_result") or {}
         run_summary = artifacts.get("run_summary") or {}
@@ -213,6 +250,37 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "run_passed": run_summary.get("run_passed"),
                 "exit_code": run_summary.get("exit_code"),
                 "run_log": run_summary.get("run_log"),
+                "service_port_source": run_summary.get("service_port_source"),
+                "service_entry_source": run_summary.get("service_entry_source"),
+                "poc_entry": run_summary.get("poc_entry"),
+                "poc_entry_source": run_summary.get("poc_entry_source"),
+                "poc_cmd": run_summary.get("poc_cmd"),
+                "poc_cmd_source": run_summary.get("poc_cmd_source"),
+                "base_url_source": run_summary.get("base_url_source"),
+                "health_path_source": run_summary.get("health_path_source"),
+                "healthchecks": run_summary.get("healthchecks") or [],
+                "healthchecks_source": run_summary.get("healthchecks_source"),
+                "runtime_service_env": run_summary.get("service_env_runtime") or {},
+                "service_env_source": run_summary.get("service_env_source"),
+                "sidecars_source": run_summary.get("sidecars_source"),
+                "executed_sidecars": run_summary.get("sidecars") or [],
+                "sidecar_start_order": run_summary.get("sidecar_start_order") or [],
+                "sidecar_start_order_source": run_summary.get("sidecar_start_order_source"),
+                "allow_network": run_summary.get("allow_network"),
+                "allow_network_source": run_summary.get("allow_network_source"),
+                "network_mode_source": run_summary.get("network_mode_source"),
+                "network_contract": run_summary.get("network_contract") or [],
+                "network_contract_source": run_summary.get("network_contract_source"),
+                "seed_strategy": run_summary.get("seed_strategy"),
+                "seed_strategy_source": run_summary.get("seed_strategy_source"),
+                "seed_files": run_summary.get("seed_files") or [],
+                "seed_files_source": run_summary.get("seed_files_source"),
+                "volume_contract": run_summary.get("volume_contract") or [],
+                "volume_contract_source": run_summary.get("volume_contract_source"),
+                "seed_apply_attempted": bool(run_summary.get("seed_apply_attempted")),
+                "seed_apply_completed": bool(run_summary.get("seed_apply_completed")),
+                "seed_files_applied_total": int(run_summary.get("seed_files_applied_total") or 0),
+                "seed_mount_targets": run_summary.get("seed_mount_targets") or [],
                 "rule": eval_result.get("rule"),
                 "promotion_eligible": (bundle.get("promotion") or {}).get("eligible"),
                 "promotion_reasons": (bundle.get("promotion") or {}).get("reasons") or [],
@@ -302,17 +370,26 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "evidence_graph": bundle.get("evidence_graph") or {},
                 "dynamic_eval": bundle.get("dynamic_eval") or {},
                 "artifact_quality": bundle.get("artifact_quality") or {},
+                "oracle_execution_parity": ((bundle.get("artifact_quality") or {}) if isinstance(bundle.get("artifact_quality"), dict) else {}).get("oracle_execution_parity"),
+                "oracle_execution_attempted": ((bundle.get("artifact_quality") or {}) if isinstance(bundle.get("artifact_quality"), dict) else {}).get("oracle_execution_attempted"),
                 "stack_dependence": bundle.get("stack_dependence") or {},
                 "family_dependence": bundle.get("family_dependence") or {},
                 "intent_satisfaction": bundle.get("intent_satisfaction") or {},
                 "name_only_outcome": bundle.get("name_only_outcome") or {},
+                "staged_synthesis": bundle.get("staged_synthesis") or {},
+                "staged_recovery": bundle.get("staged_recovery") or {},
+                "staged_recovery_strategy": (bundle.get("staged_recovery") or {}).get("recovery_strategy"),
+                "staged_failure_stage": (bundle.get("staged_recovery") or {}).get("failure_stage"),
+                "staged_failure_stage_reason": (bundle.get("staged_recovery") or {}).get("failure_stage_reason"),
                 "completion_state": bundle.get("completion_state") or {},
                 "failure_reason": (bundle.get("failure") or {}).get("reason"),
                 "terminal_failure_class": (bundle.get("failure") or {}).get("terminal_failure_class"),
             }
         )
+    single_bundle_summary = bundles[0] if len(bundles) == 1 and isinstance(bundles[0], dict) else {}
     return {
         "sid": sid,
+        "execution_salt": str(sid_input_components.get("execution_salt") or "").strip() or None,
         "overall_pass": reports.get("overall_pass"),
         "pipeline_result": manifest.get("pipeline_result"),
         "promotion_eligible": (manifest.get("promotion") or {}).get("eligible"),
@@ -339,6 +416,8 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "strict_open_world_summary": manifest.get("strict_open_world_summary") or {},
         "dynamic_eval_summary": manifest.get("dynamic_eval_summary") or {},
         "artifact_quality_summary": manifest.get("artifact_quality_summary") or {},
+        "bundle_verdict_rollup": manifest.get("bundle_verdict_rollup") or {},
+        "verdict_authority": manifest.get("verdict_authority") or {},
         "evidence_graph_summary": manifest.get("evidence_graph_summary") or {},
         "template_dependence_summary": manifest.get("template_dependence_summary") or {},
         "runtime_surface_summary": manifest.get("runtime_surface_summary") or {},
@@ -347,6 +426,7 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "intent_satisfaction_summary": manifest.get("intent_satisfaction_summary") or {},
         "name_only_outcome_summary": manifest.get("name_only_outcome_summary") or {},
         "name_only_planning_summary": manifest.get("name_only_planning_summary") or {},
+        "staged_synthesis_summary": manifest.get("staged_synthesis_summary") or {},
         "partial_progress_summary": manifest.get("partial_progress_summary") or {},
         "completion_summary": manifest.get("completion_summary") or {},
         "compiler_supported": manifest.get("compiler_supported"),
@@ -358,6 +438,99 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "fragment_id": manifest.get("fragment_id"),
         "compose_mode": manifest.get("compose_mode"),
         "service_env": manifest.get("service_env"),
+        "service_port": manifest.get("service_port"),
+        "service_base_url": manifest.get("service_base_url"),
+        "run_passed": (
+            manifest.get("run_passed")
+            if isinstance(manifest.get("run_passed"), bool)
+            else single_bundle_summary.get("run_passed")
+            if isinstance(single_bundle_summary.get("run_passed"), bool)
+            else None
+        ),
+        "run_passed_rollup": manifest.get("run_passed_rollup"),
+        "verify_pass": (
+            manifest.get("verify_pass")
+            if "verify_pass" in manifest
+            and (isinstance(manifest.get("verify_pass"), bool) or manifest.get("verify_pass") is None)
+            else single_bundle_summary.get("verify_pass")
+            if isinstance(single_bundle_summary.get("verify_pass"), bool)
+            or single_bundle_summary.get("verify_pass") is None
+            else None
+        ),
+        "verify_pass_rollup": manifest.get("verify_pass_rollup"),
+        "service_port_source": manifest.get("service_port_source"),
+        "service_entry_source": manifest.get("service_entry_source"),
+        "poc_entry": (
+            manifest.get("poc_entry")
+            if isinstance(manifest.get("poc_entry"), str)
+            else single_bundle_summary.get("poc_entry")
+            if isinstance(single_bundle_summary.get("poc_entry"), str)
+            else None
+        ),
+        "poc_entry_source": (
+            manifest.get("poc_entry_source")
+            if isinstance(manifest.get("poc_entry_source"), str)
+            else single_bundle_summary.get("poc_entry_source")
+            if isinstance(single_bundle_summary.get("poc_entry_source"), str)
+            else None
+        ),
+        "poc_cmd": (
+            manifest.get("poc_cmd")
+            if isinstance(manifest.get("poc_cmd"), str)
+            else single_bundle_summary.get("poc_cmd")
+            if isinstance(single_bundle_summary.get("poc_cmd"), str)
+            else None
+        ),
+        "poc_cmd_source": (
+            manifest.get("poc_cmd_source")
+            if isinstance(manifest.get("poc_cmd_source"), str)
+            else single_bundle_summary.get("poc_cmd_source")
+            if isinstance(single_bundle_summary.get("poc_cmd_source"), str)
+            else None
+        ),
+        "base_url_source": manifest.get("base_url_source"),
+        "health_path_source": manifest.get("health_path_source"),
+        "healthchecks": manifest.get("healthchecks") or [],
+        "healthchecks_source": manifest.get("healthchecks_source"),
+        "runtime_service_env": manifest.get("service_env_runtime") or {},
+        "allow_network": manifest.get("allow_network"),
+        "service_env_source": manifest.get("service_env_source"),
+        "sidecars_source": manifest.get("sidecars_source"),
+        "network_mode": manifest.get("network_mode"),
+        "oracle_execution_parity": (
+            manifest.get("oracle_execution_parity")
+            if isinstance(manifest.get("oracle_execution_parity"), str)
+            else single_bundle_summary.get("oracle_execution_parity")
+            if isinstance(single_bundle_summary.get("oracle_execution_parity"), str)
+            else None
+        ),
+        "oracle_execution_parity_rollup": manifest.get("oracle_execution_parity_rollup"),
+        "oracle_execution_attempted": (
+            manifest.get("oracle_execution_attempted")
+            if isinstance(manifest.get("oracle_execution_attempted"), bool)
+            else single_bundle_summary.get("oracle_execution_attempted")
+            if isinstance(single_bundle_summary.get("oracle_execution_attempted"), bool)
+            else None
+        ),
+        "oracle_execution_attempted_rollup": manifest.get("oracle_execution_attempted_rollup"),
+        "qualitative_tier_rollup": manifest.get("qualitative_tier_rollup"),
+        "allow_network_source": manifest.get("allow_network_source"),
+        "network_mode_source": manifest.get("network_mode_source"),
+        "executed_sidecars": manifest.get("executed_sidecars") or [],
+        "sidecar_start_order": manifest.get("sidecar_start_order") or [],
+        "sidecar_start_order_source": manifest.get("sidecar_start_order_source"),
+        "network_contract": manifest.get("network_contract") or [],
+        "network_contract_source": manifest.get("network_contract_source"),
+        "seed_strategy": manifest.get("seed_strategy"),
+        "seed_strategy_source": manifest.get("seed_strategy_source"),
+        "seed_files": manifest.get("seed_files") or [],
+        "seed_files_source": manifest.get("seed_files_source"),
+        "volume_contract": manifest.get("volume_contract") or [],
+        "volume_contract_source": manifest.get("volume_contract_source"),
+        "seed_apply_attempted": bool(manifest.get("seed_apply_attempted")),
+        "seed_apply_completed": bool(manifest.get("seed_apply_completed")),
+        "seed_files_applied_total": int(manifest.get("seed_files_applied_total") or 0),
+        "seed_mount_targets": manifest.get("seed_mount_targets") or [],
         "request_identity": manifest.get("request_identity") or {},
         "request_ir": manifest.get("request_ir") or {},
         "name_resolution": manifest.get("name_resolution") or {},
@@ -374,12 +547,18 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "llm_fixture_used": (
             manifest.get("llm_fixture_used")
             if isinstance(manifest.get("llm_fixture_used"), bool)
-            else (manifest.get("performance") or {}).get("llm_fixture_used")
+            else performance.get("llm_fixture_used")
         ),
-        "provider_health_state": (manifest.get("performance") or {}).get("provider_health_state"),
-        "total_duration_s": (manifest.get("performance") or {}).get("total_duration_s"),
-        "performance_retry_count": (manifest.get("performance") or {}).get("retry_count"),
-        "performance_by_stage": (manifest.get("performance") or {}).get("by_stage") or {},
+        "provider_health_state": performance.get("provider_health_state"),
+        "total_duration_s": performance.get("total_duration_s"),
+        "performance_retry_count": performance.get("retry_count"),
+        "performance_by_stage": performance.get("by_stage") or {},
+        "search_cache_hit_count": int(performance.get("search_cache_hit_count") or 0),
+        "search_cache_miss_count": int(performance.get("search_cache_miss_count") or 0),
+        "search_cache_reuse_ratio": float(performance.get("search_cache_reuse_ratio") or 0.0),
+        "search_planned_query_count": int(performance.get("search_planned_query_count") or 0),
+        "search_executed_query_count": int(performance.get("search_executed_query_count") or 0),
+        "search_early_stop_triggered": bool(performance.get("search_early_stop_triggered")),
         "dynamicness_verdict": manifest.get("dynamicness_verdict"),
         "dynamicness_reason": manifest.get("dynamicness_reason"),
         "family_non_remote_available": manifest.get("family_non_remote_available"),
@@ -412,12 +591,23 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "family_dependence": manifest.get("family_dependence") or {},
         "intent_satisfaction": manifest.get("intent_satisfaction") or {},
         "name_only_outcome": manifest.get("name_only_outcome") or {},
+        "staged_synthesis": manifest.get("staged_synthesis") or {},
+        "staged_recovery": manifest.get("staged_recovery") or {},
+        "staged_recovery_strategy": manifest.get("staged_recovery_strategy"),
+        "staged_failure_stage": manifest.get("staged_failure_stage"),
+        "staged_failure_stage_reason": manifest.get("staged_failure_stage_reason"),
         "name_only_decision": manifest.get("name_only_decision"),
         "name_only_next_required_step": manifest.get("name_only_next_required_step"),
         "name_only_planning_focus": manifest.get("name_only_planning_focus") or {},
         "name_only_primary_focus": manifest.get("name_only_primary_focus"),
         "completion_state": manifest.get("completion_state") or {},
         "stage_ceiling": manifest.get("stage_ceiling"),
+        "stage_ceiling_rollup": manifest.get("stage_ceiling_rollup"),
+        "terminal_failure_class": (
+            manifest.get("terminal_failure_class")
+            or ((manifest.get("name_only_outcome") or {}) if isinstance(manifest.get("name_only_outcome"), dict) else {}).get("terminal_failure_class")
+        ),
+        "terminal_failure_class_rollup": manifest.get("terminal_failure_class_rollup"),
         "fully_validated": manifest.get("fully_validated"),
         "researcher": manifest.get("researcher") or {},
         "pipeline_returncode": pipeline_returncode,
@@ -881,7 +1071,11 @@ def _snapshot_outputs(sid: str, destination: Path) -> None:
 
 def execute_case(case_dir: Path, *, requirement_path: Optional[Path], expectations_path: Optional[Path], mode: str, snapshot: bool, output_dir: Optional[Path]) -> Dict[str, Any]:
     case_spec = _load_case_spec(case_dir, requirement_path)
-    plan = _write_plan(case_spec.requirement, multi_vuln_opt_in=bool(case_spec.options.get("multi_vuln_opt_in", False)))
+    plan = _write_plan(
+        case_spec.requirement,
+        multi_vuln_opt_in=bool(case_spec.options.get("multi_vuln_opt_in", False)),
+        sid_salt=_execution_salt(output_dir=output_dir, case_name=case_spec.name),
+    )
     sid = plan["sid"]
     env = os.environ.copy()
     env["SID"] = sid
@@ -897,6 +1091,10 @@ def execute_case(case_dir: Path, *, requirement_path: Optional[Path], expectatio
         _ensure_docker_ready(env)
     proc = _execute_pipeline(sid, mode, env)
     summary = _load_manifest_summary(sid, pipeline_returncode=proc.returncode)
+    matrix_entry = case_matrix_entry(case_spec.name)
+    summary["case_name"] = case_spec.name
+    summary["matrix_axes"] = case_matrix_axes(case_spec.name)
+    summary["case_matrix_exempt"] = bool(matrix_entry.get("exempt"))
     destination = output_dir or (case_dir / "outputs" / sid)
     summary_path = _write_summary(summary, plan.get("requirement", case_spec.requirement), destination)
     if snapshot:

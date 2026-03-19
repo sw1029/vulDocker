@@ -199,8 +199,13 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                 "flag_token": "FLAG{OPEN_REDIRECT_OK}",
                 "negative_text_markers": ["Exploit FAILED"],
                 "forbidden_success_markers": ["false positive"],
-                "negative_controls": [{"name": "benign-next", "expect_success": False}],
-                "metamorphic": {"total": 1, "passed": 1, "rationale": "same-origin redirect stays non-exploit"},
+                "negative_controls": [{"name": "benign-next", "expect_success": False, "payload": "/local"}],
+                "metamorphic": {
+                    "total": 1,
+                    "passed": 1,
+                    "rationale": "same-origin redirect stays non-exploit",
+                    "cases": [{"name": "same-origin", "payload": "/local", "expect_success": False}],
+                },
                 "poc_cmd": "python poc.py --base-url {{base_url}}",
             },
             "name_only_generation_spec": {
@@ -224,6 +229,15 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                             "support_count": 1,
                             "support_by_source_authority": {"medium": 1},
                         },
+                        "scenario": {
+                            "selected": True,
+                            "selected_scenario_id": "family=open_redirect|stack=python/flask|topology=single_service",
+                            "selected_topology": "single_service",
+                            "selected_oracle_mode": "stateful_text",
+                            "selected_oracle_source": "primitive_family_inference",
+                            "support_count": 1,
+                            "support_by_source_authority": {"high": 1},
+                        },
                         "ready_for_materialization": True,
                     },
                 },
@@ -243,6 +257,37 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                 "negative_hypotheses": [
                     {"family": "xss", "source": "researcher_contradiction"},
                 ],
+                "provisional_family": "open_redirect",
+                "primitive_hypotheses": [
+                    {"kind": "input_vector", "value": "redirect parameter", "source": "semantic_signature"},
+                    {"kind": "sink", "value": "location header", "source": "semantic_signature"},
+                ],
+                "runtime_dependency_hypotheses": [
+                    {"kind": "sidecar", "value": "http-mock", "source": "runtime_recipe", "confidence": "medium"},
+                ],
+                "oracle_hypotheses": [
+                    {
+                        "mode": "stateful_text",
+                        "source": "primitive_family_inference",
+                        "confidence": "low",
+                        "negative_control_present": True,
+                        "metamorphic_present": True,
+                        "output_mode": "auto",
+                    },
+                ],
+                "topology_hypotheses": [
+                    {"topology": "single_service", "source": "runtime_recipe", "confidence": "high"},
+                    {"topology": "service_plus_sidecar", "source": "runtime_feasibility", "confidence": "medium"},
+                ],
+                "scenario_candidate_summary": {
+                    "candidate_count": 2,
+                    "selected_candidate_count": 1,
+                    "evidence_backed_candidate_count": 1,
+                    "top_scenario_id": "family=open_redirect|stack=python/flask|topology=single_service",
+                    "top_oracle_mode": "stateful_text",
+                    "selected_scenario_id": "family=open_redirect|stack=python/flask|topology=single_service",
+                    "selected_oracle_mode": "stateful_text",
+                },
                 "runtime_recipe_summary": {
                     "language": "python",
                     "framework": "flask",
@@ -293,6 +338,64 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
                     ],
                 },
             },
+            "staged_synthesis": {
+                "schema_version": "staged_synthesis@0.1",
+                "stage_order": [
+                    "candidate_resolution",
+                    "design_brief",
+                    "runtime_plan",
+                    "oracle_contract",
+                ],
+                "candidate_resolution": {
+                    "request_label": "Open Redirect",
+                    "resolved_vuln_id": "NAME-OPEN-REDIRECT",
+                    "effective_mode": "dynamic",
+                    "selected_family": "open_redirect",
+                    "selected_stack_id": "python/flask",
+                    "selected_topology": "single_service",
+                    "selected_oracle_mode": "stateful_text",
+                    "selected_oracle_source": "primitive_family_inference",
+                    "ready_for_materialization": True,
+                    "open_world_evidence_ready": True,
+                },
+                "design_brief": {
+                    "working_family": "open_redirect",
+                    "selected_scenario_id": "family=open_redirect|stack=python/flask|topology=single_service",
+                    "selected_topology": "single_service",
+                    "selected_oracle_mode": "stateful_text",
+                    "selected_oracle_source": "primitive_family_inference",
+                    "primary_focus": "open_world_generation",
+                    "focuses": ["open_world_generation"],
+                    "dependency_set": ["service", "sidecar:http-mock"],
+                    "required_roles": [
+                        "service_main",
+                        "poc_entry",
+                        "oracle_state_checks",
+                        "negative_control_cases",
+                        "metamorphic_cases",
+                    ],
+                },
+                "runtime_plan": {
+                    "stack_id": "python/flask",
+                    "topology": "single_service",
+                    "topology_source": "primitive_family_inference",
+                    "network_mode": "none",
+                    "db": "sqlite",
+                    "db_source": "primitive_family_inference",
+                    "service_port": 8000,
+                    "executor_health_path": "/health",
+                },
+                "oracle_contract": {
+                    "success_signature": "Exploit SUCCESS",
+                    "flag_token": "FLAG{OPEN_REDIRECT_OK}",
+                    "output_mode": "auto",
+                    "source": "researcher_verification_spec",
+                    "mode": "stateful_text",
+                    "confidence": "low",
+                    "negative_control_present": True,
+                    "metamorphic_present": True,
+                },
+            },
             "executor_plan": {
                 "service_port": 8000,
                 "health_path": "/health",
@@ -307,6 +410,7 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
 
     assert "# Name-Only Generation Spec" in prompt
     assert "Original request label: `Open Redirect`." in prompt
+    assert "# Staged Synthesis Control-Plane" in prompt
     assert "Request resolution state: `catalog_alias`." in prompt
     assert "Pattern seed state: `preserved`." in prompt
     assert (
@@ -317,6 +421,10 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
         "Request IR selected stack: stack=`python/flask`, basis=`researcher_top_candidate`, margin=`0.35`, "
         "support_count=`1`, support_authority=`medium:1`."
     ) in prompt
+    assert (
+        "Request IR selected scenario: scenario=`family=open_redirect|stack=python/flask|topology=single_service`, "
+        "topology=`single_service`, oracle_mode=`stateful_text` (primitive_family_inference), support_count=`1`, support_authority=`high:1`."
+    ) in prompt
     assert "Working family hypothesis: `open_redirect` (request_identity)." in prompt
     assert (
         "Family candidate preview: top=`open_redirect`, source=`catalog_resolution`, confidence=`high`, "
@@ -326,8 +434,46 @@ def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:
     assert "Negative markers (must stay absent on success): `Exploit FAILED`." in prompt
     assert "Forbidden success markers: `false positive`." in prompt
     assert "Negative control cases: `1`." in prompt
-    assert "Metamorphic oracle context: total=`1`, passed=`1`, rationale=`same-origin redirect stays non-exploit`." in prompt
+    assert "Metamorphic oracle context:" in prompt
+    assert "total=`1`" in prompt
+    assert "passed=`1`" in prompt
+    assert "rationale=`same-origin redirect stays non-exploit`" in prompt
+    assert "Runnable negative control payloads: `1`." in prompt
+    assert "runnable_cases=`1`" in prompt
     assert "Negative family hypotheses: `xss`." in prompt
+    assert "Provisional family hypothesis remains open: `open_redirect`." in prompt
+    assert "Primitive hypothesis preview: `input_vector:redirect parameter`, `sink:location header`." in prompt
+    assert "Runtime dependency hypotheses: `sidecar:http-mock`." in prompt
+    assert "Oracle hypotheses: `stateful_text (primitive_family_inference, low)`." in prompt
+    assert "Topology hypotheses: `single_service (runtime_recipe, high)`, `service_plus_sidecar (runtime_feasibility, medium)`." in prompt
+    assert (
+        "Scenario candidate preview: count=`2`, selected_count=`1`, evidence_backed_count=`1`, "
+        "top=`family=open_redirect|stack=python/flask|topology=single_service`, top_oracle=`stateful_text`, "
+        "selected=`family=open_redirect|stack=python/flask|topology=single_service`, selected_oracle=`stateful_text`."
+    ) in prompt
+    assert "Stage order: `candidate_resolution`, `design_brief`, `runtime_plan`, `oracle_contract`." in prompt
+    assert (
+        "Candidate resolution: request_label=`Open Redirect`, resolved_vuln_id=`NAME-OPEN-REDIRECT`, "
+        "effective_mode=`dynamic`, selected_family=`open_redirect`, selected_stack_id=`python/flask`, "
+        "selected_topology=`single_service`, selected_oracle_mode=`stateful_text`, selected_oracle_source=`primitive_family_inference`, "
+        "ready_for_materialization=`True`, open_world_evidence_ready=`True`."
+    ) in prompt
+    assert (
+        "Design brief: working_family=`open_redirect`, selected_scenario_id=`family=open_redirect|stack=python/flask|topology=single_service`, "
+        "selected_topology=`single_service`, selected_oracle_mode=`stateful_text`, selected_oracle_source=`primitive_family_inference`, "
+        "primary_focus=`open_world_generation`, focuses=`open_world_generation`, dependency_set=`service,sidecar:http-mock`, "
+        "required_roles=`service_main,poc_entry,oracle_state_checks,negative_control_cases,metamorphic_cases`."
+    ) in prompt
+    assert (
+        "Runtime plan: stack_id=`python/flask`, topology=`single_service`, topology_source=`primitive_family_inference`, "
+        "network_mode=`none`, db=`sqlite`, db_source=`primitive_family_inference`, executor_health_path=`/health`, "
+        "service_port=`8000`."
+    ) in prompt
+    assert (
+        "Oracle contract: success_signature=`Exploit SUCCESS`, flag_token=`FLAG{OPEN_REDIRECT_OK}`, "
+        "output_mode=`auto`, source=`researcher_verification_spec`, mode=`stateful_text`, confidence=`low`, "
+        "negative_control_present=`True`, metamorphic_present=`True`."
+    ) in prompt
     assert "Runtime stack remains repo-prior/defaulted and is not evidence-backed yet." not in prompt
     assert "Runtime stack selection: selected=`python/flask`, confidence=`medium`, margin=`0.35`, basis=`researcher_top_candidate`." in prompt
     assert "Stack candidate preview: working=`python/flask`, source=`researcher_candidate`, locked=`False`, defaulted=`False`, count=`2`, top_confidence=`medium`." in prompt

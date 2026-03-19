@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -73,6 +74,7 @@ def test_aggregate_repeat_results_counts_failures() -> None:
     )
 
     assert report["case"] == "cwe-89-basic"
+    assert report["case_name"] == "cwe-89-basic"
     assert report["attempt_count"] == 3
     assert report["success_count"] == 1
     assert report["failure_count"] == 2
@@ -192,4 +194,8 @@ def test_execute_repeat_gate_forwards_pipeline_returncode_into_summary_expectati
     )
 
     assert report["passed"] is True
+    assert report["case_name"] == "repeat-case"
     assert captured == [0]
+    matrix_report = json.loads(Path(report["matrix_report_path"]).read_text(encoding="utf-8"))
+    assert matrix_report["requested_case_name"] == "repeat-case"
+    assert "case is not declared in case_matrix.json" in matrix_report["matrix_unavailable_reason"]

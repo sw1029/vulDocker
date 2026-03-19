@@ -24,13 +24,14 @@ from common.researcher_report import (
     extract_verification_spec,
     normalize_researcher_report_payload,
 )
-from common.name_only import build_name_only_contract, is_name_driven_requirement
+from common.name_only import build_name_only_contract, is_name_driven_requirement, name_only_mode
 from common.runtime_surface import derive_service_env
 from common.rules import load_rule, load_rulespec, load_static_rule
 from common.vuln_catalog import (
     catalog_semantic_support_defaults,
     resolve_compiler_strategy,
     resolve_vuln_catalog_entry,
+    vuln_catalog_entries,
 )
 from common.vuln_semantics import (
     FAMILY_CANONICAL_TAGS,
@@ -489,6 +490,10 @@ def build_generator_contract(
         },
         researcher_report=report,
     )
+    recipe_service_env = runtime_recipe.get("service_env") if isinstance(runtime_recipe.get("service_env"), dict) else {}
+    if recipe_service_env:
+        service_env = deepcopy(recipe_service_env)
+        sources["service_env"] = str(runtime_recipe.get("service_env_source") or sources.get("service_env") or "runtime_recipe")
 
     resolved_payload = {
         "service_entry": service_entry,
@@ -543,6 +548,18 @@ def build_generator_contract(
         runtime_recipe=runtime_recipe,
         evidence_graph=evidence_graph,
     )
+    runtime_recipe, runtime_graph, executor_plan = _enrich_runtime_contract_surfaces(
+        request_ir=enriched_request_ir,
+        runtime_recipe=runtime_recipe,
+        runtime_graph=runtime_graph,
+        executor_plan=executor_plan,
+    )
+    if runtime_recipe:
+        payload["runtime_recipe"] = deepcopy(runtime_recipe)
+    if runtime_graph:
+        payload["runtime_graph"] = deepcopy(runtime_graph)
+    if executor_plan:
+        payload["executor_plan"] = deepcopy(executor_plan)
     if enriched_request_ir:
         payload["request_ir"] = deepcopy(enriched_request_ir)
     name_only_generation_spec = _build_name_only_generation_spec(
@@ -556,6 +573,16 @@ def build_generator_contract(
     )
     if name_only_generation_spec:
         payload["name_only_generation_spec"] = name_only_generation_spec
+    staged_synthesis = _build_staged_synthesis(
+        requirement=requirement or {},
+        request_ir=enriched_request_ir,
+        runtime_recipe=runtime_recipe,
+        executor_plan=executor_plan,
+        exploit_oracle=exploit_oracle,
+        name_only_generation_spec=name_only_generation_spec,
+    )
+    if staged_synthesis:
+        payload["staged_synthesis"] = staged_synthesis
     if provenance:
         payload["provenance"] = provenance
     if proposal:
@@ -632,6 +659,8 @@ def build_generator_contract(
         payload["exploit_oracle"] = deepcopy(exploit_oracle)
     if name_only_generation_spec:
         payload["name_only_generation_spec"] = deepcopy(name_only_generation_spec)
+    if staged_synthesis:
+        payload["staged_synthesis"] = deepcopy(staged_synthesis)
     generation_origin = _string_or_none(provenance.get("generation_origin")) if provenance else None
     if generation_origin:
         payload["generation_origin"] = generation_origin
@@ -1874,7 +1903,28 @@ def _build_runtime_recipe(
         or _string_or_none(req.get("database"))
     )
     allow_external_db = bool(runtime.get("allow_external_db", False))
+    service_port = resolved.get("service_port")
     sidecars = _runtime_sidecars(executor)
+    sidecars_source = "requirement.executor.sidecars" if sidecars else None
+    target_db_hint, target_sidecars_hint, target_topology_hint = _manifest_target_runtime_hints(manifest)
+    if not sidecars:
+        synthesized_sidecars = _synthesized_runtime_sidecars(
+            target_db=target_db_hint,
+            target_sidecars=target_sidecars_hint,
+            service_env=service_env,
+        )
+        if synthesized_sidecars:
+            sidecars = synthesized_sidecars
+            sidecars_source = "generator_manifest.metadata.target_sidecars"
+    service_env, service_env_source = _synthesized_runtime_service_env(
+        service_env=service_env,
+        service_port=service_port if isinstance(service_port, int) else DEFAULT_APP_PORT,
+        sidecars=sidecars,
+        target_db=target_db_hint,
+        target_sidecars=target_sidecars_hint,
+    )
+    if not db and target_db_hint:
+        db = target_db_hint
     template_requires_external_db = _bool_or_none(template.get("requires_external_db")) is True
     manifest_requires_external_db = _bool_or_none(manifest.get("requires_external_db")) is True
     requires_external_db = template_requires_external_db or manifest_requires_external_db or (db or "").lower() in {
@@ -1882,14 +1932,50 @@ def _build_runtime_recipe(
         "mariadb",
         "postgres",
         "postgresql",
-    }
+    } or bool(sidecars)
+    policy_allow_network = _bool_or_none(executor.get("allow_network"))
+    policy_network_mode = _string_or_none(executor.get("network_mode"))
     feasibility = executor_feasibility_summary(
         req,
         executor,
         requires_external_db=requires_external_db,
     )
-    service_port = resolved.get("service_port")
     topology = "service_plus_sidecar" if sidecars or feasibility.get("requires_external_db") else "single_service"
+    if not sidecars and target_topology_hint == "service_plus_sidecar":
+        topology = "service_plus_sidecar"
+    requires_runtime_network = bool(sidecars or topology == "service_plus_sidecar" or requires_external_db)
+    network_enabled = bool(feasibility.get("network_enabled"))
+    network_enabled_source = "executor_feasibility"
+    if policy_allow_network is None and requires_runtime_network:
+        network_enabled = True
+        network_enabled_source = "runtime_topology_requires_network"
+    elif policy_allow_network is False:
+        network_enabled = False
+        network_enabled_source = "requirement.executor.allow_network"
+    network_mode = _string_or_none(feasibility.get("network_mode")) or "none"
+    network_mode_source = "executor_feasibility"
+    if policy_network_mode:
+        network_mode = policy_network_mode
+        network_mode_source = "requirement.executor.network_mode"
+    elif network_enabled and requires_runtime_network:
+        network_mode = "bridge"
+        network_mode_source = "runtime_topology_requires_network"
+    seed_files = _runtime_seed_files(manifest)
+    seed_strategy, seed_strategy_source = _runtime_seed_strategy(
+        seed_files=seed_files,
+        db=db,
+        requires_external_db=bool(feasibility.get("requires_external_db")),
+        topology=topology,
+    )
+    volume_contract, volume_contract_source = _runtime_volume_contract(
+        seed_files=seed_files,
+        seed_strategy=seed_strategy,
+        sidecars=sidecars,
+    )
+    network_contract, network_contract_source = _runtime_network_contract(
+        service_env=service_env,
+        sidecars=sidecars,
+    )
     stack_hypotheses = stack.get("stack_hypotheses") if isinstance(stack.get("stack_hypotheses"), list) else []
     recipe: Dict[str, Any] = {
         "language": _string_or_none(stack.get("language")) or "python",
@@ -1904,14 +1990,40 @@ def _build_runtime_recipe(
         "db": db,
         "allow_external_db": allow_external_db,
         "requires_external_db": bool(feasibility.get("requires_external_db")),
-        "network_mode": _string_or_none(feasibility.get("network_mode")) or "none",
-        "network_enabled": bool(feasibility.get("network_enabled")),
+        "network_mode": network_mode,
+        "network_enabled": network_enabled,
         "sidecars": sidecars,
         "service_env": service_env,
-        "seed_files": _runtime_seed_files(manifest),
+        "seed_files": seed_files,
         "topology": topology,
         "output_mode": _string_or_none(resolved.get("output_mode")) or "auto",
     }
+    if sidecars_source:
+        recipe["sidecars_source"] = sidecars_source
+    sidecar_start_order = [
+        str(item.get("name") or "").strip()
+        for item in sidecars
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
+    if sidecar_start_order:
+        recipe["sidecar_start_order"] = sidecar_start_order
+        recipe["sidecar_start_order_source"] = sidecars_source or "runtime_recipe.sidecars"
+    if service_env_source:
+        recipe["service_env_source"] = service_env_source
+    if seed_strategy:
+        recipe["seed_strategy"] = seed_strategy
+    if seed_strategy_source:
+        recipe["seed_strategy_source"] = seed_strategy_source
+    if volume_contract:
+        recipe["volume_contract"] = volume_contract
+    if volume_contract_source:
+        recipe["volume_contract_source"] = volume_contract_source
+    if network_contract:
+        recipe["network_contract"] = network_contract
+    if network_contract_source:
+        recipe["network_contract_source"] = network_contract_source
+    recipe["network_mode_source"] = network_mode_source
+    recipe["network_enabled_source"] = network_enabled_source
     if stack_hypotheses:
         recipe["stack_hypotheses"] = deepcopy(stack_hypotheses)
     if isinstance(stack.get("stack_selection"), dict) and stack.get("stack_selection"):
@@ -1957,6 +2069,16 @@ def _build_runtime_graph(
         }
     ]
     raw_sidecars = recipe.get("sidecars") if isinstance(recipe.get("sidecars"), list) else []
+    sidecar_start_order = (
+        deepcopy(recipe.get("sidecar_start_order"))
+        if isinstance(recipe.get("sidecar_start_order"), list)
+        else []
+    )
+    sidecar_order_index = {
+        str(name).strip(): idx + 1
+        for idx, name in enumerate(sidecar_start_order)
+        if isinstance(name, str) and str(name).strip()
+    }
     for sidecar in raw_sidecars:
         if not isinstance(sidecar, dict):
             continue
@@ -1964,6 +2086,7 @@ def _build_runtime_graph(
         if not name:
             continue
         node_id = f"sidecar:{name}"
+        startup_order_index = sidecar_order_index.get(name)
         nodes.append(
             {
                 "id": node_id,
@@ -1972,8 +2095,17 @@ def _build_runtime_graph(
                 "sidecar_type": _string_or_none(sidecar.get("type")) or "unknown",
                 "image": _string_or_none(sidecar.get("image")),
                 "aliases": deepcopy(sidecar.get("aliases")) if isinstance(sidecar.get("aliases"), list) else [],
+                "env": deepcopy(sidecar.get("env")) if isinstance(sidecar.get("env"), dict) else {},
+                "ready_probe": deepcopy(sidecar.get("ready_probe")) if isinstance(sidecar.get("ready_probe"), dict) else {},
+                "startup_order_index": startup_order_index,
             }
         )
+        startup_after = None
+        if isinstance(startup_order_index, int) and startup_order_index > 1:
+            previous_name = sidecar_start_order[startup_order_index - 2]
+            previous_name = str(previous_name).strip() if isinstance(previous_name, str) else ""
+            if previous_name:
+                startup_after = f"sidecar:{previous_name}"
         edges.append(
             {
                 "from": "service",
@@ -1981,6 +2113,8 @@ def _build_runtime_graph(
                 "kind": "runtime_dependency",
                 "dependency_type": _string_or_none(sidecar.get("type")) or "unknown",
                 "network_mode": _string_or_none(recipe.get("network_mode")) or "none",
+                "startup_order_index": startup_order_index,
+                "startup_after": startup_after,
             }
         )
     env_contract = [
@@ -1988,6 +2122,23 @@ def _build_runtime_graph(
         for key, value in (recipe.get("service_env") or {}).items()
         if isinstance(key, str) and key.strip() and value not in (None, "")
     ]
+    for sidecar in raw_sidecars:
+        if not isinstance(sidecar, dict):
+            continue
+        sidecar_name = _string_or_none(sidecar.get("name"))
+        sidecar_env = sidecar.get("env") if isinstance(sidecar.get("env"), dict) else {}
+        if not sidecar_name or not sidecar_env:
+            continue
+        for key, value in sidecar_env.items():
+            if not isinstance(key, str) or not key.strip() or value in (None, ""):
+                continue
+            env_contract.append(
+                {
+                    "scope": f"sidecar:{sidecar_name.strip().lower()}",
+                    "name": str(key),
+                    "value": str(value),
+                }
+            )
     healthchecks: list[Dict[str, Any]] = []
     health_path = _string_or_none(recipe.get("health_path"))
     if health_path:
@@ -2025,9 +2176,52 @@ def _build_runtime_graph(
     seed_files = deepcopy(recipe.get("seed_files")) if isinstance(recipe.get("seed_files"), list) else []
     if seed_files:
         graph["seed_files"] = seed_files
+    seed_strategy = _string_or_none(recipe.get("seed_strategy"))
+    if seed_strategy:
+        graph["seed_strategy"] = seed_strategy
+    seed_strategy_source = _string_or_none(recipe.get("seed_strategy_source"))
+    if seed_strategy_source:
+        graph["seed_strategy_source"] = seed_strategy_source
+    volume_contract = deepcopy(recipe.get("volume_contract")) if isinstance(recipe.get("volume_contract"), list) else []
+    if volume_contract:
+        graph["volume_contract"] = volume_contract
+    volume_contract_source = _string_or_none(recipe.get("volume_contract_source"))
+    if volume_contract_source:
+        graph["volume_contract_source"] = volume_contract_source
+    network_contract = deepcopy(recipe.get("network_contract")) if isinstance(recipe.get("network_contract"), list) else []
+    if not network_contract:
+        derived_network_contract, derived_network_contract_source = _runtime_network_contract(
+            service_env=recipe.get("service_env") if isinstance(recipe.get("service_env"), dict) else {},
+            sidecars=raw_sidecars,
+        )
+        network_contract = derived_network_contract
+        if derived_network_contract_source and not _string_or_none(recipe.get("network_contract_source")):
+            recipe["network_contract_source"] = derived_network_contract_source
+    if network_contract:
+        graph["network_contract"] = network_contract
+    network_contract_source = _string_or_none(recipe.get("network_contract_source"))
+    if network_contract_source:
+        graph["network_contract_source"] = network_contract_source
     db = _string_or_none(recipe.get("db"))
     if db:
         graph["db"] = db
+    if sidecar_start_order:
+        graph["sidecar_start_order"] = sidecar_start_order
+    sidecar_start_order_source = _string_or_none(recipe.get("sidecar_start_order_source"))
+    if sidecar_start_order_source:
+        graph["sidecar_start_order_source"] = sidecar_start_order_source
+    sidecars_source = _string_or_none(recipe.get("sidecars_source"))
+    if sidecars_source:
+        graph["sidecars_source"] = sidecars_source
+    service_env_source = _string_or_none(recipe.get("service_env_source"))
+    if service_env_source:
+        graph["service_env_source"] = service_env_source
+    network_mode_source = _string_or_none(recipe.get("network_mode_source"))
+    if network_mode_source:
+        graph["network_mode_source"] = network_mode_source
+    network_enabled_source = _string_or_none(recipe.get("network_enabled_source"))
+    if network_enabled_source:
+        graph["network_enabled_source"] = network_enabled_source
     return graph
 
 
@@ -2054,25 +2248,199 @@ def _build_executor_plan(
         "requires_external_db": bool(recipe.get("requires_external_db")),
         "target_node": "service",
     }
+    network_mode_source = _string_or_none(recipe.get("network_mode_source")) or _string_or_none(graph.get("network_mode_source"))
+    if network_mode_source:
+        plan["network_mode_source"] = network_mode_source
+    network_enabled_source = _string_or_none(recipe.get("network_enabled_source")) or _string_or_none(graph.get("network_enabled_source"))
+    if network_enabled_source:
+        plan["network_enabled_source"] = network_enabled_source
     health_path = _string_or_none(recipe.get("health_path"))
     if health_path:
         plan["health_path"] = health_path
     sidecars = recipe.get("sidecars") if isinstance(recipe.get("sidecars"), list) else []
     if sidecars:
         plan["sidecars"] = deepcopy(sidecars)
+    sidecar_start_order = (
+        deepcopy(recipe.get("sidecar_start_order"))
+        if isinstance(recipe.get("sidecar_start_order"), list)
+        else deepcopy(graph.get("sidecar_start_order"))
+        if isinstance(graph.get("sidecar_start_order"), list)
+        else []
+    )
+    if sidecar_start_order:
+        plan["sidecar_start_order"] = sidecar_start_order
+    sidecar_start_order_source = (
+        _string_or_none(recipe.get("sidecar_start_order_source"))
+        or _string_or_none(graph.get("sidecar_start_order_source"))
+    )
+    if sidecar_start_order_source:
+        plan["sidecar_start_order_source"] = sidecar_start_order_source
+    sidecars_source = _string_or_none(recipe.get("sidecars_source")) or _string_or_none(graph.get("sidecars_source"))
+    if sidecars_source:
+        plan["sidecars_source"] = sidecars_source
     service_env = recipe.get("service_env") if isinstance(recipe.get("service_env"), dict) else {}
     if service_env:
         plan["service_env"] = deepcopy(service_env)
+    service_env_source = _string_or_none(recipe.get("service_env_source")) or _string_or_none(graph.get("service_env_source"))
+    if service_env_source:
+        plan["service_env_source"] = service_env_source
     stack_selection = recipe.get("stack_selection") if isinstance(recipe.get("stack_selection"), dict) else {}
     if stack_selection:
         plan["stack_selection"] = deepcopy(stack_selection)
     healthchecks = graph.get("healthchecks") if isinstance(graph.get("healthchecks"), list) else []
     if healthchecks:
         plan["healthchecks"] = deepcopy(healthchecks)
+    env_contract = graph.get("env_contract") if isinstance(graph.get("env_contract"), list) else []
+    if env_contract:
+        plan["env_contract"] = deepcopy(env_contract)
+    seed_files = graph.get("seed_files") if isinstance(graph.get("seed_files"), list) else []
+    if not seed_files:
+        seed_files = recipe.get("seed_files") if isinstance(recipe.get("seed_files"), list) else []
+    if seed_files:
+        plan["seed_files"] = deepcopy(seed_files)
+    seed_strategy = _string_or_none(recipe.get("seed_strategy")) or _string_or_none(graph.get("seed_strategy"))
+    if seed_strategy:
+        plan["seed_strategy"] = seed_strategy
+    seed_strategy_source = _string_or_none(recipe.get("seed_strategy_source")) or _string_or_none(graph.get("seed_strategy_source"))
+    if seed_strategy_source:
+        plan["seed_strategy_source"] = seed_strategy_source
+    volume_contract = (
+        deepcopy(graph.get("volume_contract"))
+        if isinstance(graph.get("volume_contract"), list)
+        else deepcopy(recipe.get("volume_contract"))
+        if isinstance(recipe.get("volume_contract"), list)
+        else []
+    )
+    if volume_contract:
+        plan["volume_contract"] = volume_contract
+    volume_contract_source = _string_or_none(graph.get("volume_contract_source")) or _string_or_none(recipe.get("volume_contract_source"))
+    if volume_contract_source:
+        plan["volume_contract_source"] = volume_contract_source
+    network_contract = (
+        deepcopy(graph.get("network_contract"))
+        if isinstance(graph.get("network_contract"), list)
+        else deepcopy(recipe.get("network_contract"))
+        if isinstance(recipe.get("network_contract"), list)
+        else []
+    )
+    if network_contract:
+        plan["network_contract"] = network_contract
+    network_contract_source = _string_or_none(graph.get("network_contract_source")) or _string_or_none(recipe.get("network_contract_source"))
+    if network_contract_source:
+        plan["network_contract_source"] = network_contract_source
     exploit_path = graph.get("exploit_path") if isinstance(graph.get("exploit_path"), dict) else {}
     if exploit_path:
         plan["exploit_path"] = deepcopy(exploit_path)
     return plan
+
+
+def _enrich_runtime_contract_surfaces(
+    *,
+    request_ir: Dict[str, Any],
+    runtime_recipe: Dict[str, Any],
+    runtime_graph: Dict[str, Any],
+    executor_plan: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    request_ir = request_ir if isinstance(request_ir, dict) else {}
+    recipe = deepcopy(runtime_recipe) if isinstance(runtime_recipe, dict) else {}
+    graph = deepcopy(runtime_graph) if isinstance(runtime_graph, dict) else {}
+    plan = deepcopy(executor_plan) if isinstance(executor_plan, dict) else {}
+    if not recipe:
+        return recipe, graph, plan
+
+    runtime_dependency_hypotheses = (
+        deepcopy(request_ir.get("runtime_dependency_hypotheses"))
+        if isinstance(request_ir.get("runtime_dependency_hypotheses"), list)
+        else []
+    )
+    oracle_hypotheses = (
+        deepcopy(request_ir.get("oracle_hypotheses"))
+        if isinstance(request_ir.get("oracle_hypotheses"), list)
+        else []
+    )
+    topology_hypotheses = (
+        deepcopy(request_ir.get("topology_hypotheses"))
+        if isinstance(request_ir.get("topology_hypotheses"), list)
+        else []
+    )
+    lead_db_hint = next(
+        (
+            entry
+            for entry in runtime_dependency_hypotheses
+            if isinstance(entry, dict)
+            and str(entry.get("kind") or "").strip().lower() == "db"
+            and _string_or_none(entry.get("value"))
+        ),
+        None,
+    )
+    lead_topology_hint = next(
+        (
+            entry
+            for entry in topology_hypotheses
+            if isinstance(entry, dict) and _string_or_none(entry.get("topology"))
+        ),
+        None,
+    )
+    lead_oracle_hint = next(
+        (
+            entry
+            for entry in oracle_hypotheses
+            if isinstance(entry, dict)
+            and (
+                _string_or_none(entry.get("mode"))
+                or _string_or_none(entry.get("output_mode"))
+                or entry.get("negative_control_present") is True
+                or entry.get("metamorphic_present") is True
+            )
+        ),
+        None,
+    )
+
+    recipe_db = _string_or_none(recipe.get("db"))
+    if not recipe_db and lead_db_hint:
+        recipe["db"] = _string_or_none(lead_db_hint.get("value"))
+        recipe["db_source"] = _string_or_none(lead_db_hint.get("source")) or "primitive_hint"
+    elif recipe_db and _string_or_none(recipe.get("db_source")) is None:
+        recipe["db_source"] = "runtime_recipe"
+
+    recipe_topology = _string_or_none(recipe.get("topology")) or "single_service"
+    if _string_or_none(recipe.get("topology_source")) is None:
+        if (
+            lead_topology_hint
+            and recipe_topology == _string_or_none(lead_topology_hint.get("topology"))
+            and recipe_topology == "single_service"
+            and not recipe.get("sidecars")
+            and not recipe.get("requires_external_db")
+        ):
+            recipe["topology_source"] = _string_or_none(lead_topology_hint.get("source")) or "primitive_hint"
+        else:
+            recipe["topology_source"] = "runtime_recipe"
+
+    if runtime_dependency_hypotheses:
+        recipe["runtime_dependency_hypotheses"] = runtime_dependency_hypotheses
+    if topology_hypotheses:
+        recipe["topology_hypotheses"] = topology_hypotheses
+
+    if graph:
+        if _string_or_none(graph.get("db")) is None and _string_or_none(recipe.get("db")):
+            graph["db"] = _string_or_none(recipe.get("db"))
+        if _string_or_none(graph.get("db_source")) is None and _string_or_none(recipe.get("db_source")):
+            graph["db_source"] = _string_or_none(recipe.get("db_source"))
+        if _string_or_none(graph.get("topology_source")) is None and _string_or_none(recipe.get("topology_source")):
+            graph["topology_source"] = _string_or_none(recipe.get("topology_source"))
+
+    if plan:
+        if _string_or_none(plan.get("db")) is None and _string_or_none(recipe.get("db")):
+            plan["db"] = _string_or_none(recipe.get("db"))
+        if _string_or_none(plan.get("db_source")) is None and _string_or_none(recipe.get("db_source")):
+            plan["db_source"] = _string_or_none(recipe.get("db_source"))
+        if _string_or_none(plan.get("topology_source")) is None and _string_or_none(recipe.get("topology_source")):
+            plan["topology_source"] = _string_or_none(recipe.get("topology_source"))
+        if runtime_dependency_hypotheses:
+            plan["runtime_dependency_hypotheses"] = runtime_dependency_hypotheses
+        if topology_hypotheses:
+            plan["topology_hypotheses"] = topology_hypotheses
+    return recipe, graph, plan
 
 
 def _runtime_graph_summary(runtime_graph: Dict[str, Any]) -> Dict[str, Any]:
@@ -2397,7 +2765,21 @@ def _family_candidates_from_report(report: Dict[str, Any]) -> list[Dict[str, Any
     )
     ranked = family_summary.get("ranked_families") if isinstance(family_summary, dict) else []
     candidates: list[Dict[str, Any]] = []
-    if not isinstance(ranked, list):
+    if not isinstance(ranked, list) or not ranked:
+        top_family = _string_or_none(family_summary.get("top_family"))
+        if not top_family:
+            return candidates
+        candidate: Dict[str, Any] = {
+            "family": top_family.lower(),
+            "source": "researcher_hypothesis_summary",
+        }
+        confidence = _string_or_none(family_summary.get("top_confidence"))
+        if confidence:
+            candidate["confidence"] = confidence.lower()
+        top_margin = family_summary.get("top_margin")
+        if isinstance(top_margin, (int, float)):
+            candidate["score"] = round(float(top_margin), 3)
+        candidates.append(candidate)
         return candidates
     for entry in ranked:
         if not isinstance(entry, dict):
@@ -2420,6 +2802,185 @@ def _family_candidates_from_report(report: Dict[str, Any]) -> list[Dict[str, Any
             candidate["signal_hits"] = signal_hits
         candidates.append(candidate)
     return candidates
+
+
+def _primitive_family_profiles() -> Dict[str, Dict[str, Any]]:
+    profiles: Dict[str, Dict[str, Any]] = {}
+    for entry in vuln_catalog_entries():
+        if not isinstance(entry, dict):
+            continue
+        family = _string_or_none(entry.get("family"))
+        vuln_id = _string_or_none(entry.get("vuln_id"))
+        if not family or not vuln_id:
+            continue
+        family = family.lower()
+        profile = profiles.setdefault(
+            family,
+            {
+                "bucket_terms": {
+                    "input_vector": [],
+                    "sink": [],
+                    "exploit_precondition": [],
+                },
+            },
+        )
+        baseline = _normalize_semantic_buckets(baseline_semantic_signature(vuln_id))
+        for bucket in ("input_vector", "sink", "exploit_precondition"):
+            for value in baseline.get(bucket) or []:
+                if value not in profile["bucket_terms"][bucket]:
+                    profile["bucket_terms"][bucket].append(value)
+    return profiles
+
+
+_PRIMITIVE_FAMILY_RUNTIME_HINTS: Dict[str, Dict[str, Any]] = {
+    "open_redirect": {
+        "oracle_hypotheses": [
+            {
+                "mode": "stateful_text",
+                "output_mode": "auto",
+                "negative_control_present": True,
+                "metamorphic_present": True,
+                "source": "primitive_family_inference",
+                "confidence": "low",
+            }
+        ],
+    },
+    "sqli": {
+        "dependencies": [
+            {
+                "kind": "db",
+                "value": "sqlite",
+                "source": "primitive_family_inference",
+                "confidence": "low",
+            }
+        ],
+        "topologies": [
+            {
+                "topology": "single_service",
+                "source": "primitive_family_inference",
+                "confidence": "low",
+            }
+        ],
+        "oracle_hypotheses": [
+            {
+                "mode": "text_markers",
+                "output_mode": "auto",
+                "negative_control_present": True,
+                "metamorphic_present": False,
+                "source": "primitive_family_inference",
+                "confidence": "low",
+            }
+        ],
+    },
+    "sql_injection": {
+        "dependencies": [
+            {
+                "kind": "db",
+                "value": "sqlite",
+                "source": "primitive_family_inference",
+                "confidence": "low",
+            }
+        ],
+        "topologies": [
+            {
+                "topology": "single_service",
+                "source": "primitive_family_inference",
+                "confidence": "low",
+            }
+        ],
+        "oracle_hypotheses": [
+            {
+                "mode": "text_markers",
+                "output_mode": "auto",
+                "negative_control_present": True,
+                "metamorphic_present": False,
+                "source": "primitive_family_inference",
+                "confidence": "low",
+            }
+        ],
+    },
+}
+
+
+def _primitive_family_candidates_from_hypotheses(
+    primitive_hypotheses: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    if not isinstance(primitive_hypotheses, list) or not primitive_hypotheses:
+        return []
+    bucket_values: Dict[str, list[str]] = {
+        "input_vector": [],
+        "sink": [],
+        "exploit_precondition": [],
+    }
+    for entry in primitive_hypotheses:
+        if not isinstance(entry, dict):
+            continue
+        kind = _string_or_none(entry.get("kind"))
+        value = _string_or_none(entry.get("value"))
+        if not kind or not value or kind not in bucket_values:
+            continue
+        if value not in bucket_values[kind]:
+            bucket_values[kind].append(value)
+
+    candidates: list[Dict[str, Any]] = []
+    for family, profile in _primitive_family_profiles().items():
+        matched_buckets: list[str] = []
+        matched_values: list[str] = []
+        signal_hits = 0
+        bucket_terms = profile.get("bucket_terms") if isinstance(profile.get("bucket_terms"), dict) else {}
+        for bucket in ("input_vector", "sink", "exploit_precondition"):
+            family_terms = bucket_terms.get(bucket) if isinstance(bucket_terms.get(bucket), list) else []
+            if not family_terms:
+                continue
+            for value in bucket_values.get(bucket) or []:
+                if not _semantic_bucket_overlap([value], family_terms):
+                    continue
+                matched_buckets.append(bucket)
+                signal_hits += 1
+                if value not in matched_values:
+                    matched_values.append(value)
+                break
+        if len(matched_buckets) < 2:
+            continue
+        if not any(bucket in {"sink", "exploit_precondition"} for bucket in matched_buckets):
+            continue
+        confidence = "medium" if len(matched_buckets) >= 3 else "low"
+        score = round(len(matched_buckets) + (signal_hits / 10.0), 3)
+        candidate: Dict[str, Any] = {
+            "family": family,
+            "source": "primitive_signature",
+            "confidence": confidence,
+            "score": score,
+            "matched_buckets": matched_buckets,
+            "signal_hits": signal_hits,
+        }
+        if matched_values:
+            candidate["matched_primitive_values"] = matched_values[:3]
+        candidates.append(candidate)
+    return sorted(
+        candidates,
+        key=lambda item: (
+            -len(item.get("matched_buckets") or []),
+            -float(item.get("score") or 0.0),
+            str(item.get("family") or ""),
+        ),
+    )
+
+
+def _primitive_runtime_hints_for_request_ir(request_ir: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(request_ir, dict):
+        return {}
+    primitive_hypotheses = request_ir.get("primitive_hypotheses") if isinstance(request_ir.get("primitive_hypotheses"), list) else []
+    provisional_family = _string_or_none(request_ir.get("provisional_family"))
+    if not primitive_hypotheses or not provisional_family:
+        return {}
+    normalized_family = _normalized_family_key(provisional_family)
+    if not normalized_family:
+        return {}
+    for family_key, payload in _PRIMITIVE_FAMILY_RUNTIME_HINTS.items():
+        if normalized_family in _family_match_keys(family_key):
+            return deepcopy(payload)
+    return {}
 
 
 def _stack_candidates_from_runtime_and_report(
@@ -2594,6 +3155,291 @@ def _merge_stack_candidates(
     return merged
 
 
+def _primitive_hypotheses_from_report(report: Dict[str, Any]) -> list[Dict[str, Any]]:
+    signature = report.get("semantic_signature") if isinstance(report.get("semantic_signature"), dict) else {}
+    if not isinstance(signature, dict) or not signature:
+        return []
+    hypotheses: list[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for kind in ("input_vector", "sink", "exploit_precondition"):
+        values = signature.get(kind) if isinstance(signature.get(kind), list) else []
+        for item in values[:3]:
+            value = _string_or_none(item)
+            if not value:
+                continue
+            key = (kind, value.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            hypotheses.append(
+                {
+                    "kind": kind,
+                    "value": value.lower(),
+                    "source": "semantic_signature",
+                }
+            )
+    return hypotheses
+
+
+def _runtime_dependency_hypotheses_from_runtime_recipe(runtime_recipe: Dict[str, Any]) -> list[Dict[str, Any]]:
+    recipe = runtime_recipe if isinstance(runtime_recipe, dict) else {}
+    hypotheses: list[Dict[str, Any]] = []
+    db = _string_or_none(recipe.get("db"))
+    if db:
+        hypotheses.append(
+            {
+                "kind": "db",
+                "value": db.lower(),
+                "source": "runtime_recipe",
+                "confidence": "high" if db.lower() == "sqlite" else "medium",
+            }
+        )
+    for sidecar in recipe.get("sidecars") or [] if isinstance(recipe.get("sidecars"), list) else []:
+        if not isinstance(sidecar, dict):
+            continue
+        sidecar_type = _string_or_none(sidecar.get("type")) or _string_or_none(sidecar.get("name"))
+        if not sidecar_type:
+            continue
+        hypotheses.append(
+            {
+                "kind": "sidecar",
+                "value": sidecar_type.lower(),
+                "source": "runtime_recipe",
+                "confidence": "medium",
+            }
+        )
+    return hypotheses
+
+
+def _runtime_dependency_hypotheses_from_request_ir(request_ir: Dict[str, Any]) -> list[Dict[str, Any]]:
+    hints = _primitive_runtime_hints_for_request_ir(request_ir)
+    dependencies = hints.get("dependencies") if isinstance(hints.get("dependencies"), list) else []
+    return [deepcopy(entry) for entry in dependencies if isinstance(entry, dict)]
+
+
+def _topology_hypotheses_from_runtime_recipe(runtime_recipe: Dict[str, Any]) -> list[Dict[str, Any]]:
+    recipe = runtime_recipe if isinstance(runtime_recipe, dict) else {}
+    topology = _string_or_none(recipe.get("topology")) or "single_service"
+    hypotheses = [
+        {
+            "topology": topology.lower(),
+            "source": "runtime_recipe",
+            "confidence": "high",
+        }
+    ]
+    if recipe.get("requires_external_db") is True and topology.lower() != "service_plus_sidecar":
+        hypotheses.append(
+            {
+                "topology": "service_plus_sidecar",
+                "source": "runtime_feasibility",
+                "confidence": "medium",
+            }
+        )
+    return hypotheses
+
+
+def _topology_hypotheses_from_request_ir(request_ir: Dict[str, Any]) -> list[Dict[str, Any]]:
+    hints = _primitive_runtime_hints_for_request_ir(request_ir)
+    topologies = hints.get("topologies") if isinstance(hints.get("topologies"), list) else []
+    return [deepcopy(entry) for entry in topologies if isinstance(entry, dict)]
+
+
+def _oracle_hypotheses_from_request_ir(request_ir: Dict[str, Any]) -> list[Dict[str, Any]]:
+    hints = _primitive_runtime_hints_for_request_ir(request_ir)
+    oracle_hypotheses = hints.get("oracle_hypotheses") if isinstance(hints.get("oracle_hypotheses"), list) else []
+    return [deepcopy(entry) for entry in oracle_hypotheses if isinstance(entry, dict)]
+
+
+def _merge_unique_mapping_entries(
+    *groups: list[Dict[str, Any]],
+    key_fields: tuple[str, ...],
+) -> list[Dict[str, Any]]:
+    merged: list[Dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            key = tuple(str(entry.get(field) or "").strip().lower() for field in key_fields)
+            if not key or any(not token for token in key):
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(deepcopy(entry))
+    return merged
+
+
+def _scenario_oracle_profile_from_context(
+    report: Dict[str, Any],
+    request_ir: Dict[str, Any],
+) -> Dict[str, Any]:
+    proposal = _normalize_proposed_verification_contract(report) or {}
+    oracle_hypotheses = _merge_unique_mapping_entries(
+        _oracle_hypotheses_from_request_ir(request_ir),
+        key_fields=("mode", "source"),
+    )
+    lead_hint = next((entry for entry in oracle_hypotheses if isinstance(entry, dict)), None)
+    if _string_or_none(proposal.get("json_success_key")) or _string_or_none(proposal.get("success_mode")) == "json":
+        mode = "json_contract"
+    elif (
+        proposal.get("negative_control_present") is True
+        or proposal.get("metamorphic_present") is True
+        or proposal.get("negative_controls")
+        or proposal.get("metamorphic")
+    ):
+        mode = "stateful_text"
+    elif proposal:
+        mode = "text_markers"
+    else:
+        mode = _string_or_none((lead_hint or {}).get("mode")) or "contract_or_auto"
+    return {
+        "mode": mode,
+        "negative_control_present": bool(
+            proposal.get("negative_control_present")
+            or proposal.get("negative_controls")
+            or proposal.get("negative_text_markers")
+            or ((lead_hint or {}).get("negative_control_present") is True)
+        ),
+        "metamorphic_present": bool(
+            proposal.get("metamorphic_present")
+            or proposal.get("metamorphic")
+            or ((lead_hint or {}).get("metamorphic_present") is True)
+        ),
+        "source": _string_or_none(proposal.get("source"))
+        or _string_or_none((lead_hint or {}).get("source"))
+        or "unknown",
+        "confidence": _string_or_none((lead_hint or {}).get("confidence")) or "unknown",
+    }
+
+
+def _provisional_family_from_request_ir(request_ir: Dict[str, Any]) -> Optional[str]:
+    selection = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+    family_selection = selection.get("family") if isinstance(selection.get("family"), dict) else {}
+    if family_selection.get("selected") is True:
+        return None
+    family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
+    if not family_candidates:
+        return None
+    top = family_candidates[0] if isinstance(family_candidates[0], dict) else {}
+    family = _string_or_none(top.get("family"))
+    source = _string_or_none(top.get("source")) or ""
+    confidence = _string_or_none(top.get("confidence")) or ""
+    if not family:
+        return None
+    if source == "primitive_signature":
+        second = family_candidates[1] if len(family_candidates) > 1 and isinstance(family_candidates[1], dict) else {}
+        second_source = _string_or_none(second.get("source")) or ""
+        second_score = second.get("score")
+        top_score = top.get("score")
+        second_confidence = _string_or_none(second.get("confidence")) or ""
+        if second_source == "primitive_signature":
+            if second_confidence == confidence and second_score == top_score:
+                return None
+    if _is_request_resolution_family_source(source) and _family_confidence_rank(confidence) >= _family_confidence_rank("high"):
+        return None
+    return family.lower()
+
+
+def _scenario_candidates_from_context(
+    *,
+    request_ir: Dict[str, Any],
+    runtime_recipe: Dict[str, Any],
+    report: Dict[str, Any],
+) -> list[Dict[str, Any]]:
+    family_candidates = request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else []
+    stack_candidates = request_ir.get("stack_candidates") if isinstance(request_ir.get("stack_candidates"), list) else []
+    if not family_candidates or not stack_candidates:
+        return []
+    topology_hypotheses = _merge_unique_mapping_entries(
+        _topology_hypotheses_from_runtime_recipe(runtime_recipe),
+        _topology_hypotheses_from_request_ir(request_ir),
+        key_fields=("topology",),
+    )
+    dependency_hypotheses = _merge_unique_mapping_entries(
+        _runtime_dependency_hypotheses_from_runtime_recipe(runtime_recipe),
+        _runtime_dependency_hypotheses_from_request_ir(request_ir),
+        key_fields=("kind", "value"),
+    )
+    oracle_hypotheses = _merge_unique_mapping_entries(
+        _oracle_hypotheses_from_request_ir(request_ir),
+        key_fields=("mode", "source"),
+    )
+    oracle_profile = _scenario_oracle_profile_from_context(report, request_ir)
+    selection = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+    selected_family = _string_or_none(((selection.get("family") or {}) if isinstance(selection.get("family"), dict) else {}).get("selected_family"))
+    selected_stack = _string_or_none(((selection.get("stack") or {}) if isinstance(selection.get("stack"), dict) else {}).get("selected_stack_id"))
+    selected_topology = _string_or_none(runtime_recipe.get("topology")) or "single_service"
+    candidates: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for family_entry in family_candidates[:3]:
+        if not isinstance(family_entry, dict):
+            continue
+        family = _string_or_none(family_entry.get("family"))
+        if not family:
+            continue
+        for stack_entry in stack_candidates[:3]:
+            if not isinstance(stack_entry, dict):
+                continue
+            stack_id = _string_or_none(stack_entry.get("stack_id"))
+            if not stack_id:
+                continue
+            for topology_entry in topology_hypotheses[:2]:
+                if not isinstance(topology_entry, dict):
+                    continue
+                topology = _string_or_none(topology_entry.get("topology"))
+                if not topology:
+                    continue
+                scenario_id = f"family={family.lower()}|stack={stack_id.lower()}|topology={topology.lower()}"
+                if scenario_id in seen:
+                    continue
+                seen.add(scenario_id)
+                evidence_ids: list[str] = []
+                for group in (family_entry.get("evidence_ids"), stack_entry.get("evidence_ids")):
+                    if not isinstance(group, list):
+                        continue
+                    for item in group:
+                        token = _string_or_none(item)
+                        if token and token not in evidence_ids:
+                            evidence_ids.append(token)
+                candidate: Dict[str, Any] = {
+                    "scenario_id": scenario_id,
+                    "family": family.lower(),
+                    "stack_id": stack_id.lower(),
+                    "topology": topology.lower(),
+                    "dependency_set": [
+                        "service",
+                        *[
+                            f"{str(item.get('kind') or '').strip().lower()}:{str(item.get('value') or '').strip().lower()}"
+                            for item in dependency_hypotheses
+                            if str(item.get("kind") or "").strip() and str(item.get("value") or "").strip()
+                        ],
+                    ],
+                    "oracle_profile": deepcopy(oracle_profile),
+                    "family_source": _string_or_none(family_entry.get("source")) or "unknown",
+                    "stack_source": _string_or_none(stack_entry.get("source")) or "unknown",
+                    "family_confidence": _string_or_none(family_entry.get("confidence")) or "unknown",
+                    "stack_confidence": _string_or_none(stack_entry.get("confidence")) or "unknown",
+                    "topology_source": _string_or_none(topology_entry.get("source")) or "unknown",
+                    "topology_confidence": _string_or_none(topology_entry.get("confidence")) or "unknown",
+                    "selected": bool(
+                        selected_family
+                        and selected_stack
+                        and family.lower() == selected_family.lower()
+                        and stack_id.lower() == selected_stack.lower()
+                        and topology.lower() == selected_topology.lower()
+                    ),
+                }
+                if oracle_hypotheses:
+                    candidate["oracle_hypotheses"] = deepcopy(oracle_hypotheses)
+                if evidence_ids:
+                    candidate["evidence_ids"] = evidence_ids
+                candidates.append(candidate)
+    return candidates
+
+
 def _derived_request_ir_abstain_reason(
     request_ir: Dict[str, Any],
     *,
@@ -2677,6 +3523,49 @@ def _enriched_request_ir(
     negative_hypotheses = _negative_hypotheses_from_report(report, family_support)
     if negative_hypotheses:
         request_ir["negative_hypotheses"] = negative_hypotheses
+    primitive_hypotheses = _merge_unique_mapping_entries(
+        request_ir.get("primitive_hypotheses") if isinstance(request_ir.get("primitive_hypotheses"), list) else [],
+        _primitive_hypotheses_from_report(report),
+        key_fields=("kind", "value"),
+    )
+    if primitive_hypotheses:
+        request_ir["primitive_hypotheses"] = primitive_hypotheses
+        primitive_family_candidates = _primitive_family_candidates_from_hypotheses(primitive_hypotheses)
+        if primitive_family_candidates:
+            merged_family_candidates = _merge_family_candidates(
+                request_ir.get("family_candidates") if isinstance(request_ir.get("family_candidates"), list) else [],
+                primitive_family_candidates,
+                resolution_confidence=resolution_confidence.lower(),
+            )
+            merged_family_candidates = _attach_family_candidate_evidence(merged_family_candidates, family_support)
+            if merged_family_candidates:
+                request_ir["family_candidates"] = merged_family_candidates
+    request_ir["provisional_family"] = _provisional_family_from_request_ir(request_ir)
+    runtime_dependency_hypotheses = _merge_unique_mapping_entries(
+        request_ir.get("runtime_dependency_hypotheses")
+        if isinstance(request_ir.get("runtime_dependency_hypotheses"), list)
+        else [],
+        _runtime_dependency_hypotheses_from_runtime_recipe(runtime_recipe),
+        _runtime_dependency_hypotheses_from_request_ir(request_ir),
+        key_fields=("kind", "value"),
+    )
+    if runtime_dependency_hypotheses:
+        request_ir["runtime_dependency_hypotheses"] = runtime_dependency_hypotheses
+    oracle_hypotheses = _merge_unique_mapping_entries(
+        request_ir.get("oracle_hypotheses") if isinstance(request_ir.get("oracle_hypotheses"), list) else [],
+        _oracle_hypotheses_from_request_ir(request_ir),
+        key_fields=("mode", "source"),
+    )
+    if oracle_hypotheses:
+        request_ir["oracle_hypotheses"] = oracle_hypotheses
+    topology_hypotheses = _merge_unique_mapping_entries(
+        _topology_hypotheses_from_request_ir(request_ir),
+        request_ir.get("topology_hypotheses") if isinstance(request_ir.get("topology_hypotheses"), list) else [],
+        _topology_hypotheses_from_runtime_recipe(runtime_recipe),
+        key_fields=("topology",),
+    )
+    if topology_hypotheses:
+        request_ir["topology_hypotheses"] = topology_hypotheses
     selection_decision = _request_ir_selection_decision(
         request_ir,
         runtime_recipe=runtime_recipe,
@@ -2684,6 +3573,25 @@ def _enriched_request_ir(
     )
     if selection_decision:
         request_ir["selection_decision"] = selection_decision
+    scenario_candidates = _merge_unique_mapping_entries(
+        _scenario_candidates_from_context(
+            request_ir=request_ir,
+            runtime_recipe=runtime_recipe,
+            report=report,
+        ),
+        request_ir.get("scenario_candidates") if isinstance(request_ir.get("scenario_candidates"), list) else [],
+        key_fields=("scenario_id",),
+    )
+    if scenario_candidates:
+        request_ir["scenario_candidates"] = scenario_candidates
+        selection_decision = _request_ir_selection_decision(
+            request_ir,
+            runtime_recipe=runtime_recipe,
+            evidence_graph=evidence_graph,
+        )
+        if selection_decision:
+            request_ir["selection_decision"] = selection_decision
+    request_ir["provisional_family"] = _provisional_family_from_request_ir(request_ir)
     abstain_reason = _derived_request_ir_abstain_reason(
         request_ir,
         report=report,
@@ -2812,7 +3720,7 @@ def _request_ir_candidate_evidence_ids(request_ir: Dict[str, Any]) -> list[str]:
 
     for item in (request_ir.get("evidence_ids") or []) if isinstance(request_ir, dict) else []:
         _push(item)
-    for key in ("family_candidates", "stack_candidates", "identifier_candidates"):
+    for key in ("family_candidates", "stack_candidates", "identifier_candidates", "scenario_candidates"):
         group = request_ir.get(key) if isinstance(request_ir.get(key), list) else []
         for entry in group:
             if not isinstance(entry, dict):
@@ -2820,6 +3728,102 @@ def _request_ir_candidate_evidence_ids(request_ir: Dict[str, Any]) -> list[str]:
             for item in entry.get("evidence_ids") or []:
                 _push(item)
     return evidence_ids
+
+
+def _scenario_selection_payload(
+    request_ir: Dict[str, Any],
+    *,
+    runtime_recipe: Dict[str, Any],
+    authority_map: Dict[str, str],
+    family_payload: Dict[str, Any],
+    stack_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    scenario_candidates = request_ir.get("scenario_candidates") if isinstance(request_ir.get("scenario_candidates"), list) else []
+    normalized_candidates = [entry for entry in scenario_candidates if isinstance(entry, dict)]
+    if not normalized_candidates:
+        return {}
+
+    selected_family = _string_or_none(family_payload.get("selected_family")) if family_payload.get("selected") is True else None
+    selected_stack = _string_or_none(stack_payload.get("selected_stack_id")) if stack_payload.get("selected") is True else None
+    runtime_topology = _string_or_none(runtime_recipe.get("topology")) or "single_service"
+    selected_candidate: Optional[Dict[str, Any]] = None
+    for entry in normalized_candidates:
+        if entry.get("selected") is True:
+            selected_candidate = entry
+            break
+    if selected_candidate is None and selected_family and selected_stack:
+        for entry in normalized_candidates:
+            family = _string_or_none(entry.get("family"))
+            stack_id = _string_or_none(entry.get("stack_id"))
+            topology = _string_or_none(entry.get("topology"))
+            if (
+                family
+                and stack_id
+                and topology
+                and family.lower() == selected_family.lower()
+                and stack_id.lower() == selected_stack.lower()
+                and topology.lower() == runtime_topology.lower()
+            ):
+                selected_candidate = entry
+                break
+
+    preview_candidate = selected_candidate or normalized_candidates[0]
+    payload: Dict[str, Any] = {
+        "candidate_count": len(normalized_candidates),
+        "selected": bool(selected_candidate and selected_family and selected_stack),
+        "source": "scenario_candidates",
+        "top_scenario_id": _string_or_none(preview_candidate.get("scenario_id")),
+        "top_family": _string_or_none(preview_candidate.get("family")),
+        "top_stack_id": _string_or_none(preview_candidate.get("stack_id")),
+        "topology": _string_or_none(preview_candidate.get("topology")) or runtime_topology.lower(),
+        "dependency_count": len(
+            [
+                item
+                for item in (preview_candidate.get("dependency_set") or [])
+                if isinstance(item, str) and str(item).strip()
+            ]
+        ),
+    }
+    preview_oracle_profile = (
+        preview_candidate.get("oracle_profile") if isinstance(preview_candidate.get("oracle_profile"), dict) else {}
+    )
+    if preview_oracle_profile:
+        payload["top_oracle_mode"] = _string_or_none(preview_oracle_profile.get("mode"))
+        payload["top_oracle_source"] = _string_or_none(preview_oracle_profile.get("source"))
+        payload["top_oracle_confidence"] = _string_or_none(preview_oracle_profile.get("confidence"))
+        payload["top_oracle_negative_control_present"] = preview_oracle_profile.get("negative_control_present") is True
+        payload["top_oracle_metamorphic_present"] = preview_oracle_profile.get("metamorphic_present") is True
+    if selected_candidate:
+        payload["selected_scenario_id"] = _string_or_none(selected_candidate.get("scenario_id"))
+        payload["selected_family"] = _string_or_none(selected_candidate.get("family"))
+        payload["selected_stack_id"] = _string_or_none(selected_candidate.get("stack_id"))
+        payload["selected_topology"] = _string_or_none(selected_candidate.get("topology")) or runtime_topology.lower()
+        selected_oracle_profile = (
+            selected_candidate.get("oracle_profile")
+            if isinstance(selected_candidate.get("oracle_profile"), dict)
+            else {}
+        )
+        if selected_oracle_profile:
+            payload["selected_oracle_mode"] = _string_or_none(selected_oracle_profile.get("mode"))
+            payload["selected_oracle_source"] = _string_or_none(selected_oracle_profile.get("source"))
+            payload["selected_oracle_confidence"] = _string_or_none(selected_oracle_profile.get("confidence"))
+            payload["selected_oracle_negative_control_present"] = (
+                selected_oracle_profile.get("negative_control_present") is True
+            )
+            payload["selected_oracle_metamorphic_present"] = (
+                selected_oracle_profile.get("metamorphic_present") is True
+            )
+        payload.update(
+            _support_summary(
+                [
+                    item
+                    for item in (selected_candidate.get("evidence_ids") or [])
+                    if isinstance(item, str) and str(item).strip()
+                ],
+                authority_map,
+            )
+        )
+    return payload
 
 
 def _request_ir_selection_decision(
@@ -2854,7 +3858,7 @@ def _request_ir_selection_decision(
         if family:
             family_payload.update(_family_support_summary(family, family_support, authority_map))
         if family and (
-            len(unique_families) == 1
+            (len(unique_families) == 1 and source.lower() != "primitive_signature")
             or (_is_request_resolution_family_source(source) and _family_confidence_rank(confidence) >= _family_confidence_rank("high"))
         ):
             family_payload["selected"] = True
@@ -2883,18 +3887,29 @@ def _request_ir_selection_decision(
             ]
         decision["stack"] = stack_payload
 
+    family_payload = decision.get("family") if isinstance(decision.get("family"), dict) else {}
+    stack_payload = decision.get("stack") if isinstance(decision.get("stack"), dict) else {}
+    scenario_payload = _scenario_selection_payload(
+        request_ir,
+        runtime_recipe=runtime_recipe,
+        authority_map=authority_map,
+        family_payload=family_payload,
+        stack_payload=stack_payload,
+    )
+    if scenario_payload:
+        decision["scenario"] = scenario_payload
+
     if decision:
-        decision["ready_for_materialization"] = bool((decision.get("family") or {}).get("selected")) and bool(
-            (decision.get("stack") or {}).get("selected")
-        )
-        family_payload = decision.get("family") if isinstance(decision.get("family"), dict) else {}
-        stack_payload = decision.get("stack") if isinstance(decision.get("stack"), dict) else {}
+        decision["ready_for_materialization"] = bool(family_payload.get("selected")) and bool(stack_payload.get("selected"))
         stack_basis = str(stack_payload.get("basis") or "").strip().lower()
         stack_is_explicit = stack_basis == "explicit_requirement"
+        scenario_selected = scenario_payload.get("selected") is True if scenario_payload else False
+        scenario_evidence_backed = scenario_payload.get("evidence_backed") is True if scenario_payload else False
         decision["open_world_evidence_ready"] = (
             decision["ready_for_materialization"]
             and family_payload.get("evidence_backed") is True
             and (stack_payload.get("evidence_backed") is True or stack_is_explicit)
+            and (not scenario_payload or (scenario_selected and scenario_evidence_backed))
         )
     return decision
 
@@ -2957,8 +3972,10 @@ def _name_only_planning_focus_summary(
     selection_decision = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
     family_decision = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
     stack_decision = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+    scenario_decision = selection_decision.get("scenario") if isinstance(selection_decision.get("scenario"), dict) else {}
     family_selected = family_decision.get("selected") is True
     stack_selected = stack_decision.get("selected") is True
+    scenario_selected = scenario_decision.get("selected") is True
     family_evidence_backed = family_decision.get("evidence_backed") is True
     stack_evidence_backed = stack_decision.get("evidence_backed") is True
     stack_basis = str(stack_decision.get("basis") or "").strip().lower()
@@ -2972,6 +3989,13 @@ def _name_only_planning_focus_summary(
             _add_focus("evidence_authority", "selected_family_authority_thin")
         if stack_selected and not stack_is_explicit_or_locked and stack_decision.get("high_or_medium_authority_support") is not True:
             _add_focus("evidence_authority", "selected_stack_authority_thin")
+        if family_selected and stack_selected and scenario_decision.get("candidate_count"):
+            if not scenario_selected:
+                _add_focus("topology_or_scenario_design", "scenario_unresolved")
+            elif scenario_decision.get("evidence_backed") is not True:
+                _add_focus("evidence_authority", "selected_scenario_support_missing")
+            if scenario_selected and scenario_decision.get("high_or_medium_authority_support") is not True:
+                _add_focus("evidence_authority", "selected_scenario_authority_thin")
     if require_open_world_oracle:
         if exploit_oracle.get("negative_control_present") is not True:
             _add_focus("oracle_realism", "negative_control_missing")
@@ -2990,6 +4014,7 @@ def _name_only_planning_focus_summary(
         and request_ir_evidence_ids
         and (not family_selected or family_evidence_backed)
         and (not stack_selected or stack_evidence_backed or stack_is_explicit_or_locked)
+        and (not scenario_decision or scenario_decision.get("evidence_backed") is True)
         and exploit_oracle.get("negative_control_present") is True
         and exploit_oracle.get("metamorphic_present") is True
     ):
@@ -3233,6 +4258,7 @@ def _build_name_only_generation_spec(
     selection_decision = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
     family_selection = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
     stack_selection = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+    scenario_selection = selection_decision.get("scenario") if isinstance(selection_decision.get("scenario"), dict) else {}
     if family_selection:
         family_candidate_summary["selection_evidence_backed"] = family_selection.get("evidence_backed") is True
         family_candidate_summary["selection_support_count"] = int(family_selection.get("support_count") or 0)
@@ -3245,6 +4271,77 @@ def _build_name_only_generation_spec(
         stack_candidate_summary["selection_support_by_source_authority"] = deepcopy(
             stack_selection.get("support_by_source_authority")
         ) if isinstance(stack_selection.get("support_by_source_authority"), dict) else {}
+    provisional_family = _string_or_none(request_ir.get("provisional_family"))
+    primitive_hypotheses = deepcopy(request_ir.get("primitive_hypotheses")) if isinstance(request_ir.get("primitive_hypotheses"), list) else []
+    runtime_dependency_hypotheses = (
+        deepcopy(request_ir.get("runtime_dependency_hypotheses"))
+        if isinstance(request_ir.get("runtime_dependency_hypotheses"), list)
+        else []
+    )
+    oracle_hypotheses = (
+        deepcopy(request_ir.get("oracle_hypotheses"))
+        if isinstance(request_ir.get("oracle_hypotheses"), list)
+        else []
+    )
+    topology_hypotheses = (
+        deepcopy(request_ir.get("topology_hypotheses"))
+        if isinstance(request_ir.get("topology_hypotheses"), list)
+        else []
+    )
+    scenario_candidates = deepcopy(request_ir.get("scenario_candidates")) if isinstance(request_ir.get("scenario_candidates"), list) else []
+    selected_scenarios = [
+        entry
+        for entry in scenario_candidates
+        if isinstance(entry, dict) and entry.get("selected") is True
+    ]
+    lead_scenario = None
+    if selected_scenarios:
+        lead_scenario = selected_scenarios[0]
+    else:
+        lead_scenario = next((entry for entry in scenario_candidates if isinstance(entry, dict)), None)
+    evidence_backed_scenario_count = 0
+    for entry in scenario_candidates:
+        if not isinstance(entry, dict):
+            continue
+        evidence_ids = entry.get("evidence_ids") if isinstance(entry.get("evidence_ids"), list) else []
+        if any(isinstance(item, str) and str(item).strip() for item in evidence_ids):
+            evidence_backed_scenario_count += 1
+    scenario_candidate_summary: Dict[str, Any] = {
+        "candidate_count": len([entry for entry in scenario_candidates if isinstance(entry, dict)]),
+        "selected_candidate_count": len(selected_scenarios),
+        "evidence_backed_candidate_count": evidence_backed_scenario_count,
+    }
+    if isinstance(lead_scenario, dict):
+        scenario_candidate_summary.update(
+            {
+                "top_scenario_id": _string_or_none(lead_scenario.get("scenario_id")),
+                "top_family": _string_or_none(lead_scenario.get("family")),
+                "top_stack_id": _string_or_none(lead_scenario.get("stack_id")),
+                "topology": _string_or_none(lead_scenario.get("topology")),
+            }
+        )
+        top_oracle_profile = (
+            lead_scenario.get("oracle_profile") if isinstance(lead_scenario.get("oracle_profile"), dict) else {}
+        )
+        if top_oracle_profile:
+            scenario_candidate_summary["top_oracle_mode"] = _string_or_none(top_oracle_profile.get("mode"))
+            scenario_candidate_summary["top_oracle_source"] = _string_or_none(top_oracle_profile.get("source"))
+    if selected_scenarios:
+        scenario_candidate_summary["selected_scenario_id"] = _string_or_none(selected_scenarios[0].get("scenario_id"))
+        selected_oracle_profile = (
+            selected_scenarios[0].get("oracle_profile")
+            if isinstance(selected_scenarios[0].get("oracle_profile"), dict)
+            else {}
+        )
+        if selected_oracle_profile:
+            scenario_candidate_summary["selected_oracle_mode"] = _string_or_none(selected_oracle_profile.get("mode"))
+            scenario_candidate_summary["selected_oracle_source"] = _string_or_none(selected_oracle_profile.get("source"))
+    if scenario_selection:
+        scenario_candidate_summary["selection_evidence_backed"] = scenario_selection.get("evidence_backed") is True
+        scenario_candidate_summary["selection_support_count"] = int(scenario_selection.get("support_count") or 0)
+        scenario_candidate_summary["selection_support_by_source_authority"] = deepcopy(
+            scenario_selection.get("support_by_source_authority")
+        ) if isinstance(scenario_selection.get("support_by_source_authority"), dict) else {}
     payload: Dict[str, Any] = {
         "schema_version": "name_only_generation_spec@0.1",
         "request_label": request_label or None,
@@ -3260,6 +4357,8 @@ def _build_name_only_generation_spec(
         "request_identity_family": request_identity_family or None,
         "family_hypothesis_summary": family_summary,
         "family_candidate_summary": family_candidate_summary,
+        "provisional_family": provisional_family or None,
+        "primitive_hypotheses": primitive_hypotheses,
         "negative_hypotheses": negative_hypotheses,
         "identifier_candidate_summary": {
             "candidate_count": len(
@@ -3272,6 +4371,10 @@ def _build_name_only_generation_spec(
             else None,
             "abstain_reason": _string_or_none(request_ir.get("abstain_reason")) if isinstance(request_ir, dict) else None,
         },
+        "runtime_dependency_hypotheses": runtime_dependency_hypotheses,
+        "oracle_hypotheses": oracle_hypotheses,
+        "topology_hypotheses": topology_hypotheses,
+        "scenario_candidate_summary": scenario_candidate_summary,
         "runtime_recipe_summary": {
             key: deepcopy(runtime_recipe.get(key))
             for key in (
@@ -3325,6 +4428,290 @@ def _build_name_only_generation_spec(
     return payload
 
 
+def _build_staged_synthesis(
+    *,
+    requirement: Dict[str, Any],
+    request_ir: Dict[str, Any],
+    runtime_recipe: Dict[str, Any],
+    executor_plan: Dict[str, Any],
+    exploit_oracle: Dict[str, Any],
+    name_only_generation_spec: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(requirement, dict):
+        return {}
+    request_ir = request_ir if isinstance(request_ir, dict) else {}
+    runtime_recipe = runtime_recipe if isinstance(runtime_recipe, dict) else {}
+    executor_plan = executor_plan if isinstance(executor_plan, dict) else {}
+    exploit_oracle = exploit_oracle if isinstance(exploit_oracle, dict) else {}
+    name_only_generation_spec = (
+        name_only_generation_spec if isinstance(name_only_generation_spec, dict) else {}
+    )
+
+    request_label = _string_or_none(request_ir.get("request_label")) or _string_or_none(requirement.get("vuln_name"))
+    selection_decision = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+    family_selection = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
+    stack_selection = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+    scenario_selection = selection_decision.get("scenario") if isinstance(selection_decision.get("scenario"), dict) else {}
+    planning_focus_summary = (
+        name_only_generation_spec.get("planning_focus_summary")
+        if isinstance(name_only_generation_spec.get("planning_focus_summary"), dict)
+        else {}
+    )
+    runtime_dependency_hypotheses = (
+        deepcopy(request_ir.get("runtime_dependency_hypotheses"))
+        if isinstance(request_ir.get("runtime_dependency_hypotheses"), list)
+        else []
+    )
+    oracle_hypotheses = (
+        deepcopy(request_ir.get("oracle_hypotheses"))
+        if isinstance(request_ir.get("oracle_hypotheses"), list)
+        else []
+    )
+    topology_hypotheses = (
+        deepcopy(request_ir.get("topology_hypotheses"))
+        if isinstance(request_ir.get("topology_hypotheses"), list)
+        else []
+    )
+    lead_db_hint = next(
+        (
+            entry
+            for entry in runtime_dependency_hypotheses
+            if isinstance(entry, dict)
+            and str(entry.get("kind") or "").strip().lower() == "db"
+            and _string_or_none(entry.get("value"))
+        ),
+        None,
+    )
+    lead_topology_hint = next(
+        (
+            entry
+            for entry in topology_hypotheses
+            if isinstance(entry, dict) and _string_or_none(entry.get("topology"))
+        ),
+        None,
+    )
+    lead_oracle_hint = next(
+        (
+            entry
+            for entry in oracle_hypotheses
+            if isinstance(entry, dict)
+            and (
+                _string_or_none(entry.get("mode"))
+                or _string_or_none(entry.get("output_mode"))
+                or entry.get("negative_control_present") is True
+                or entry.get("metamorphic_present") is True
+            )
+        ),
+        None,
+    )
+    language = _string_or_none(runtime_recipe.get("language"))
+    framework = _string_or_none(runtime_recipe.get("framework"))
+    runtime_stack_id = f"{language.lower()}/{framework.lower()}" if language and framework else ""
+    scenario_candidates = (
+        deepcopy(request_ir.get("scenario_candidates"))
+        if isinstance(request_ir.get("scenario_candidates"), list)
+        else []
+    )
+    selected_scenario_id = _string_or_none(scenario_selection.get("selected_scenario_id"))
+    selected_scenario_entry = next(
+        (
+            entry
+            for entry in scenario_candidates
+            if isinstance(entry, dict)
+            and selected_scenario_id
+            and _string_or_none(entry.get("scenario_id")) == selected_scenario_id
+        ),
+        None,
+    )
+    if selected_scenario_entry is None:
+        selected_scenario_entry = next(
+            (
+                entry
+                for entry in scenario_candidates
+                if isinstance(entry, dict) and entry.get("selected") is True
+            ),
+            None,
+        )
+    if selected_scenario_entry is None:
+        selected_scenario_entry = next((entry for entry in scenario_candidates if isinstance(entry, dict)), None)
+    selected_dependency_set = [
+        str(item).strip().lower()
+        for item in ((selected_scenario_entry or {}).get("dependency_set") or [])
+        if isinstance(item, str) and str(item).strip()
+    ]
+    design_brief_required_roles: list[str] = ["service_main", "poc_entry"]
+    selected_topology_for_roles = (
+        _string_or_none(scenario_selection.get("selected_topology"))
+        or _string_or_none((selected_scenario_entry or {}).get("topology"))
+        or _string_or_none(runtime_recipe.get("topology"))
+        or _string_or_none((lead_topology_hint or {}).get("topology"))
+        or "single_service"
+    )
+    selected_oracle_mode_for_roles = (
+        _string_or_none(scenario_selection.get("selected_oracle_mode"))
+        or _string_or_none((((selected_scenario_entry or {}).get("oracle_profile") or {}) if isinstance((selected_scenario_entry or {}).get("oracle_profile"), dict) else {}).get("mode"))
+        or _string_or_none((lead_oracle_hint or {}).get("mode"))
+    )
+    if selected_topology_for_roles == "service_plus_sidecar":
+        design_brief_required_roles.append("dependency_sidecar")
+    if any(item.startswith("db:") for item in selected_dependency_set):
+        design_brief_required_roles.append("dependency_db")
+    if any(item.startswith("sidecar:") for item in selected_dependency_set):
+        design_brief_required_roles.append("dependency_sidecar")
+    if selected_oracle_mode_for_roles == "stateful_text":
+        design_brief_required_roles.append("oracle_state_checks")
+    elif selected_oracle_mode_for_roles == "json_contract":
+        design_brief_required_roles.append("oracle_json_contract")
+    negative_control_present = bool(
+        scenario_selection.get("selected_oracle_negative_control_present") is True
+        or ((((selected_scenario_entry or {}).get("oracle_profile") or {}) if isinstance((selected_scenario_entry or {}).get("oracle_profile"), dict) else {}).get("negative_control_present") is True)
+        or exploit_oracle.get("negative_control_present") is True
+    )
+    metamorphic_present = bool(
+        scenario_selection.get("selected_oracle_metamorphic_present") is True
+        or ((((selected_scenario_entry or {}).get("oracle_profile") or {}) if isinstance((selected_scenario_entry or {}).get("oracle_profile"), dict) else {}).get("metamorphic_present") is True)
+        or exploit_oracle.get("metamorphic_present") is True
+    )
+    if negative_control_present:
+        design_brief_required_roles.append("negative_control_cases")
+    if metamorphic_present:
+        design_brief_required_roles.append("metamorphic_cases")
+    deduped_required_roles: list[str] = []
+    for role in design_brief_required_roles:
+        if role not in deduped_required_roles:
+            deduped_required_roles.append(role)
+
+    candidate_resolution = {
+        "request_label": request_label,
+        "resolved_vuln_id": _string_or_none(request_ir.get("resolved_vuln_id")) or _string_or_none(requirement.get("vuln_id")),
+        "effective_mode": _string_or_none(name_only_generation_spec.get("effective_mode")) or name_only_mode(requirement),
+        "selected_family": _string_or_none(family_selection.get("selected_family")),
+        "provisional_family": _string_or_none(request_ir.get("provisional_family")),
+        "selected_stack_id": _string_or_none(stack_selection.get("selected_stack_id")) or runtime_stack_id or None,
+        "selected_scenario_id": _string_or_none(scenario_selection.get("selected_scenario_id")),
+        "selected_topology": _string_or_none(scenario_selection.get("selected_topology"))
+        or _string_or_none(scenario_selection.get("topology"))
+        or _string_or_none((selected_scenario_entry or {}).get("topology"))
+        or _string_or_none(runtime_recipe.get("topology"))
+        or _string_or_none((lead_topology_hint or {}).get("topology"))
+        or "single_service",
+        "selected_oracle_mode": _string_or_none(scenario_selection.get("selected_oracle_mode"))
+        or _string_or_none(scenario_selection.get("top_oracle_mode"))
+        or _string_or_none((((selected_scenario_entry or {}).get("oracle_profile") or {}) if isinstance((selected_scenario_entry or {}).get("oracle_profile"), dict) else {}).get("mode"))
+        or _string_or_none((lead_oracle_hint or {}).get("mode")),
+        "selected_oracle_source": _string_or_none(scenario_selection.get("selected_oracle_source"))
+        or _string_or_none(scenario_selection.get("top_oracle_source"))
+        or _string_or_none((((selected_scenario_entry or {}).get("oracle_profile") or {}) if isinstance((selected_scenario_entry or {}).get("oracle_profile"), dict) else {}).get("source"))
+        or _string_or_none((lead_oracle_hint or {}).get("source")),
+        "ready_for_materialization": selection_decision.get("ready_for_materialization") is True,
+        "open_world_evidence_ready": selection_decision.get("open_world_evidence_ready") is True,
+        "validator": "request_ir_selection_contract",
+        "repair_policy": "refresh_from_request_ir_and_runtime_recipe",
+        "abort_policy": "degrade_to_prompt_guidance",
+    }
+    design_brief = {
+        "working_family": _string_or_none(name_only_generation_spec.get("family_working_hypothesis")),
+        "selected_scenario_id": candidate_resolution.get("selected_scenario_id"),
+        "selected_topology": candidate_resolution.get("selected_topology"),
+        "selected_oracle_mode": candidate_resolution.get("selected_oracle_mode"),
+        "selected_oracle_source": candidate_resolution.get("selected_oracle_source"),
+        "primary_focus": _string_or_none(planning_focus_summary.get("primary_focus")),
+        "focuses": deepcopy(planning_focus_summary.get("focuses"))
+        if isinstance(planning_focus_summary.get("focuses"), list)
+        else [],
+        "dependency_set": selected_dependency_set,
+        "primitive_hypotheses": deepcopy(request_ir.get("primitive_hypotheses"))
+        if isinstance(request_ir.get("primitive_hypotheses"), list)
+        else [],
+        "negative_hypotheses": deepcopy(request_ir.get("negative_hypotheses"))
+        if isinstance(request_ir.get("negative_hypotheses"), list)
+        else [],
+        "required_roles": deduped_required_roles,
+        "validator": "design_brief_contract",
+        "repair_policy": "narrow_to_selected_family_stack_topology",
+        "abort_policy": "fail_open_to_manifest_validation",
+    }
+    runtime_plan = {
+        "stack_id": runtime_stack_id or _string_or_none(stack_selection.get("selected_stack_id")),
+        "topology": _string_or_none(runtime_recipe.get("topology"))
+        or candidate_resolution.get("selected_topology")
+        or _string_or_none((lead_topology_hint or {}).get("topology")),
+        "topology_source": (
+            _string_or_none(runtime_recipe.get("topology_source"))
+            if _string_or_none(runtime_recipe.get("topology_source"))
+            else "runtime_recipe"
+            if _string_or_none(runtime_recipe.get("topology"))
+            else _string_or_none((lead_topology_hint or {}).get("source"))
+            or "candidate_resolution"
+        ),
+        "service_port": runtime_recipe.get("service_port"),
+        "network_mode": _string_or_none(runtime_recipe.get("network_mode")) or "none",
+        "db": _string_or_none(runtime_recipe.get("db"))
+        or _string_or_none((lead_db_hint or {}).get("value"))
+        or "none",
+        "db_source": (
+            _string_or_none(runtime_recipe.get("db_source"))
+            if _string_or_none(runtime_recipe.get("db_source"))
+            else "runtime_recipe"
+            if _string_or_none(runtime_recipe.get("db"))
+            else _string_or_none((lead_db_hint or {}).get("source"))
+            or "none"
+        ),
+        "sidecars": deepcopy(runtime_recipe.get("sidecars")) if isinstance(runtime_recipe.get("sidecars"), list) else [],
+        "runtime_dependency_hypotheses": runtime_dependency_hypotheses,
+        "topology_hypotheses": topology_hypotheses,
+        "executor_health_path": _string_or_none(executor_plan.get("health_path")),
+        "validator": "runtime_recipe_executor_alignment",
+        "repair_policy": "prefer_executor_plan_over_guessing",
+        "abort_policy": "fail_manifest_if_runtime_surface_conflicts",
+    }
+    if (
+        _string_or_none(runtime_plan.get("topology")) == _string_or_none((lead_topology_hint or {}).get("topology"))
+        and _string_or_none((lead_topology_hint or {}).get("source"))
+        and runtime_plan.get("topology") == "single_service"
+        and not runtime_recipe.get("db")
+        and not runtime_recipe.get("sidecars")
+    ):
+        runtime_plan["topology_source"] = _string_or_none((lead_topology_hint or {}).get("source"))
+    oracle_contract = {
+        "success_signature": _string_or_none(exploit_oracle.get("success_signature")),
+        "flag_token": _string_or_none(exploit_oracle.get("flag_token")),
+        "output_mode": _string_or_none(exploit_oracle.get("output_mode"))
+        or _string_or_none((lead_oracle_hint or {}).get("output_mode"))
+        or "auto",
+        "negative_control_present": bool(
+            exploit_oracle.get("negative_control_present") is True
+            or ((lead_oracle_hint or {}).get("negative_control_present") is True)
+        ),
+        "metamorphic_present": bool(
+            exploit_oracle.get("metamorphic_present") is True
+            or ((lead_oracle_hint or {}).get("metamorphic_present") is True)
+        ),
+        "source": _string_or_none(exploit_oracle.get("source"))
+        or _string_or_none((lead_oracle_hint or {}).get("source"))
+        or "resolved_contract",
+        "mode": _string_or_none((lead_oracle_hint or {}).get("mode")) or "contract_or_auto",
+        "confidence": _string_or_none((lead_oracle_hint or {}).get("confidence")) or "unknown",
+        "oracle_hypotheses": oracle_hypotheses,
+        "validator": "exploit_oracle_contract",
+        "repair_policy": "reuse_existing_oracle_contract",
+        "abort_policy": "verification_required_before_promotion",
+    }
+    return {
+        "schema_version": "staged_synthesis@0.1",
+        "stage_order": [
+            "candidate_resolution",
+            "design_brief",
+            "runtime_plan",
+            "oracle_contract",
+        ],
+        "candidate_resolution": candidate_resolution,
+        "design_brief": design_brief,
+        "runtime_plan": runtime_plan,
+        "oracle_contract": oracle_contract,
+    }
+
+
 def _runtime_sidecars(executor: Dict[str, Any]) -> list[Dict[str, Any]]:
     raw = executor.get("sidecars") if isinstance(executor, dict) else None
     if not isinstance(raw, list):
@@ -3347,9 +4734,164 @@ def _runtime_sidecars(executor: Dict[str, Any]) -> list[Dict[str, Any]]:
             ]
             if normalized_aliases:
                 entry["aliases"] = normalized_aliases
+        env = item.get("env")
+        if isinstance(env, dict):
+            normalized_env = {
+                str(key).strip(): str(value)
+                for key, value in env.items()
+                if isinstance(key, str) and str(key).strip() and value not in (None, "")
+            }
+            if normalized_env:
+                entry["env"] = normalized_env
+        ready_probe = item.get("ready_probe")
+        if isinstance(ready_probe, dict) and ready_probe:
+            entry["ready_probe"] = deepcopy(ready_probe)
+        network_mode = _string_or_none(item.get("network_mode"))
+        if network_mode:
+            entry["network_mode"] = network_mode
         if entry:
             sidecars.append(entry)
     return sidecars
+
+
+def _manifest_target_runtime_hints(manifest: Dict[str, Any]) -> tuple[str | None, list[str], str | None]:
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    if not isinstance(metadata, dict):
+        return None, [], None
+    target_db = _string_or_none(metadata.get("target_db"))
+    target_db = target_db.lower() if isinstance(target_db, str) and target_db.strip() else None
+    target_sidecars_raw = metadata.get("target_sidecars") if isinstance(metadata.get("target_sidecars"), list) else []
+    target_sidecars = [
+        str(item).strip().lower()
+        for item in target_sidecars_raw
+        if isinstance(item, str) and str(item).strip()
+    ]
+    target_topology = _string_or_none(metadata.get("target_topology"))
+    target_topology = target_topology.lower() if isinstance(target_topology, str) and target_topology.strip() else None
+    return target_db, target_sidecars, target_topology
+
+
+def _synthesized_runtime_sidecars(
+    *,
+    target_db: str | None,
+    target_sidecars: list[str],
+    service_env: Dict[str, str],
+) -> list[Dict[str, Any]]:
+    hints = [
+        str(item).strip().lower()
+        for item in target_sidecars
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if target_db and target_db not in hints:
+        hints.append(target_db)
+    if not hints:
+        return []
+    db_host = str(service_env.get("DB_HOST") or "").strip() or "db-internal"
+    db_name = str(service_env.get("DB_NAME") or "").strip() or "sqliapp"
+    db_user = str(service_env.get("DB_USER") or "").strip() or "sqli"
+    db_password = str(service_env.get("DB_PASSWORD") or "").strip() or "sqli_pw"
+    for hint in hints:
+        if hint in {"mysql", "mariadb"}:
+            image = "mysql:8.0" if hint == "mysql" else "mariadb:11"
+            return [
+                {
+                    "name": f"{hint}-main",
+                    "type": hint,
+                    "image": image,
+                    "aliases": [db_host],
+                    "env": {
+                        "MYSQL_ROOT_PASSWORD": "sqli_root_pw",
+                        "MYSQL_DATABASE": db_name,
+                        "MYSQL_USER": db_user,
+                        "MYSQL_PASSWORD": db_password,
+                    },
+                    "ready_probe": {"type": "mysql", "retries": 10},
+                }
+            ]
+        if hint in {"postgres", "postgresql"}:
+            return [
+                {
+                    "name": "postgres-main",
+                    "type": "postgres",
+                    "image": "postgres:16",
+                    "aliases": [db_host],
+                    "env": {
+                        "POSTGRES_DB": db_name,
+                        "POSTGRES_USER": db_user,
+                        "POSTGRES_PASSWORD": db_password,
+                    },
+                    "ready_probe": {"type": "postgres", "retries": 10},
+                }
+            ]
+    return []
+
+
+def _synthesized_runtime_service_env(
+    *,
+    service_env: Dict[str, str],
+    service_port: int,
+    sidecars: list[Dict[str, Any]],
+    target_db: str | None,
+    target_sidecars: list[str],
+) -> tuple[Dict[str, str], str | None]:
+    env = {
+        str(key): str(value)
+        for key, value in (service_env or {}).items()
+        if isinstance(key, str) and key.strip() and value not in (None, "")
+    }
+    sidecar_type = ""
+    for entry in sidecars:
+        if not isinstance(entry, dict):
+            continue
+        candidate = str(entry.get("type") or entry.get("name") or "").strip().lower()
+        if candidate in {"mysql", "mariadb", "postgres", "postgresql"}:
+            sidecar_type = candidate
+            break
+    if not sidecar_type:
+        hints = [
+            str(item).strip().lower()
+            for item in target_sidecars
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if target_db:
+            hints.append(str(target_db).strip().lower())
+        for candidate in hints:
+            if candidate in {"mysql", "mariadb", "postgres", "postgresql"}:
+                sidecar_type = candidate
+                break
+    if not sidecar_type:
+        return env, None
+
+    primary_sidecar = next((entry for entry in sidecars if isinstance(entry, dict)), {})
+    aliases = primary_sidecar.get("aliases") if isinstance(primary_sidecar.get("aliases"), list) else []
+    host = env.get("DB_HOST") or (
+        str(aliases[0]).strip() if aliases and isinstance(aliases[0], str) and str(aliases[0]).strip() else ""
+    ) or str(primary_sidecar.get("name") or "").strip() or "db-internal"
+    primary_env = primary_sidecar.get("env") if isinstance(primary_sidecar.get("env"), dict) else {}
+    if sidecar_type in {"mysql", "mariadb"}:
+        defaults = {
+            "APP_PORT": str(service_port),
+            "DB_HOST": host,
+            "DB_PORT": "3306",
+            "DB_USER": env.get("DB_USER") or str(primary_env.get("MYSQL_USER") or "").strip() or "sqli",
+            "DB_PASSWORD": env.get("DB_PASSWORD") or str(primary_env.get("MYSQL_PASSWORD") or "").strip() or "sqli_pw",
+            "DB_NAME": env.get("DB_NAME") or str(primary_env.get("MYSQL_DATABASE") or "").strip() or "sqliapp",
+        }
+    else:
+        defaults = {
+            "APP_PORT": str(service_port),
+            "DB_HOST": host,
+            "DB_PORT": "5432",
+            "DB_USER": env.get("DB_USER") or str(primary_env.get("POSTGRES_USER") or "").strip() or "sqli",
+            "DB_PASSWORD": env.get("DB_PASSWORD") or str(primary_env.get("POSTGRES_PASSWORD") or "").strip() or "sqli_pw",
+            "DB_NAME": env.get("DB_NAME") or str(primary_env.get("POSTGRES_DB") or "").strip() or "sqliapp",
+        }
+    changed = False
+    for key, value in defaults.items():
+        if not str(env.get(key) or "").strip() and str(value or "").strip():
+            env[key] = str(value)
+            changed = True
+    return env, ("runtime_hint_sidecar_defaults" if changed else None)
 
 
 def _runtime_seed_files(manifest: Dict[str, Any]) -> list[str]:
@@ -3368,6 +4910,105 @@ def _runtime_seed_files(manifest: Dict[str, Any]) -> list[str]:
         if role in {"schema", "seed_data"} or name in {"schema.sql", "seed_data.sql"}:
             seeds.append(path)
     return seeds
+
+
+def _runtime_seed_strategy(
+    *,
+    seed_files: list[str],
+    db: Optional[str],
+    requires_external_db: bool,
+    topology: str,
+) -> tuple[str | None, str | None]:
+    normalized_seed_files = [
+        str(item).strip()
+        for item in seed_files
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if not normalized_seed_files:
+        return None, None
+    normalized_db = str(db or "").strip().lower()
+    normalized_topology = str(topology or "").strip().lower()
+    if normalized_db == "sqlite":
+        return "sqlite_service_init", "runtime_recipe.seed_files+db"
+    if requires_external_db or normalized_topology == "service_plus_sidecar" or normalized_db in {"mysql", "mariadb", "postgres", "postgresql"}:
+        return "sidecar_sql_apply", "runtime_recipe.seed_files+topology"
+    return None, None
+
+
+def _runtime_volume_contract(
+    *,
+    seed_files: list[str],
+    seed_strategy: Optional[str],
+    sidecars: list[Dict[str, Any]],
+) -> tuple[list[Dict[str, str]], str | None]:
+    strategy = str(seed_strategy or "").strip().lower()
+    if strategy != "sidecar_sql_apply":
+        return [], None
+    sql_seed_files = [
+        str(item).strip()
+        for item in seed_files
+        if isinstance(item, str) and str(item).strip().lower().endswith(".sql")
+    ]
+    if not sql_seed_files:
+        return [], None
+    volume_contract: list[Dict[str, str]] = []
+    for sidecar in sidecars:
+        if not isinstance(sidecar, dict):
+            continue
+        name = _string_or_none(sidecar.get("name"))
+        sidecar_type = _string_or_none(sidecar.get("type")) or _string_or_none(sidecar.get("image")) or ""
+        normalized_type = str(sidecar_type).strip().lower().split("/")[-1].split(":")[0]
+        if not name or normalized_type not in {"mysql", "mariadb", "postgres", "postgresql"}:
+            continue
+        volume_contract.append(
+            {
+                "scope": f"sidecar:{name.strip().lower()}",
+                "source": "workspace",
+                "target": "/seed-input",
+                "mode": "ro",
+            }
+        )
+    if not volume_contract:
+        return [], None
+    return volume_contract, "runtime_recipe.seed_files+seed_strategy"
+
+
+def _runtime_network_contract(
+    *,
+    service_env: Dict[str, str],
+    sidecars: list[Dict[str, Any]],
+) -> tuple[list[Dict[str, str]], str | None]:
+    if not sidecars:
+        return [], None
+    network_contract: list[Dict[str, str]] = []
+    db_host = str(service_env.get("DB_HOST") or "").strip()
+    if db_host:
+        network_contract.append(
+            {
+                "scope": "service",
+                "name": "DB_HOST",
+                "alias": db_host,
+            }
+        )
+    for sidecar in sidecars:
+        if not isinstance(sidecar, dict):
+            continue
+        sidecar_name = _string_or_none(sidecar.get("name"))
+        aliases = sidecar.get("aliases") if isinstance(sidecar.get("aliases"), list) else []
+        if not sidecar_name:
+            continue
+        for alias in aliases:
+            if not isinstance(alias, str) or not alias.strip():
+                continue
+            network_contract.append(
+                {
+                    "scope": f"sidecar:{sidecar_name.strip().lower()}",
+                    "alias": alias.strip(),
+                }
+            )
+    if not network_contract:
+        return [], None
+    return network_contract, "runtime_recipe.service_env+sidecars"
 
 
 def _runtime_health_path(manifest: Dict[str, Any]) -> Optional[str]:

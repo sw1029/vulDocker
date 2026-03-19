@@ -100,6 +100,11 @@ class ResearcherService:
         self._last_report: Dict[str, Any] | None = None
         self._last_guard_spec: Dict[str, Any] | None = None
         self._search_records: List[Dict[str, Any]] = []
+        self._search_cache_hit_count = 0
+        self._search_cache_miss_count = 0
+        self._search_planned_query_count = 0
+        self._search_executed_query_count = 0
+        self._search_early_stop_triggered = False
         self._search_health_path: Path | None = None
         self._search_degraded = False
         self._last_evidence_relevance: Dict[str, Any] | None = None
@@ -272,38 +277,174 @@ class ResearcherService:
             or "mvp-sample"
         )
 
+    def _search_cache_path(self) -> Path:
+        repo_root = get_repo_root().resolve()
+        metadata_root = Path(self.metadata_root).resolve()
+        try:
+            metadata_root.relative_to(repo_root)
+        except ValueError:
+            return ensure_dir(Path(self.metadata_root) / "_search_cache") / "search_cache.json"
+        return ensure_dir(repo_root / "artifacts" / "_search_cache") / "search_cache.json"
+
+    def _load_search_cache(self) -> Dict[str, Any]:
+        path = self._search_cache_path()
+        if not path.exists():
+            return {"schema_version": "search_cache@0.1", "entries": {}}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {"schema_version": "search_cache@0.1", "entries": {}}
+        if not isinstance(payload, dict):
+            return {"schema_version": "search_cache@0.1", "entries": {}}
+        entries = payload.get("entries")
+        if not isinstance(entries, dict):
+            payload["entries"] = {}
+        return payload
+
+    def _write_search_cache(self, payload: Dict[str, Any]) -> None:
+        self._search_cache_path().write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _search_cache_key(request_payload: Dict[str, Any]) -> str:
+        normalized = json.dumps(request_payload or {}, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _search_results_from_payload(results_payload: Any) -> List[SearchResult]:
+        if not isinstance(results_payload, list):
+            return []
+        results: List[SearchResult] = []
+        for entry in results_payload:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title") or "").strip()
+            url = str(entry.get("url") or "").strip()
+            snippet = str(entry.get("snippet") or "").strip()
+            if not (title and url):
+                continue
+            results.append(
+                SearchResult(
+                    title=title,
+                    url=url,
+                    snippet=snippet,
+                    source=str(entry.get("source") or "local").strip() or "local",
+                    published=str(entry.get("published") or "").strip() or None,
+                    query=str(entry.get("query") or "").strip() or None,
+                    retrieved_at=str(entry.get("retrieved_at") or "").strip() or None,
+                    provider=str(entry.get("provider") or "").strip() or None,
+                    score=float(entry.get("score")) if isinstance(entry.get("score"), (int, float)) else None,
+                    raw_content=str(entry.get("raw_content") or "").strip() or None,
+                    request_id=str(entry.get("request_id") or "").strip() or None,
+                )
+            )
+        return results
+
+    def _should_early_stop_search(
+        self,
+        *,
+        retained_hits: List[SearchResult],
+        new_url_count: int,
+    ) -> bool:
+        if self._search_executed_query_count < 2:
+            return False
+        if new_url_count != 0:
+            return False
+        if len(retained_hits) < self.search_limit:
+            return False
+        return any(
+            self._source_authority_for_hit(hit, evidence_type=self._classify_evidence_type(hit)) == "high"
+            for hit in retained_hits
+        )
+
     def _collect_search_results(self, queries: Iterable[str], span: ReactSpan) -> List[SearchResult]:
         hits: List[SearchResult] = []
         seen_urls: set[str] = set()
         self._search_records = []
+        self._search_cache_hit_count = 0
+        self._search_cache_miss_count = 0
+        self._search_executed_query_count = 0
+        self._search_early_stop_triggered = False
+        query_list = [str(query).strip() for query in queries if str(query).strip()]
+        self._search_planned_query_count = len(query_list)
         search_policy = self._search_policy()
-        for query in queries:
+        cache_payload = self._load_search_cache()
+        cache_entries = cache_payload.get("entries") if isinstance(cache_payload.get("entries"), dict) else {}
+        if not isinstance(cache_entries, dict):
+            cache_entries = {}
+            cache_payload["entries"] = cache_entries
+        cache_dirty = False
+        for query in query_list:
             filters = self._search_filters()
-            new_hits = self.search_tool.search_with_filters(
-                query,
+            request = SearchRequest(
+                query=query,
                 limit=self.search_limit,
                 policy=search_policy,
-                include_domains=filters.get("include_domains"),
-                exclude_domains=filters.get("exclude_domains"),
-                time_range=filters.get("time_range"),
-                country=filters.get("country"),
-                search_lang=filters.get("search_lang"),
+                include_domains=list(filters.get("include_domains") or []),
+                exclude_domains=list(filters.get("exclude_domains") or []),
+                time_range=str(filters.get("time_range") or "") or None,
+                country=str(filters.get("country") or "") or None,
+                search_lang=str(filters.get("search_lang") or "") or None,
             )
-            execution = self.search_tool.last_execution()
-            request_payload = (
-                execution.request
-                if isinstance(execution, SearchExecution) and isinstance(execution.request, dict)
-                else SearchRequest(
-                    query=query,
+            request_payload = request.to_payload()
+            cache_key = self._search_cache_key(request_payload)
+            cache_entry = cache_entries.get(cache_key) if isinstance(cache_entries, dict) else None
+            cache_hit = False
+            if isinstance(cache_entry, dict):
+                new_hits = self._search_results_from_payload(cache_entry.get("results"))
+                execution_payload = cache_entry.get("execution") if isinstance(cache_entry.get("execution"), dict) else {}
+                execution = SearchExecution.from_payload(execution_payload) if execution_payload else SearchExecution(
+                    provider="cache",
+                    configured=True,
+                    result_count=len(new_hits),
+                    request=request_payload,
+                )
+                cache_hit = True
+                self._search_cache_hit_count += 1
+            else:
+                new_hits = self.search_tool.search_with_filters(
+                    query,
                     limit=self.search_limit,
                     policy=search_policy,
-                    include_domains=list(filters.get("include_domains") or []),
-                    exclude_domains=list(filters.get("exclude_domains") or []),
-                    time_range=str(filters.get("time_range") or "") or None,
-                    country=str(filters.get("country") or "") or None,
-                    search_lang=str(filters.get("search_lang") or "") or None,
-                ).to_payload()
+                    include_domains=filters.get("include_domains"),
+                    exclude_domains=filters.get("exclude_domains"),
+                    time_range=filters.get("time_range"),
+                    country=filters.get("country"),
+                    search_lang=filters.get("search_lang"),
+                )
+                execution = self.search_tool.last_execution()
+                self._search_cache_miss_count += 1
+                if isinstance(execution, SearchExecution):
+                    cache_entries[cache_key] = {
+                        "request": request_payload,
+                        "execution": execution.to_payload(),
+                        "results": [hit.to_payload(include_raw_content=True) for hit in new_hits],
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    cache_dirty = True
+            self._search_executed_query_count += 1
+            execution_payload = (
+                execution.to_payload()
+                if isinstance(execution, SearchExecution)
+                else {
+                    "provider": "cache" if cache_hit else None,
+                    "configured": cache_hit,
+                    "request": request_payload,
+                    "result_count": len(new_hits),
+                }
             )
+            execution_payload["cache_hit"] = cache_hit
+            new_url_count = 0
+            deduped_hits_for_record: List[Dict[str, Any]] = []
+            for hit in new_hits:
+                deduped_hits_for_record.append(hit.to_payload(include_raw_content=True))
+                if hit.url in seen_urls:
+                    continue
+                seen_urls.add(hit.url)
+                hits.append(hit)
+                new_url_count += 1
             self._search_records.append(
                 {
                     "query": query,
@@ -311,19 +452,29 @@ class ResearcherService:
                     "provider": execution.provider if isinstance(execution, SearchExecution) else None,
                     "policy": search_policy,
                     "request": request_payload,
-                    "execution": execution.to_payload() if isinstance(execution, SearchExecution) else None,
-                    "results": [hit.to_payload(include_raw_content=True) for hit in new_hits],
+                    "execution": execution_payload,
+                    "results": deduped_hits_for_record,
                     "raw_payload_digest": (
                         execution.raw_payload_digest if isinstance(execution, SearchExecution) else None
                     ),
+                    "cache_hit": cache_hit,
+                    "new_url_count": new_url_count,
+                    "early_stop_triggered": False,
                 }
             )
-            span.event("search", query=query, hits=len(new_hits))
-            for hit in new_hits:
-                if hit.url in seen_urls:
-                    continue
-                seen_urls.add(hit.url)
-                hits.append(hit)
+            span.event("search", query=query, hits=len(new_hits), cache_hit=cache_hit, new_url_count=new_url_count)
+            if self._should_early_stop_search(retained_hits=hits, new_url_count=new_url_count):
+                self._search_early_stop_triggered = True
+                self._search_records[-1]["early_stop_triggered"] = True
+                span.event(
+                    "search_early_stop",
+                    query=query,
+                    executed_queries=self._search_executed_query_count,
+                    retained_hits=len(hits),
+                )
+                break
+        if cache_dirty:
+            self._write_search_cache(cache_payload)
         return hits
 
     def _build_evidence_graph(
@@ -691,6 +842,15 @@ class ResearcherService:
             "request_count": len(self._search_records),
             "remote_result_count": remote_result_count,
             "local_result_count": local_result_count,
+            "cache_hit_count": self._search_cache_hit_count,
+            "cache_miss_count": self._search_cache_miss_count,
+            "cache_reuse_ratio": round(
+                self._search_cache_hit_count / max(1, self._search_cache_hit_count + self._search_cache_miss_count),
+                3,
+            ),
+            "planned_query_count": self._search_planned_query_count,
+            "executed_query_count": self._search_executed_query_count,
+            "early_stop_triggered": self._search_early_stop_triggered,
             "degraded": degraded,
             "last_error": last_execution.error if isinstance(last_execution, SearchExecution) else None,
             "last_status_code": last_execution.status_code if isinstance(last_execution, SearchExecution) else None,

@@ -116,6 +116,20 @@ def _compile_registered_flask_fragment_manifest(
         semantic_profile.get("normalized_vuln_id") or requirement.get("vuln_id") or default_vuln_id
     ).strip()
     poc_payload = fragment.poc_builder(port)
+    poc_command = scaffold.render_poc_command(poc_path="poc.py")
+    if strategy in {
+        "open_redirect_reflect",
+        "sqli_string_concat",
+        "sqli_string_concat_mysql",
+        "path_traversal_file_read",
+        "ssrf_loopback_fetch",
+        "template_injection_render",
+        "xss_reflected",
+        "ldap_injection_filter",
+        "command_injection_shell",
+        "code_injection_eval",
+    }:
+        poc_command = f"{poc_command} --payload {{{{payload}}}}"
     import_block = fragment.import_block.replace("{{port}}", str(port))
     app_setup_block = fragment.app_setup_block.replace("{{port}}", str(port)).strip()
     route_block = fragment.route_block.replace("{{port}}", str(port)).strip()
@@ -131,6 +145,11 @@ def _compile_registered_flask_fragment_manifest(
         compiler_strategy=strategy,
         requirement=requirement,
         service_port=port,
+    )
+    verification_spec = _compiler_verification_spec(
+        strategy=strategy,
+        success_signature=str(poc_payload.get("success_signature") or "Exploit SUCCESS"),
+        flag_token=str(poc_payload.get("flag_token") or ""),
     )
     return _compiler_manifest_from_parts(
         sid=sid,
@@ -152,7 +171,7 @@ def _compile_registered_flask_fragment_manifest(
         poc_description=fragment.poc_description,
         build_command=scaffold.render_build_command(),
         run_command=scaffold.render_run_command(service_path=service_path),
-        poc_command=scaffold.render_poc_command(poc_path="poc.py"),
+        poc_command=poc_command,
         dockerfile_content=scaffold.render_dockerfile(service_path=service_path, port=port),
         readme_content=scaffold.render_readme(
             requested_name=requested_name,
@@ -174,7 +193,44 @@ def _compile_registered_flask_fragment_manifest(
         run_env=run_env,
         requires_external_db=fragment.requires_external_db,
         extra_files=[dict(item) for item in fragment.extra_files],
+        verification_spec=verification_spec,
     )
+
+
+def _compiler_verification_spec(
+    *,
+    strategy: str,
+    success_signature: str,
+    flag_token: str,
+) -> Dict[str, Any] | None:
+    spec: Dict[str, Any] = {}
+    if success_signature:
+        spec["success_text_markers"] = [success_signature]
+    if flag_token:
+        spec["flag_token"] = flag_token
+    if strategy == "open_redirect_reflect":
+        spec["negative_controls"] = [
+            {"name": "same-origin-local", "expect_success": False, "payload": "/local"},
+        ]
+        spec["metamorphic"] = {
+            "relation": "same_origin_redirects_stay_non_exploit",
+            "cases": [
+                {"name": "same-origin-profile", "expect_success": False, "payload": "/profile"},
+            ],
+        }
+        return spec
+    if strategy in {"sqli_string_concat", "sqli_string_concat_mysql"}:
+        spec["negative_controls"] = [
+            {"name": "literal-admin", "expect_success": False, "payload": "admin"},
+        ]
+        spec["metamorphic"] = {
+            "relation": "benign_credentials_stay_non_exploit",
+            "cases": [
+                {"name": "guest-user", "expect_success": False, "payload": "guest"},
+            ],
+        }
+        return spec
+    return spec or None
 
 
 def _compiler_manifest_from_parts(
@@ -208,6 +264,7 @@ def _compiler_manifest_from_parts(
     run_env: Optional[Dict[str, str]] = None,
     requires_external_db: bool = False,
     extra_files: Optional[List[Dict[str, Any]]] = None,
+    verification_spec: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     files = [
         {
@@ -270,6 +327,8 @@ def _compiler_manifest_from_parts(
     }
     if isinstance(run_env, dict) and run_env:
         payload["run"]["env"] = {str(key): str(value) for key, value in run_env.items() if str(key).strip()}
+    if isinstance(verification_spec, dict) and verification_spec:
+        payload["verification_spec"] = verification_spec
     metadata = payload["metadata"]
     if stack_scaffold_id:
         metadata["stack_scaffold_id"] = stack_scaffold_id

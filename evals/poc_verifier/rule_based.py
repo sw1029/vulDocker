@@ -222,6 +222,11 @@ def verify_with_rule(
     if not evidence:
         evidence.append("Signature missing")
 
+    oracle_execution = _load_oracle_execution(log_path, run_summary or summary_data)
+    oracle_execution_summary = _oracle_execution_summary(oracle_execution)
+    if oracle_execution_summary.get("evidence"):
+        evidence.extend(oracle_execution_summary.get("evidence") or [])
+
     verification_policy_blocked = False
     if (
         success
@@ -254,6 +259,11 @@ def verify_with_rule(
             verification_trust,
         ),
         "verification_policy_blocked": verification_policy_blocked,
+        "oracle_execution": oracle_execution_summary.get("payload") or {},
+        "oracle_execution_parity": oracle_execution_summary.get("parity") or "missing",
+        "oracle_execution_attempted": oracle_execution_summary.get("attempted") is True,
+        "oracle_negative_controls_pass": oracle_execution_summary.get("negative_controls_pass"),
+        "oracle_metamorphic_pass": oracle_execution_summary.get("metamorphic_pass"),
         "terminal_failure_class": "low_trust_verification" if verification_policy_blocked else "",
         "evidence": ", ".join(evidence),
         "log_path": str(log_path),
@@ -603,6 +613,78 @@ def _load_summary_data(
         if isinstance(data, dict):
             return data
     return None
+
+
+def _load_oracle_execution(
+    log_path: Path,
+    run_summary: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if isinstance(run_summary, dict):
+        explicit_path = run_summary.get("oracle_execution_path")
+        if isinstance(explicit_path, str) and explicit_path.strip():
+            path = Path(explicit_path)
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    data = None
+                if isinstance(data, dict):
+                    return data
+        embedded = run_summary.get("oracle_execution")
+        if isinstance(embedded, dict) and embedded:
+            return embedded
+    oracle_path = log_path.with_name("oracle_execution.json")
+    if oracle_path.exists():
+        try:
+            data = json.loads(oracle_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _oracle_execution_summary(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(payload, dict) or not payload:
+        return {
+            "payload": {},
+            "parity": "missing",
+            "attempted": False,
+            "negative_controls_pass": None,
+            "metamorphic_pass": None,
+            "evidence": [],
+        }
+    negative_controls = payload.get("negative_controls") if isinstance(payload.get("negative_controls"), dict) else {}
+    metamorphic = payload.get("metamorphic") if isinstance(payload.get("metamorphic"), dict) else {}
+    parity = str(payload.get("parity") or "").strip().lower() or "missing"
+    attempted = bool(negative_controls.get("attempted") or metamorphic.get("attempted"))
+    evidence: List[str] = []
+    if negative_controls:
+        total = int(negative_controls.get("total") or 0)
+        declared = int(negative_controls.get("total_declared") or total)
+        passed = negative_controls.get("passed") is True
+        if negative_controls.get("available"):
+            evidence.append(
+                f"oracle negative controls {'passed' if passed else 'missing/failed'} "
+                f"({total}/{declared} executable)"
+            )
+    if metamorphic:
+        total = int(metamorphic.get("total") or 0)
+        declared = int(metamorphic.get("total_declared") or total)
+        passed = metamorphic.get("passed") is True
+        if metamorphic.get("available"):
+            evidence.append(
+                f"oracle metamorphic replays {'passed' if passed else 'missing/failed'} "
+                f"({total}/{declared} executable)"
+            )
+    return {
+        "payload": payload,
+        "parity": parity,
+        "attempted": attempted,
+        "negative_controls_pass": negative_controls.get("passed") if negative_controls else None,
+        "metamorphic_pass": metamorphic.get("passed") if metamorphic else None,
+        "evidence": evidence,
+    }
 
 
 def _evaluate_patterns(

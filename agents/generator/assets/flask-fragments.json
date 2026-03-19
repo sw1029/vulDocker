@@ -201,7 +201,15 @@
       "sink": ["SQL query execution", "mysql.connector.connect", "cursor.execute"],
       "exploit_precondition": ["input concatenated/interpolated into SQL sink", "sql injection"]
     },
-    "requirements_content": "Flask==3.0.0\nmysql-connector-python==8.1.0\nrequests==2.31.0\n"
+    "requirements_content": "Flask==3.0.0\nmysql-connector-python==8.1.0\nrequests==2.31.0\n",
+    "extra_files": [
+      {
+        "path": "schema.sql",
+        "role": "schema",
+        "description": "MySQL schema and seed data for the registry-backed SQLi sidecar lane.",
+        "content": "CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY, username VARCHAR(64), password VARCHAR(64));\nCREATE TABLE IF NOT EXISTS audit_tokens (id INT PRIMARY KEY AUTO_INCREMENT, token VARCHAR(128) NOT NULL);\nINSERT INTO users (id, username, password) VALUES (1, 'admin', 'secret') ON DUPLICATE KEY UPDATE username=VALUES(username), password=VALUES(password);\nINSERT INTO users (id, username, password) VALUES (2, 'guest', 'guest') ON DUPLICATE KEY UPDATE username=VALUES(username), password=VALUES(password);\nINSERT INTO audit_tokens (token) VALUES ('FLAG-sqli-demo-token') ON DUPLICATE KEY UPDATE token=token;\n"
+      }
+    ]
   },
   "ssrf_loopback_fetch": {
     "family": "ssrf",

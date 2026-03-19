@@ -1802,6 +1802,17 @@ def test_cwe89_basic_repeatability_gate(tmp_path: Path) -> None:
     assert report["passed"] is True
     assert report["attempt_count"] == 3
     assert report["failure_count"] == 0
+    assert report["matrix_axes"]["family_known"] == "known"
+    assert isinstance(report["cache_reuse_observed"], bool)
+    assert isinstance(report["cache_reuse_consistent"], bool)
+    assert isinstance(report["executed_query_reduction_observed"], bool)
+    assert Path(report["matrix_report_path"]).exists()
+    assert Path(report["support_candidate_path"]).exists()
+    first_attempt = report["attempts"][0]
+    assert first_attempt["case_name"] == "cwe-89-basic"
+    assert first_attempt["matrix_axes"]["topology_class"] == "single_service"
+    assert "search_cache_hit_count" in first_attempt
+    assert "search_executed_query_count" in first_attempt
 
 
 @pytest.mark.e2e
@@ -1826,6 +1837,17 @@ def test_template_injection_name_only_repeatability_gate(tmp_path: Path) -> None
     assert report["passed"] is True
     assert report["attempt_count"] == 3
     assert report["failure_count"] == 0
+    assert report["matrix_axes"]["phrase_shape"] == "canonical"
+    assert isinstance(report["cache_reuse_observed"], bool)
+    assert isinstance(report["cache_reuse_consistent"], bool)
+    assert isinstance(report["executed_query_reduction_observed"], bool)
+    assert Path(report["matrix_report_path"]).exists()
+    assert Path(report["support_candidate_path"]).exists()
+    first_attempt = report["attempts"][0]
+    assert first_attempt["case_name"] == "template-injection-name-only"
+    assert first_attempt["matrix_axes"]["oracle_difficulty"] == "payload_replay"
+    assert "search_cache_hit_count" in first_attempt
+    assert "search_early_stop_triggered" in first_attempt
 
 
 @pytest.mark.e2e

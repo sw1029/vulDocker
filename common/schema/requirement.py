@@ -278,6 +278,113 @@ def _stack_candidates_for_request_ir(requirement: Dict[str, Any]) -> List[Dict[s
     ]
 
 
+def _runtime_dependency_hypotheses_for_request_ir(requirement: Dict[str, Any]) -> List[Dict[str, str]]:
+    runtime = requirement.get("runtime") if isinstance(requirement.get("runtime"), dict) else {}
+    runtime = runtime if isinstance(runtime, dict) else {}
+    db = str(
+        runtime.get("db")
+        or runtime.get("database")
+        or requirement.get("db")
+        or requirement.get("database")
+        or ""
+    ).strip().lower()
+    if not db:
+        return []
+    confidence = "high" if db == "sqlite" else "medium"
+    return [
+        {
+            "kind": "db",
+            "value": db,
+            "source": "request_runtime_db",
+            "confidence": confidence,
+        }
+    ]
+
+
+def _topology_hypotheses_for_request_ir(requirement: Dict[str, Any]) -> List[Dict[str, str]]:
+    runtime = requirement.get("runtime") if isinstance(requirement.get("runtime"), dict) else {}
+    runtime = runtime if isinstance(runtime, dict) else {}
+    policy = requirement.get("policy") if isinstance(requirement.get("policy"), dict) else {}
+    executor = policy.get("executor") if isinstance(policy.get("executor"), dict) else {}
+    sidecars = executor.get("sidecars") if isinstance(executor.get("sidecars"), list) else []
+    db = str(
+        runtime.get("db")
+        or runtime.get("database")
+        or requirement.get("db")
+        or requirement.get("database")
+        or ""
+    ).strip().lower()
+    requires_sidecar = bool(sidecars) or db in {"mysql", "mariadb", "postgres", "postgresql"}
+    topology = "service_plus_sidecar" if requires_sidecar else "single_service"
+    confidence = "medium" if requires_sidecar else "high"
+    return [{"topology": topology, "source": "request_runtime_hint", "confidence": confidence}]
+
+
+def _scenario_candidates_for_request_ir(
+    requirement: Dict[str, Any],
+    *,
+    family_candidates: List[Dict[str, str]],
+    stack_candidates: List[Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    if not isinstance(family_candidates, list) or not isinstance(stack_candidates, list):
+        return []
+    topologies = _topology_hypotheses_for_request_ir(requirement)
+    dependency_set = [
+        "service",
+        *[
+            f"{str(item.get('kind') or '').strip().lower()}:{str(item.get('value') or '').strip().lower()}"
+            for item in _runtime_dependency_hypotheses_for_request_ir(requirement)
+            if str(item.get("kind") or "").strip() and str(item.get("value") or "").strip()
+        ],
+    ]
+    candidates: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for family in family_candidates[:3]:
+        if not isinstance(family, dict):
+            continue
+        family_name = str(family.get("family") or "").strip().lower()
+        if not family_name:
+            continue
+        for stack in stack_candidates[:3]:
+            if not isinstance(stack, dict):
+                continue
+            stack_id = str(stack.get("stack_id") or "").strip().lower()
+            if not stack_id:
+                continue
+            for topology in topologies[:2]:
+                if not isinstance(topology, dict):
+                    continue
+                topology_name = str(topology.get("topology") or "").strip().lower()
+                if not topology_name:
+                    continue
+                scenario_id = f"family={family_name}|stack={stack_id}|topology={topology_name}"
+                if scenario_id in seen:
+                    continue
+                seen.add(scenario_id)
+                candidates.append(
+                    {
+                        "scenario_id": scenario_id,
+                        "family": family_name,
+                        "stack_id": stack_id,
+                        "topology": topology_name,
+                        "dependency_set": list(dependency_set),
+                        "oracle_profile": {
+                            "mode": "contract_or_auto",
+                            "negative_control_present": False,
+                            "metamorphic_present": False,
+                        },
+                        "family_source": str(family.get("source") or "").strip().lower() or "unknown",
+                        "stack_source": str(stack.get("source") or "").strip().lower() or "unknown",
+                        "family_confidence": str(family.get("confidence") or "").strip().lower() or "unknown",
+                        "stack_confidence": str(stack.get("confidence") or "").strip().lower() or "unknown",
+                        "topology_source": str(topology.get("source") or "").strip().lower() or "unknown",
+                        "topology_confidence": str(topology.get("confidence") or "").strip().lower() or "unknown",
+                        "selected": False,
+                    }
+                )
+    return candidates
+
+
 def _family_candidates_for_request_ir(
     requirement: Dict[str, Any],
     *,
@@ -499,6 +606,13 @@ def _build_request_ir(
             if key in name_only_contract
         },
     }
+    payload["runtime_dependency_hypotheses"] = _runtime_dependency_hypotheses_for_request_ir(requirement)
+    payload["topology_hypotheses"] = _topology_hypotheses_for_request_ir(requirement)
+    payload["scenario_candidates"] = _scenario_candidates_for_request_ir(
+        requirement,
+        family_candidates=payload["family_candidates"],
+        stack_candidates=payload["stack_candidates"],
+    )
     return payload
 
 

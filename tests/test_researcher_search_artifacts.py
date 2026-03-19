@@ -71,8 +71,10 @@ class _SearchToolStub:
         self._hits = hits
         self._execution = execution
         self.last_kwargs = {}
+        self.call_count = 0
 
     def search_with_filters(self, query, limit=3, policy="remote_prefer", **kwargs):  # noqa: ANN001
+        self.call_count += 1
         self.last_kwargs = {"query": query, "limit": limit, "policy": policy, **kwargs}
         for hit in self._hits:
             if not hit.query:
@@ -774,6 +776,144 @@ def test_search_filters_are_propagated_to_request_payload(monkeypatch, tmp_path:
     assert trace["request"]["include_domains"] == ["mitre.org", "owasp.org"]
     assert trace["request"]["exclude_domains"] == ["example.com"]
     assert trace["request"]["time_range"] == "30d"
+
+
+def test_search_cache_reuses_previous_query_results(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("agents.researcher.service.load_static_context", lambda _snapshot: "")
+    monkeypatch.setattr("agents.researcher.service.get_repo_root", lambda: tmp_path)
+    search_tool = _SearchToolStub(
+        [
+            SearchResult(
+                title="remote note",
+                url="https://owasp.org/demo",
+                snippet="remote snippet",
+                source="remote",
+                provider="tavily",
+            )
+        ],
+        SearchExecution(
+            provider="tavily",
+            configured=True,
+            result_count=1,
+            request={"query": "unknown cwe exploit", "limit": 3, "policy": "remote_required"},
+        ),
+    )
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CWE-9999",
+        search_policy="remote_required",
+        require_evidence=False,
+    )
+    service._evaluate_evidence_quality = lambda bundle, hits: ("sufficient", "sufficient evidence")  # type: ignore[attr-defined]
+    service.search_tool = search_tool  # type: ignore[attr-defined]
+
+    service.run()
+    second = _service_stub(
+        tmp_path,
+        vuln_id="CWE-9999",
+        search_policy="remote_required",
+        require_evidence=False,
+    )
+    second._evaluate_evidence_quality = lambda bundle, hits: ("sufficient", "sufficient evidence")  # type: ignore[attr-defined]
+    second.search_tool = search_tool  # type: ignore[attr-defined]
+    second.run()
+
+    health = json.loads((tmp_path / "search_health.json").read_text(encoding="utf-8"))
+    assert search_tool.call_count == 1
+    assert health["cache_hit_count"] == 1
+    assert health["cache_miss_count"] == 0
+    assert health["executed_query_count"] == 1
+
+
+def test_collect_search_results_triggers_early_stop_on_diminishing_returns(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("agents.researcher.service.get_repo_root", lambda: tmp_path)
+    service = _service_stub(
+        tmp_path,
+        vuln_id="NAME-OPEN-REDIRECT",
+        search_policy="remote_required",
+        require_evidence=False,
+    )
+    service.search_limit = 2  # type: ignore[attr-defined]
+    service._query_plan_index = {  # type: ignore[attr-defined]
+        "q1": {"priority": 3},
+        "q2": {"priority": 2},
+        "q3": {"priority": 1},
+    }
+
+    class _LoopStub(_ReactLoopStub):
+        def query_plan_from_requirement(self, requirement, *, limit=3):  # noqa: ANN001
+            return {
+                "request_label": "Open Redirect",
+                "family_hypotheses": [],
+                "exploit_hypotheses": [],
+                "queries": [
+                    {"query": "q1", "priority": 3},
+                    {"query": "q2", "priority": 2},
+                    {"query": "q3", "priority": 1},
+                ],
+            }
+
+    class _PerQuerySearchTool(_SearchToolStub):
+        def search_with_filters(self, query, limit=3, policy="remote_prefer", **kwargs):  # noqa: ANN001
+            self.call_count += 1
+            if query == "q1":
+                return [
+                    SearchResult(
+                        title="high authority",
+                        url="https://owasp.org/demo",
+                        snippet="open redirect writeup",
+                        source="remote",
+                        provider="tavily",
+                        query=query,
+                    )
+                ]
+            if query == "q2":
+                return [
+                    SearchResult(
+                        title="duplicate authority",
+                        url="https://owasp.org/demo",
+                        snippet="same writeup",
+                        source="remote",
+                        provider="tavily",
+                        query=query,
+                    ),
+                    SearchResult(
+                        title="second authority",
+                        url="https://mitre.org/demo",
+                        snippet="second writeup",
+                        source="remote",
+                        provider="tavily",
+                        query=query,
+                    ),
+                ]
+            return [
+                SearchResult(
+                    title="duplicate authority again",
+                    url="https://mitre.org/demo",
+                    snippet="same writeup",
+                    source="remote",
+                    provider="tavily",
+                    query=query,
+                )
+            ]
+
+    search_tool = _PerQuerySearchTool(
+        [],
+        SearchExecution(
+            provider="tavily",
+            configured=True,
+            result_count=1,
+            request={"query": "q1", "limit": 3, "policy": "remote_required"},
+        ),
+    )
+    service.react_loop = _LoopStub()  # type: ignore[attr-defined]
+    service.search_tool = search_tool  # type: ignore[attr-defined]
+    hits = service._collect_search_results(["q1", "q2", "q3"], _Span())  # type: ignore[attr-defined]
+
+    assert len(hits) == 2
+    assert service._search_early_stop_triggered is True  # type: ignore[attr-defined]
+    assert service._search_executed_query_count == 3  # type: ignore[attr-defined]
+    assert service._search_records[-1]["early_stop_triggered"] is True  # type: ignore[attr-defined]
 
 
 def _write_template_fixture(template_dir: Path, metadata: dict) -> None:

@@ -84,6 +84,11 @@ def test_requirement_for_synthesis_injects_resolved_runtime_recipe(tmp_path: Pat
                 "health_path": "/health",
                 "topology": "service_plus_sidecar",
             },
+            "staged_synthesis": {
+                "schema_version": "staged_synthesis@0.1",
+                "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+                "candidate_resolution": {"selected_topology": "service_plus_sidecar"},
+            },
         },
     )
 
@@ -91,6 +96,7 @@ def test_requirement_for_synthesis_injects_resolved_runtime_recipe(tmp_path: Pat
 
     assert enriched["runtime_recipe"]["framework"] == "fastapi"
     assert enriched["executor_plan"]["health_path"] == "/health"
+    assert enriched["staged_synthesis"]["candidate_resolution"]["selected_topology"] == "service_plus_sidecar"
     assert "runtime_recipe" not in service.requirement  # type: ignore[operator]
 
 
@@ -179,6 +185,11 @@ def test_requirement_for_synthesis_builds_preflight_contract_for_name_only_when_
     assert enriched["request_ir"]["selection_decision"]["ready_for_materialization"] is True
     assert "name_only_generation_spec" in enriched
     assert "executor_plan" in enriched
+    assert "staged_synthesis" in enriched
+    assert enriched["staged_synthesis"]["runtime_plan"]["topology"] == "single_service"
+    assert enriched["staged_synthesis"]["design_brief"]["selected_topology"] == "single_service"
+    assert enriched["staged_synthesis"]["design_brief"]["selected_oracle_mode"] == "stateful_text"
+    assert "negative_control_cases" in enriched["staged_synthesis"]["design_brief"]["required_roles"]
 
 
 def test_researcher_report_for_prompt_preserves_family_hypothesis_summary(tmp_path: Path) -> None:

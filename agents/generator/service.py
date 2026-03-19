@@ -485,7 +485,7 @@ class GeneratorService:
         if not isinstance(contract, dict) or not contract:
             return preflight if isinstance(preflight, dict) else {}
         merged = deepcopy(contract)
-        for key in ("request_ir", "runtime_recipe", "exploit_oracle", "name_only_generation_spec", "executor_plan"):
+        for key in ("request_ir", "runtime_recipe", "exploit_oracle", "name_only_generation_spec", "executor_plan", "staged_synthesis"):
             existing = merged.get(key)
             candidate = preflight.get(key) if isinstance(preflight, dict) else None
             if isinstance(existing, dict) and existing:
@@ -503,7 +503,7 @@ class GeneratorService:
     def _requirement_for_synthesis(self) -> Dict[str, Any]:
         requirement = deepcopy(self.requirement) if isinstance(self.requirement, dict) else {}
         contract = self._resolved_contract_for_synthesis()
-        for key in ("request_ir", "runtime_recipe", "exploit_oracle", "name_only_generation_spec", "executor_plan"):
+        for key in ("request_ir", "runtime_recipe", "exploit_oracle", "name_only_generation_spec", "executor_plan", "staged_synthesis"):
             payload = contract.get(key) if isinstance(contract.get(key), dict) else {}
             if payload:
                 requirement[key] = deepcopy(payload)
@@ -985,6 +985,8 @@ class GeneratorService:
                     "suggested_dependencies": failure_meta.get("suggested_dependencies", []),
                     "guard_error_code": failure_meta.get("guard_error_code"),
                     "guard_error_subcode": failure_meta.get("guard_error_subcode"),
+                    "failure_stage": failure_meta.get("failure_stage"),
+                    "failure_stage_reason": failure_meta.get("failure_stage_reason"),
                     "unsupported_ops": failure_meta.get("unsupported_ops", []),
                     "schema_errors": failure_meta.get("schema_errors", []),
                     "schema_normalizations": failure_meta.get("schema_normalizations", []),
@@ -1022,6 +1024,8 @@ class GeneratorService:
                     "missing_dependencies": failure_meta.get("missing_dependencies", []),
                     "suggested_dependencies": failure_meta.get("suggested_dependencies", []),
                     "guard_error_code": failure_meta.get("guard_error_code"),
+                    "failure_stage": failure_meta.get("failure_stage"),
+                    "failure_stage_reason": failure_meta.get("failure_stage_reason"),
                     "unsupported_ops": failure_meta.get("unsupported_ops", []),
                 }
                 self.loop_controller.record_failure(
@@ -1200,8 +1204,11 @@ class GeneratorService:
             payload = normalize_hint_payload(entry.get("hint_payload"))
             payload_text = json.dumps(payload, indent=2, ensure_ascii=False)
             supported_ops = ", ".join(sorted(SUPPORTED_GENERATOR_ASSERTION_OPS))
+            failure_stage = str(entry.get("failure_stage") or "").strip()
+            stage_line = f"- Latest staged synthesis failure_stage: `{failure_stage}`.\n" if failure_stage else ""
             return (
                 "# Failure Hint Payload (JSON)\n"
+                f"{stage_line}"
                 "```json\n"
                 f"{payload_text}\n"
                 "```\n"
@@ -1235,6 +1242,9 @@ class GeneratorService:
         parts: List[str] = []
         if guard_error_code:
             parts.append(f"Latest guard failure code: {guard_error_code}")
+        failure_stage = str(entry.get("failure_stage") or "").strip()
+        if failure_stage:
+            parts.append(f"Latest staged synthesis failure_stage: {failure_stage}")
         if unsupported_ops:
             parts.append("Unsupported guard ops from last run: " + ", ".join(sorted({str(op) for op in unsupported_ops if op})))
             parts.append(

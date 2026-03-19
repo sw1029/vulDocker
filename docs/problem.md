@@ -4,7 +4,7 @@ Status: canonical
 Audience: mixed
 Source of truth for: project problem statement, name-only/open-world target behavior, success criteria
 Not the source of truth for: current baseline evidence, implementation roadmap, subsystem policy details
-Last validated against: code inspection and representative reruns reflected on 2026-03-14
+Last validated against: current success-criteria wording, roadmap alignment, and rerun-backed truth reflected on 2026-03-19
 
 본 프로젝트의 핵심 문제는 "취약점 이름만 주어졌을 때도 사용자가 기대한 의도에 맞는 취약 Docker 환경을 생성·실행·검증할 수 있는가"입니다. 현재 레포는 일부 family에 대해 정직한 regression platform과 bounded dynamic generation을 제공하지만, generalized open-world generator로는 아직 부족합니다.
 
@@ -12,7 +12,64 @@ Last validated against: code inspection and representative reruns reflected on 2
 - 현재 truth와 baseline: [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
 - 현재 제약과 금지 claim: [docs/constraints.md](constraints.md)
 - 구현 우선순위: [docs/final_solution.md](final_solution.md)
+- actionable ticket backlog: [docs/work_tickets.md](work_tickets.md)
 - 운영 절차: [docs/handbook.md](handbook.md)
+- representative validation harness: [tests/e2e/README.md](../tests/e2e/README.md)
+
+## Reader Routing
+
+- 목표/성공 기준을 확인하려면 이 문서를 본다.
+- 지금 실제로 어디까지 되는지 확인하려면 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)로 간다.
+- 무엇을 주장하면 안 되는지 확인하려면 [docs/constraints.md](constraints.md)로 간다.
+- 다음 구현 순서를 정하려면 [docs/final_solution.md](final_solution.md)와 [docs/work_tickets.md](work_tickets.md)로 간다.
+- 실제 실행 절차와 artifact 해석은 [docs/handbook.md](handbook.md)를 본다.
+- representative rerun command와 repeatability/support 검증 하니스는 [tests/e2e/README.md](../tests/e2e/README.md)를 본다.
+
+## Validation Companions
+
+이 문서의 success criteria를 실제 검증으로 내릴 때는 아래 문서를 같이 본다.
+
+- “현재 실제로 충족됐는가”는 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
+- “무엇을 충족으로 말하면 안 되는가”는 [docs/constraints.md](constraints.md)
+- “성공 기준 5축이 어떤 backlog owner로 분해되는가”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Axis Map`
+- “완료판정 companion 문서 세트는 무엇인가”는 [docs/work_tickets.md](work_tickets.md)의 `Completion Companions`
+- “각 축 완료를 무엇으로 판정하나”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Checklist`
+- “각 축 완료를 어떤 순서로 검토하나”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Review Flow`
+- “완료판정 문서를 어떤 순서로 열 것인가”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Reading Order`
+- “지금 확인된 open-world residual이 어떤 ticket bundle로 쪼개지는가”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Ticket Breakdown`
+- “지금 residual을 어떤 순서로 구현 검토하나”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Review Flow`
+- “residual 문서를 어떤 순서로 열 것인가”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Reading Order`
+- “residual 검토 companion 문서 세트는 무엇인가”는 [docs/work_tickets.md](work_tickets.md)의 `Residual Companions`
+- “지금 내가 검증/완료판정/잔여 검토 중 무엇을 하려는지에 따라 어디서 시작해야 하나”는 [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+- “어떤 phase acceptance가 어떤 검증 surface로 이어지는가”는 [docs/final_solution.md](final_solution.md)의 `Acceptance-To-Validation Translation`
+- “검증 문서를 어떤 순서로 열 것인가”는 [docs/work_tickets.md](work_tickets.md)의 `Validation Reading Order`
+- “검증 질문별로 어느 문서를 먼저 봐야 하나”는 [docs/work_tickets.md](work_tickets.md)의 `Validation Question Routing`
+- “residual 질문별로 어느 문서를 먼저 봐야 하나”는 [docs/work_tickets.md](work_tickets.md)의 `Residual Question Routing`
+- “실제 rerun command는 무엇인가”는 [tests/e2e/README.md](../tests/e2e/README.md)
+
+## Completion Companions
+
+이 문서의 success criteria를 완료판정 관점으로 읽을 때는 아래 문서를 같이 본다.
+
+- completion companion set은 [docs/work_tickets.md](work_tickets.md)의 `Completion Companions`
+- axis map / close criteria / canonical review order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Axis Map`, `Open-World Completion Checklist`, `Open-World Completion Review Flow`
+- canonical completion reading order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Reading Order`
+- phase acceptance map은 [docs/final_solution.md](final_solution.md)의 `Acceptance-To-Validation Translation`
+- current truth / non-claim은 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+
+## Review Mode Entry
+
+이 문서를 보고 있을 때도, 현재 목적은 아래 셋 중 하나로 다시 좁혀서 본다.
+
+- 검증:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
+- 완료판정:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - 이 문서의 `Completion Companions`
+- 잔여 구현 검토:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - [docs/work_tickets.md](work_tickets.md)의 `Residual Companions`
 
 ## Problem Statement
 
@@ -88,3 +145,14 @@ Last validated against: code inspection and representative reruns reflected on 2
 - 현재 시스템이 할 수 있는 것/없는 것은 [docs/constraints.md](constraints.md)에서 정의합니다.
 - 구현 우선순위와 phase plan은 [docs/final_solution.md](final_solution.md)가 단일 소스입니다.
 - 실제 운영 절차와 명령은 [docs/handbook.md](handbook.md)를 봅니다.
+- representative validation harness와 case layout은 [tests/e2e/README.md](../tests/e2e/README.md)를 봅니다.
+
+## How To Update This Document
+
+- success criteria나 target behavior wording이 바뀔 때만 갱신한다.
+- current baseline 수치나 rerun 결과는 여기 적지 않고 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)로 보낸다.
+- current non-claim이나 운영 전제는 [docs/constraints.md](constraints.md)로 보낸다.
+- 우선순위나 phase ordering이 바뀌면 [docs/final_solution.md](final_solution.md)와 [docs/work_tickets.md](work_tickets.md)를 함께 갱신한다.
+- representative validation harness entrypoint가 바뀌면 [tests/e2e/README.md](../tests/e2e/README.md)와 같이 맞춘다.
+- completion companion 관계나 completion reading order가 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춘다.
+- review mode entry shortcut이 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춘다.

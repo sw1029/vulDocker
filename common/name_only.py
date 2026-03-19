@@ -143,6 +143,133 @@ def build_name_only_contract(
     }
 
 
+def _normalized_closure_path_set(values: Any) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    return {
+        str(item).strip().lower()
+        for item in values
+        if isinstance(item, str) and str(item).strip()
+    }
+
+
+def closure_source_allowed_by_contract(contract: Any, closure_source: Any) -> bool:
+    token = str(closure_source or "").strip().lower()
+    if not token or not isinstance(contract, dict):
+        return False
+    return token in _normalized_closure_path_set(contract.get("allowed_execution_paths"))
+
+
+def closure_source_satisfies_intent(contract: Any, closure_source: Any) -> bool:
+    token = str(closure_source or "").strip().lower()
+    if not token or not isinstance(contract, dict):
+        return False
+    return token in _normalized_closure_path_set(contract.get("intent_satisfying_paths"))
+
+
+def resolve_name_only_closure_source(
+    *,
+    failure_stage: Any,
+    generation_origin: Any,
+    strict_counts_as_generalization: bool,
+) -> str:
+    failure_stage_token = str(failure_stage or "").strip().upper()
+    generation_origin_token = str(generation_origin or "").strip().lower()
+    if failure_stage_token in {"CAPABILITY_CHECK", "RESEARCH", "GENERATOR", "NAME_ONLY_GATE"}:
+        return "failed"
+    if generation_origin_token == "compiler_generated":
+        return "curated_lower_bound"
+    if generation_origin_token == "built_in_template":
+        return "template_assisted"
+    if generation_origin_token == "deterministic_fallback":
+        return "degraded_deterministic_fallback"
+    if generation_origin_token == "llm_manifest" and strict_counts_as_generalization:
+        return "strict_open_world_positive"
+    if generation_origin_token == "llm_manifest":
+        return "trusted_dynamic"
+    return generation_origin_token or "unknown"
+
+
+def classify_name_only_intent(
+    *,
+    mode: Any,
+    contract: Any,
+    closure_source: Any,
+    failure_stage: Any = "",
+    dynamic_eval_status: Any = "",
+    open_world_class: Any = "",
+    strict_open_world_class: Any = "",
+    strict_counts_as_generalization: bool = False,
+) -> Dict[str, Any]:
+    mode_token = str(mode or "").strip().lower() or "compatibility"
+    closure_source_token = str(closure_source or "").strip().lower()
+    failure_stage_token = str(failure_stage or "").strip().upper()
+    dynamic_eval_status_token = str(dynamic_eval_status or "").strip().lower()
+    open_world_class_token = str(open_world_class or "").strip().lower()
+    strict_class_token = str(strict_open_world_class or "").strip().lower()
+    allowed_by_execution_contract = closure_source_allowed_by_contract(contract, closure_source_token)
+    satisfies_intent_contract = closure_source_satisfies_intent(contract, closure_source_token)
+
+    status = "compatibility_lower_bound"
+    meets_intent = False
+    partial = False
+    reason = ""
+
+    if mode_token == "compatibility":
+        if failure_stage_token:
+            status = "compatibility_failed"
+            reason = "compatibility lane failed before lower-bound completion"
+        else:
+            status = "compatibility_lower_bound"
+            meets_intent = satisfies_intent_contract or closure_source_token == "curated_lower_bound"
+            reason = "compatibility mode allows curated lower-bound/template-backed closure"
+    elif mode_token in {"dynamic", "dynamic_eval"}:
+        if strict_counts_as_generalization or open_world_class_token == "open_world_positive" or satisfies_intent_contract:
+            status = "dynamic_success"
+            meets_intent = True
+            reason = "name-only dynamic lane closed without relying on degraded lower-bound recovery"
+        elif dynamic_eval_status_token == "lower_bound_recovered" or closure_source_token == "curated_lower_bound":
+            status = "lower_bound_recovered"
+            reason = "dynamic lane fell back to an existing curated lower-bound path"
+        elif allowed_by_execution_contract:
+            status = "degraded_dynamic_success"
+            partial = True
+            reason = "dynamic lane remained runnable, but closure still relied on degraded deterministic fallback"
+        else:
+            status = "dynamic_failed"
+            reason = "dynamic lane did not produce an acceptable runnable bundle"
+    else:
+        if strict_counts_as_generalization or satisfies_intent_contract:
+            status = "strict_dynamic_success"
+            meets_intent = True
+            reason = "strict dynamic lane achieved strict open-world positive evidence"
+        elif dynamic_eval_status_token == "degraded_success" or strict_class_token in {
+            "strict_minimal_dynamic_fallback",
+            "strict_semantic_guided_fallback",
+        }:
+            status = "strict_dynamic_rejected_degraded"
+            reason = "strict dynamic lane produced only degraded deterministic fallback and does not meet intent"
+        elif strict_class_token in {
+            "strict_dynamic_generation_failed",
+            "strict_dynamic_live_llm_required",
+            "strict_dynamic_capability_unavailable",
+        } or dynamic_eval_status_token == "dynamic_failed" or failure_stage_token:
+            status = "strict_dynamic_failed"
+            reason = "strict dynamic lane failed before acceptable materialization"
+        else:
+            status = "strict_dynamic_not_satisfied"
+            reason = "strict dynamic lane did not reach strict open-world positive evidence"
+
+    return {
+        "status": status,
+        "meets_intent": meets_intent,
+        "partial": partial,
+        "reason": reason,
+        "allowed_by_execution_contract": allowed_by_execution_contract,
+        "satisfies_intent_contract": satisfies_intent_contract,
+    }
+
+
 def with_name_only_contract(requirement: Any) -> Dict[str, Any]:
     req = deepcopy(requirement) if isinstance(requirement, dict) else {}
     policy = req.get("policy")
@@ -156,7 +283,11 @@ def with_name_only_contract(requirement: Any) -> Dict[str, Any]:
 __all__ = [
     "VALID_NAME_ONLY_MODES",
     "build_name_only_contract",
+    "classify_name_only_intent",
+    "closure_source_allowed_by_contract",
+    "closure_source_satisfies_intent",
     "is_name_driven_requirement",
     "name_only_mode",
+    "resolve_name_only_closure_source",
     "with_name_only_contract",
 ]

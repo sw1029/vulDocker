@@ -371,9 +371,40 @@ def test_family_aware_fallback_manifest_for_template_injection_uses_asset_templa
 
 def test_generic_unsupported_fallback_manifest_uses_asset_templates(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "NAME-CUSTOM-WEIRD-VULN")
+    engine._requirement["staged_synthesis"] = {  # type: ignore[index]
+        "schema_version": "staged_synthesis@0.1",
+        "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+        "design_brief": {
+            "selected_topology": "service_plus_sidecar",
+            "selected_oracle_mode": "stateful_text",
+            "selected_oracle_source": "researcher_verification_spec",
+            "dependency_set": ["service", "db:mysql"],
+            "required_roles": [
+                "service_main",
+                "poc_entry",
+                "dependency_db",
+                "dependency_sidecar",
+                "oracle_state_checks",
+            ],
+        },
+    }
     manifest = engine._fallback_manifest()
 
     assert manifest["metadata"]["fallback_class"] == "generic_unsupported_family"
+    assert manifest["metadata"]["design_brief_topology"] == "service_plus_sidecar"
+    assert manifest["metadata"]["design_brief_oracle_mode"] == "stateful_text"
+    assert manifest["metadata"]["design_brief_oracle_source"] == "researcher_verification_spec"
+    assert manifest["metadata"]["design_brief_required_roles"] == [
+        "service_main",
+        "poc_entry",
+        "dependency_db",
+        "dependency_sidecar",
+        "oracle_state_checks",
+    ]
+    assert manifest["metadata"]["design_brief_dependency_set"] == ["service", "db:mysql"]
+    assert manifest["metadata"]["target_topology"] == "service_plus_sidecar"
+    assert manifest["metadata"]["target_db"] == "mysql"
+    assert manifest["metadata"]["target_sidecars"] == ["mysql"]
     dockerfile = next(entry for entry in manifest["files"] if entry.get("path") == "Dockerfile")
     service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
     poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
@@ -720,6 +751,99 @@ def test_dynamic_eval_semantic_guided_fallback_abstains_on_overlapping_family_ma
     assert manifest["metadata"]["semantic_guided_ambiguous"] is True
 
 
+def test_dynamic_eval_semantic_guided_fallback_can_use_design_brief_dependency_db_when_semantics_missing(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-DB-THING")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["staged_synthesis"] = {  # type: ignore[index]
+        "schema_version": "staged_synthesis@0.1",
+        "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+        "design_brief": {
+            "selected_topology": "single_service",
+            "dependency_set": ["service", "db:sqlite"],
+            "required_roles": ["service_main", "poc_entry", "dependency_db"],
+        },
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "sqli",
+            "top_confidence": "medium",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {}  # type: ignore[attr-defined]
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "sqli"
+    assert manifest["metadata"]["semantic_guided_selection_source"] == "design_brief_dependency_db"
+    assert manifest["metadata"]["semantic_guided_candidate_families"] == ["sqli"]
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert manifest["metadata"]["design_brief_topology"] == "single_service"
+    assert manifest["metadata"]["design_brief_dependency_set"] == ["service", "db:sqlite"]
+    assert manifest["metadata"]["design_brief_required_roles"] == ["service_main", "poc_entry", "dependency_db"]
+    assert manifest["metadata"]["target_topology"] == "single_service"
+    assert manifest["metadata"]["target_db"] == "sqlite"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "sqlite3.connect(DB_PATH)" in service_main["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_use_researcher_top_family_when_semantic_signature_missing(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-CSRF")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "csrf",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {}  # type: ignore[attr-defined]
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "csrf"
+    assert manifest["metadata"]["semantic_guided_selection_source"] == "researcher_top_family_no_semantic_signature"
+    assert manifest["metadata"]["semantic_guided_candidate_families"] == ["csrf"]
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_abstains_when_semantic_signature_missing_and_top_family_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-CSRF")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "csrf",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": True,
+        }
+    }
+    engine._guard_spec_payload = {}  # type: ignore[attr-defined]
+
+    manifest = engine._fallback_manifest()
+
+    assert manifest["metadata"]["fallback_class"] == "generic_unsupported_family"
+    assert manifest["metadata"]["semantic_guided_abstain_reason"] == "no_semantic_family_match"
+
+
 def test_dynamic_eval_semantic_guided_fallback_tolerates_minor_contradiction_with_clear_margin(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "NAME-CUSTOM-OPEN-REDIRECT")
     engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
@@ -772,8 +896,191 @@ def test_dynamic_eval_semantic_guided_open_redirect_manifest_includes_verificati
 
     assert manifest["metadata"]["fallback_class"] == "semantic_guided"
     assert verification_spec["negative_controls"][0]["name"] == "missing-next"
+    assert verification_spec["negative_controls"][0]["payload"] == "/local"
     assert verification_spec["metamorphic"]["passed"] == 1
+    assert verification_spec["metamorphic"]["cases"] == [
+        {"name": "same-origin-relative", "expect_success": False, "payload": "/profile"}
+    ]
     assert "open redirect exploit success" in verification_spec["metamorphic"]["rationale"]
+    assert manifest["poc"]["cmd"] == "python poc.py --base-url {{base_url}} --payload {{payload}}"
+
+
+def test_stateless_minimal_dynamic_manifests_include_payload_replay_verification_specs(tmp_path: Path) -> None:
+    cases = [
+        {
+            "family": "xss",
+            "vuln_id": "CWE-79",
+            "negative_payload": "hello",
+            "metamorphic_payload": "<img src=x onerror=alert(1)>",
+            "guard_signature": {
+                "input_vector": ["request.args", "query parameter", "user input"],
+                "sink": ["render_template_string", "template response"],
+                "exploit_precondition": ["<script>", "unescaped reflection", "cross-site scripting"],
+            },
+        },
+        {
+            "family": "path_traversal",
+            "vuln_id": "NAME-CUSTOM-PATH-TRAVERSAL",
+            "negative_payload": "note.txt",
+            "metamorphic_payload": ".././secret.txt",
+            "guard_signature": {
+                "input_vector": ["request.args", "path parameter"],
+                "sink": ["open(", "os.path.join"],
+                "exploit_precondition": ["path traversal", "../"],
+            },
+        },
+        {
+            "family": "ssrf",
+            "vuln_id": "NAME-CUSTOM-SSRF",
+            "negative_payload": "/health",
+            "metamorphic_payload": "/metadata?from=probe",
+            "guard_signature": {
+                "input_vector": ["request.args", "url parameter"],
+                "sink": ["requests.get", "http client request"],
+                "exploit_precondition": ["server-side request forgery"],
+            },
+        },
+        {
+            "family": "command_injection",
+            "vuln_id": "CWE-78",
+            "negative_payload": "echo safe",
+            "metamorphic_payload": "printf FLAG-command-injection-demo-token",
+            "guard_signature": {
+                "input_vector": ["request.args", "command parameter"],
+                "sink": ["subprocess", "shell=True"],
+                "exploit_precondition": ["command injection", "user input in command"],
+            },
+        },
+        {
+            "family": "code_injection",
+            "vuln_id": "CWE-94",
+            "negative_payload": "0",
+            "metamorphic_payload": "str(FLAG_TOKEN)",
+            "guard_signature": {
+                "input_vector": ["request.args", "code parameter"],
+                "sink": ["eval(", "exec("],
+                "exploit_precondition": ["code injection", "user input reaches eval"],
+            },
+        },
+        {
+            "family": "ldap_injection",
+            "vuln_id": "NAME-LDAP-INJECTION",
+            "negative_payload": "guest",
+            "metamorphic_payload": "*",
+            "guard_signature": {
+                "input_vector": ["request.args", "ldap user parameter"],
+                "sink": ["LDAP filter construction", "directory search", "search_directory("],
+                "exploit_precondition": ["ldap injection", "filter bypass via wildcard or OR clause"],
+            },
+        },
+        {
+            "family": "template_injection",
+            "vuln_id": "NAME-CUSTOM-TEMPLATE-INJECTION",
+            "negative_payload": "friend",
+            "metamorphic_payload": "{{6*7}}",
+            "guard_signature": {
+                "input_vector": ["request.args", "template variable", "name parameter"],
+                "sink": ["render_template_string", "Template("],
+                "exploit_precondition": ["template injection", "server-side expression evaluation", "{{7*7}}"],
+            },
+        },
+        {
+            "family": "csrf",
+            "vuln_id": "NAME-CUSTOM-CSRF",
+            "negative_payload": "0",
+            "metamorphic_payload": "250",
+            "guard_signature": {
+                "input_vector": ["cross-site request", "cookie-authenticated session"],
+                "sink": ["state-changing endpoint (POST/PUT/DELETE/PATCH)"],
+                "exploit_precondition": ["missing csrf token validation"],
+            },
+        },
+        {
+            "family": "deserialization",
+            "vuln_id": "NAME-CUSTOM-DESERIALIZATION",
+            "negative_payload": "echo safe",
+            "metamorphic_payload": "printf FLAG{DESER_OK}",
+            "guard_signature": {
+                "input_vector": ["request.body", "serialized payload"],
+                "sink": ["pickle.loads", "unsafe deserialization"],
+                "exploit_precondition": ["deserialization", "attacker-controlled pickle payload"],
+            },
+        },
+        {
+            "family": "xxe",
+            "vuln_id": "NAME-XXE",
+            "negative_payload": "file:///etc/hostname",
+            "metamorphic_payload": "file:///tmp/./xxe-secret.txt",
+            "guard_signature": {
+                "input_vector": ["request.body", "xml payload"],
+                "sink": ["etree.fromstring", "resolve_entities=True"],
+                "exploit_precondition": ["xxe", "external entity resolution"],
+            },
+        },
+    ]
+
+    for case in cases:
+        engine = _engine(tmp_path / case["family"], case["vuln_id"])
+        engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+        engine._researcher_report_payload = {  # type: ignore[attr-defined]
+            "family_hypothesis_summary": {
+                "top_family": case["family"],
+                "top_confidence": "high",
+                "contradiction_count": 0,
+                "ambiguous": False,
+            }
+        }
+        engine._guard_spec_payload = {  # type: ignore[attr-defined]
+            "semantic_signature": case["guard_signature"]
+        }
+
+        manifest = engine._fallback_manifest()
+        verification_spec = manifest.get("verification_spec") or {}
+        poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+
+        assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+        assert manifest["metadata"]["semantic_guided_family"] == case["family"]
+        assert manifest["poc"]["cmd"] == "python poc.py --base-url {{base_url}} --payload {{payload}}"
+        assert verification_spec["negative_controls"][0]["payload"] == case["negative_payload"]
+        assert verification_spec["metamorphic"]["cases"][0]["payload"] == case["metamorphic_payload"]
+        assert "parser.add_argument('--payload'" in poc_entry["content"]
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_xss_minimal_dynamic(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CWE-79")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["runtime_recipe"] = {  # type: ignore[index]
+        "language": "python",
+        "framework": "fastapi",
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "xss",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        },
+        "tech_stack_candidates": [
+            {"language": "python", "framework": "fastapi", "stack_id": "python/fastapi", "confidence": "medium"}
+        ],
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "query parameter", "user input"],
+            "sink": ["render_template_string", "template response"],
+            "exploit_precondition": ["<script>", "unescaped reflection", "cross-site scripting"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    poc_entry = next(entry for entry in manifest["files"] if entry.get("role") == "poc_entry")
+    assert "def echo(name: str = '')" in service_main["content"]
+    assert "/echo?name=" in poc_entry["content"]
+    assert "parser.add_argument('--payload'" in poc_entry["content"]
 
 
 def test_dynamic_eval_semantic_guided_fallback_can_use_request_identity_when_research_is_degraded(
@@ -1247,6 +1554,134 @@ def test_dynamic_eval_semantic_guided_fallback_can_emit_fastapi_sqli_minimal_dyn
     assert "uvicorn.run(app" in service_main["content"]
     assert "fastapi==" in requirements["content"].lower()
     assert "uvicorn==" in requirements["content"].lower()
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_emit_mysql_sqli_minimal_dynamic_from_design_brief(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-SQLI")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["staged_synthesis"] = {  # type: ignore[index]
+        "schema_version": "staged_synthesis@0.1",
+        "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+        "design_brief": {
+            "selected_topology": "service_plus_sidecar",
+            "dependency_set": ["service", "db:mysql"],
+            "required_roles": ["service_main", "poc_entry", "dependency_db", "dependency_sidecar"],
+        },
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "sqli",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "user-controlled request parameter"],
+            "sink": ["cur.execute", "sql query execution"],
+            "exploit_precondition": ["sql injection", "input concatenated into sql sink"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
+    schema_entry = next(entry for entry in manifest["files"] if entry.get("path") == "schema.sql")
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert manifest["metadata"]["target_db"] == "mysql"
+    assert manifest["metadata"]["target_sidecars"] == ["mysql"]
+    assert manifest["metadata"]["target_topology"] == "service_plus_sidecar"
+    assert manifest["run"]["env"] == {
+        "DB_HOST": "db-internal",
+        "DB_PORT": "3306",
+        "DB_USER": "sqli",
+        "DB_PASSWORD": "sqli_pw",
+        "DB_NAME": "sqliapp",
+    }
+    assert "import pymysql" in service_main["content"]
+    assert "pymysql.connect(" in service_main["content"]
+    assert "Path(__file__).with_name('schema.sql')" in service_main["content"]
+    assert "SCHEMA_PATH.read_text" in service_main["content"]
+    assert "cur.execute(query)" in service_main["content"]
+    assert "sqlite3.connect" not in service_main["content"]
+    assert "pymysql==" in requirements["content"].lower()
+    assert schema_entry["role"] == "schema"
+    assert "CREATE TABLE IF NOT EXISTS users" in schema_entry["content"]
+    assert "INSERT INTO users" in schema_entry["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_semantic_guided_fallback_can_emit_postgres_sqli_minimal_dynamic_from_design_brief(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "NAME-CUSTOM-SQLI")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["staged_synthesis"] = {  # type: ignore[index]
+        "schema_version": "staged_synthesis@0.1",
+        "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+        "design_brief": {
+            "selected_topology": "service_plus_sidecar",
+            "dependency_set": ["service", "db:postgres"],
+            "required_roles": ["service_main", "poc_entry", "dependency_db", "dependency_sidecar"],
+        },
+    }
+    engine._requirement["runtime_recipe"] = {  # type: ignore[index]
+        "language": "python",
+        "framework": "fastapi",
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "sqli",
+            "top_confidence": "high",
+            "contradiction_count": 0,
+            "ambiguous": False,
+        }
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "user-controlled request parameter"],
+            "sink": ["cursor.execute", "sql query execution"],
+            "exploit_precondition": ["sql injection", "input concatenated into sql sink"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    requirements = next(entry for entry in manifest["files"] if entry.get("path") == "requirements.txt")
+    schema_entry = next(entry for entry in manifest["files"] if entry.get("path") == "schema.sql")
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    assert manifest["metadata"]["target_db"] == "postgres"
+    assert manifest["metadata"]["target_sidecars"] == ["postgres"]
+    assert manifest["metadata"]["target_topology"] == "service_plus_sidecar"
+    assert manifest["run"]["env"] == {
+        "DB_HOST": "db-internal",
+        "DB_PORT": "5432",
+        "DB_USER": "sqli",
+        "DB_PASSWORD": "sqli_pw",
+        "DB_NAME": "sqliapp",
+    }
+    assert "from fastapi import FastAPI, Query" in service_main["content"]
+    assert "import psycopg2" in service_main["content"]
+    assert "Path(__file__).with_name('schema.sql')" in service_main["content"]
+    assert "SCHEMA_PATH.read_text" in service_main["content"]
+    assert "cursor_factory=RealDictCursor" in service_main["content"]
+    assert "sqlite3.connect" not in service_main["content"]
+    assert "psycopg2-binary==" in requirements["content"].lower()
+    assert schema_entry["role"] == "schema"
+    assert "CREATE TABLE IF NOT EXISTS users" in schema_entry["content"]
+    assert "SERIAL PRIMARY KEY" in schema_entry["content"]
     assert not any("semantic mismatch:" in item for item in errors)
     semantics = (report or {}).get("semantics") or {}
     assert semantics.get("semantic_match") is True

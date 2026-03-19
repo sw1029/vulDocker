@@ -14,7 +14,11 @@ def exploit(base_url: str, target: str) -> bool:
         print(f'[open-redirect-compiler] request failed: {exc}', file=sys.stderr)
         return False
     location = resp.headers.get('Location', '')
-    return resp.status_code in {301, 302, 303, 307, 308} and location == target
+    return (
+        target.startswith(('http://', 'https://'))
+        and resp.status_code in {301, 302, 303, 307, 308}
+        and location == target
+    )
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Open Redirect compiler PoC')

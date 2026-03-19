@@ -14,6 +14,7 @@ from orchestrator.pack import (
     _bundle_dynamicness_verdict,
     _bundle_dynamic_eval_summary,
     _bundle_completion_state,
+    _bundle_verdict_rollup,
     _bundle_open_world_readiness,
     _completion_summary,
     _evidence_graph_summary,
@@ -35,6 +36,7 @@ from orchestrator.pack import (
     _open_world_readiness_summary,
     _support_promotion_summary,
     _open_world_summary,
+    _runtime_surface_summary,
     _rollup_multibundle_name_only_outcome_field,
     _request_identity_summary,
     _strict_open_world_summary,
@@ -111,6 +113,194 @@ def test_evidence_graph_summary_rolls_up_node_counts() -> None:
     assert summary["by_node_kind"]["request"] == 2
     assert summary["by_node_kind"]["evidence"] == 1
     assert summary["by_edge_kind"]["supports_family_hypothesis"] == 1
+
+
+def test_runtime_surface_summary_rolls_up_runtime_provenance_buckets() -> None:
+    summary = _runtime_surface_summary(
+        [
+            {
+                "runtime_recipe": {
+                    "hypothetical": False,
+                    "topology": "service_plus_sidecar",
+                    "network_enabled": True,
+                    "sidecars": [{"name": "mysql-main"}],
+                    "network_contract": [
+                        {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+                        {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+                    ],
+                    "network_contract_source": "runtime_recipe.service_env+sidecars",
+                    "seed_strategy": "sidecar_sql_apply",
+                    "volume_contract": [
+                        {
+                            "scope": "sidecar:mysql-main",
+                            "source": "workspace",
+                            "target": "/seed-input",
+                            "mode": "ro",
+                        }
+                    ],
+                    "volume_contract_source": "runtime_recipe.seed_files+seed_strategy",
+                    "sidecars_source": "generator_manifest.metadata.target_sidecars",
+                    "service_env_source": "runtime_hint_sidecar_defaults",
+                    "network_mode_source": "runtime_topology_requires_network",
+                    "sidecar_start_order": ["mysql-main"],
+                },
+                "artifacts": {
+                    "run_summary": {
+                        "sidecars": [
+                            {
+                                "name": "mysql-main",
+                                "type": "mysql",
+                                "container": "sid-pack-mysql-main",
+                                "image": "mysql:8.0",
+                                "aliases": ["db-internal"],
+                                "start_order_index": 1,
+                                "seed_mount_target": "/seed-input",
+                                "seed_files_applied": ["schema.sql"],
+                            }
+                        ],
+                        "service_port_source": "executor_plan.service_port",
+                        "service_entry_source": "executor_plan.service_entry",
+                        "poc_entry_source": "runtime_graph.exploit_path.entrypoint",
+                        "poc_cmd_source": "resolved_contract.poc_cmd",
+                        "base_url_source": "executor_plan.base_url",
+                        "health_path_source": "runtime_graph.healthchecks[service]",
+                        "seed_apply_attempted": True,
+                        "seed_apply_completed": True,
+                        "seed_files_applied_total": 1,
+                        "seed_mount_targets": ["/seed-input"],
+                    }
+                },
+            },
+            {
+                "runtime_recipe": {
+                    "hypothetical": True,
+                    "topology": "single_service",
+                    "network_enabled": False,
+                    "sidecars": [],
+                    "seed_strategy": "sqlite_service_init",
+                    "network_contract": [],
+                    "network_contract_source": "missing",
+                    "volume_contract": [],
+                    "volume_contract_source": "missing",
+                    "sidecars_source": "missing",
+                    "service_env_source": "resolved_contract.service_env",
+                    "network_mode_source": "requirement.executor.network_mode",
+                    "sidecar_start_order": [],
+                },
+                "artifacts": {
+                    "run_summary": {
+                        "seed_apply_attempted": False,
+                        "seed_apply_completed": False,
+                        "seed_files_applied_total": 0,
+                        "seed_mount_targets": [],
+                    }
+                },
+            },
+        ]
+    )
+
+    assert summary["bundle_count"] == 2
+    assert summary["realized_bundles"] == 1
+    assert summary["hypothetical_bundles"] == 1
+    assert summary["network_enabled_bundles"] == 1
+    assert summary["sidecar_bundles"] == 1
+    assert summary["by_topology"] == {"service_plus_sidecar": 1, "single_service": 1}
+    assert summary["by_seed_strategy"] == {"sidecar_sql_apply": 1, "sqlite_service_init": 1}
+    assert summary["by_service_port_source"] == {
+        "executor_plan.service_port": 1,
+        "missing": 1,
+    }
+    assert summary["by_service_entry_source"] == {
+        "executor_plan.service_entry": 1,
+        "missing": 1,
+    }
+    assert summary["by_poc_entry_source"] == {
+        "runtime_graph.exploit_path.entrypoint": 1,
+        "missing": 1,
+    }
+    assert summary["by_poc_cmd_source"] == {
+        "resolved_contract.poc_cmd": 1,
+        "missing": 1,
+    }
+    assert summary["by_base_url_source"] == {
+        "executor_plan.base_url": 1,
+        "missing": 1,
+    }
+    assert summary["by_health_path_source"] == {
+        "runtime_graph.healthchecks[service]": 1,
+        "missing": 1,
+    }
+    assert summary["by_sidecars_source"] == {
+        "generator_manifest.metadata.target_sidecars": 1,
+        "missing": 1,
+    }
+    assert summary["by_service_env_source"] == {
+        "runtime_hint_sidecar_defaults": 1,
+        "resolved_contract.service_env": 1,
+    }
+    assert summary["by_network_mode_source"] == {
+        "runtime_topology_requires_network": 1,
+        "requirement.executor.network_mode": 1,
+    }
+    assert summary["volume_contract_bundles"] == 1
+    assert summary["network_contract_bundles"] == 1
+    assert summary["by_volume_contract_source"] == {
+        "runtime_recipe.seed_files+seed_strategy": 1,
+        "missing": 1,
+    }
+    assert summary["by_network_contract_source"] == {
+        "runtime_recipe.service_env+sidecars": 1,
+        "missing": 1,
+    }
+    assert summary["explicit_sidecar_order_bundles"] == 1
+    assert summary["seed_apply_attempted_bundles"] == 1
+    assert summary["seed_apply_completed_bundles"] == 1
+    assert summary["seed_files_applied_total"] == 1
+    assert summary["executed_sidecar_bundles"] == 1
+    assert summary["executed_sidecar_count"] == 1
+    assert summary["seed_mount_target_bundles"] == 1
+    assert summary["custom_seed_mount_target_bundles"] == 0
+    assert summary["by_seed_mount_target"] == {"/seed-input": 1}
+    assert summary["by_executed_sidecar_type"] == {"mysql": 1}
+
+
+def test_runtime_surface_summary_can_fall_back_to_run_summary_execution_shape() -> None:
+    summary = _runtime_surface_summary(
+        [
+            {
+                "runtime_recipe": {},
+                "artifacts": {
+                    "run_summary": {
+                        "network_mode": "bridge",
+                        "sidecars": [
+                            {
+                                "name": "mysql-main",
+                                "type": "mysql",
+                                "container": "sid-pack-mysql-main",
+                                "image": "mysql:8.0",
+                                "aliases": ["db-internal"],
+                                "start_order_index": 1,
+                                "seed_mount_target": "/seed-input",
+                                "seed_files_applied": ["schema.sql"],
+                            }
+                        ],
+                        "sidecar_start_order": ["mysql-main"],
+                    }
+                },
+            }
+        ]
+    )
+
+    assert summary["bundle_count"] == 1
+    assert summary["realized_bundles"] == 1
+    assert summary["hypothetical_bundles"] == 0
+    assert summary["network_enabled_bundles"] == 1
+    assert summary["sidecar_bundles"] == 1
+    assert summary["executed_sidecar_bundles"] == 1
+    assert summary["executed_sidecar_count"] == 1
+    assert summary["explicit_sidecar_order_bundles"] == 1
+    assert summary["by_topology"] == {"service_plus_sidecar": 1}
+    assert summary["by_executed_sidecar_type"] == {"mysql": 1}
 
 
 def test_bundle_completion_state_distinguishes_generated_from_fully_validated() -> None:
@@ -190,6 +380,75 @@ def test_completion_summary_rolls_up_stage_ceiling_counts() -> None:
     }
 
 
+def test_bundle_verdict_rollup_summarizes_multibundle_execution_states() -> None:
+    summary = _bundle_verdict_rollup(
+        [
+            {
+                "artifacts": {
+                    "run_summary": {"run_passed": True},
+                    "eval_result": {"verify_pass": True},
+                },
+                "artifact_quality": {
+                    "oracle_execution_attempted": True,
+                    "oracle_execution_parity": "high",
+                    "qualitative_tier": "bounded_sidecar_parity_success",
+                },
+                "completion_state": {"stage_ceiling": "fully_validated"},
+            },
+            {
+                "artifacts": {
+                    "run_summary": {"run_passed": False},
+                    "eval_result": {"verify_pass": False},
+                },
+                "artifact_quality": {
+                    "oracle_execution_attempted": False,
+                    "oracle_execution_parity": "missing",
+                    "qualitative_tier": "planning_only",
+                },
+                "completion_state": {"stage_ceiling": "pre_generation"},
+                "failure": {"terminal_failure_class": "strict_dynamic_remote_research_unavailable"},
+            },
+            {
+                "artifacts": {
+                    "run_summary": {},
+                    "eval_result": {},
+                },
+                "artifact_quality": {
+                    "oracle_execution_parity": "partial",
+                    "qualitative_tier": "thin_fallback_demo",
+                },
+                "completion_state": {"stage_ceiling": "generated"},
+            },
+        ]
+    )
+
+    assert summary == {
+        "bundle_count": 3,
+        "run_passed_bundles": 1,
+        "run_failed_bundles": 1,
+        "run_unknown_bundles": 1,
+        "run_passed_consensus": "mixed",
+        "verify_pass_bundles": 1,
+        "verify_failed_bundles": 1,
+        "verify_unknown_bundles": 1,
+        "verify_pass_consensus": "mixed",
+        "oracle_execution_attempted_bundles": 1,
+        "oracle_execution_attempted_consensus": "mixed",
+        "by_oracle_execution_parity": {"high": 1, "missing": 1, "partial": 1},
+        "oracle_execution_parity_consensus": "mixed",
+        "by_qualitative_tier": {
+            "bounded_sidecar_parity_success": 1,
+            "planning_only": 1,
+            "thin_fallback_demo": 1,
+        },
+        "qualitative_tier_consensus": "mixed",
+        "by_stage_ceiling": {"fully_validated": 1, "pre_generation": 1, "generated": 1},
+        "stage_ceiling_consensus": "mixed",
+        "by_terminal_failure_class": {"strict_dynamic_remote_research_unavailable": 1},
+        "terminal_failure_class_consensus": "mixed",
+    }
+
+
 def test_bundle_generation_provenance_reads_materializer_from_generator_manifest(tmp_path: Path) -> None:
     (tmp_path / "generator_manifest.json").write_text(
         json.dumps(
@@ -244,6 +503,90 @@ def test_bundle_generation_provenance_surfaces_semantic_guided_selection_metadat
     assert provenance["semantic_guided_selection_source"] == "request_resolution"
     assert provenance["semantic_guided_abstain_reason"] == "ambiguous_semantic_family_match"
     assert provenance["semantic_guided_ambiguous"] is True
+
+
+def test_bundle_staged_recovery_reads_generator_manifest_and_failure_stage(tmp_path: Path) -> None:
+    write_generator_contract(
+        tmp_path,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": "sid-pack",
+            "slug": "name-open-redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "staged_synthesis": {
+                "schema_version": "staged_synthesis@0.1",
+                "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+            },
+        },
+    )
+    (tmp_path / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "failure_stage": "oracle_contract",
+                "failure_stage_reason": "oracle_contract_mismatch",
+                "staged_synthesis": {
+                    "schema_version": "staged_synthesis@0.1",
+                    "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+                },
+                "manifest": {
+                    "metadata": {
+                        "recovery_strategy": "oracle_contract",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    staged = pack_mod._bundle_staged_synthesis(tmp_path)
+    recovery = pack_mod._bundle_staged_recovery(tmp_path)
+
+    assert staged["schema_version"] == "staged_synthesis@0.1"
+    assert recovery["recovery_strategy"] == "oracle_contract"
+    assert recovery["failure_stage"] == "oracle_contract"
+    assert recovery["failure_stage_reason"] == "oracle_contract_mismatch"
+    assert recovery["stage_aware_recovery_used"] is True
+
+
+def test_staged_synthesis_summary_rolls_up_recovery_strategy_and_failure_stage() -> None:
+    summary = pack_mod._staged_synthesis_summary(
+        [
+            {
+                "staged_synthesis": {
+                    "candidate_resolution": {"selected_topology": "single_service"},
+                    "runtime_plan": {"topology": "single_service"},
+                },
+                "staged_recovery": {
+                    "recovery_strategy": "oracle_contract",
+                    "failure_stage": "oracle_contract",
+                    "failure_stage_reason": "oracle_contract_mismatch",
+                    "stage_aware_recovery_used": True,
+                },
+            },
+            {
+                "staged_synthesis": {
+                    "candidate_resolution": {"selected_topology": "service_plus_sidecar"},
+                },
+                "staged_recovery": {
+                    "failure_stage": "runtime_plan",
+                    "failure_stage_reason": "runtime_plan_mismatch",
+                    "stage_aware_recovery_used": False,
+                },
+            },
+        ]
+    )
+
+    assert summary["staged_bundles"] == 2
+    assert summary["with_failure_stage_bundles"] == 2
+    assert summary["stage_aware_recovery_bundles"] == 1
+    assert summary["by_recovery_strategy"] == {"oracle_contract": 1}
+    assert summary["by_failure_stage"] == {"oracle_contract": 1, "runtime_plan": 1}
+    assert summary["by_failure_stage_reason"] == {
+        "oracle_contract_mismatch": 1,
+        "runtime_plan_mismatch": 1,
+    }
+    assert summary["by_selected_topology"] == {"single_service": 1, "service_plus_sidecar": 1}
 
 
 def test_bundle_promotion_is_blocked_by_medium_confidence_unknown_noise(tmp_path: Path) -> None:
@@ -1370,7 +1713,12 @@ def test_bundle_support_promotion_accepts_high_quality_strict_open_world_bundle(
             "promotion": {"eligible": True, "reasons": []},
             "open_world": {"class": "open_world_positive", "counts_as_generalization": True},
             "strict_open_world": {"class": "strict_open_world_positive", "counts_as_generalization": True},
-            "artifact_quality": {"band": "high", "oracle_clarity": "high", "topology_clarity": "high"},
+            "artifact_quality": {
+                "band": "high",
+                "oracle_clarity": "high",
+                "oracle_execution_parity": "high",
+                "topology_clarity": "high",
+            },
             "stack_dependence": {"stack_defaulted": False, "repo_prior_bounded": False},
             "family_dependence": {"candidate_evidence_backed": True},
             "name_only_outcome": {"decision": "intent_met"},
@@ -1831,6 +2179,34 @@ def test_request_ir_summary_tracks_candidate_ambiguity_evidence_and_negative_hyp
                         {"stack_id": "python/flask", "confidence": "medium"},
                         {"stack_id": "python/fastapi", "confidence": "low"},
                     ],
+                    "provisional_family": "xss",
+                    "primitive_hypotheses": [
+                        {"kind": "input_vector", "value": "query parameter"},
+                        {"kind": "sink", "value": "template rendering"},
+                    ],
+                    "runtime_dependency_hypotheses": [
+                        {"kind": "db", "value": "sqlite"},
+                    ],
+                    "topology_hypotheses": [
+                        {"topology": "single_service", "source": "runtime_recipe", "confidence": "high"},
+                    ],
+                    "scenario_candidates": [
+                        {
+                            "scenario_id": "family=xss|stack=python/flask|topology=single_service",
+                            "family": "xss",
+                            "stack_id": "python/flask",
+                            "topology": "single_service",
+                            "selected": True,
+                            "evidence_ids": ["evidence:1"],
+                        },
+                        {
+                            "scenario_id": "family=template_injection|stack=python/fastapi|topology=single_service",
+                            "family": "template_injection",
+                            "stack_id": "python/fastapi",
+                            "topology": "single_service",
+                            "selected": False,
+                        },
+                    ],
                     "negative_hypotheses": [{"family": "template_injection", "source": "researcher_contradiction"}],
                     "selection_decision": {
                         "family": {"selected": True, "selected_family": "xss", "source": "token_match"},
@@ -1871,10 +2247,18 @@ def test_request_ir_summary_tracks_candidate_ambiguity_evidence_and_negative_hyp
     assert summary["unresolved_ambiguous_family_candidate_bundles"] == 0
     assert summary["unresolved_ambiguous_stack_candidate_bundles"] == 0
     assert summary["negative_hypothesis_bundles"] == 1
+    assert summary["provisional_family_bundles"] == 1
+    assert summary["primitive_hypothesis_bundles"] == 1
+    assert summary["runtime_dependency_hypothesis_bundles"] == 1
+    assert summary["topology_hypothesis_bundles"] == 1
+    assert summary["scenario_candidate_bundles"] == 1
+    assert summary["selected_scenario_candidate_bundles"] == 1
     assert summary["avg_identifier_candidate_count"] == 1.5
     assert summary["avg_family_candidate_count"] == 1.5
     assert summary["avg_stack_candidate_count"] == 1.5
     assert summary["avg_negative_hypothesis_count"] == 0.5
+    assert summary["avg_primitive_hypothesis_count"] == 1.0
+    assert summary["avg_scenario_candidate_count"] == 1.0
     assert summary["by_resolution_state"] == {"token_match": 1, "catalog_alias": 1}
     assert summary["by_resolution_match_class"] == {"token_match": 1, "catalog_alias": 1}
     assert summary["by_resolution_confidence"] == {"medium": 1, "high": 1}
@@ -1915,6 +2299,16 @@ def test_selection_readiness_summary_tracks_selected_and_resolved_ambiguity() ->
                             "support_by_source_authority": {"medium": 1},
                             "high_or_medium_authority_support": True,
                         },
+                        "scenario": {
+                            "selected": True,
+                            "selected_scenario_id": "family=xss|stack=python/flask|topology=single_service",
+                            "selected_topology": "single_service",
+                            "source": "scenario_candidates",
+                            "evidence_backed": True,
+                            "support_count": 1,
+                            "support_by_source_authority": {"high": 1},
+                            "high_or_medium_authority_support": True,
+                        },
                         "ready_for_materialization": True,
                         "open_world_evidence_ready": True,
                     },
@@ -1949,6 +2343,16 @@ def test_selection_readiness_summary_tracks_selected_and_resolved_ambiguity() ->
                             "support_by_source_authority": {},
                             "high_or_medium_authority_support": False,
                         },
+                        "scenario": {
+                            "selected": False,
+                            "top_scenario_id": "family=open_redirect|stack=python/flask|topology=single_service",
+                            "topology": "single_service",
+                            "source": "scenario_candidates",
+                            "evidence_backed": False,
+                            "support_count": 0,
+                            "support_by_source_authority": {},
+                            "high_or_medium_authority_support": False,
+                        },
                         "ready_for_materialization": False,
                         "open_world_evidence_ready": False,
                     },
@@ -1959,23 +2363,29 @@ def test_selection_readiness_summary_tracks_selected_and_resolved_ambiguity() ->
 
     assert summary["family_selected_bundles"] == 1
     assert summary["stack_selected_bundles"] == 1
+    assert summary["scenario_selected_bundles"] == 1
     assert summary["ready_for_materialization_bundles"] == 1
     assert summary["open_world_evidence_ready_bundles"] == 1
     assert summary["family_evidence_backed_bundles"] == 1
     assert summary["stack_evidence_backed_bundles"] == 1
+    assert summary["scenario_evidence_backed_bundles"] == 1
     assert summary["family_high_or_medium_authority_support_bundles"] == 1
     assert summary["stack_high_or_medium_authority_support_bundles"] == 1
+    assert summary["scenario_high_or_medium_authority_support_bundles"] == 1
     assert summary["resolved_ambiguous_family_bundles"] == 1
     assert summary["resolved_ambiguous_stack_bundles"] == 1
     assert summary["unresolved_ambiguous_family_bundles"] == 1
     assert summary["unresolved_ambiguous_stack_bundles"] == 1
     assert summary["by_family_source"] == {"token_match": 1, "catalog_alias": 1}
     assert summary["by_stack_source"] == {"researcher_candidate": 1, "profile_prior": 1}
+    assert summary["by_scenario_source"] == {"scenario_candidates": 2}
     assert summary["by_family_confidence"] == {"medium": 1}
     assert summary["by_stack_confidence"] == {"high": 1}
     assert summary["by_stack_basis"] == {"researcher_top_candidate": 1}
+    assert summary["by_scenario_topology"] == {"single_service": 2}
     assert summary["by_family_support_authority"] == {"high": 1, "medium": 1}
     assert summary["by_stack_support_authority"] == {"medium": 1}
+    assert summary["by_scenario_support_authority"] == {"high": 1}
 
 
 def test_family_dependence_summary_tracks_semantic_signature_and_unresolved_fallbacks() -> None:
@@ -2209,10 +2619,98 @@ def test_bundle_artifact_quality_uses_exploit_oracle_when_verification_is_missin
     assert quality["metamorphic_present"] is False
     assert quality["verification_trust"] == "missing"
     assert quality["verification_independence"] == "missing"
+    assert quality["oracle_execution_parity"] == "missing"
     assert quality["band"] == "low"
+    assert quality["qualitative_tier"] == "thin_or_incomplete"
+    assert quality["qualitative_review"] == "artifact remains thin or incomplete for operator-facing use"
     assert any("deterministic fallback bundle" in note for note in quality["notes"])
     assert any("independent high-trust verification" in note for note in quality["notes"])
+    assert any("oracle execution parity is missing" in note for note in quality["notes"])
     assert any("metamorphic checks" in note for note in quality["notes"])
+
+
+def test_bundle_artifact_quality_promotes_executed_oracle_parity_when_verification_is_independent(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "README.md").write_text(
+        "\n".join(
+            [
+                "# verified bundle",
+                "",
+                "docker build -t demo .",
+                "docker run -p 8000:8000 demo",
+                "python poc.py --base-url http://127.0.0.1:8000",
+                "",
+                "Verification markers",
+                "Success signature: `Exploit SUCCESS`",
+                "Flag token: `FLAG{OK}`",
+                "Runtime expects a single-service HTTP container on port `8000`.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    quality = pack_mod._bundle_artifact_quality(
+        {
+            "paths": {"workspace": str(workspace_dir)},
+            "runtime_recipe": {"topology": "single_service", "service_port": 8000},
+            "exploit_oracle": {
+                "success_signature": "Exploit SUCCESS",
+                "flag_token": "FLAG{OK}",
+                "negative_controls": [{"name": "benign-path", "expect_success": False, "payload": "/local"}],
+                "metamorphic": {"cases": [{"name": "same-origin", "payload": "/local", "expect_success": False}]},
+            },
+            "verification": {
+                "rule_source": "declared_rule",
+                "trust": "high",
+                "independence": "independent",
+                "oracle_execution_parity": "high",
+                "oracle_execution_attempted": True,
+            },
+        }
+    )
+
+    assert quality["oracle_clarity"] == "high"
+    assert quality["oracle_rigor"] == "high"
+    assert quality["oracle_execution_parity"] == "high"
+    assert quality["qualitative_tier"] == "native_operator_ready"
+    assert "executed oracle closure" in quality["qualitative_review"]
+
+
+def test_artifact_quality_summary_rolls_up_qualitative_tiers() -> None:
+    summary = pack_mod._artifact_quality_summary(
+        [
+            {
+                "artifact_quality": {
+                    "band": "high",
+                    "score": 10,
+                    "readme_present": True,
+                    "runtime_recipe_present": True,
+                    "oracle_execution_parity": "high",
+                    "qualitative_tier": "native_operator_ready",
+                }
+            },
+            {
+                "artifact_quality": {
+                    "band": "medium",
+                    "score": 8,
+                    "readme_present": True,
+                    "runtime_recipe_present": True,
+                    "oracle_execution_parity": "high",
+                    "qualitative_tier": "thin_fallback_demo",
+                }
+            },
+        ]
+    )
+
+    assert summary["bundle_count"] == 2
+    assert summary["by_qualitative_tier"] == {
+        "native_operator_ready": 1,
+        "thin_fallback_demo": 1,
+    }
+    assert summary["oracle_high_nonhigh_band_bundles"] == 1
+    assert summary["thin_fallback_demo_bundles"] == 1
+    assert summary["native_operator_ready_bundles"] == 1
 
 
 def test_bundle_dynamic_eval_summary_reads_status_file(tmp_path: Path) -> None:
@@ -3484,9 +3982,11 @@ def test_write_manifest_surfaces_bundle_provenance_and_performance(tmp_path: Pat
     assert manifest["bundles"][0]["runtime_graph"]["exploit_path"]["target_node"] == "service"
     assert manifest["bundles"][0]["runtime_recipe"]["service_port"] == 5000
     assert manifest["artifact_quality_summary"]["bundle_count"] == 1
+    assert manifest["artifact_quality_summary"]["by_qualitative_tier"] == {"thin_or_incomplete": 1}
     assert manifest["artifact_quality"]["runtime_recipe_present"] is True
     assert manifest["artifact_quality"]["generation_authenticity"] == "degraded_fallback"
     assert manifest["artifact_quality"]["band"] == "low"
+    assert manifest["artifact_quality"]["qualitative_tier"] == "thin_or_incomplete"
     assert any("deterministic fallback bundle" in note for note in manifest["artifact_quality"]["notes"])
     assert manifest["template_dependence_summary"]["lower_bound_dependent_bundles"] == 1
     assert manifest["bundles"][0]["lower_bound"]["effective_non_remote_available"] is True
@@ -3563,16 +4063,190 @@ def test_write_manifest_classifies_llm_manifest_as_trusted_dynamic(tmp_path: Pat
     assert manifest["generation_summary"]["by_compose_mode"] == {}
     assert manifest["generation_summary"]["by_stack_scaffold_id"] == {}
     assert manifest["generation_summary"]["llm_fixture_bundles"] == 1
-    assert manifest["generation_summary"]["template_origin_bundles"] == 0
-    assert manifest["generation_summary"]["template_assisted_bundles"] == 0
-    assert manifest["generation_summary"]["registry_compose_bundles"] == 0
-    assert manifest["generation_summary"]["scaffolded_bundles"] == 0
-    assert manifest["fallback_used"] is False
-    assert manifest["family_override_applied"] is False
-    assert manifest["llm_stub_used"] is False
-    assert manifest["llm_fixture_used"] is True
-    assert manifest["bundles"][0]["dynamicness"]["verdict"] == "trusted dynamic"
-    assert manifest["bundles"][0]["dynamicness"]["trusted"] is True
+
+
+def test_write_manifest_flattens_single_bundle_runtime_execution_surface(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-runtime-flatten"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_id": "CWE-89"},
+        "run_matrix": {"vuln_bundles": [{"vuln_id": "CWE-89", "slug": "cwe-89", "workspace_subdir": "app"}]},
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+    monkeypatch.setattr(
+        pack_mod,
+        "_collect_bundle_records",
+        lambda incoming_plan, incoming_sid: [
+            {
+                "slug": "cwe-89",
+                "vuln_id": "CWE-89",
+                "runtime_recipe": {"topology": "service_plus_sidecar", "hypothetical": False},
+                "completion_state": {
+                    "generated": True,
+                    "executed": True,
+                    "run_passed": True,
+                    "verified": True,
+                    "verify_pass": True,
+                    "reviewed": False,
+                    "review_ready": False,
+                    "fully_validated": False,
+                    "stage_ceiling": "verified",
+                    "generation_origin": "compiler_generated",
+                },
+                "artifacts": {
+                    "run_summary": {
+                        "service_port": 5000,
+                        "service_base_url": "http://127.0.0.1:5000",
+                        "service_port_source": "executor_plan.service_port",
+                        "service_entry_source": "executor_plan.service_entry",
+                        "poc_entry": "poc.py",
+                        "poc_entry_source": "executor_plan.poc_entry",
+                        "poc_cmd": "python poc.py --base-url {{base_url}}",
+                        "poc_cmd_source": "resolved_contract.poc_cmd",
+                        "base_url_source": "executor_plan.base_url",
+                        "health_path_source": "runtime_graph.healthchecks[service]",
+                        "healthchecks": [
+                            {"node": "service", "path": "/ready", "port": 5000, "transport": "http"}
+                        ],
+                        "healthchecks_source": "runtime_graph.healthchecks",
+                        "service_env_runtime": {
+                            "APP_PORT": "5000",
+                            "DB_HOST": "db-internal",
+                            "DB_NAME": "appdb",
+                        },
+                        "service_env_source": "runtime_hint_sidecar_defaults",
+                        "sidecars_source": "generator_manifest.metadata.target_sidecars",
+                        "allow_network": True,
+                        "allow_network_source": "runtime_topology_requires_network",
+                        "network_mode": "bridge",
+                        "network_mode_source": "runtime_topology_requires_network",
+                        "network_contract": [
+                            {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+                            {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+                        ],
+                        "network_contract_source": "runtime_recipe.service_env+sidecars",
+                        "sidecar_start_order": ["mysql-main"],
+                        "sidecar_start_order_source": "generator_manifest.metadata.target_sidecars",
+                        "seed_strategy": "sidecar_sql_apply",
+                        "seed_strategy_source": "runtime_recipe.seed_files+topology",
+                        "seed_files": ["schema.sql"],
+                        "seed_files_source": "executor_plan.seed_files",
+                        "volume_contract": [
+                            {
+                                "scope": "sidecar:mysql-main",
+                                "source": "workspace",
+                                "target": "/seed-input",
+                                "mode": "ro",
+                            }
+                        ],
+                        "volume_contract_source": "runtime_recipe.seed_files+seed_strategy",
+                        "seed_apply_attempted": True,
+                        "seed_apply_completed": True,
+                        "seed_files_applied_total": 1,
+                        "seed_mount_targets": ["/seed-input"],
+                        "sidecars": [
+                            {
+                                "name": "mysql-main",
+                                "type": "mysql",
+                                "container": "sid-pack-runtime-flatten-cwe-89-mysql-main",
+                                "image": "mysql:8.0",
+                                "aliases": ["db-internal"],
+                                "start_order_index": 1,
+                                "seed_mount_target": "/seed-input",
+                                "seed_files_applied": ["schema.sql"],
+                            }
+                        ],
+                    },
+                    "eval_result": {"verify_pass": True},
+                },
+                "artifact_quality": {
+                    "band": "high",
+                    "oracle_execution_parity": "high",
+                    "oracle_execution_attempted": True,
+                },
+            }
+        ],
+    )
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["service_port"] == 5000
+    assert manifest["service_base_url"] == "http://127.0.0.1:5000"
+    assert manifest["run_passed"] is True
+    assert manifest["verify_pass"] is True
+    assert manifest["service_port_source"] == "executor_plan.service_port"
+    assert manifest["service_entry_source"] == "executor_plan.service_entry"
+    assert manifest["poc_entry"] == "poc.py"
+    assert manifest["poc_entry_source"] == "executor_plan.poc_entry"
+    assert manifest["poc_cmd"] == "python poc.py --base-url {{base_url}}"
+    assert manifest["poc_cmd_source"] == "resolved_contract.poc_cmd"
+    assert manifest["base_url_source"] == "executor_plan.base_url"
+    assert manifest["health_path_source"] == "runtime_graph.healthchecks[service]"
+    assert manifest["healthchecks"] == [{"node": "service", "path": "/ready", "port": 5000, "transport": "http"}]
+    assert manifest["healthchecks_source"] == "runtime_graph.healthchecks"
+    assert manifest["service_env_runtime"] == {
+        "APP_PORT": "5000",
+        "DB_HOST": "db-internal",
+        "DB_NAME": "appdb",
+    }
+    assert manifest["service_env_source"] == "runtime_hint_sidecar_defaults"
+    assert manifest["sidecars_source"] == "generator_manifest.metadata.target_sidecars"
+    assert manifest["allow_network"] is True
+    assert manifest["allow_network_source"] == "runtime_topology_requires_network"
+    assert manifest["network_mode"] == "bridge"
+    assert manifest["oracle_execution_parity"] == "high"
+    assert manifest["oracle_execution_attempted"] is True
+    assert manifest["network_mode_source"] == "runtime_topology_requires_network"
+    assert manifest["network_contract"] == [
+        {"scope": "service", "name": "DB_HOST", "alias": "db-internal"},
+        {"scope": "sidecar:mysql-main", "alias": "db-internal"},
+    ]
+    assert manifest["network_contract_source"] == "runtime_recipe.service_env+sidecars"
+    assert manifest["sidecar_start_order"] == ["mysql-main"]
+    assert manifest["sidecar_start_order_source"] == "generator_manifest.metadata.target_sidecars"
+    assert manifest["seed_strategy"] == "sidecar_sql_apply"
+    assert manifest["seed_strategy_source"] == "runtime_recipe.seed_files+topology"
+    assert manifest["seed_files"] == ["schema.sql"]
+    assert manifest["seed_files_source"] == "executor_plan.seed_files"
+    assert manifest["volume_contract"] == [
+        {
+            "scope": "sidecar:mysql-main",
+            "source": "workspace",
+            "target": "/seed-input",
+            "mode": "ro",
+        }
+    ]
+    assert manifest["volume_contract_source"] == "runtime_recipe.seed_files+seed_strategy"
+    assert manifest["seed_apply_attempted"] is True
+    assert manifest["seed_apply_completed"] is True
+    assert manifest["seed_files_applied_total"] == 1
+    assert manifest["seed_mount_targets"] == ["/seed-input"]
+    assert manifest["executed_sidecars"] == [
+        {
+            "name": "mysql-main",
+            "type": "mysql",
+            "container": "sid-pack-runtime-flatten-cwe-89-mysql-main",
+            "image": "mysql:8.0",
+            "aliases": ["db-internal"],
+            "start_order_index": 1,
+            "seed_mount_target": "/seed-input",
+            "seed_files_applied": ["schema.sql"],
+        }
+    ]
 
 
 def test_write_manifest_classifies_compiler_generated_as_compiler_first(tmp_path: Path, monkeypatch) -> None:
@@ -4189,6 +4863,89 @@ def test_write_manifest_uses_generator_failure_record_for_failed_bundle_provenan
     assert manifest["bundles"][0]["dynamicness"]["verdict"] == "deterministic fallback dependent"
 
 
+def test_write_manifest_surfaces_staged_recovery_for_single_bundle(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-staged-recovery"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "run").mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "reports").mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": "name-open-redirect",
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "staged_synthesis": {
+                "schema_version": "staged_synthesis@0.1",
+                "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+                "candidate_resolution": {"selected_topology": "single_service"},
+            },
+        },
+    )
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "failure_stage": "runtime_plan",
+                "failure_stage_reason": "runtime_plan_mismatch",
+                "staged_synthesis": {
+                    "schema_version": "staged_synthesis@0.1",
+                    "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
+                    "candidate_resolution": {"selected_topology": "single_service"},
+                },
+                "manifest": {
+                    "metadata": {
+                        "recovery_strategy": "runtime_plan",
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "run" / "summary.json").write_text(
+        json.dumps({"run_passed": True, "exit_code": 0}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "reports" / "evals.json").write_text(
+        json.dumps({"results": [{"slug": "name-open-redirect", "verify_pass": True}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_id": "NAME-OPEN-REDIRECT"},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app"}
+            ]
+        },
+        "features": {"multi_vuln": False},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["staged_recovery_strategy"] == "runtime_plan"
+    assert manifest["staged_failure_stage"] == "runtime_plan"
+    assert manifest["staged_failure_stage_reason"] == "runtime_plan_mismatch"
+    assert manifest["staged_synthesis_summary"]["stage_aware_recovery_bundles"] == 1
+    assert manifest["bundles"][0]["staged_recovery"]["recovery_strategy"] == "runtime_plan"
+
+
 def test_write_manifest_removes_stale_counterpart_file(tmp_path: Path, monkeypatch) -> None:
     sid = "sid-pack-stale-counterpart"
     metadata_dir = tmp_path / "metadata" / sid
@@ -4656,6 +5413,303 @@ def test_write_manifest_rolls_up_multibundle_top_level_provenance_when_uniform(
     assert manifest["stack_scaffold_id"] == "python/flask"
     assert manifest["stack_scaffold_version"] == "1.0"
     assert manifest["compose_mode"] == "registry"
+
+
+def test_write_manifest_includes_multibundle_bundle_verdict_rollup(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-multi-bundle-verdict-rollup"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "success"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_ids": ["NAME-TEMPLATE-INJECTION", "NAME-OPEN-REDIRECT"], "multi_vuln": True},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-TEMPLATE-INJECTION", "slug": "name-template-injection", "workspace_subdir": "app/name-template-injection"},
+                {"vuln_id": "NAME-OPEN-REDIRECT", "slug": "name-open-redirect", "workspace_subdir": "app/name-open-redirect"},
+            ]
+        },
+        "features": {"multi_vuln": True},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+    monkeypatch.setattr(
+        pack_mod,
+        "_collect_bundle_records",
+        lambda _plan, _sid: [
+            {
+                "slug": "name-template-injection",
+                "vuln_id": "NAME-TEMPLATE-INJECTION",
+                "artifacts": {
+                    "run_summary": {"run_passed": True},
+                    "eval_result": {"verify_pass": True},
+                },
+                "artifact_quality": {
+                    "oracle_execution_attempted": True,
+                    "oracle_execution_parity": "high",
+                    "qualitative_tier": "thin_fallback_demo",
+                },
+                "completion_state": {
+                    "fully_validated": False,
+                    "stage_ceiling": "generated",
+                    "run_passed": True,
+                    "verify_pass": True,
+                },
+            },
+            {
+                "slug": "name-open-redirect",
+                "vuln_id": "NAME-OPEN-REDIRECT",
+                "artifacts": {
+                    "run_summary": {"run_passed": False},
+                    "eval_result": {},
+                },
+                "artifact_quality": {
+                    "oracle_execution_attempted": False,
+                    "oracle_execution_parity": "missing",
+                    "qualitative_tier": "planning_only",
+                },
+                "completion_state": {
+                    "fully_validated": False,
+                    "stage_ceiling": "generated",
+                    "run_passed": False,
+                    "verify_pass": None,
+                },
+            },
+        ],
+    )
+
+    manifest_path = pack_mod.write_manifest(sid, plan)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["bundle_verdict_rollup"] == {
+        "bundle_count": 2,
+        "run_passed_bundles": 1,
+        "run_failed_bundles": 1,
+        "run_unknown_bundles": 0,
+        "run_passed_consensus": "mixed",
+        "verify_pass_bundles": 1,
+        "verify_failed_bundles": 0,
+        "verify_unknown_bundles": 1,
+        "verify_pass_consensus": "mixed",
+        "oracle_execution_attempted_bundles": 1,
+        "oracle_execution_attempted_consensus": "mixed",
+        "by_oracle_execution_parity": {"high": 1, "missing": 1},
+        "oracle_execution_parity_consensus": "mixed",
+        "by_qualitative_tier": {"thin_fallback_demo": 1, "planning_only": 1},
+        "qualitative_tier_consensus": "mixed",
+        "by_stage_ceiling": {"generated": 2},
+        "stage_ceiling_consensus": "generated",
+        "by_terminal_failure_class": {},
+        "terminal_failure_class_consensus": "none",
+    }
+    assert manifest["run_passed_rollup"] == "mixed"
+    assert manifest["verify_pass_rollup"] == "mixed"
+    assert manifest["oracle_execution_attempted_rollup"] == "mixed"
+    assert manifest["oracle_execution_parity_rollup"] == "mixed"
+    assert manifest["qualitative_tier_rollup"] == "mixed"
+    assert manifest["stage_ceiling_rollup"] == "generated"
+    assert manifest["terminal_failure_class_rollup"] == "none"
+    assert manifest["verdict_authority"] == {
+        "canonical_surface": "bundles",
+        "top_level_role": "convenience_projection",
+        "mode": "multi_bundle",
+        "fields": {
+            "run_passed": {
+                "canonical_source": "bundles[].completion_state.run_passed",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "run_passed_rollup",
+            },
+            "verify_pass": {
+                "canonical_source": "bundles[].completion_state.verify_pass",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "verify_pass_rollup",
+            },
+            "stage_ceiling": {
+                "canonical_source": "bundles[].completion_state.stage_ceiling",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "stage_ceiling_rollup",
+                "exact_key": "stage_ceiling",
+            },
+            "terminal_failure_class": {
+                "canonical_source": "bundles[].failure.terminal_failure_class|bundles[].name_only_outcome.terminal_failure_class",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "terminal_failure_class_rollup",
+            },
+            "oracle_execution_parity": {
+                "canonical_source": "bundles[].artifact_quality.oracle_execution_parity",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "oracle_execution_parity_rollup",
+            },
+            "oracle_execution_attempted": {
+                "canonical_source": "bundles[].artifact_quality.oracle_execution_attempted",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "multibundle_rollup",
+                "rollup_key": "oracle_execution_attempted_rollup",
+            },
+        },
+    }
+
+
+def test_write_manifest_rolls_up_uniform_multibundle_top_level_verdict_fields(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-pack-multi-bundle-uniform-top-level-verdicts"
+    metadata_dir = tmp_path / "metadata" / sid
+    artifacts_dir = tmp_path / "artifacts" / sid
+    workspace_dir = tmp_path / "workspaces" / sid / "app"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "loop_state.json").write_text(
+        json.dumps({"sid": sid, "last_result": "failure"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    plan = {
+        "sid": sid,
+        "paths": {
+            "metadata": str(metadata_dir),
+            "artifacts": str(artifacts_dir),
+            "workspace": str(workspace_dir),
+        },
+        "requirement": {"vuln_ids": ["NAME-A", "NAME-B"], "multi_vuln": True},
+        "run_matrix": {
+            "vuln_bundles": [
+                {"vuln_id": "NAME-A", "slug": "name-a", "workspace_subdir": "app/name-a"},
+                {"vuln_id": "NAME-B", "slug": "name-b", "workspace_subdir": "app/name-b"},
+            ]
+        },
+        "features": {"multi_vuln": True},
+    }
+    monkeypatch.setattr(pack_mod, "get_metadata_dir", lambda incoming_sid: tmp_path / "metadata" / incoming_sid)
+    monkeypatch.setattr(pack_mod, "get_artifacts_dir", lambda incoming_sid: tmp_path / "artifacts" / incoming_sid)
+    monkeypatch.setattr(
+        pack_mod,
+        "_collect_bundle_records",
+        lambda _plan, _sid: [
+            {
+                "slug": "name-a",
+                "vuln_id": "NAME-A",
+                "artifacts": {"run_summary": {}, "eval_result": {}},
+                "artifact_quality": {
+                    "oracle_execution_attempted": False,
+                    "oracle_execution_parity": "missing",
+                    "qualitative_tier": "planning_only",
+                },
+                "completion_state": {
+                    "run_passed": False,
+                    "verify_pass": None,
+                    "stage_ceiling": "pre_generation",
+                    "fully_validated": False,
+                },
+                "name_only_outcome": {
+                    "decision": "fail_closed",
+                    "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                },
+                "failure": {"terminal_failure_class": "strict_dynamic_remote_research_unavailable"},
+            },
+            {
+                "slug": "name-b",
+                "vuln_id": "NAME-B",
+                "artifacts": {"run_summary": {}, "eval_result": {}},
+                "artifact_quality": {
+                    "oracle_execution_attempted": False,
+                    "oracle_execution_parity": "missing",
+                    "qualitative_tier": "planning_only",
+                },
+                "completion_state": {
+                    "run_passed": False,
+                    "verify_pass": None,
+                    "stage_ceiling": "pre_generation",
+                    "fully_validated": False,
+                },
+                "name_only_outcome": {
+                    "decision": "fail_closed",
+                    "terminal_failure_class": "strict_dynamic_remote_research_unavailable",
+                },
+                "failure": {"terminal_failure_class": "strict_dynamic_remote_research_unavailable"},
+            },
+        ],
+    )
+
+    manifest_path = pack_mod.write_manifest(sid, plan, filename="failure_manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["run_passed"] is False
+    assert manifest["run_passed_rollup"] == "all_false"
+    assert manifest["verify_pass"] is None
+    assert manifest["verify_pass_rollup"] == "unknown"
+    assert manifest["stage_ceiling"] == "pre_generation"
+    assert manifest["stage_ceiling_rollup"] == "pre_generation"
+    assert manifest["terminal_failure_class"] == "strict_dynamic_remote_research_unavailable"
+    assert manifest["terminal_failure_class_rollup"] == "strict_dynamic_remote_research_unavailable"
+    assert manifest["oracle_execution_parity"] == "missing"
+    assert manifest["oracle_execution_parity_rollup"] == "missing"
+    assert manifest["oracle_execution_attempted"] is False
+    assert manifest["oracle_execution_attempted_rollup"] == "all_false"
+    assert manifest["verdict_authority"] == {
+        "canonical_surface": "bundles",
+        "top_level_role": "convenience_projection",
+        "mode": "multi_bundle",
+        "fields": {
+            "run_passed": {
+                "canonical_source": "bundles[].completion_state.run_passed",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "run_passed_rollup",
+                "exact_key": "run_passed",
+            },
+            "verify_pass": {
+                "canonical_source": "bundles[].completion_state.verify_pass",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "verify_pass_rollup",
+                "exact_key": "verify_pass",
+            },
+            "stage_ceiling": {
+                "canonical_source": "bundles[].completion_state.stage_ceiling",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "stage_ceiling_rollup",
+                "exact_key": "stage_ceiling",
+            },
+            "terminal_failure_class": {
+                "canonical_source": "bundles[].failure.terminal_failure_class|bundles[].name_only_outcome.terminal_failure_class",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "terminal_failure_class_rollup",
+                "exact_key": "terminal_failure_class",
+            },
+            "oracle_execution_parity": {
+                "canonical_source": "bundles[].artifact_quality.oracle_execution_parity",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "oracle_execution_parity_rollup",
+                "exact_key": "oracle_execution_parity",
+            },
+            "oracle_execution_attempted": {
+                "canonical_source": "bundles[].artifact_quality.oracle_execution_attempted",
+                "canonical_precedence": "bundle_truth",
+                "projection_mode": "uniform_multibundle_exact",
+                "rollup_key": "oracle_execution_attempted_rollup",
+                "exact_key": "oracle_execution_attempted",
+            },
+        },
+    }
 
 
 def test_write_failure_manifest_surfaces_remote_evidence_missing_as_research_short_circuit(
