@@ -4,7 +4,7 @@ Status: canonical
 Audience: mixed
 Source of truth for: current technical, operational, and evaluation constraints
 Not the source of truth for: roadmap, rerun baseline tables, quickstart
-Last validated against: code inspection, representative reruns, and workspace-local direct/support workflow verification on 2026-03-19
+Last validated against: code inspection, representative reruns, and workspace-local direct/support workflow verification on 2026-03-21
 
 이 문서는 현재 시스템이 할 수 있는 것, 아직 못 하는 것, 그리고 무엇을 주장하면 안 되는지를 canonical하게 정리합니다. 미래 계획은 최소 링크로만 남기고, 여기에는 현재 사실만 기록합니다.
 
@@ -20,7 +20,7 @@ Last validated against: code inspection, representative reruns, and workspace-lo
 
 - 현재 시스템이 “무엇을 할 수 있는지 / 말하면 안 되는지”를 확인하려면 이 문서를 본다.
 - 실제 rerun 결과나 current baseline은 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)를 본다.
-- phase 우선순위는 [docs/final_solution.md](final_solution.md), implementation-sized work item은 [docs/work_tickets.md](work_tickets.md)를 본다.
+- phase 우선순위는 [docs/final_solution.md](final_solution.md), implementation-sized work item과 current completion priority order, 잔여 작업량/turn envelope는 [docs/work_tickets.md](work_tickets.md)를 본다.
 - 실제 명령과 artifact location은 [docs/handbook.md](handbook.md)를 본다.
 - case layout과 rerun/support harness command는 [tests/e2e/README.md](../tests/e2e/README.md)를 본다.
 
@@ -31,14 +31,18 @@ Last validated against: code inspection, representative reruns, and workspace-lo
 - observed truth와 실제 rerun evidence는 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
 - success criteria 5축과 backlog owner 대응은 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Axis Map`
 - completion companion set은 [docs/work_tickets.md](work_tickets.md)의 `Completion Companions`
+- priority companion set은 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`
 - success criteria 5축의 완료판정 질문과 최소 근거는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Checklist`
 - success criteria 5축의 canonical 완료 검토 순서는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Review Flow`
 - success criteria 5축의 canonical 완료판정 reading order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Reading Order`
 - latest confirmed residual의 축별 ticket bundle 분해는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Ticket Breakdown`
+- latest direct verification까지 반영한 current completion priority order는 [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope는 [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`
 - latest confirmed residual의 canonical 구현 검토 순서는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Review Flow`
 - latest confirmed residual 검토 문서 순서는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Reading Order`
 - residual companion set은 [docs/work_tickets.md](work_tickets.md)의 `Residual Companions`
 - review mode별 canonical 시작점은 [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+- 우선순위 판단 routing은 [docs/work_tickets.md](work_tickets.md)의 `Priority Question Routing`, `Priority Reading Order`, `Assessment-To-Ticket Interpretation`
 - phase acceptance와 검증 surface 대응은 [docs/final_solution.md](final_solution.md)의 `Acceptance-To-Validation Translation`
 - ticket별 first harness와 reading order는 [docs/work_tickets.md](work_tickets.md)의 `Validation Routing` / `Validation Reading Order`
 - 질문 기반 검증 문서 routing은 [docs/work_tickets.md](work_tickets.md)의 `Validation Question Routing`
@@ -51,9 +55,25 @@ Last validated against: code inspection, representative reruns, and workspace-lo
 이 문서의 constraint를 완료판정 관점으로 연결할 때는 아래 문서를 같이 본다.
 
 - completion companion set은 [docs/work_tickets.md](work_tickets.md)의 `Completion Companions`
+- priority companion set은 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`
 - axis map / close criteria / canonical review order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Axis Map`, `Open-World Completion Checklist`, `Open-World Completion Review Flow`
 - canonical completion reading order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Reading Order`
+- current completion priority order는 [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`
 - phase acceptance map은 [docs/final_solution.md](final_solution.md)의 `Acceptance-To-Validation Translation`
+- observed truth는 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
+- concrete rerun / support harness command는 [tests/e2e/README.md](../tests/e2e/README.md)
+
+## Priority Companions
+
+이 문서의 constraint를 우선순위 판단 관점으로 연결할 때는 아래 문서를 같이 본다.
+
+- current completion priority order는 [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope는 [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`
+- representative evidence와 함께 보는 turn estimate shortcut은 [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / routing / reading order는 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`, `Priority Question Routing`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading은 [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석은 [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`
+- phase ordering / sequencing guardrail은 [docs/final_solution.md](final_solution.md), [docs/work_tickets.md](work_tickets.md)의 `Sequencing Rule`
 - observed truth는 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
 - concrete rerun / support harness command는 [tests/e2e/README.md](../tests/e2e/README.md)
 
@@ -70,6 +90,25 @@ Last validated against: code inspection, representative reruns, and workspace-lo
 - 잔여 구현 검토:
   - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
   - [docs/work_tickets.md](work_tickets.md)의 `Residual Companions`
+- 작업량 추산:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`
+- 우선순위 판단:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - 이 문서의 `Priority Companions`
+  - [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+
+## Priority Review Entry
+
+제약/금지 claim 관점에서 우선순위 판단을 시작할 때는 아래 순서를 권장한다.
+
+1. 이 문서의 `Priority Companions`
+2. [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
+3. [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`, `Assessment-To-Ticket Interpretation`
+4. current forbidden claim과 operational prerequisite를 이 문서에서 먼저 확인
+5. [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/final_solution.md](final_solution.md)
+
+turn estimate shortcut은 [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`를 따른다.
 
 ## 1. Name-Only Mode Constraints
 
@@ -246,6 +285,20 @@ Constraint: `support_promotion`은 여전히 PACK의 honesty surface이며, extr
 - Observable today: latest slice에서는 same item/update/decision record도 `schema_status=normalized|legacy_upgraded`를 직접 가지기 시작했지만, 그래도 이것 역시 local/manual workflow hardening이지 operational curated promotion loop completion은 아닙니다.
 - Observable today: latest direct verification 기준 representative `sqli-sidecar-compiler-custom-env` lane은 app/runtime/oracle quality는 높아도 support workflow에서는 still `strict_open_world:strict_curated_lower_bound`, `open_world:catalog_resolved_lower_bound`, `oracle_clarity:medium`, `family_evidence:candidate_unbacked`, `measured_gate:cache_reuse_inconsistent` 때문에 reviewable candidate가 되지 않습니다. same empty-decision local apply chain은 `curated_support_registry.json`을 false promotion 없이 `registry_item_count=0` no-op 상태로 끝냅니다.
 - Observable today: same representative sidecar support rerun은 `support_review_index.json`에서 `by_support_status={"blocked_mixed":1}`와 separated `by_mechanical_blocker` / `by_promotion_policy_blocker`를 남기며, same no-op apply chain은 `accepted/rejected/pending_by_support_status={}`와 empty local registry `by_support_status={}`로 끝납니다.
+- Observable today: latest planning-only pair direct verification(`foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`)에서는 `support_review_index.json`가 `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={"blocked_mixed":2}`를 남겼습니다. 즉 verdict-authority readiness alone still does not imply reviewable/promotable candidate입니다.
+- Observable today: latest fresh positive pair direct verification(`trusted-dynamic-sqli`, `open-redirect-dynamic-name-only`)에서도 combined `support_review_index.json`가 `support_candidate_file_count=2`, `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={"blocked_mixed":2}`를 남겼습니다. `2026-03-20` rerun에서도 same aggregate가 그대로 재확인됐습니다. 즉 actual Docker materialization이 열려도 current measured/support policy 기준으로는 still “runnable but not promotable”일 수 있습니다.
+- Observable today: latest helper semantics에서는 same positive blocked lane를 helper wrapper로 재현할 때도 `ops/ci/run_support_workflow_chain.sh`와 `ops/ci/run_positive_pair_promotion_check.sh`가 `repeatability_report.json`이 남은 `repeat_case.py` nonzero를 허용하고 support review까지 계속 진행합니다. same `run_repeatability_chain.sh`에는 transient docker readiness retry seam(`VULD_REPEAT_CHAIN_DOCKER_RETRY_COUNT`, `VULD_REPEAT_CHAIN_DOCKER_RETRY_DELAY_SEC`)이 있고, `docker daemon permission denied`는 retry 대상이 아니라 separate permission artifact marker/note로 surface됩니다. unrestricted Docker-enabled helper rerun에서는 helper wrapper도 다시 `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={"blocked_mixed":2}` current truth와 정렬됩니다. 따라서 helper contract green만으로 generalized support closure를 주장하면 안 되지만, runtime-equivalent helper truth는 unrestricted helper rerun 또는 manual repeatability/support chain으로 재현할 수 있습니다.
+- Observable today: same bounded environment distinction은 sandbox helper output 자체에도 남습니다. current workspace-local direct verification에서는 `run_positive_pair_promotion_check.sh`가 permission-artifact note를 남기면서 `support_candidate_file_count=2`, `authority_ready_bundle_count=0`, `measured_gate_blocked_bundle_count=0`, `reviewable_bundle_count=0`, `by_support_status={}` empty aggregate로 끝날 수도 다시 확인됐습니다. same output은 runtime-equivalent measured/support truth가 아니라 permission-artifact environment output으로 읽어야 합니다.
+- Observable today: same latest direct reverify는 `docker ps` / `docker ps -a`가 empty container list로 정상 응답한 세션에서 실행됐고, strict stub / `trusted-dynamic-sqli` / `open-redirect-dynamic-name-only` direct rerun도 다시 모두 성공했습니다. 따라서 same helper split은 host Docker availability 부재가 아니라 helper output이 permission-artifact environment output으로 갈라지는 bounded distinction으로 읽는 편이 맞습니다.
+- Observable today: same `2026-03-20` latest liveaudit rerun에서도 direct `run_case.py` 3종과 manual `repeat_case.py -> support_review.py` chain은 다시 성공했지만, sandbox helper wrapper는 다시 permission-artifact note와 empty aggregate / `case_failed` repeatability output으로 갈라졌습니다. 따라서 current authoritative measured/support truth는 계속 manual chain 또는 unrestricted helper rerun 기준으로 읽어야 합니다.
+- Observable today: same workspace-local helper rerun에서는 per-case `repeatability_report.json`도 `passed=false`와 blocker `case_failed`를 포함할 수 있었습니다. same failure는 current core measured/support truth 변화가 아니라 permission-artifact environment output 쪽 drift입니다.
+- Observable today: same `2026-03-20` latest audit2 rerun에서도 `docker ps` / `docker ps -a`는 정상이고 `docker images`에 fresh `sid-*` image가 남았는데, sandbox helper wrapper는 again empty aggregate와 permission summary split으로 갈라졌습니다. therefore same split도 host Docker precondition 부재가 아니라 permission-artifact environment output distinction으로 읽는 편이 맞습니다.
+- Observable today: same latest audit2 rerun에서 helper per-case `repeatability_report.json`는 둘 다 `passed=false`였고 blocker에 `case_failed`, `quality_tier_inconsistent`, `verdict_authority_inconsistent`가 같이 남았습니다. manual chain이 같은 세션에서 다시 `by_support_status={"blocked_mixed":2}`를 재현한 점을 같이 보면, same helper blockers도 current core truth 변화가 아니라 bounded helper projection drift입니다.
+- Observable today: same helper output root의 `permission_artifact_summary.json`는 `runtime_equivalent_helper_truth_available=false`, `recommended_action=unrestricted_docker_rerun`를 남깁니다. therefore current workspace-local helper output은 machine-readable summary 기준으로도 runtime-equivalent helper truth가 아닙니다.
+- Observable today: same `2026-03-21` direct rerun에서도 `docker ps` / `docker ps -a`는 again empty list로 정상이고 `docker images`에는 fresh `sid-*` image가 남았습니다. same session에서 strict stub / `trusted-dynamic-sqli` / `open-redirect-dynamic-name-only` direct rerun은 again 모두 성공했고, manual positive pair support review도 again `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={"blocked_mixed":2}`를 남겼습니다.
+- Observable today: same `2026-03-21` latest audit3 rerun에서는 summary-level classification도 다시 동일했습니다. strict stub은 `name_only_decision=fail_closed`, `stage_ceiling=pre_generation`, `generation_summary.by_dynamicness_verdict={pre-generation fail-closed:1}`였고, `trusted-dynamic-sqli`는 `provider_health_state=llm_fixture`, `generation_origin=llm_manifest`, `generation_summary.by_dynamicness_verdict={trusted dynamic:1}`였으며, `open-redirect-dynamic-name-only`는 `provider_health_state=llm_degraded`, `generation_origin=deterministic_fallback`, `name_only_decision=partial`, `generation_summary.by_dynamicness_verdict={deterministic fallback dependent:1}`였습니다.
+- Observable today: same `2026-03-21` sandbox helper rerun은 again empty aggregate와 permission summary split으로 갈라졌고, helper per-case `repeatability_report.json`는 둘 다 `passed=false`였으며 blocker에 `case_failed`, `cache_reuse_inconsistent`, `artifact_quality_band_not_high`, `quality_tier_inconsistent`, `oracle_execution_parity_not_high`, `verdict_authority_inconsistent`가 같이 남았습니다. therefore latest rerun도 host Docker availability 부재가 아니라 permission-artifact environment output distinction을 재확인한 bounded helper projection drift입니다.
+- Current command entry: same positive pair rerun/support chain은 [tests/e2e/README.md](../tests/e2e/README.md)의 `Positive Pair Promotion Check`를 entrypoint로 사용하되, sandbox helper output에 permission-artifact note가 보이면 unrestricted helper rerun 또는 같은 섹션의 underlying manual chain을 우선합니다.
 - Observable today: latest slice에서는 same `support_review.py -> support_decide.py -> support_apply.py` chain의 synthetic reviewable accept path와 blocked no-op path가 regression으로 고정됐지만, 이것이 곧 representative actual measured lane accept path가 닫혔다는 뜻은 아닙니다.
 - Observable today: latest slice에서는 same support workflow가 blocker를 `mechanical` vs `promotion_policy` class로 나눠 surface하고, candidate `mechanically_healthy` / `promotion_policy_ready`, review/update aggregate `mechanically_*` / `promotion_policy_*` count, `by_mechanical_blocker` / `by_promotion_policy_blocker`도 같이 노출하기 시작했습니다. 그래도 이것은 blocker interpretation surface 강화이지 auto-promotion policy completion은 아닙니다.
 - Observable today: latest slice에서는 same support workflow가 `support_status` / `by_support_status`도 같이 노출하기 시작해, current promotion state를 token으로 더 직접 읽을 수 있습니다. 그래도 이것 역시 interpretation surface 강화이지 auto-promotion policy completion은 아닙니다.
@@ -287,12 +340,26 @@ Constraint: strict no-remote fail-closed는 capability precheck에서 early reje
 - Allowed claim: strict dynamic lane can fail closed before RESEARCH when remote capability is unavailable
 - Forbidden claim: strict no-remote failure always reflects post-research semantic rejection
 
+Constraint: strict dynamic live-LLM fail-closed도 capability precheck에서 early reject될 수 있습니다.
+
+- Current enforcement surface: `orchestrator/run_pipeline.py`, `name_only_outcome`, `terminal_failure_class`, E2E `summary.json`
+- Observable today: representative `open-redirect-strict-dynamic-stub` direct rerun에서는 live LLM path가 stub/fixture/disallowed 상태이면 `CAPABILITY_CHECK` 단계에서 `strict_dynamic_live_llm_unavailable`로 멈추고, `name_only_outcome.decision=fail_closed`, `name_only_next_required_step=capability_or_research`, `open_world_class=name_driven_capability_gate_failed`로 남습니다.
+- Allowed claim: strict dynamic lane can fail closed before RESEARCH when a live LLM path is unavailable or disallowed
+- Forbidden claim: strict dynamic fail-closed를 항상 remote researcher evidence 부재 하나로만 설명하는 것
+
 Constraint: local direct runtime verification은 host Docker availability가 먼저 충족되어야 합니다.
 
 - Current enforcement surface: local shell environment, `docker ps`, `tests/e2e/run_case.py`
-- Observable today: latest workspace-local direct verification에서는 representative dynamic lane가 `docker daemon is not reachable`로 멈췄고, same WSL 2 distro에서는 `docker ps` 자체가 command-missing 상태였다. 즉 이 세션에서는 Docker daemon reachability 이전에 WSL integration / binary availability가 direct runtime verification의 선행 조건이었다.
+- Observable today: host Docker integration은 여전히 선행 조건이지만, latest same-day rerun에서는 `docker ps`와 `docker ps -a`가 정상 응답했고 representative dynamic lane(`open-redirect-dynamic-name-only`)와 fixture-backed positive LLM-shaped lane(`trusted-dynamic-sqli`)도 둘 다 expectations를 통과했다. lingering container도 남지 않았으므로 local Docker precondition은 real prerequisite이지만, latest current-state blocker 자체는 아니다.
 - Allowed claim: local direct runtime verification may be blocked by host Docker integration prerequisites
 - Forbidden claim: 이런 local Docker precondition failure를 곧바로 product/runtime regression으로 읽는 것
+
+Constraint: strict live-LLM fail-closed lane와 positive LLM-shaped lane는 같은 capability claim이 아닙니다.
+
+- Current enforcement surface: `tests/e2e/cases/open-redirect-strict-dynamic-stub`, `tests/e2e/cases/trusted-dynamic-sqli`, `name_only_outcome`, local Docker/runtime prerequisite
+- Observable today: `open-redirect-strict-dynamic-stub`는 no-Docker direct rerun만으로 `strict_dynamic_live_llm_unavailable` fail-closed honesty를 확인할 수 있다. 별도로 Docker-enabled rerun에서는 `trusted-dynamic-sqli`가 `provider_health_state=llm_fixture`, `generation_origin=llm_manifest`로 actual Docker materialization까지 갔고, `open-redirect-dynamic-name-only`는 `provider_health_state=llm_degraded`, `generation_origin=deterministic_fallback`, `name_only_outcome.decision=partial`로 actual runtime/oracle path를 다시 열었다. 따라서 strict fail-closed honesty, fixture-backed positive materialization, degraded fallback dynamic lane는 서로 다른 claim이다.
+- Allowed claim: live-LLM capability gate honesty, fixture-backed positive materialization, degraded/fallback dynamic execution should be verified separately
+- Forbidden claim: strict stub pass나 fixture-backed positive lane pass만으로 live LLM open-world positive generation capability 전체가 직접 검증됐다고 읽는 것
 
 Constraint: summary surface는 richer해졌지만 top-level projection drift가 남아 있습니다.
 
@@ -319,11 +386,16 @@ Constraint: eval matrix는 current E2E case set 기준으로만 부분 도입됐
 - `artifact_quality=high`가 사람 기준 좋은 lab realism을 항상 보장한다
 - 현재 `request_ir`가 이미 generator/executor의 authoritative control-plane이다
 
-## 10. How To Update This Document
+## How To Update This Document
 
 - direct rerun, current code inspection, or stable policy change가 있을 때만 갱신합니다.
 - TODO, priority, next slice는 적지 않습니다. phase roadmap은 [docs/final_solution.md](final_solution.md), actionable ticket backlog는 [docs/work_tickets.md](work_tickets.md)로 보냅니다.
 - representative sample 수치는 “observed sample”로만 적고, generalized claim으로 올리지 않습니다.
 - validation prerequisite나 harness command routing이 바뀌면 [docs/handbook.md](handbook.md), [tests/e2e/README.md](../tests/e2e/README.md)와 같이 맞춥니다.
 - completion companion 관계나 completion reading order가 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춥니다.
+- priority companion 관계나 priority reading order가 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춥니다.
+- LLM-response stricter reading의 claim boundary가 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 맞춥니다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 맞춥니다.
+- 잔여 작업량/turn envelope 해석이 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`와 같이 맞춥니다.
+- [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`가 바뀌면 same shortcut도 같이 맞춥니다.
 - review mode entry shortcut이 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춥니다.

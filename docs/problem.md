@@ -4,7 +4,7 @@ Status: canonical
 Audience: mixed
 Source of truth for: project problem statement, name-only/open-world target behavior, success criteria
 Not the source of truth for: current baseline evidence, implementation roadmap, subsystem policy details
-Last validated against: current success-criteria wording, roadmap alignment, and rerun-backed truth reflected on 2026-03-19
+Last validated against: current success-criteria wording, roadmap alignment, and rerun-backed truth reflected on 2026-03-20
 
 본 프로젝트의 핵심 문제는 "취약점 이름만 주어졌을 때도 사용자가 기대한 의도에 맞는 취약 Docker 환경을 생성·실행·검증할 수 있는가"입니다. 현재 레포는 일부 family에 대해 정직한 regression platform과 bounded dynamic generation을 제공하지만, generalized open-world generator로는 아직 부족합니다.
 
@@ -21,7 +21,7 @@ Last validated against: current success-criteria wording, roadmap alignment, and
 - 목표/성공 기준을 확인하려면 이 문서를 본다.
 - 지금 실제로 어디까지 되는지 확인하려면 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)로 간다.
 - 무엇을 주장하면 안 되는지 확인하려면 [docs/constraints.md](constraints.md)로 간다.
-- 다음 구현 순서를 정하려면 [docs/final_solution.md](final_solution.md)와 [docs/work_tickets.md](work_tickets.md)로 간다.
+- 다음 구현 순서와 잔여 작업량/turn envelope를 정하려면 [docs/final_solution.md](final_solution.md)와 [docs/work_tickets.md](work_tickets.md)로 간다.
 - 실제 실행 절차와 artifact 해석은 [docs/handbook.md](handbook.md)를 본다.
 - representative rerun command와 repeatability/support 검증 하니스는 [tests/e2e/README.md](../tests/e2e/README.md)를 본다.
 
@@ -33,10 +33,15 @@ Last validated against: current success-criteria wording, roadmap alignment, and
 - “무엇을 충족으로 말하면 안 되는가”는 [docs/constraints.md](constraints.md)
 - “성공 기준 5축이 어떤 backlog owner로 분해되는가”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Axis Map`
 - “완료판정 companion 문서 세트는 무엇인가”는 [docs/work_tickets.md](work_tickets.md)의 `Completion Companions`
+- “우선순위 판단 companion 문서 세트는 무엇인가”는 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`
 - “각 축 완료를 무엇으로 판정하나”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Checklist`
 - “각 축 완료를 어떤 순서로 검토하나”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Review Flow`
 - “완료판정 문서를 어떤 순서로 열 것인가”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Reading Order`
 - “지금 확인된 open-world residual이 어떤 ticket bundle로 쪼개지는가”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Ticket Breakdown`
+- “현재 completeness 기준 구현 우선순위가 어떻게 정렬되는가”는 [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`
+- “latest positive representative pair를 ticket 기준 visible blocker / structural root-cause로 어떻게 읽는가”는 [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- “LLM response로 실제 vulnerable Docker를 만든다는 stricter reading에서 무엇이 본체 residual인가”는 [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`
+- “왜 runnable positive pair가 곧 support-ready/promotable candidate를 뜻하지 않는가”는 [docs/constraints.md](constraints.md)와 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)의 latest positive pair support review truth를 같이 본다. current workspace-local sandbox helper output은 permission-artifact environment output으로 empty aggregate로 끝날 수 있으므로, runtime-equivalent truth는 unrestricted helper rerun 또는 manual chain을 우선한다
 - “지금 residual을 어떤 순서로 구현 검토하나”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Review Flow`
 - “residual 문서를 어떤 순서로 열 것인가”는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Reading Order`
 - “residual 검토 companion 문서 세트는 무엇인가”는 [docs/work_tickets.md](work_tickets.md)의 `Residual Companions`
@@ -46,15 +51,34 @@ Last validated against: current success-criteria wording, roadmap alignment, and
 - “검증 질문별로 어느 문서를 먼저 봐야 하나”는 [docs/work_tickets.md](work_tickets.md)의 `Validation Question Routing`
 - “residual 질문별로 어느 문서를 먼저 봐야 하나”는 [docs/work_tickets.md](work_tickets.md)의 `Residual Question Routing`
 - “실제 rerun command는 무엇인가”는 [tests/e2e/README.md](../tests/e2e/README.md)
+- latest low-cost no-Docker boundary sanity는 [tests/e2e/README.md](../tests/e2e/README.md)의 `Low-Cost No-Docker Validation Lanes`를 본다.
+- latest blocked/no-op measured/support sanity는 같은 [tests/e2e/README.md](../tests/e2e/README.md)의 planning-only measured/support no-op pair를 본다.
+- latest fastest policy/measured-support preflight는 [tests/e2e/README.md](../tests/e2e/README.md)의 `Focused No-Docker Regression Slice`와 [docs/handbook.md](handbook.md)의 common checks를 같이 본다.
 
 ## Completion Companions
 
 이 문서의 success criteria를 완료판정 관점으로 읽을 때는 아래 문서를 같이 본다.
 
 - completion companion set은 [docs/work_tickets.md](work_tickets.md)의 `Completion Companions`
+- priority companion set은 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`
 - axis map / close criteria / canonical review order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Axis Map`, `Open-World Completion Checklist`, `Open-World Completion Review Flow`
 - canonical completion reading order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Reading Order`
+- current completion priority order는 [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope는 [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`
 - phase acceptance map은 [docs/final_solution.md](final_solution.md)의 `Acceptance-To-Validation Translation`
+- current truth / non-claim은 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+
+## Priority Companions
+
+이 문서의 success criteria를 우선순위 판단 관점으로 읽을 때는 아래 문서를 같이 본다.
+
+- current completion priority order는 [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope는 [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`
+- representative evidence와 함께 보는 turn estimate shortcut은 [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / routing / reading order는 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`, `Priority Question Routing`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading은 [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석은 [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`
+- phase ordering / sequencing guardrail은 [docs/final_solution.md](final_solution.md), [docs/work_tickets.md](work_tickets.md)의 `Sequencing Rule`
 - current truth / non-claim은 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
 
 ## Review Mode Entry
@@ -70,6 +94,25 @@ Last validated against: current success-criteria wording, roadmap alignment, and
 - 잔여 구현 검토:
   - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
   - [docs/work_tickets.md](work_tickets.md)의 `Residual Companions`
+- 작업량 추산:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`
+- 우선순위 판단:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - 이 문서의 `Priority Companions`
+  - [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+
+## Priority Review Entry
+
+success criteria 관점에서 우선순위 판단을 시작할 때는 아래 순서를 권장한다.
+
+1. 이 문서의 `Priority Companions`
+2. [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
+3. [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`, `Assessment-To-Ticket Interpretation`
+4. [docs/final_solution.md](final_solution.md)의 phase ordering / acceptance gate
+5. [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+
+turn estimate shortcut은 [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`를 따른다.
 
 ## Problem Statement
 
@@ -113,6 +156,8 @@ Last validated against: current success-criteria wording, roadmap alignment, and
 - remote evidence와 stricter verifier independence가 필요합니다.
 - capability가 없거나 evidence가 부족하면 `fail_closed` 또는 `abstain`이어야 합니다.
 - lower-bound recovery는 success로 읽지 않습니다.
+- current direct verification 기준 strict fail-closed는 단일 bucket이 아니라 `remote_research_unavailable`, `live_llm_unavailable` 같은 capability-gate subclass로도 정직하게 구분돼야 합니다.
+- strict live-LLM fail-closed honesty와 positive LLM-response Docker materialization은 서로 다른 acceptance question으로 읽어야 합니다.
 
 ## Success Criteria
 
@@ -128,7 +173,9 @@ Last validated against: current success-criteria wording, roadmap alignment, and
 
 - bounded lower-bound closure를 generalized open-world success처럼 설명하는 것
 - repo-prior/defaulted stack을 evidence-led selection처럼 설명하는 것
+- helper contract green을 representative blocked promotion-lane operator success처럼 설명하는 것
 - quality metadata만 풍부하고 verifier execution parity가 약한 결과를 high-quality artifact처럼 설명하는 것
+- `authority_ready`나 selected candidate truth만 보고 measured/support reviewable candidate라고 읽는 것
 
 ## Non-Goals
 
@@ -153,6 +200,10 @@ Last validated against: current success-criteria wording, roadmap alignment, and
 - current baseline 수치나 rerun 결과는 여기 적지 않고 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)로 보낸다.
 - current non-claim이나 운영 전제는 [docs/constraints.md](constraints.md)로 보낸다.
 - 우선순위나 phase ordering이 바뀌면 [docs/final_solution.md](final_solution.md)와 [docs/work_tickets.md](work_tickets.md)를 함께 갱신한다.
+- LLM-response stricter reading이 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 맞춘다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 맞춘다.
+- 잔여 작업량/turn envelope 해석이 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`와 같이 맞춘다.
+- [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`가 바뀌면 same shortcut도 같이 맞춘다.
 - representative validation harness entrypoint가 바뀌면 [tests/e2e/README.md](../tests/e2e/README.md)와 같이 맞춘다.
 - completion companion 관계나 completion reading order가 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춘다.
 - review mode entry shortcut이 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춘다.

@@ -13,9 +13,11 @@ Relevant canonical docs:
 - [작업 티켓](../work_tickets.md)
 - success criteria 5축과 backlog owner 대응: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Axis Map`
 - completion companion set과 canonical reading order: [docs/work_tickets.md](../work_tickets.md)의 `Completion Companions`, `Open-World Completion Reading Order`
+- priority companion set과 canonical priority routing: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
 - success criteria 5축의 완료판정 질문과 최소 근거: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Checklist`
 - success criteria 5축의 canonical 완료 검토 순서: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Review Flow`
 - latest confirmed residual의 축별 ticket bundle 분해: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Residual Ticket Breakdown`
+- latest direct verification까지 반영한 current completion priority order와 잔여 작업량/turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
 - [검증 하니스](../../tests/e2e/README.md)
 
 ## 핵심 파일
@@ -54,6 +56,11 @@ Relevant canonical docs:
 ## Current Residual Owners
 
 - primitive-first generator controller 부재는 주로 `TKT-001-A/D/E/F/G` owner다.
+- strict capability-gate fail-closed subclass split(`strict_dynamic_remote_research_unavailable` vs `strict_dynamic_live_llm_unavailable`)이 generator 이전 단계에서 흔들리지 않는지 보는 cheapest no-Docker residual reading도 현재 `TKT-001-E`에 인접한다.
+- fixture-backed positive LLM-shaped lane(`trusted-dynamic-sqli`)는 generator-side positive representative lane이고, latest Docker-enabled rerun에서는 실제 materialization까지 다시 열렸다. 다만 current truth는 `llm_fixture` / `llm_manifest` / `thin_or_incomplete`이므로 strict stub honesty와 generalized live LLM materialization을 계속 분리해서 읽어야 한다.
+- latest positive representative pair를 ticket-form으로 다시 자르면 `trusted-dynamic-sqli`는 visible blocker cluster(`TKT-006`, `TKT-008-A*`, `TKT-009-A1`), `open-redirect-dynamic-name-only`는 structural root-cause cluster(`TKT-001`, `TKT-002~005`, `TKT-006`, `TKT-008-A*`)에 더 가깝다. canonical 해석은 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`을 따른다.
+- same positive pair는 현재 `runnable but not promotable`이다. generator 관점에서는 build/run 성공보다 fixture-backed synthesis quality와 fallback materialization 성격이 먼저 blocker로 읽힌다.
+- same positive pair의 canonical rerun/support command chain은 [tests/e2e/README.md](../../tests/e2e/README.md)의 `Positive Pair Promotion Check`를 따른다.
 - stage persistence / repair-first / downgrade journaling residual은 `TKT-006-A/B/C` owner다.
 - 현재 generator 문서는 “primitive-informed bounded generation”까지는 설명할 수 있지만, primitive-first generalized synthesis를 claim하면 안 된다.
 
@@ -62,12 +69,36 @@ Relevant canonical docs:
 ## Residual Review Focus
 
 - `TKT-001` residual은 `service.py`에서 selection/branch consumption, `synthesis.py`에서 scenario-dependent generation path가 실제로 갈리는지부터 본다.
+- `TKT-001-E/F` boundary sanity는 `open-redirect-strict-dynamic-no-remote`, `open-redirect-strict-dynamic-stub`, `foobar-name-only-negative` 같은 no-Docker lane에서 generator 이전 fail-closed/abstain split이 흐려지지 않는지부터 본다.
+- positive LLM-shaped lane는 `trusted-dynamic-sqli`를 대표로 보되, current residual은 host Docker prerequisite가 아니라 fixture-backed synthesis quality와 measured/support closure라는 점을 함께 본다.
 - `TKT-006` residual은 `synthesis.py`와 `generator_manifest.json` / `generator_failures.jsonl` / `loop_state.json`에서 stage persistence와 repair-first retry가 남는지부터 본다.
 
 ## Completion Review Focus
 
 - `TKT-001` completion은 `service.py`와 `synthesis.py`가 family label이 아니라 primitive/dependency/topology/oracle branch를 실제 materialization path에 반영하는지부터 본다.
 - `TKT-006` completion은 `generator_manifest.json`, `generator_failures.jsonl`, `loop_state.json`가 stage persistence, repair-first retry, downgrade trace를 fallback 이전 canonical path로 남기는지부터 본다.
+
+## Priority Companions
+
+이 문서를 우선순위 판단 관점으로 읽을 때는 아래 문서를 같이 본다.
+
+- current completion priority order: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`
+- representative evidence와 함께 보는 turn estimate shortcut: [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / reading order: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading: [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석: [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`
+- current truth / non-claim: [docs/current_state_gap_analysis.md](../current_state_gap_analysis.md), [docs/constraints.md](../constraints.md)
+- code/harness entry: [docs/code/README.md](README.md), [tests/e2e/README.md](../../tests/e2e/README.md)
+
+## Priority Review Focus
+
+- current completion priority order에서 generator는 `TKT-001`과 `TKT-006`의 primary companion이다.
+- `TKT-007`과 맞닿는 oracle surface는 있더라도, generator 문서를 measured/support 우선순위 source처럼 읽지는 않는다.
+- LLM-response stricter reading에서도 generator는 strict stub honesty와 positive LLM-shaped materialization residual을 `LLM-Response Capability Overlay` 기준으로 분리해서 읽는 primary companion이다.
+- latest positive representative pair의 ticket-form 해석도 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`을 같이 따른다.
+- 잔여 작업량/turn envelope 해석도 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`를 같이 따른다.
+- turn estimate shortcut도 [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`를 같이 따른다.
 
 ## Review Mode Entry
 
@@ -81,6 +112,10 @@ Relevant canonical docs:
 - 잔여 구현 검토:
   - 이 문서의 `Residual Review Focus`
   - [docs/code/README.md](README.md)의 `Residual Review Entry`
+- 우선순위 판단:
+  - 이 문서의 `Priority Review Focus`
+  - [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`
+  - [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
 
 ## Ticket-First Entry
 
@@ -112,6 +147,12 @@ Relevant canonical docs:
   - non-SQLi name-only lane for `TKT-001`
   - semantic-guided dynamic lane for `TKT-006`
   - payload-bearing dynamic lane for generator-side oracle surface sanity
+  - fixture-backed positive LLM-shaped lane for Docker-enabled materialization sanity:
+    - `trusted-dynamic-sqli`
+  - cheapest no-Docker boundary lanes for `TKT-001-E/F`:
+    - `open-redirect-strict-dynamic-no-remote`
+    - `open-redirect-strict-dynamic-stub`
+    - `foobar-name-only-negative`
 
 ## How To Update This Document
 
@@ -122,5 +163,10 @@ Relevant canonical docs:
 - ticket-first entrypoint나 representative validation surface가 바뀌면 이 문서의 해당 섹션도 같이 갱신한다.
 - completion review focus가 바뀌면 같은 owner/ticket mapping에 맞춰 이 문서도 같이 갱신한다.
 - residual review focus가 바뀌면 같은 owner/ticket mapping에 맞춰 이 문서도 같이 갱신한다.
+- priority review focus나 priority companion 해석이 바뀌면 [docs/code/README.md](README.md), [docs/work_tickets.md](../work_tickets.md)와 같이 갱신한다.
+- LLM-response stricter reading의 generator-side 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 갱신한다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 갱신한다.
+- 잔여 작업량/turn envelope 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`와 같이 갱신한다.
+- [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`가 바뀌면 same shortcut도 같이 갱신한다.
 - review mode entry shortcut이 바뀌면 [docs/code/README.md](README.md)와 같이 갱신한다.
 - direct rerun harness나 generator-related representative lane selection이 바뀌면 [tests/e2e/README.md](../../tests/e2e/README.md)와 같이 갱신한다.

@@ -22,9 +22,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from common.guardrails import GuardEngine, SUPPORTED_GENERATOR_ASSERTION_OPS
 from common.hints import build_hint_payload
+from common.llm import llm_execution_summary
 from common.deps.stdlib import load_stdlib_spec
 from common.logging import get_logger
-from common.prompts import build_guard_autofix_prompt, build_synthesis_prompt
+from common.prompts import build_guard_autofix_prompt, build_synthesis_prompt, prompt_contract
 from common.paths import ensure_dir
 from common.researcher_report import normalize_researcher_report_payload
 from common.roles import normalize_role, role_matches
@@ -61,6 +62,24 @@ DEFAULT_POC_TEMPLATE = {
     "success_signature": "Exploit SUCCESS",
     "notes": "Auto-injected fallback PoC block",
 }
+
+
+def _llm_path_class(
+    *,
+    provider_attempted: bool,
+    provider_succeeded: bool,
+    stub_fallback: bool,
+    fixture_used: bool,
+) -> str:
+    if fixture_used:
+        return "fixture"
+    if provider_succeeded and not stub_fallback:
+        return "live"
+    if stub_fallback and provider_attempted:
+        return "degraded"
+    if stub_fallback:
+        return "stub"
+    return "not_executed"
 
 
 def _default_allowlist() -> List[str]:
@@ -186,6 +205,7 @@ class CandidateReport:
     llm_provider_succeeded: bool = False
     llm_failure_class: str = ""
     llm_failure_message: str = ""
+    llm_execution: Dict[str, Any] = field(default_factory=dict)
     failure_stage: str = ""
     failure_stage_reason: str = ""
 
@@ -197,7 +217,7 @@ class CandidateReport:
     def to_summary(self) -> Dict[str, Any]:
         files = self.manifest.get("files") or []
         file_paths = [entry.get("path") for entry in files if isinstance(entry, dict)]
-        return {
+        summary = {
             "index": self.index,
             "score": round(self.score, 3),
             "violations": self.violations,
@@ -220,6 +240,9 @@ class CandidateReport:
             "failure_stage": self.failure_stage,
             "failure_stage_reason": self.failure_stage_reason,
         }
+        if self.llm_execution:
+            summary["llm_execution"] = deepcopy(self.llm_execution)
+        return summary
 
 
 @dataclass
@@ -248,6 +271,7 @@ class SynthesisEngine:
         metadata_dir: Path,
         mode: str,
         user_deps: Sequence[str] | None = None,
+        retry_budget_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.sid = sid
         self.llm = llm
@@ -278,6 +302,86 @@ class SynthesisEngine:
         self._researcher_report_payload: Dict[str, Any] = {}
         self._guard_autofix_level: str = "none"
         self._guard_autofix_max_attempts: int = 0
+        self._candidate_budget: int = 1
+        self._llm_prompt_invocations: Dict[str, int] = {}
+        self._retry_budget_context: Dict[str, Any] = dict(retry_budget_context or {})
+
+    def _llm_execution_from_state(
+        self,
+        *,
+        stub_fallback: bool,
+        fixture_used: bool,
+        provider_attempted: bool,
+        provider_succeeded: bool,
+        failure_class: str = "",
+        failure_message: str = "",
+        observed: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = llm_execution_summary(self.llm, observed=observed, metadata=metadata)
+        payload["provider_attempted"] = bool(provider_attempted)
+        payload["provider_succeeded"] = bool(provider_succeeded)
+        payload["stub_fallback"] = bool(stub_fallback)
+        payload["fixture_used"] = bool(fixture_used)
+        payload["path_class"] = _llm_path_class(
+            provider_attempted=bool(provider_attempted),
+            provider_succeeded=bool(provider_succeeded),
+            stub_fallback=bool(stub_fallback),
+            fixture_used=bool(fixture_used),
+        )
+        if failure_class:
+            payload["last_error_class"] = failure_class
+        if failure_message:
+            payload["last_error_message"] = failure_message
+        return payload
+
+    def _synthesis_llm_metadata(
+        self,
+        *,
+        fixture_used: bool,
+        candidate_index: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        retry_budget: Dict[str, Any] = {
+            "candidate_budget": max(1, int(getattr(self, "_candidate_budget", 1) or 1)),
+            "guard_autofix_max_attempts": max(0, int(getattr(self, "_guard_autofix_max_attempts", 0) or 0)),
+        }
+        retry_budget.update(
+            {
+                key: value
+                for key, value in (self._retry_budget_context or {}).items()
+                if value is not None
+            }
+        )
+        if candidate_index is not None:
+            retry_budget["candidate_index"] = int(candidate_index)
+        prompt_invocations = self._prompt_invocation_counts()
+        if "synthesis_manifest" in prompt_invocations:
+            retry_budget["actual_candidate_runs"] = int(prompt_invocations.get("synthesis_manifest") or 0)
+        if "guard_autofix" in prompt_invocations:
+            retry_budget["actual_guard_autofix_runs"] = int(prompt_invocations.get("guard_autofix") or 0)
+        if "dep_guard_inference" in prompt_invocations:
+            retry_budget["actual_dep_guard_inference_runs"] = int(prompt_invocations.get("dep_guard_inference") or 0)
+        metadata = {
+            "cache_mode": "fixture_file" if fixture_used else "none",
+            "retry_budget": retry_budget,
+        }
+        if prompt_invocations:
+            metadata["prompt_contracts"] = [prompt_contract(name) for name in prompt_invocations]
+            metadata["prompt_invocations"] = prompt_invocations
+        return metadata
+
+    def _record_prompt_invocation(self, name: str) -> None:
+        token = str(name or "").strip()
+        if not token:
+            return
+        self._llm_prompt_invocations[token] = int(self._llm_prompt_invocations.get(token) or 0) + 1
+
+    def _prompt_invocation_counts(self) -> Dict[str, int]:
+        return {
+            str(key).strip(): int(value)
+            for key, value in (self._llm_prompt_invocations or {}).items()
+            if str(key).strip() and int(value) > 0
+        }
 
     def run(
         self,
@@ -295,6 +399,7 @@ class SynthesisEngine:
         """Generate k candidates, select the best, and materialize it."""
 
         candidate_k = max(1, int(candidate_k or 1))
+        self._candidate_budget = candidate_k
         reports: List[CandidateReport] = []
         self._requirement = requirement
         self._load_stdlib_spec()
@@ -339,6 +444,7 @@ class SynthesisEngine:
                 poc_template=poc_template,
                 guard_spec=guard_spec,
             )
+            self._record_prompt_invocation("synthesis_manifest")
             raw = self.llm.generate(messages)
             manifest_llm_fixture_used = bool(getattr(self.llm, "fixture_used", False))
             manifest_llm_stub_used = bool(getattr(self.llm, "last_used_stub", False)) and not manifest_llm_fixture_used
@@ -346,6 +452,18 @@ class SynthesisEngine:
             manifest_llm_provider_succeeded = bool(getattr(self.llm, "last_provider_succeeded", False))
             manifest_llm_failure_class = str(getattr(self.llm, "last_error_class", "") or "")
             manifest_llm_failure_message = str(getattr(self.llm, "last_error_message", "") or "")
+            manifest_llm_execution = self._llm_execution_from_state(
+                stub_fallback=manifest_llm_stub_used,
+                fixture_used=manifest_llm_fixture_used,
+                provider_attempted=manifest_llm_provider_attempted,
+                provider_succeeded=manifest_llm_provider_succeeded,
+                failure_class=manifest_llm_failure_class,
+                failure_message=manifest_llm_failure_message,
+                metadata=self._synthesis_llm_metadata(
+                    fixture_used=manifest_llm_fixture_used,
+                    candidate_index=idx,
+                ),
+            )
             manifest = self._parse_manifest(raw, idx)
             fallback_used = self._manifest_uses_deterministic_fallback(manifest)
             fallback_class = self._manifest_fallback_class(manifest)
@@ -396,6 +514,7 @@ class SynthesisEngine:
                     llm_provider_succeeded=manifest_llm_provider_succeeded,
                     llm_failure_class=manifest_llm_failure_class,
                     llm_failure_message=manifest_llm_failure_message,
+                    llm_execution=manifest_llm_execution,
                     failure_stage=str(stage_failure.get("failure_stage") or "").strip(),
                     failure_stage_reason=str(stage_failure.get("failure_stage_reason") or "").strip(),
                 )
@@ -807,6 +926,24 @@ class SynthesisEngine:
             llm_failure_message=next(
                 (report.llm_failure_message for report in reversed(reports) if report.llm_failure_message),
                 "",
+            ),
+            llm_execution=self._llm_execution_from_state(
+                stub_fallback=any(report.llm_stub_used for report in reports),
+                fixture_used=any(report.llm_fixture_used for report in reports),
+                provider_attempted=any(report.llm_provider_attempted for report in reports),
+                provider_succeeded=any(report.llm_provider_succeeded for report in reports),
+                failure_class=next(
+                    (report.llm_failure_class for report in reversed(reports) if report.llm_failure_class),
+                    "",
+                ),
+                failure_message=next(
+                    (report.llm_failure_message for report in reversed(reports) if report.llm_failure_message),
+                    "",
+                ),
+                observed=True,
+                metadata=self._synthesis_llm_metadata(
+                    fixture_used=any(report.llm_fixture_used for report in reports),
+                ),
             ),
             failure_stage=str(stage_failure.get("failure_stage") or "").strip(),
             failure_stage_reason=str(stage_failure.get("failure_stage_reason") or "").strip(),
@@ -1476,6 +1613,24 @@ class SynthesisEngine:
             llm_failure_message=next(
                 (report.llm_failure_message for report in reversed(reports) if report.llm_failure_message),
                 "",
+            ),
+            llm_execution=self._llm_execution_from_state(
+                stub_fallback=any(report.llm_stub_used for report in reports),
+                fixture_used=any(report.llm_fixture_used for report in reports),
+                provider_attempted=any(report.llm_provider_attempted for report in reports),
+                provider_succeeded=any(report.llm_provider_succeeded for report in reports),
+                failure_class=next(
+                    (report.llm_failure_class for report in reversed(reports) if report.llm_failure_class),
+                    "",
+                ),
+                failure_message=next(
+                    (report.llm_failure_message for report in reversed(reports) if report.llm_failure_message),
+                    "",
+                ),
+                observed=True,
+                metadata=self._synthesis_llm_metadata(
+                    fixture_used=any(report.llm_fixture_used for report in reports),
+                ),
             ),
             failure_stage=str(stage_failure.get("failure_stage") or "").strip(),
             failure_stage_reason=str(stage_failure.get("failure_stage_reason") or "").strip(),
@@ -5190,6 +5345,7 @@ class SynthesisEngine:
             violations=violations,
             guard_spec=self._guard_spec_payload,
         )
+        self._record_prompt_invocation("guard_autofix")
         raw = self.llm.generate(prompt)
         text = (raw or "").strip()
         if text.startswith("```"):
@@ -5776,6 +5932,18 @@ class SynthesisEngine:
             generation_origin = "deterministic_fallback"
         elif selected.family_override_applied:
             generation_origin = "family_override"
+        llm_execution = self._llm_execution_from_state(
+            stub_fallback=selected.llm_stub_used,
+            fixture_used=selected.llm_fixture_used,
+            provider_attempted=selected.llm_provider_attempted,
+            provider_succeeded=selected.llm_provider_succeeded,
+            failure_class=selected.llm_failure_class,
+            failure_message=selected.llm_failure_message,
+            observed=True,
+            metadata=self._synthesis_llm_metadata(
+                fixture_used=selected.llm_fixture_used,
+            ),
+        )
         manifest_payload = {
             "sid": self.sid,
             "mode": self.mode,
@@ -5806,6 +5974,7 @@ class SynthesisEngine:
             "llm_provider_succeeded": selected.llm_provider_succeeded,
             "llm_failure_class": selected.llm_failure_class,
             "llm_failure_message": selected.llm_failure_message,
+            "llm_execution": llm_execution,
             "failure_stage": selected.failure_stage or None,
             "failure_stage_reason": selected.failure_stage_reason or None,
             "provenance": {
@@ -5817,6 +5986,8 @@ class SynthesisEngine:
                 "llm_fixture_used": selected.llm_fixture_used,
                 "llm_provider_attempted": selected.llm_provider_attempted,
                 "llm_provider_succeeded": selected.llm_provider_succeeded,
+                "llm_failure_class": selected.llm_failure_class or None,
+                "llm_execution": llm_execution,
             },
         }
         manifest_path.write_text(json.dumps(manifest_payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -6048,6 +6219,18 @@ class SynthesisEngine:
             "family_override_applied": family_override_applied,
             "llm_failure_class": llm_failure_class or None,
             "llm_failure_message": llm_failure_message or None,
+            "llm_execution": self._llm_execution_from_state(
+                stub_fallback=llm_stub_used,
+                fixture_used=llm_fixture_used,
+                provider_attempted=llm_provider_attempted,
+                provider_succeeded=llm_provider_succeeded,
+                failure_class=llm_failure_class,
+                failure_message=llm_failure_message,
+                observed=True,
+                metadata=self._synthesis_llm_metadata(
+                    fixture_used=llm_fixture_used,
+                ),
+            ),
             "failure_stage": failure_stage or None,
             "failure_stage_reason": failure_stage_reason or None,
             "staged_synthesis": self._staged_synthesis_payload(),
@@ -6719,6 +6902,7 @@ class SynthesisEngine:
 
         try:
             messages = self._build_dep_guard_messages(manifest, required_static, declared)
+            self._record_prompt_invocation("dep_guard_inference")
             response = self.llm.generate(messages)
         except Exception as exc:  # pragma: no cover - safety
             LOGGER.warning("LLM dependency inference failed for %s: %s", self.sid, exc)

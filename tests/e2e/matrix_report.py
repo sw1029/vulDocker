@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -201,3 +202,55 @@ def write_matrix_report(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return report
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Build matrix_report.json from repeat_case output directories")
+    parser.add_argument(
+        "run_dirs",
+        nargs="+",
+        help="repeat_case output directories containing summary.json and optional repeatability_report.json",
+    )
+    parser.add_argument("--output", type=Path, required=True, help="Path to matrix_report.json")
+    args = parser.parse_args(argv)
+
+    summaries: list[Path] = []
+    repeatability_reports: list[Path] = []
+
+    for run_dir_input in args.run_dirs:
+        run_dir = Path(run_dir_input).resolve()
+        if not run_dir.is_dir():
+            raise SystemExit(f"run directory not found: {run_dir}")
+
+        summary_path = run_dir / "summary.json"
+        if summary_path.exists():
+            summaries.append(summary_path)
+
+        repeatability_path = run_dir / "repeatability_report.json"
+        if repeatability_path.exists():
+            repeatability_reports.append(repeatability_path)
+        elif not summary_path.exists():
+            raise SystemExit(
+                f"neither summary.json nor repeatability_report.json found: {run_dir}"
+            )
+
+    report = write_matrix_report(
+        args.output.resolve(),
+        summaries,
+        repeatability_reports=repeatability_reports,
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output.resolve()),
+                "case_count": report.get("case_count"),
+                "fully_green": report.get("fully_green"),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -12,9 +12,11 @@ Relevant canonical docs:
 - [작업 티켓](../work_tickets.md)
 - success criteria 5축과 backlog owner 대응: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Axis Map`
 - completion companion set과 canonical reading order: [docs/work_tickets.md](../work_tickets.md)의 `Completion Companions`, `Open-World Completion Reading Order`
+- priority companion set과 canonical priority routing: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
 - success criteria 5축의 완료판정 질문과 최소 근거: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Checklist`
 - success criteria 5축의 canonical 완료 검토 순서: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Review Flow`
 - latest confirmed residual의 축별 ticket bundle 분해: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Residual Ticket Breakdown`
+- latest direct verification까지 반영한 current completion priority order와 잔여 작업량/turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
 - [검증 하니스](../../tests/e2e/README.md)
 
 ## 핵심 파일
@@ -102,6 +104,7 @@ Relevant canonical docs:
 - dependency ordering/lifecycle residual은 `TKT-003-A/B` owner다.
 - seed/init DSL residual은 `TKT-004-A/B` owner다.
 - env/volume/network contract generalization residual은 `TKT-005-A/B/C` owner다.
+- host Docker availability precondition은 backlog ticket이 아니라 operational prerequisite다. current cheapest no-Docker pair(`foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`)는 executor truth 자체가 아니라 upstream policy/reporting sanity만 확인한다.
 - 현재 executor 문서는 bounded contract-stage/runtime parity와 stronger early validation까지는 설명할 수 있지만, generalized runtime control-plane closure를 claim하면 안 된다.
 
 ## Residual Review Focus
@@ -113,6 +116,29 @@ Relevant canonical docs:
 
 - `TKT-002` completion은 `docker_local.py`가 `runtime_graph` / `executor_plan`을 fallback hint가 아니라 actual materialization precedence로 소비하는지부터 본다.
 - `TKT-003`~`TKT-005` completion은 lifecycle ordering, seed/init result surface, env-volume-network contract semantics가 실제 run summary와 oracle replay surface까지 일관되게 남는지부터 본다.
+
+## Priority Companions
+
+이 문서를 우선순위 판단 관점으로 읽을 때는 아래 문서를 같이 본다.
+
+- current completion priority order: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`
+- representative evidence와 함께 보는 turn estimate shortcut: [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / reading order: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading: [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석: [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`
+- current truth / non-claim: [docs/current_state_gap_analysis.md](../current_state_gap_analysis.md), [docs/constraints.md](../constraints.md)
+- code/harness entry: [docs/code/README.md](README.md), [tests/e2e/README.md](../../tests/e2e/README.md)
+
+## Priority Review Focus
+
+- current completion priority order에서 executor는 `TKT-002`~`TKT-005` generalized runtime closure의 primary companion이다.
+- Docker prerequisite가 막힌 환경의 no-Docker pair는 executor completion 증명이 아니라, current order를 바꾸지 않는 fallback sanity라는 점도 여기서 같이 읽는다.
+- latest positive representative pair는 executor가 실제 runtime path까지는 열 수 있음을 보여 주지만, same ticket-form reading은 여전히 generalized runtime closure 미완으로 귀결된다. canonical 해석은 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`을 따른다.
+- 잔여 작업량/turn envelope 해석도 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`를 같이 따른다.
+- turn estimate shortcut도 [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`를 같이 따른다.
+- LLM-response stricter reading에서도 positive LLM-shaped capability는 Docker/runtime closure가 열려야 의미가 있으므로, executor priority는 그대로 본체 bucket에 남는다.
+- LLM-response 기준 상세 해석은 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`를 따른다.
 
 ## Review Mode Entry
 
@@ -126,6 +152,10 @@ Relevant canonical docs:
 - 잔여 구현 검토:
   - 이 문서의 `Residual Review Focus`
   - [docs/code/README.md](README.md)의 `Residual Review Entry`
+- 우선순위 판단:
+  - 이 문서의 `Priority Review Focus`
+  - [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`
+  - [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
 
 ## Ticket-First Entry
 
@@ -153,6 +183,7 @@ Relevant canonical docs:
 - representative runtime rerun:
   - Docker-enabled `tests/e2e/test_cases.py`
   - representative direct `run_case.py` lane for single-service and sidecar topology
+  - no-Docker pair (`foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`)는 executor parity regression이 아니라 Docker prerequisite가 막힌 환경에서 policy/reporting boundary만 빠르게 확인하는 fallback rehearsal이다
 
 이 디렉토리를 볼 때는 [docs/constraints.md](../constraints.md)의 executor/runtime constraints를 먼저 같이 봐야 합니다.
 
@@ -165,5 +196,10 @@ Relevant canonical docs:
 - ticket-first entrypoint나 representative validation surface가 바뀌면 이 문서의 해당 섹션도 같이 갱신한다.
 - completion review focus가 바뀌면 same runtime-control-plane mapping에 맞춰 이 문서도 같이 갱신한다.
 - residual review focus가 바뀌면 same runtime-control-plane mapping에 맞춰 이 문서도 같이 갱신한다.
+- priority review focus나 priority companion 해석이 바뀌면 [docs/code/README.md](README.md), [docs/work_tickets.md](../work_tickets.md)와 같이 갱신한다.
+- LLM-response stricter reading의 executor/runtime 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 갱신한다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 갱신한다.
+- 잔여 작업량/turn envelope 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`와 같이 갱신한다.
+- [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`가 바뀌면 same shortcut도 같이 갱신한다.
 - review mode entry shortcut이 바뀌면 [docs/code/README.md](README.md)와 같이 갱신한다.
 - runtime representative harness나 Docker-gated rerun path가 바뀌면 [tests/e2e/README.md](../../tests/e2e/README.md)와 같이 갱신한다.

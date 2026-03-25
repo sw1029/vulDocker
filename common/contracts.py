@@ -679,6 +679,18 @@ def build_generator_contract(
     llm_fixture_used = _bool_or_none(provenance.get("llm_fixture_used")) if provenance else None
     if llm_fixture_used is not None:
         payload["llm_fixture_used"] = llm_fixture_used
+    llm_provider_attempted = _bool_or_none(provenance.get("llm_provider_attempted")) if provenance else None
+    if llm_provider_attempted is not None:
+        payload["llm_provider_attempted"] = llm_provider_attempted
+    llm_provider_succeeded = _bool_or_none(provenance.get("llm_provider_succeeded")) if provenance else None
+    if llm_provider_succeeded is not None:
+        payload["llm_provider_succeeded"] = llm_provider_succeeded
+    llm_failure_class = _string_or_none(provenance.get("llm_failure_class")) if provenance else None
+    if llm_failure_class:
+        payload["llm_failure_class"] = llm_failure_class
+    llm_execution = provenance.get("llm_execution") if isinstance(provenance, dict) else None
+    if isinstance(llm_execution, dict) and llm_execution:
+        payload["llm_execution"] = deepcopy(llm_execution)
     if poc_cmd:
         payload["poc_cmd"] = poc_cmd
     if semantic_contract.get("semantic_signature"):
@@ -1271,17 +1283,51 @@ def _resolve_generation_provenance(
     if family_override_applied is not None:
         provenance["family_override_applied"] = family_override_applied
 
+    llm_execution = manifest_payload.get("llm_execution") if isinstance(manifest_payload, dict) else None
+    if not isinstance(llm_execution, dict) and isinstance(template_summary, dict):
+        llm_execution = template_summary.get("llm_execution")
+    if isinstance(llm_execution, dict) and llm_execution:
+        provenance["llm_execution"] = deepcopy(llm_execution)
+
     llm_stub_used = _bool_or_none(manifest_payload.get("llm_stub_used")) if isinstance(manifest_payload, dict) else None
+    if llm_stub_used is None and isinstance(llm_execution, dict):
+        llm_stub_used = _bool_or_none(llm_execution.get("stub_fallback"))
     if llm_stub_used is None and isinstance(template_summary, dict):
         llm_stub_used = _bool_or_none(template_summary.get("llm_stub_used"))
     if llm_stub_used is not None:
         provenance["llm_stub_used"] = llm_stub_used
 
     llm_fixture_used = _bool_or_none(manifest_payload.get("llm_fixture_used")) if isinstance(manifest_payload, dict) else None
+    if llm_fixture_used is None and isinstance(llm_execution, dict):
+        llm_fixture_used = _bool_or_none(llm_execution.get("fixture_used"))
     if llm_fixture_used is None and isinstance(template_summary, dict):
         llm_fixture_used = _bool_or_none(template_summary.get("llm_fixture_used"))
     if llm_fixture_used is not None:
         provenance["llm_fixture_used"] = llm_fixture_used
+
+    llm_provider_attempted = _bool_or_none(manifest_payload.get("llm_provider_attempted")) if isinstance(manifest_payload, dict) else None
+    if llm_provider_attempted is None and isinstance(llm_execution, dict):
+        llm_provider_attempted = _bool_or_none(llm_execution.get("provider_attempted"))
+    if llm_provider_attempted is None and isinstance(template_summary, dict):
+        llm_provider_attempted = _bool_or_none(template_summary.get("llm_provider_attempted"))
+    if llm_provider_attempted is not None:
+        provenance["llm_provider_attempted"] = llm_provider_attempted
+
+    llm_provider_succeeded = _bool_or_none(manifest_payload.get("llm_provider_succeeded")) if isinstance(manifest_payload, dict) else None
+    if llm_provider_succeeded is None and isinstance(llm_execution, dict):
+        llm_provider_succeeded = _bool_or_none(llm_execution.get("provider_succeeded"))
+    if llm_provider_succeeded is None and isinstance(template_summary, dict):
+        llm_provider_succeeded = _bool_or_none(template_summary.get("llm_provider_succeeded"))
+    if llm_provider_succeeded is not None:
+        provenance["llm_provider_succeeded"] = llm_provider_succeeded
+
+    llm_failure_class = _string_or_none(manifest_payload.get("llm_failure_class")) if isinstance(manifest_payload, dict) else None
+    if llm_failure_class is None and isinstance(llm_execution, dict):
+        llm_failure_class = _string_or_none(llm_execution.get("last_error_class"))
+    if llm_failure_class is None and isinstance(template_summary, dict):
+        llm_failure_class = _string_or_none(template_summary.get("llm_failure_class"))
+    if llm_failure_class:
+        provenance["llm_failure_class"] = llm_failure_class
 
     fallback_class = _fallback_class_from_payload(manifest_payload)
     if fallback_class is None and isinstance(template_summary, dict):
@@ -3767,10 +3813,14 @@ def _scenario_selection_payload(
                 selected_candidate = entry
                 break
 
+    family_selected = family_payload.get("selected") is True
+    stack_selected = stack_payload.get("selected") is True
+    selected_candidate_present = bool(selected_candidate)
+    scenario_selected = bool(selected_candidate_present and family_selected and stack_selected)
     preview_candidate = selected_candidate or normalized_candidates[0]
     payload: Dict[str, Any] = {
         "candidate_count": len(normalized_candidates),
-        "selected": bool(selected_candidate and selected_family and selected_stack),
+        "selected": scenario_selected,
         "source": "scenario_candidates",
         "top_scenario_id": _string_or_none(preview_candidate.get("scenario_id")),
         "top_family": _string_or_none(preview_candidate.get("family")),
@@ -3784,6 +3834,28 @@ def _scenario_selection_payload(
             ]
         ),
     }
+    payload["selected_candidate_present"] = selected_candidate_present
+    if scenario_selected:
+        payload["selection_state"] = "selected"
+        payload["selected_by"] = (
+            "scenario_candidates.explicit_selected"
+            if isinstance(selected_candidate, dict) and selected_candidate.get("selected") is True
+            else "family_stack_runtime_topology_alignment"
+        )
+    elif selected_candidate_present:
+        payload["selection_state"] = "candidate_only"
+        payload["selected_by"] = "scenario_candidates.preview_candidate"
+        unresolved_reasons: list[str] = []
+        if not family_selected:
+            unresolved_reasons.append("family_unselected")
+        if not stack_selected:
+            unresolved_reasons.append("stack_unselected")
+        if unresolved_reasons:
+            payload["unresolved_reasons"] = unresolved_reasons
+    else:
+        payload["selection_state"] = "unresolved"
+        payload["selected_by"] = "unresolved"
+        payload["unresolved_reasons"] = ["scenario_candidate_unresolved"]
     preview_oracle_profile = (
         preview_candidate.get("oracle_profile") if isinstance(preview_candidate.get("oracle_profile"), dict) else {}
     )
@@ -4342,6 +4414,18 @@ def _build_name_only_generation_spec(
         scenario_candidate_summary["selection_support_by_source_authority"] = deepcopy(
             scenario_selection.get("support_by_source_authority")
         ) if isinstance(scenario_selection.get("support_by_source_authority"), dict) else {}
+        scenario_candidate_summary["selection_state"] = _string_or_none(scenario_selection.get("selection_state")) or None
+        scenario_candidate_summary["selected_candidate_present"] = (
+            scenario_selection.get("selected_candidate_present") is True
+        )
+        scenario_candidate_summary["selected_by"] = _string_or_none(scenario_selection.get("selected_by")) or None
+        unresolved_reasons = scenario_selection.get("unresolved_reasons")
+        if isinstance(unresolved_reasons, list):
+            scenario_candidate_summary["selection_unresolved_reasons"] = [
+                str(item).strip().lower()
+                for item in unresolved_reasons
+                if isinstance(item, str) and str(item).strip()
+            ]
     payload: Dict[str, Any] = {
         "schema_version": "name_only_generation_spec@0.1",
         "request_label": request_label or None,

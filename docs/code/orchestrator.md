@@ -14,9 +14,11 @@ Relevant canonical docs:
 - [작업 티켓](../work_tickets.md)
 - success criteria 5축과 backlog owner 대응: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Axis Map`
 - completion companion set과 canonical reading order: [docs/work_tickets.md](../work_tickets.md)의 `Completion Companions`, `Open-World Completion Reading Order`
+- priority companion set과 canonical priority routing: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
 - success criteria 5축의 완료판정 질문과 최소 근거: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Checklist`
 - success criteria 5축의 canonical 완료 검토 순서: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Review Flow`
 - latest confirmed residual의 축별 ticket bundle 분해: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Residual Ticket Breakdown`
+- latest direct verification까지 반영한 current completion priority order와 잔여 작업량/turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
 - [검증 하니스](../../tests/e2e/README.md)
 
 ## 핵심 파일
@@ -86,6 +88,7 @@ Relevant canonical docs:
 ## Current Residual Owners
 
 - partial-lane / selection control-plane residual은 `TKT-001-*`, `TKT-006-*` owner와 직접 연결된다.
+- strict capability-gate fail-closed subclass split(`strict_dynamic_remote_research_unavailable` vs `strict_dynamic_live_llm_unavailable`) 유지도 현재는 `TKT-001-E` residual reading에 포함된다.
 - measured gate / summary consistency residual은 `TKT-008-A*`, `TKT-008-B*` owner다.
 - curated registry / support workflow residual은 `TKT-009-A*`, `TKT-009-B*` owner다.
 - orchestrator 문서는 many artifact surfaces를 설명할 수 있지만, 이것만으로 generalized control-plane closure나 auto-promotion completion을 claim하면 안 된다.
@@ -94,6 +97,29 @@ Relevant canonical docs:
 
 - `TKT-001`, `TKT-006` completion은 `plan.py` / `run_pipeline.py` / `pack.py`가 selection branch authority와 staged recovery truth를 실제 operator-facing summary까지 일관되게 남기는지부터 본다.
 - `TKT-008`, `TKT-009` completion은 `support_extract.py`와 measured/support artifacts가 candidate -> review -> update -> registry current state까지 같은 vocabulary와 precedence를 유지하는지부터 본다.
+
+## Priority Companions
+
+이 문서를 우선순위 판단 관점으로 읽을 때는 아래 문서를 같이 본다.
+
+- current completion priority order: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`
+- representative evidence와 함께 보는 turn estimate shortcut: [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / reading order: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading: [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석: [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`
+- current truth / non-claim: [docs/current_state_gap_analysis.md](../current_state_gap_analysis.md), [docs/constraints.md](../constraints.md)
+- code/artifact entry: [docs/code/README.md](README.md), [docs/handbook.md](../handbook.md)
+
+## Priority Review Focus
+
+- current completion priority order에서 orchestrator는 `TKT-001`, `TKT-006`, 그리고 후행 `TKT-008`, `TKT-009` handoff를 읽는 primary companion이다.
+- 이 문서는 priority source가 아니라, 선택/summary/measured-support registry handoff가 실제 어디서 만들어지는지 좁히는 entrypoint로 읽는다.
+- latest positive representative pair의 ticket-form reading도 orchestrator를 `selection -> synthesis -> measured/support handoff` translation layer로 다시 묶는다. canonical 해석은 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`을 따른다.
+- 잔여 작업량/turn envelope 해석도 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`를 같이 따른다.
+- turn estimate shortcut도 [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`를 같이 따른다.
+- LLM-response stricter reading에서도 orchestrator는 strict live-LLM honesty와 positive LLM-shaped handoff를 같은 `TKT-001 -> TKT-006 -> TKT-008/9` 흐름으로 분리해 읽게 만드는 companion이다.
+- LLM-response 기준 상세 해석은 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`를 따른다.
 
 ## Review Mode Entry
 
@@ -107,6 +133,10 @@ Relevant canonical docs:
 - 잔여 구현 검토:
   - 이 문서의 `Current Residual Owners`
   - [docs/code/README.md](README.md)의 `Residual Review Entry`
+- 우선순위 판단:
+  - 이 문서의 `Priority Review Focus`
+  - [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`
+  - [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
 
 ## Ticket-First Entry
 
@@ -119,11 +149,13 @@ Relevant canonical docs:
   - `orchestrator/support_extract.py`
   - `tests/e2e/repeat_case.py`
   - `tests/e2e/matrix_report.py`
+  - latest low-cost rehearsal pair: `foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`
 - `TKT-009`를 먼저 볼 때:
   - `orchestrator/support_extract.py`
   - `tests/e2e/support_review.py`
   - `tests/e2e/support_decide.py`
   - `tests/e2e/support_apply.py`
+  - latest blocked/no-op rehearsal pair: `foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`
 
 ## Representative Validation Surface
 
@@ -138,6 +170,13 @@ Relevant canonical docs:
 - representative direct workflow:
   - `python tests/e2e/run_case.py --case <CASE_DIR> --mode deterministic`
   - `python tests/e2e/repeat_case.py --case <CASE_DIR> --attempts 2 --mode deterministic --output-dir <OUT_DIR>`
+  - low-cost no-Docker policy lanes:
+    - `open-redirect-strict-dynamic-no-remote`
+    - `open-redirect-strict-dynamic-stub`
+    - `foobar-name-only-negative`
+  - low-cost measured/support blocked-no-op pair:
+    - `foobar-name-only-negative`
+    - `open-redirect-strict-dynamic-no-remote`
 
 ## Name-Only/Open-World 작업 시 먼저 볼 것
 
@@ -153,5 +192,10 @@ Relevant canonical docs:
 - phase ordering과 backlog owner는 [docs/final_solution.md](../final_solution.md), [docs/work_tickets.md](../work_tickets.md)로 보낸다.
 - ticket-first entrypoint나 representative validation surface가 바뀌면 이 문서의 해당 섹션도 같이 갱신한다.
 - completion review focus가 바뀌면 same owner/ticket mapping에 맞춰 이 문서도 같이 갱신한다.
+- priority review focus나 priority companion 해석이 바뀌면 [docs/code/README.md](README.md), [docs/work_tickets.md](../work_tickets.md)와 같이 갱신한다.
+- LLM-response stricter reading의 orchestrator-side handoff 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 갱신한다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 갱신한다.
+- 잔여 작업량/turn envelope 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`와 같이 갱신한다.
+- [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`가 바뀌면 same shortcut도 같이 갱신한다.
 - review mode entry shortcut이 바뀌면 [docs/code/README.md](README.md)와 같이 갱신한다.
 - harness command family나 measured/support validation flow가 바뀌면 [tests/e2e/README.md](../../tests/e2e/README.md)와 같이 갱신한다.

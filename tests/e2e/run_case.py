@@ -185,6 +185,12 @@ def _ensure_docker_ready(env: Dict[str, str]) -> None:
     try:
         subprocess.run(["docker", "info"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     except subprocess.CalledProcessError as exc:
+        stderr_text = (exc.stderr or b"").decode("utf-8", errors="ignore").lower()
+        if (
+            "permission denied while trying to connect to the docker daemon socket" in stderr_text
+            or "connect: operation not permitted" in stderr_text
+        ):
+            raise CaseError("docker daemon permission denied") from exc
         raise CaseError("docker daemon is not reachable") from exc
 
 
@@ -337,6 +343,12 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "semantic_guided_abstain_reason": (bundle.get("provenance") or {}).get("semantic_guided_abstain_reason"),
                 "semantic_guided_ambiguous": (bundle.get("provenance") or {}).get("semantic_guided_ambiguous"),
                 "llm_fixture_used": (bundle.get("provenance") or {}).get("llm_fixture_used"),
+                "research_retry_budget": (bundle.get("researcher") or {}).get("retry_budget"),
+                "research_timeout_budget": (bundle.get("researcher") or {}).get("timeout_budget"),
+                "research_cost_budget": (bundle.get("researcher") or {}).get("cost_budget"),
+                "generation_retry_budget": (((bundle.get("provenance") or {}).get("llm_execution") or {}).get("retry_budget")),
+                "generation_timeout_budget": (((bundle.get("provenance") or {}).get("llm_execution") or {}).get("timeout_budget")),
+                "generation_cost_budget": (((bundle.get("provenance") or {}).get("llm_execution") or {}).get("cost_budget")),
                 "dynamicness_verdict": (bundle.get("dynamicness") or {}).get("verdict"),
                 "dynamicness_reason": (bundle.get("dynamicness") or {}).get("reason"),
                 "family_non_remote_available": (bundle.get("lower_bound") or {}).get("family_non_remote_available"),
@@ -550,6 +562,15 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
             else performance.get("llm_fixture_used")
         ),
         "provider_health_state": performance.get("provider_health_state"),
+        "research_retry_budget": manifest.get("research_retry_budget") or {},
+        "research_timeout_budget": manifest.get("research_timeout_budget") or {},
+        "research_cost_budget": manifest.get("research_cost_budget") or {},
+        "generation_retry_budget": manifest.get("generation_retry_budget") or {},
+        "generation_timeout_budget": manifest.get("generation_timeout_budget") or {},
+        "generation_cost_budget": manifest.get("generation_cost_budget") or {},
+        "reviewer_retry_budget": manifest.get("reviewer_retry_budget") or {},
+        "reviewer_timeout_budget": manifest.get("reviewer_timeout_budget") or {},
+        "reviewer_cost_budget": manifest.get("reviewer_cost_budget") or {},
         "total_duration_s": performance.get("total_duration_s"),
         "performance_retry_count": performance.get("retry_count"),
         "performance_by_stage": performance.get("by_stage") or {},

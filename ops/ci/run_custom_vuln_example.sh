@@ -17,10 +17,16 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-BASE_REQ="${REPO_ROOT}/inputs/base_requirement.yml"
+BASE_REQ="${VULD_CUSTOM_BASE_REQUIREMENT_FILE:-${REPO_ROOT}/inputs/base_requirement.yml}"
+RUN_CASE_SCRIPT="${VULD_CUSTOM_RUN_CASE_SCRIPT:-${SCRIPT_DIR}/run_case.sh}"
 
 if [[ ! -f "${BASE_REQ}" ]]; then
   echo "[CUSTOM] base requirement not found: ${BASE_REQ}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${RUN_CASE_SCRIPT}" ]]; then
+  echo "[CUSTOM] run_case helper not found: ${RUN_CASE_SCRIPT}" >&2
   exit 1
 fi
 
@@ -113,4 +119,4 @@ echo "[CUSTOM] Generated requirement: ${TMP_REQ}"
 echo "[CUSTOM] VULN_IDS: ${VULN_IDS[*]}"
 echo "[CUSTOM] MODE: ${MODE}"
 
-bash "${SCRIPT_DIR}/run_case.sh" "${TMP_REQ}" "${MODE}"
+"${RUN_CASE_SCRIPT}" "${TMP_REQ}" "${MODE}"

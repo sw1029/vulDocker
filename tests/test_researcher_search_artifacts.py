@@ -9,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from agents.researcher.service import ResearcherService
+from common.config import DecodingProfile
 from rag.tools import SearchExecution, SearchResult, WebSearchTool
 
 
@@ -125,6 +126,25 @@ def _service_stub(
     service._build_and_write_guard_spec = lambda report, evidence, bundle: (None, None)  # type: ignore[attr-defined]
     service._synthesize_candidates = lambda: {"rules": [], "templates": []}  # type: ignore[attr-defined]
     return service
+
+
+class _LLMStub:
+    def __init__(self) -> None:
+        self.model_name = "gpt-5.2"
+        self.decoding = DecodingProfile(mode="deterministic", temperature=0.0, top_p=1.0)
+        self.observed_provider_attempted = False
+        self.observed_provider_succeeded = False
+        self.observed_stub_fallback = False
+        self.observed_fixture_used = False
+        self.last_error_class = None
+        self.last_error_message = None
+        self.last_error_retryable = None
+        self.last_fixture_path = None
+        self.use_stub = False
+        self._fallback_on_error = True
+        self.configured_cost_budget_usd = 0.25
+        self._last_usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        self._observed_usage_totals = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
 
 
 def test_remote_required_failure_records_search_health_path(monkeypatch, tmp_path: Path) -> None:
@@ -712,6 +732,46 @@ def test_unknown_cwe_researcher_run_fail_closes_when_only_wrong_family_tavily_hi
     assert health["configured"] is True
     assert health["remote_result_count"] == 1
     assert contract["contract_stage"] == "research_seed"
+
+
+def test_llm_execution_summary_includes_prompt_contract_and_search_cache_mode(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="NAME-OPEN-REDIRECT",
+        search_policy="remote_prefer",
+        require_evidence=True,
+    )
+    service.plan["loop"] = {"max_loops": 4}  # type: ignore[index]
+    (tmp_path / "loop_state.json").write_text(json.dumps({"current_loop": 2}), encoding="utf-8")
+    service.llm = _LLMStub()  # type: ignore[attr-defined]
+    service.search_tool = type("SearchTool", (), {"timeout": 8.0})()  # type: ignore[attr-defined]
+    service._search_cache_hit_count = 2  # type: ignore[attr-defined]
+    service._search_cache_miss_count = 1  # type: ignore[attr-defined]
+    service._record_prompt_invocation("researcher_report")  # type: ignore[attr-defined]
+    service._record_prompt_invocation("guard_planner")  # type: ignore[attr-defined]
+    service._guard_planner_budget_mode = "bundle_ensemble"  # type: ignore[attr-defined]
+    service._guard_planner_planned_runs = 2  # type: ignore[attr-defined]
+
+    payload = service._llm_execution_summary()  # type: ignore[attr-defined]
+
+    assert payload["prompt_contracts"][0]["name"] == "researcher_report"
+    assert payload["prompt_contracts"][0]["version"] == "build_researcher_prompt@1"
+    assert payload["prompt_contracts"][1]["name"] == "guard_planner"
+    assert payload["prompt_invocations"]["researcher_report"] == 1
+    assert payload["prompt_invocations"]["guard_planner"] == 1
+    assert payload["timeout_budget"]["search_timeout_s"] == 8.0
+    assert payload["cost_budget"]["configured_cost_budget_usd"] == 0.25
+    assert payload["cost_budget"]["usage_tokens"]["total_tokens"] == 30
+    assert payload["cost_budget"]["usage_scope"] == "observed"
+    assert payload["cost_budget"]["pricing_model"] == "gpt-5"
+    assert payload["cost_budget"]["pricing_basis"] == "alias"
+    assert payload["retry_budget"]["controller_loop_current"] == 2
+    assert payload["retry_budget"]["controller_loop_max"] == 4
+    assert payload["retry_budget"]["guard_planner_planned_runs"] == 2
+    assert payload["retry_budget"]["guard_planner_actual_runs"] == 1
+    assert payload["retry_budget"]["guard_budget_mode"] == "bundle_ensemble"
+    assert payload["cache_mode"] == "search_cache_read_write"
+    assert payload["path_class"] == "not_executed"
 
 
 def test_search_filters_are_propagated_to_request_payload(monkeypatch, tmp_path: Path) -> None:

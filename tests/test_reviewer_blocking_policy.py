@@ -15,6 +15,7 @@ from common.run_matrix import VulnBundle
 
 class _LoopStub:
     current_loop = 1
+    max_loops = 3
 
     def start_loop(self) -> None:
         return None
@@ -31,6 +32,29 @@ class _LLMStub:
         return "{}"
 
 
+class _LLMExecutionStub:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, prompt):  # noqa: ANN001
+        self.calls += 1
+        return "{}"
+
+    def execution_summary(self, observed=False, metadata=None):  # noqa: ANN001
+        payload = {
+            "attempt_scope": "observed" if observed else "last_call",
+            "provider_attempted": False,
+            "provider_succeeded": False,
+            "stub_fallback": False,
+            "fixture_used": False,
+            "path_class": "not_executed",
+            "cache_mode": "none",
+        }
+        if isinstance(metadata, dict):
+            payload.update(metadata)
+        return payload
+
+
 class _FailIfCalledLLM:
     def generate(self, prompt):  # noqa: ANN001
         raise AssertionError("LLM should not have been called")
@@ -39,7 +63,7 @@ class _FailIfCalledLLM:
 def test_reviewer_non_blocking_quality_issue_does_not_block_successful_bundle(tmp_path: Path) -> None:
     service = ReviewerService.__new__(ReviewerService)
     service.sid = "sid-review"
-    service.plan = {"requirement": {}, "paths": {"metadata": str(tmp_path)}}  # type: ignore[attr-defined]
+    service.plan = {"requirement": {}, "paths": {"metadata": str(tmp_path)}, "features": {"multi_vuln": True}}  # type: ignore[attr-defined]
     service.metadata_root = tmp_path  # type: ignore[attr-defined]
     service.loop_controller = _LoopStub()  # type: ignore[attr-defined]
     service.llm = _LLMStub()  # type: ignore[attr-defined]
@@ -317,6 +341,85 @@ def test_reviewer_skips_llm_feedback_for_clean_runs_by_default(tmp_path: Path) -
 
     bundle_report = json.loads((tmp_path / "reviewer_report.json").read_text(encoding="utf-8"))
     assert bundle_report["blocking_bundles"] == []
+
+
+def test_reviewer_summary_and_bundle_report_include_llm_execution_when_feedback_runs(tmp_path: Path) -> None:
+    service = ReviewerService.__new__(ReviewerService)
+    service.sid = "sid-review"
+    service.plan = {"requirement": {}, "paths": {"metadata": str(tmp_path)}, "features": {"multi_vuln": True}}  # type: ignore[attr-defined]
+    service.metadata_root = tmp_path  # type: ignore[attr-defined]
+    service.loop_controller = _LoopStub()  # type: ignore[attr-defined]
+    service.llm = _LLMExecutionStub()  # type: ignore[attr-defined]
+    service.bundles = [VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")]  # type: ignore[attr-defined]
+    service._evaluate_bundle = lambda bundle: ReviewerContext(  # type: ignore[attr-defined]
+        sid="sid-review",
+        bundle=bundle,
+        log_path=tmp_path / "run.log",
+        log_excerpt="ok",
+        success=True,
+        issues=[],
+        blocking=False,
+        reason="",
+        fix_hint="",
+    )
+    service._scan_workspace = lambda bundle, exploit_success=False: [  # type: ignore[attr-defined]
+        {
+            "sid": "sid-review",
+            "bundle_slug": bundle.slug,
+            "file": "app.py",
+            "line": 1,
+            "issue": "Dynamic guard mismatch: semantic drift",
+            "fix_hint": "realign semantics",
+            "severity": "medium",
+            "blocking": False,
+            "created_at": "2026-03-06T00:00:00+00:00",
+        }
+    ]
+
+    service.run()
+
+    summary = json.loads((tmp_path / "reviewer_report.json").read_text(encoding="utf-8"))
+    bundle_report = json.loads((tmp_path / "bundles" / "cwe-89" / "reviewer_report.json").read_text(encoding="utf-8"))
+
+    for payload in (summary, bundle_report):
+        llm_execution = payload["llm_execution"]
+        assert llm_execution["prompt_contracts"][0]["name"] == "reviewer"
+        assert llm_execution["prompt_invocations"]["reviewer"] == 1
+        assert llm_execution["retry_budget"]["reviewer_feedback_runs"] == 1
+        assert llm_execution["retry_budget"]["controller_loop_current"] == 1
+        assert llm_execution["retry_budget"]["controller_loop_max"] == 3
+        assert llm_execution["cache_mode"] == "none"
+
+
+def test_reviewer_clean_run_keeps_llm_execution_without_prompt_metadata(tmp_path: Path) -> None:
+    service = ReviewerService.__new__(ReviewerService)
+    service.sid = "sid-review"
+    service.plan = {"requirement": {}, "paths": {"metadata": str(tmp_path)}}  # type: ignore[attr-defined]
+    service.metadata_root = tmp_path  # type: ignore[attr-defined]
+    service.loop_controller = _LoopStub()  # type: ignore[attr-defined]
+    service.llm = _LLMExecutionStub()  # type: ignore[attr-defined]
+    service.bundles = [VulnBundle(vuln_id="CWE-89", slug="cwe-89", workspace_subdir="app")]  # type: ignore[attr-defined]
+    service._evaluate_bundle = lambda bundle: ReviewerContext(  # type: ignore[attr-defined]
+        sid="sid-review",
+        bundle=bundle,
+        log_path=tmp_path / "run.log",
+        log_excerpt="ok",
+        success=True,
+        issues=[],
+        blocking=False,
+        reason="",
+        fix_hint="",
+    )
+    service._scan_workspace = lambda bundle, exploit_success=False: []  # type: ignore[attr-defined]
+
+    service.run()
+
+    summary = json.loads((tmp_path / "reviewer_report.json").read_text(encoding="utf-8"))
+    llm_execution = summary["llm_execution"]
+    assert llm_execution["path_class"] == "not_executed"
+    assert llm_execution["cache_mode"] == "none"
+    assert "prompt_contracts" not in llm_execution
+    assert "retry_budget" not in llm_execution
 
 
 def test_reviewer_skips_research_blocked_bundle_but_reviews_runnable_bundle(

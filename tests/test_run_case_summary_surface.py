@@ -167,6 +167,23 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                         "GENERATOR": {"count": 1, "duration_s": 1.4, "skipped": 0},
                     },
                 },
+                "research_retry_budget": {
+                    "controller_loop_current": 1,
+                    "controller_loop_max": 3,
+                    "researcher_report_runs": 1,
+                },
+                "research_timeout_budget": {"llm_request_timeout_s": 9.5, "search_timeout_s": 8.0},
+                "research_cost_budget": {"configured_cost_budget_usd": 0.25},
+                "generation_retry_budget": {
+                    "controller_loop_current": 1,
+                    "controller_loop_max": 3,
+                    "planned_candidate_budget": 1,
+                },
+                "generation_timeout_budget": {"llm_request_timeout_s": 9.5},
+                "generation_cost_budget": {"configured_cost_budget_usd": 0.25},
+                "reviewer_retry_budget": {},
+                "reviewer_timeout_budget": {},
+                "reviewer_cost_budget": {},
                 "evidence_graph_summary": {
                     "bundle_count": 1,
                     "graph_present_bundles": 1,
@@ -795,6 +812,12 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["search_cache_hit_count"] == 2
     assert summary["search_cache_miss_count"] == 1
     assert summary["search_cache_reuse_ratio"] == 0.667
+    assert summary["research_retry_budget"]["researcher_report_runs"] == 1
+    assert summary["generation_retry_budget"]["planned_candidate_budget"] == 1
+    assert summary["research_timeout_budget"]["search_timeout_s"] == 8.0
+    assert summary["generation_timeout_budget"]["llm_request_timeout_s"] == 9.5
+    assert summary["research_cost_budget"]["configured_cost_budget_usd"] == 0.25
+    assert summary["generation_cost_budget"]["configured_cost_budget_usd"] == 0.25
     assert summary["search_planned_query_count"] == 4
     assert summary["search_executed_query_count"] == 3
     assert summary["search_early_stop_triggered"] is True

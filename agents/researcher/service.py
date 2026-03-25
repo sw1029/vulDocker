@@ -28,12 +28,12 @@ from common.guardrails import (
     write_guard_spec,
     write_guard_spec_ensemble,
 )
-from common.llm import LLMClient
+from common.llm import LLMClient, llm_execution_summary
 from common.logging import get_logger
 from common.name_only import build_name_only_contract, is_name_driven_requirement
 from common.paths import ensure_dir, get_repo_root
 from common.plan import load_plan
-from common.prompts import build_guard_planner_prompt, build_researcher_prompt
+from common.prompts import build_guard_planner_prompt, build_researcher_prompt, prompt_contract
 from common.researcher_report import extract_verification_spec, normalize_researcher_report_payload
 from common.roles import normalize_role
 from common.runtime_assets import record_generated_runtime_asset
@@ -111,6 +111,9 @@ class ResearcherService:
         self._query_plan: Dict[str, Any] = {}
         self._query_plan_index: Dict[str, Dict[str, Any]] = {}
         self._family_hypothesis_summary: Dict[str, Any] = {}
+        self._llm_prompt_invocations: Dict[str, int] = {}
+        self._guard_planner_budget_mode: str = "bundle_once"
+        self._guard_planner_planned_runs: int = 0
 
     def run(self) -> Path:
         snapshot = self._snapshot_id()
@@ -214,10 +217,6 @@ class ResearcherService:
             report["quality_reason"] = quality_reason or "sufficient evidence"
             report["guard_fallback"] = guard_fallback
             report["created_at"] = datetime.now(timezone.utc).isoformat()
-            llm_execution = self._llm_execution_summary()
-            if llm_execution:
-                report["llm_execution"] = llm_execution
-            self._last_report = report
             guard_spec_path, guard_ensemble_path = self._build_and_write_guard_spec(
                 report=report,
                 evidence=evidence,
@@ -232,6 +231,10 @@ class ResearcherService:
                 report["candidate_rules"] = candidates["rules"]
             if candidates["templates"]:
                 report["candidate_templates"] = candidates["templates"]
+            llm_execution = self._llm_execution_summary()
+            if llm_execution:
+                report["llm_execution"] = llm_execution
+            self._last_report = report
             contract_path = self._write_resolved_contract_seed(report, active_bundle)
             report["resolved_contract_path"] = str(contract_path)
             path = self._write_report(report)
@@ -875,6 +878,7 @@ class ResearcherService:
             failure_context=self.react_loop.failure_context,
             variation_key=self.variation_manager.key,
         )
+        self._record_prompt_invocation("researcher_report")
         raw = self.llm.generate(prompt)
         return self._parse_report(raw)
 
@@ -908,21 +912,84 @@ class ResearcherService:
         llm = getattr(self, "llm", None)
         if llm is None:
             return {}
+        cache_active = (self._search_cache_hit_count + self._search_cache_miss_count) > 0
+        prompt_invocations = self._prompt_invocation_counts()
+        search_timeout_s = getattr(getattr(self, "search_tool", None), "timeout", None)
+        metadata = {
+            "cache_mode": "search_cache_read_write" if cache_active else None,
+            "timeout_budget": {"search_timeout_s": float(search_timeout_s)} if isinstance(search_timeout_s, (int, float)) else None,
+        }
+        if prompt_invocations:
+            metadata["prompt_contracts"] = [prompt_contract(name) for name in prompt_invocations]
+            metadata["prompt_invocations"] = prompt_invocations
+        retry_budget = self._llm_retry_budget_metadata(prompt_invocations)
+        if retry_budget:
+            metadata["retry_budget"] = retry_budget
+        return llm_execution_summary(llm, observed=True, metadata=metadata)
+
+    def _record_prompt_invocation(self, name: str) -> None:
+        token = str(name or "").strip()
+        if not token:
+            return
+        current = getattr(self, "_llm_prompt_invocations", None)
+        if not isinstance(current, dict):
+            current = {}
+            self._llm_prompt_invocations = current
+        current[token] = int(current.get(token) or 0) + 1
+
+    def _prompt_invocation_counts(self) -> Dict[str, int]:
+        current = getattr(self, "_llm_prompt_invocations", None)
+        if not isinstance(current, dict):
+            return {}
+        normalized: Dict[str, int] = {}
+        for key, value in current.items():
+            token = str(key or "").strip()
+            if not token:
+                continue
+            try:
+                count = int(value)
+            except Exception:
+                continue
+            if count > 0:
+                normalized[token] = count
+        return normalized
+
+    def _retry_budget_context(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {}
-        if bool(getattr(llm, "observed_provider_attempted", False)):
-            payload["provider_attempted"] = True
-        if bool(getattr(llm, "observed_provider_succeeded", False)):
-            payload["provider_succeeded"] = True
-        if bool(getattr(llm, "observed_stub_fallback", False)):
-            payload["stub_fallback"] = True
-        if bool(getattr(llm, "observed_fixture_used", False)):
-            payload["fixture_used"] = True
-        error_class = str(getattr(llm, "last_error_class", "") or "").strip()
-        if error_class:
-            payload["last_error_class"] = error_class
-        error_message = str(getattr(llm, "last_error_message", "") or "").strip()
-        if error_message:
-            payload["last_error_message"] = error_message
+        plan = self.plan if isinstance(getattr(self, "plan", None), dict) else {}
+        loop_cfg = plan.get("loop") if isinstance(plan.get("loop"), dict) else {}
+        try:
+            max_loops = int(loop_cfg.get("max_loops"))
+        except Exception:
+            max_loops = 0
+        if max_loops > 0:
+            payload["controller_loop_max"] = max_loops
+        loop_state_path = self.metadata_dir / "loop_state.json"
+        if loop_state_path.exists():
+            try:
+                state = json.loads(loop_state_path.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+            try:
+                current_loop = int((state or {}).get("current_loop", 0))
+            except Exception:
+                current_loop = 0
+            if current_loop > 0:
+                payload["controller_loop_current"] = current_loop
+        return payload
+
+    def _llm_retry_budget_metadata(self, prompt_invocations: Dict[str, int]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = self._retry_budget_context()
+        if "researcher_report" in prompt_invocations:
+            payload["researcher_report_runs"] = int(prompt_invocations.get("researcher_report") or 0)
+        planned_runs = int(getattr(self, "_guard_planner_planned_runs", 0) or 0)
+        actual_runs = int(prompt_invocations.get("guard_planner") or 0)
+        budget_mode = str(getattr(self, "_guard_planner_budget_mode", "") or "").strip()
+        if planned_runs > 0 or actual_runs > 0:
+            payload["guard_planner_planned_runs"] = planned_runs
+            payload["guard_planner_actual_runs"] = actual_runs
+            if budget_mode:
+                payload["guard_budget_mode"] = budget_mode
         return payload
 
     def write_skip_report(self, reason: str) -> Path:
@@ -1954,6 +2021,8 @@ class ResearcherService:
         run_count = 1
         if budget_mode == "bundle_ensemble":
             run_count = self._guard_ensemble_runs()
+        self._guard_planner_budget_mode = budget_mode
+        self._guard_planner_planned_runs = run_count
 
         raw_candidates: List[Dict[str, Any]] = []
         for _ in range(run_count):
@@ -1965,6 +2034,7 @@ class ResearcherService:
                 sid=self.sid,
                 slug=bundle.slug if bundle else "",
             )
+            self._record_prompt_invocation("guard_planner")
             raw = self.llm.generate(prompt)
             candidate = self._parse_guard_spec_candidate(
                 raw=raw,

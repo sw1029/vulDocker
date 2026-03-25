@@ -8,16 +8,18 @@ fi
 
 REQ_PATH="$1"
 MODE="${2:-deterministic}"
+PYTHON_BIN="${VULD_RUN_CASE_PYTHON_BIN:-python}"
+DOCKER_BIN="${VULD_RUN_CASE_DOCKER_BIN:-docker}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
-if ! command -v docker >/dev/null 2>&1; then
+if ! command -v "${DOCKER_BIN}" >/dev/null 2>&1; then
   echo "[CASE] ERROR: docker binary not found" >&2
   exit 1
 fi
 
-if ! docker info >/dev/null 2>&1; then
+if ! "${DOCKER_BIN}" info >/dev/null 2>&1; then
   echo "[CASE] ERROR: cannot reach Docker daemon. Grant permissions before running." >&2
   exit 1
 fi
@@ -28,9 +30,9 @@ if [[ ! -f "${REQ_PATH}" ]]; then
 fi
 
 echo "[CASE] Planning ${REQ_PATH}"
-python orchestrator/plan.py --input "${REQ_PATH}"
+"${PYTHON_BIN}" orchestrator/plan.py --input "${REQ_PATH}"
 
-SID=$(python - "$REQ_PATH" <<'PY'
+SID=$("${PYTHON_BIN}" - "$REQ_PATH" <<'PY'
 from pathlib import Path
 import sys
 import orchestrator.plan as plan_module
@@ -46,9 +48,9 @@ echo "[CASE] SID=${SID}"
 export SID
 
 PIPE_RC=0
-python orchestrator/run_pipeline.py --sid "${SID}" --mode "${MODE}" || PIPE_RC=$?
+"${PYTHON_BIN}" orchestrator/run_pipeline.py --sid "${SID}" --mode "${MODE}" || PIPE_RC=$?
 
-python - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 import json, os, pathlib, sys
 sid = os.environ["SID"]
 root = pathlib.Path(".")

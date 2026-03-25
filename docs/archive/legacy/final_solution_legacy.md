@@ -7,6 +7,42 @@
 > - 현재 상태: `docs/current_state_gap_analysis.md`
 > - 제약조건: `docs/constraints.md`
 > - 구현 로드맵: `docs/final_solution.md`
+> - current completion priority order / 잔여 작업량·turn envelope: `docs/work_tickets.md`의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
+
+> 이 문서는 historical roadmap snapshot이다. 현재 구현 우선순위 판정에는 쓰지 않는다.
+
+## Priority Companions
+
+legacy roadmap 문서 기준으로도 current priority source는 아래만 따른다.
+
+- current completion priority order: [docs/work_tickets.md](../../work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope: [docs/work_tickets.md](../../work_tickets.md)의 `Estimated Turn Envelope`
+- representative evidence와 함께 보는 turn estimate shortcut: [docs/work_tickets.md](../../work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / reading order: [docs/work_tickets.md](../../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading: [docs/work_tickets.md](../../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석: [docs/work_tickets.md](../../work_tickets.md)의 `LLM-Response Capability Overlay`
+- canonical roadmap / current truth / current non-claim: [docs/final_solution.md](../../final_solution.md), [docs/current_state_gap_analysis.md](../../current_state_gap_analysis.md), [docs/constraints.md](../../constraints.md)
+
+## Priority Review Entry
+
+legacy roadmap에서 priority를 확인해야 한다면 아래 순서를 따른다.
+
+1. 이 문서의 `Priority Companions`
+2. [docs/work_tickets.md](../../work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
+3. [docs/work_tickets.md](../../work_tickets.md)의 `LLM-Response Capability Overlay`, `Assessment-To-Ticket Interpretation`
+4. [docs/final_solution.md](../../final_solution.md), [docs/current_state_gap_analysis.md](../../current_state_gap_analysis.md), [docs/constraints.md](../../constraints.md)
+
+turn estimate shortcut은 [docs/work_tickets.md](../../work_tickets.md)의 `Turn Estimate Entry`를 따른다.
+
+## How To Update This Document
+
+- historical roadmap snapshot 의미나 redirect target이 바뀔 때만 갱신합니다.
+- current roadmap, current priority, current rerun truth는 여기로 옮겨 적지 않습니다. 각각 [docs/final_solution.md](../../final_solution.md), [docs/work_tickets.md](../../work_tickets.md), [docs/current_state_gap_analysis.md](../../current_state_gap_analysis.md)를 우선합니다.
+- priority companion 관계나 priority reading order가 바뀌면 [docs/work_tickets.md](../../work_tickets.md), [README.md](../../../README.md)와 같이 맞춥니다.
+- LLM-response stricter reading의 legacy roadmap redirect target이 바뀌면 [docs/work_tickets.md](../../work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 맞춥니다.
+- latest positive representative pair의 ticket-form redirect target이 바뀌면 [docs/work_tickets.md](../../work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 맞춥니다.
+- 잔여 작업량/turn envelope redirect target이 바뀌면 [docs/work_tickets.md](../../work_tickets.md)의 `Estimated Turn Envelope`와 같이 맞춥니다.
+- [docs/work_tickets.md](../../work_tickets.md)의 `Turn Estimate Entry` redirect target이 바뀌면 same shortcut도 같이 맞춥니다.
 
 ## MoSCoW TODO Checklist
 

@@ -4,7 +4,7 @@ Status: canonical
 Audience: mixed
 Source of truth for: implementation priority, phase ordering, acceptance gates
 Not the source of truth for: current rerun evidence, active constraints, operator quickstart
-Last validated against: current code structure, rerun-backed assessment, and active ticket decomposition on 2026-03-19
+Last validated against: current code structure, rerun-backed assessment, and active ticket decomposition on 2026-03-21
 
 이 문서는 `name only` intent fidelity와 generalized open-world readiness를 높이기 위한 phase-based roadmap입니다. 현재 baseline을 재서술하지 않고, 어떤 순서로 무엇을 바꿀지와 각 phase의 완료 조건만 정의합니다.
 
@@ -16,13 +16,13 @@ Last validated against: current code structure, rerun-backed assessment, and act
 - 운영/명령/아티팩트: [docs/handbook.md](handbook.md)
 - representative validation harness: [tests/e2e/README.md](../tests/e2e/README.md)
 
-실제 구현 backlog를 작업 티켓 단위로 쪼갠 canonical 문서는 [docs/work_tickets.md](work_tickets.md)다. 이 문서는 phase ordering과 acceptance gate만 유지한다. latest bounded repeatability/support stabilization closure는 `TKT-008-B3`와 `TKT-009-B3` 아래에 흡수되며 phase ordering 자체는 바꾸지 않는다.
+실제 구현 backlog를 작업 티켓 단위로 쪼갠 canonical 문서는 [docs/work_tickets.md](work_tickets.md)다. 이 문서는 phase ordering과 acceptance gate만 유지한다. latest bounded repeatability/support stabilization closure는 `TKT-008-B3`와 `TKT-009-B3` 아래에 흡수되며, latest slice에서는 `ops/ci/lib_case_chain_profile_target_forward.sh`와 `tests/test_ops_ci_case_chain_profile_target_forward.py`가 direct/repeatability profile wrapper family의 shared `profile target forward` surface까지 direct regression으로 닫았다. phase ordering 자체는 바꾸지 않는다.
 
 ## Reader Routing
 
 - current truth나 rerun evidence를 확인하려면 이 문서가 아니라 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)를 먼저 본다.
 - 금지 claim과 current limit은 [docs/constraints.md](constraints.md)를 본다.
-- 실제 구현 단위와 subtask owner는 [docs/work_tickets.md](work_tickets.md)를 본다.
+- 실제 구현 단위, subtask owner, 잔여 작업량/turn envelope는 [docs/work_tickets.md](work_tickets.md)를 본다.
 - 이 문서는 phase ordering, acceptance gate, sequencing 판단에만 쓴다.
 - concrete rerun command와 measured/support harness detail은 [tests/e2e/README.md](../tests/e2e/README.md)를 본다.
 
@@ -34,14 +34,19 @@ Last validated against: current code structure, rerun-backed assessment, and act
 - constraint boundary와 forbidden claim은 [docs/constraints.md](constraints.md)
 - success criteria 5축과 backlog owner 대응은 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Axis Map`
 - completion companion set은 [docs/work_tickets.md](work_tickets.md)의 `Completion Companions`
+- priority companion set은 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`
 - success criteria 5축의 완료판정 질문과 최소 근거는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Checklist`
 - success criteria 5축의 canonical 완료 검토 순서는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Review Flow`
 - success criteria 5축의 canonical 완료판정 reading order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Reading Order`
 - latest confirmed residual의 축별 ticket bundle 분해는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Ticket Breakdown`
+- latest residual의 concise ticket-form summary는 [docs/work_tickets.md](work_tickets.md)의 `Current Remaining Ticket Form`
+- latest residual의 shorthand ticket routing은 [docs/work_tickets.md](work_tickets.md)의 `Current Remaining Ticket Routing`
+- latest direct verification까지 반영한 current completion priority order는 [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`
 - latest confirmed residual의 canonical 구현 검토 순서는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Review Flow`
 - latest confirmed residual 검토 문서 순서는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Reading Order`
 - residual companion set은 [docs/work_tickets.md](work_tickets.md)의 `Residual Companions`
 - review mode별 canonical 시작점은 [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+- 우선순위 판단 문서 routing은 [docs/work_tickets.md](work_tickets.md)의 `Priority Question Routing`, `Priority Reading Order`, `Assessment-To-Ticket Interpretation`
 - ticket owner, first harness, validation reading order는 [docs/work_tickets.md](work_tickets.md)의 `Validation Routing` / `Validation Reading Order`
 - 질문 기반 검증 문서 routing은 [docs/work_tickets.md](work_tickets.md)의 `Validation Question Routing`
 - 질문 기반 residual 문서 routing은 [docs/work_tickets.md](work_tickets.md)의 `Residual Question Routing`
@@ -53,10 +58,27 @@ Last validated against: current code structure, rerun-backed assessment, and act
 이 문서의 phase/acceptance gate를 완료판정 관점으로 읽을 때는 아래 문서를 같이 본다.
 
 - completion companion set은 [docs/work_tickets.md](work_tickets.md)의 `Completion Companions`
+- priority companion set은 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`
 - axis map / close criteria / canonical review order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Axis Map`, `Open-World Completion Checklist`, `Open-World Completion Review Flow`
 - canonical completion reading order는 [docs/work_tickets.md](work_tickets.md)의 `Open-World Completion Reading Order`
 - concrete rerun / support harness command는 [tests/e2e/README.md](../tests/e2e/README.md)
 - current truth / non-claim은 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+
+## Priority Companions
+
+이 문서의 phase ordering/sequencing을 우선순위 판단 관점으로 읽을 때는 아래 문서를 같이 본다.
+
+- current completion priority order와 해석 규칙은 [docs/work_tickets.md](work_tickets.md)의 `Confirmed Completion Priority Order`
+- latest residual의 concise ticket-form summary는 [docs/work_tickets.md](work_tickets.md)의 `Current Remaining Ticket Form`
+- 잔여 작업량과 practical turn envelope는 [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`
+- queue-facing 정성/정량 shorthand는 [docs/work_tickets.md](work_tickets.md)의 `Current Capability Scorecard`
+- 계획 구체성 보강이 필요한 residual은 [docs/work_tickets.md](work_tickets.md)의 `Planning Specificity Residual Overlay`
+- representative evidence와 함께 보는 turn estimate shortcut은 [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / routing / reading order는 [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`, `Priority Question Routing`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading은 [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석은 [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`
+- current truth / non-claim은 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+- concrete rerun / support harness command은 [tests/e2e/README.md](../tests/e2e/README.md)
 
 ## Review Mode Entry
 
@@ -71,6 +93,26 @@ Last validated against: current code structure, rerun-backed assessment, and act
 - 잔여 구현 검토:
   - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
   - [docs/work_tickets.md](work_tickets.md)의 `Open-World Residual Review Flow`
+- 작업량 추산:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`
+- 우선순위 판단:
+  - [docs/work_tickets.md](work_tickets.md)의 `Review Mode Matrix`
+  - 이 문서의 `Priority Companions`
+  - [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+
+## Priority Review Entry
+
+phase ordering/sequencing 관점에서 우선순위 판단을 시작할 때는 아래 순서를 권장한다.
+
+1. 이 문서의 `Priority Companions`
+2. [docs/work_tickets.md](work_tickets.md)의 `Current Remaining Snapshot`, `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
+3. [docs/work_tickets.md](work_tickets.md)의 `Current Capability Scorecard`, `Planning Specificity Residual Overlay`, `Evaluation-To-Ticket Breakdown`, `LLM-Response Capability Overlay`, `Assessment-To-Ticket Interpretation`
+4. 이 문서의 `Phase-To-Ticket Translation`, `Acceptance Gates`
+5. [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+6. [tests/e2e/README.md](../tests/e2e/README.md), [docs/code/README.md](code/README.md), [docs/handbook.md](handbook.md)
+
+turn estimate shortcut은 [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`를 따른다.
 
 ## Strategy Summary
 
@@ -111,18 +153,18 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 | Phase | Current ticket owner(s) | Note |
 | --- | --- | --- |
 | `Phase 0` | `TKT-001-E`, `TKT-001-F` | decision policy / partial-lane state machine residual |
-| `Phase 1` | `TKT-001-A`, `TKT-001-B`, `TKT-001-C`, `TKT-001-G` | joint scenario candidate IR와 evidence authority residual |
+| `Phase 1` | `TKT-001-A`, `TKT-001-B`, `TKT-001-C`, `TKT-001-G`, `TKT-001-H` | joint scenario candidate IR, selection algebra, evidence authority residual |
 | `Phase 2` | `TKT-006-A`, `TKT-006-B`, `TKT-006-C` | typed staged synthesis의 resumable / repair-first residual |
-| `Phase 2.5` | `TKT-001-D` | selection decision authoritative control-plane residual |
+| `Phase 2.5` | `TKT-001-D`, `TKT-006-D` | selection decision authoritative control-plane residual과 live-positive materialization provenance residual |
 | `Phase 3A` | `TKT-002-A`, `TKT-004-A`, `TKT-005-A/B/C` | bounded contract-stage runtime synthesis의 remaining normalization / promotion residual |
 | `Phase 3B` | `TKT-002-B` | executor provenance-preserving parity residual |
-| `Phase 3C` | `TKT-002-C`, `TKT-003-A/B`, `TKT-004-B`, `TKT-005-A/B/C` | generalized runtime closure 본체 |
-| `Phase 4` | `TKT-007-A`, `TKT-007-B` | browserful / multi-step stateful oracle residual |
+| `Phase 3C` | `TKT-002-C/D`, `TKT-003-A/B`, `TKT-004-B`, `TKT-005-A/B/C` | generalized runtime closure 본체와 topology class ladder residual |
+| `Phase 4` | `TKT-007-A`, `TKT-007-B`, `TKT-007-C` | browserful / multi-step stateful oracle residual과 realism rubric operationalization |
 | `Phase 5A` | `TKT-008-A1`, `TKT-008-A2` | measurement surface는 도입됐고 remaining closure는 authoritative gate 쪽 |
 | `Phase 5B` | `TKT-008-A*`, `TKT-008-B*` | measured gate와 summary consistency residual |
-| `Phase 6A` | `TKT-008-A1`, `TKT-009-A1` | reviewable extraction policy와 actual accept-path residual |
+| `Phase 6A` | `TKT-008-A1`, `TKT-009-A1-A/B` | reviewable extraction policy와 first promotion proving-ground residual |
 | `Phase 6B` | `TKT-009-A*`, `TKT-009-B*` | curated registry closure residual |
-| `Phase 7` | `TKT-010-A`, `TKT-010-B` | expansion. 현재는 defer 유지 |
+| `Phase 7` | `TKT-010-A`, `TKT-010-B`, `TKT-010-C` | expansion. 현재는 defer 유지하되 unlock contract를 먼저 정의 |
 
 ## Phase Plan
 
@@ -133,10 +175,12 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - `name_only` mode별 success/partial/fail-closed 기준을 하나의 policy surface로 통합합니다.
 - `planning_focus_summary`, `next_required_step`, `name_only_outcome`의 중복 판단을 줄입니다.
 - `dynamic/strict_dynamic`에서 `stack_defaulted`, `selection_open_world_evidence_ready=false`, `oracle execution parity missing` 상태는 `intent_met`로 올리지 않습니다.
+- strict capability-gate fail-closed가 `remote_research_unavailable`와 `live_llm_unavailable` 같은 subclass를 계속 분리해 남기도록 유지합니다.
 
 완료 조건:
 - 같은 bundle에 대해 `pipeline_result=success`여도 `name_only_outcome=partial`가 왜 그런지 단일 policy로 설명됩니다.
 - claim surface에서 `promotion`, `support_promotion`, `open_world_readiness`가 혼동되지 않습니다.
+- low-cost no-Docker pair(`open-redirect-strict-dynamic-no-remote`, `open-redirect-strict-dynamic-stub`, `foobar-name-only-negative`)가 각각 `fail_closed/fail_closed/abstain`과 올바른 next-step/failure subclass를 계속 유지합니다.
 
 ### Phase 1. Joint Scenario Candidate IR
 
@@ -146,11 +190,14 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - `provisional_family`, `primitive_hypotheses`, `runtime_dependency_hypotheses`, `topology_hypotheses`를 허용합니다.
 - researcher/query planner가 candidate branch를 끝까지 보존하도록 바꿉니다.
 - family는 runtime/oracle design의 입력이기도 하지만, 장기적으로는 selected scenario를 설명하는 projection으로 밀어냅니다.
+- `candidate_score`, `contradiction_score`, `evidence_sufficiency`, `selected_by`, `abstain_reason`를 가진 explicit selection algebra를 도입해, tie-break / abstain / fail-closed 규칙이 actual selection rule로 남게 만듭니다.
+- `negative_hypotheses`와 contradiction signal이 same selection rule 안에서 family/stack/topology/oracle 선택에 실제 영향을 주게 만듭니다.
 
 완료 조건:
 - misleading stack evidence, family conflict, topology-required lane이 branch-preserved state로 남습니다.
 - broad phrase와 unknown-but-inducible phrase가 bounded synthetic name 하나로 즉시 닫히지 않습니다.
 - `selection_decision`이 단순한 top candidate 소비가 아니라 joint candidate 선택 결과가 됩니다.
+- same `selection_decision`이 왜 selected/abstain/fail_closed가 됐는지를 contradiction/evidence sufficiency/abstain reason까지 포함해 설명합니다.
 
 ### Phase 2. Typed Staged Synthesis
 
@@ -178,11 +225,15 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - `selection_decision.scenario`, `selected_oracle_mode/source`, `design_brief.required_roles`, `dependency_set`를 generator control-plane으로 승격합니다.
 - `design_brief` 실패가 generic fallback으로 바로 떨어지지 않도록 role-aware retry/recovery/guard 경로를 명시화합니다.
 - `required_roles` 기반 role mismatch가 candidate validation에서 직접 드러나게 만듭니다.
+- `live`, `fixture`, `stub`, `degraded` generation path가 서로 다른 provider/materialization contract를 쓰게 하고, provider/model/prompt/decoding/retry/cost/cache provenance를 summary와 measured gate에 같이 남깁니다.
+- latest bounded closure로는 `researcher_report`, `generator_manifest`, `generator_template`, `resolved_contract`, `reviewer_report`가 공통 `llm_execution` surface를 공유하고 `provider_backend`, `model`, `decoding_profile`, `path_class`, `fixture_path`, `last_error_retryable`, actual `prompt_contracts/prompt_invocations`, `retry_budget`, `timeout_budget`, `cost_budget`, `cache_mode`까지는 already surfaced됩니다. same `retry_budget`도 now `controller_loop_current/max`와 stage-specific planned/actual run count를 함께 담기 시작했고, `cost_budget`도 configured budget + usage token + litellm cost-map-based conservative estimate를 담기 시작했습니다. direct/operator summary도 stage retry/timeout/cost budget surface를 top-level convenience field로 읽을 수 있게 됐습니다.
+- remaining residual은 promotion-quality cost policy / pricing governance, default/provider-policy-aware timeout closure beyond configured values, fully unified retry budget closure, 그리고 first true live-positive proving-ground lane입니다.
 
 완료 조건:
 - `design_brief`가 prompt surface뿐 아니라 retry/recovery/guard classification에 실제 사용됩니다.
 - `selected scenario/oracle`이 summary field가 아니라 candidate validation과 repair 경로를 바꿉니다.
 - dependency-heavy/oracle-heavy brief가 서로 다른 recovery path로 흐릅니다.
+- strict stub honesty lane와 live-positive materialization lane가 서로 다른 acceptance surface를 쓰고, representative positive lane에서 fixture/stub/degraded와 live-positive가 혼동되지 않습니다.
 
 ### Phase 3. Runtime/Topology Generation And Executor Parity
 
@@ -191,6 +242,7 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - generator가 먼저 `service + db` topology, dependency wiring, readiness order, env contract, seed/init contract를 설계합니다.
 - 그 다음 executor가 별도 heuristic 재해석보다 `executor_plan`을 authoritative input으로 읽습니다.
 - `service_plus_sidecar`는 operator policy 주입이 아니라 generator design 결과가 됩니다.
+- generalized runtime closure는 abstract goal이 아니라 `service_only -> service_plus_db -> service_plus_supporting_sidecar -> multi_primary_web_pair -> browserful_lab_topology` 같은 representative topology class ladder로 읽히게 만듭니다.
 
 권장 closure 순서:
 
@@ -211,6 +263,7 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - single-service 외의 대표 lane이 contract-driven으로 실행됩니다.
 - `dependency order`, `seed/init`, `volume/env contract`, `network lifecycle`이 heuristic/policy fallback이 아니라 runtime/executor plan에서 설명됩니다.
 - `runtime_graph` 또는 richer `executor_plan`이 executable control-plane 역할을 합니다.
+- representative topology class ladder의 각 단계에 대해 first validation lane과 remaining blocker가 explicit하게 남습니다.
 
 ### Phase 4. Oracle Execution Parity
 
@@ -222,12 +275,14 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - representative compiler/native lane과 deterministic fallback lane에서도 `run_passed/verify_pass`와 `oracle_execution_parity` 사이의 gap을 줄입니다.
 - representative stateless/body-structured/sessionful payload-replay lane이 닫힌 뒤 남는 residual은 broader multi-step/browser stateful oracle replay와 richer realism rubric입니다.
 - current near-term residual은 now `csrf` single-flow demo를 넘는 broader browserful/sessionful state transition oracle closure입니다.
+- `exploit_path_diversity`, `statefulness`, `victim_realism`, `environment_fidelity`, `verifier_independence`, `cleanup_reproducibility` 같은 explicit realism rubric axis를 정의하고 same rubric이 `artifact_quality`, measured gate, support review에서 같은 vocabulary를 쓰게 만듭니다.
 
 완료 조건:
 - `negative_controls`와 `metamorphic`가 문서 속 필드가 아니라 실제 평가 경로가 됩니다.
 - open-world readiness와 support claim이 더 보수적이고 설명 가능해집니다.
 - representative direct execution에서 `run_passed=true`, `verify_pass=true`인 lane이 `oracle_execution_parity=missing`으로 대량 잔존하지 않습니다.
 - representative stateless/body-structured/sessionful fallback lane을 넘어서 broader multi-step/browser stateful oracle lane까지 execution parity를 확장할 다음 residual이 명확합니다.
+- realism rubric axis와 threshold가 explicit하고, same threshold가 quality tier / measured gate / support promotion 해석에 같이 반영됩니다.
 
 ### Phase 5A. Eval Matrix And Performance Surface
 
@@ -283,6 +338,7 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - representative bounded compiler/native lane이 `intent_met`여도 generalized open-world/support-ready로 자동 승격되지 않도록 summary와 gate가 유지됩니다.
 - representative executed single-bundle summary는 runtime fact/provenance뿐 아니라 core execution/oracle verdict도 nested bundle truth와 좁게 정렬됩니다.
 - remaining summary consistency residual은 mixed multi-bundle convenience projection과 stronger authoritative measurement gate에 더 집중되며, operationally는 `TKT-008-B1/B2`로 나뉩니다.
+- planning-only no-Docker pair에서 `authority_ready_bundle_count > 0`이더라도 same measured lane가 `measured_gate_blocked_bundle_count > 0`, `reviewable_bundle_count = 0`로 남는 current policy가 계속 분리돼 읽힙니다.
 
 ### Phase 6A. Support Candidate Extraction
 
@@ -291,9 +347,11 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - `primitive_signature`, `runtime_contract`, `oracle_contract`, `unsafe_pattern` 추출 규칙을 정의합니다.
 - support promotion은 executed oracle parity와 eval matrix 통과를 전제로 합니다.
 - bounded fallback artifact는 runnable하더라도 promotion 대상에서 계속 배제합니다.
+- “first promotable proving ground”를 abstract lane이 아니라 representative positive lane 집합으로 고정합니다. 최소한 하나의 LLM-shaped lane와 하나의 dynamic name-only lane이 separate accept-path target으로 남아야 합니다.
 
 완료 조건:
 - `support_promotion`이 honesty surface를 넘어 reviewable extraction path가 됩니다.
+- representative positive proving-ground lane가 무엇인지와 왜 reviewable/non-reviewable인지가 current support workflow에서 직접 읽힙니다.
 
 ### Phase 6B. Curated Registry Closure
 
@@ -312,11 +370,14 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 - same registry maintenance 상태를 single `schema_status` token으로도 읽을 수 있게 합니다.
 - same maintenance 상태를 nested item/update/decision record에서도 직접 읽을 수 있게 합니다.
 - same `support_review_index.json -> support_registry_update.json -> curated_support_registry.json` chain이 case-level aggregate와 explicit case list vocabulary를 잃지 않게 합니다.
+- representative proving-ground lane 중 최소 하나는 non-empty accepted local registry item을 materialize하는 direct workflow로 닫고, remaining positive lane는 explicit blocker set과 함께 계속 measured gate에 남겨 둡니다.
 
 완료 조건:
 - preview artifact가 아니라 실제 curated registry update가 가능합니다.
 - accept/reject history와 artifact provenance가 추적 가능합니다.
 - review/update/current-state artifact가 같은 case-level vocabulary와 status split으로 읽힙니다.
+- low-cost no-Docker blocked/no-op pair가 empty decision apply 후에도 `registry_item_count = 0`, `schema_status = normalized` empty local registry로 끝나며 false promotion을 만들지 않습니다.
+- representative positive proving-ground lane가 “왜 아직 blocked인가 / 왜 이제 reviewable인가”를 same vocabulary로 설명합니다.
 
 ### Phase 7. Expansion
 
@@ -324,27 +385,38 @@ actual validation harness 진입 순서는 같은 [docs/work_tickets.md](work_ti
 
 - `family count`보다 `runtime class`, `dependency class`, `topology class`, `oracle class` 확장을 우선합니다.
 - Python 밖으로 나가기 전, 현재 Python lane에서 intent fidelity와 executor parity를 먼저 안정화합니다.
+- expansion을 열기 전 선행 prerequisite bundle을 explicit unlock contract로 정의합니다.
 
 완료 조건:
 - 확장된 family/stack이 기존 claim surface와 동일한 rigor로 측정됩니다.
+- unlock contract 없이 family/stack/runtime-class count를 늘리지 않습니다.
 
 ## Acceptance Gates
 
 각 phase는 아래를 만족해야 다음 phase로 넘어갑니다.
 
 - Phase 0: mode별 decision policy가 문서와 summary surface에서 일치함
+- Phase 0: low-cost no-Docker pair가 `fail_closed/fail_closed/abstain`과 correct capability/semantic boundary를 유지함
+- Phase 0: strict live-LLM fail-closed honesty와 positive LLM-shaped Docker materialization claim을 서로 다른 acceptance question으로 계속 분리해 읽음
 - Phase 1: branch-preserved candidate IR이 summary와 downstream input에 roundtrip됨
+- Phase 1: scenario selection algebra가 tie-break / contradiction / abstain reason / negative hypothesis consumption까지 explicit하게 남음
 - Phase 2: stage별 typed artifacts와 repair policy가 기록됨
 - Phase 2.5: staged surface가 generator retry/recovery/guard path를 실제로 바꿈
+- Phase 2.5: live/fixture/stub/degraded generation provenance가 분리되고 live-positive path가 별도 acceptance surface를 가짐
 - Phase 3: executor가 runtime/executor plan을 주 입력으로 사용하고 dependency order/seed-init/volume-network residual이 주요 blocker가 아님
 - Phase 3A: bounded mysql/postgres lane에서 contract surface가 `sidecars`, `service_env`, `seed_files`, `target_*`를 executor 전에 합성함
 - Phase 3B: executor execution surface와 run summary가 contract-synthesized provenance(`sidecars_source`, `service_env_source`)를 보존함
 - Phase 3C: dependency order/seed-init/volume-network residual이 bounded exception이 아니라 generalized runtime contract로 설명됨
 - Phase 4: verifier가 negative/metamorphic를 실제 실행함
+- Phase 4: realism rubric axis와 threshold가 explicit하고 measured/support gate vocabulary와 정렬됨
 - Phase 5A: eval matrix, repeatability report, performance cache가 운영됨
 - Phase 5B: matrix/perf surface가 stronger regression gate로 읽힘
+- Phase 5B: authority handoff와 measured/promotion gate split이 planning-only pair에서도 계속 분리돼 읽힘
 - Phase 6A: promotion package가 reviewable artifact로 추출됨
 - Phase 6B: review/update preview가 실제 registry workflow로 닫힘
+- Phase 6B: blocked/no-op pair가 false promotion 없이 empty local registry로 닫힘
+- Phase 6B: representative positive proving-ground lane 중 최소 하나가 accepted local registry item으로 닫힘
+- Phase 7: expansion unlock contract가 explicit하게 충족되기 전까지 expansion backlog가 상향되지 않음
 
 ## Acceptance-To-Validation Translation
 
@@ -352,15 +424,15 @@ phase acceptance를 실제 검증 surface에 연결할 때는 아래 대응을 �
 
 | Phase | First validation surface | Representative check | Notes |
 | --- | --- | --- | --- |
-| `Phase 0` | `tests/test_name_only_helpers.py`, `tests/test_pack_promotion.py` | planning-only / fail-closed / abstain direct rerun | decision policy와 operator-facing outcome wording 정렬을 본다 |
+| `Phase 0` | `tests/test_name_only_helpers.py`, `tests/test_pack_promotion.py` | `open-redirect-strict-dynamic-no-remote`, `open-redirect-strict-dynamic-stub`, `foobar-name-only-negative` direct rerun | decision policy와 operator-facing outcome wording, fail-closed subclass split을 본다 |
 | `Phase 1` | `tests/test_researcher_search_artifacts.py`, `tests/test_contract_resolution.py` | representative non-SQLi name-only direct rerun | branch-preserved candidate IR와 scenario/evidence authority surface를 본다 |
-| `Phase 2` | `tests/test_synthesis_prompt_contract.py`, `tests/test_synthesis_semantic_guard.py`, `tests/test_synthesis_fallback_poc.py` | semantic-guided dynamic rerun | staged artifact persistence, repair-first, downgrade journal을 본다 |
-| `Phase 2.5` | `tests/test_generator_template_planner.py`, `tests/test_run_pipeline_failure_resolution.py` | non-SQLi bounded lane direct rerun | staged surface가 generator branching/recovery를 실제로 바꾸는지 본다 |
+| `Phase 2` | `tests/test_synthesis_prompt_contract.py`, `tests/test_synthesis_semantic_guard.py`, `tests/test_synthesis_fallback_poc.py` | semantic-guided dynamic rerun, `trusted-dynamic-sqli` | staged artifact persistence, repair-first, downgrade journal과 fixture-backed positive synthesis quality를 같이 본다 |
+| `Phase 2.5` | `tests/test_generator_template_planner.py`, `tests/test_run_pipeline_failure_resolution.py` | non-SQLi bounded lane direct rerun, `trusted-dynamic-sqli` provenance check | staged surface가 generator branching/recovery를 실제로 바꾸는지와 live/fixture/stub/degraded provenance가 분리되는지를 같이 본다 |
 | `Phase 3A` / `3B` | `tests/test_contract_resolution.py`, `tests/test_executor_poc_exec.py`, `tests/test_run_case_summary_surface.py` | representative single-service / bounded sidecar rerun | contract-stage bounded runtime synthesis와 executor provenance parity를 본다 |
-| `Phase 3C` | `tests/test_runtime_rules.py`, `tests/test_runtime_surface.py`, `tests/e2e/test_cases.py` | ordered dependency / sidecar / seed lane rerun | generalized runtime closure 본체다. executed representative lane는 Docker가 필요할 수 있다 |
-| `Phase 4` | `tests/test_rule_based_semantic_contract.py`, `tests/test_llm_assisted_verifier.py` | representative stateful / richer oracle rerun | executed oracle parity와 realism rubric integration을 본다 |
-| `Phase 5A` / `5B` | `tests/test_repeatability_gate.py`, `tests/e2e/test_case_matrix_rollup.py` | `repeat_case.py`, `matrix_report.py` | measured gate preview와 matrix/perf closure를 본다 |
-| `Phase 6A` / `6B` | `tests/test_support_extract.py`, `tests/e2e/test_support_workflow.py` | `support_review.py -> support_decide.py -> support_apply.py` | reviewable extraction과 curated registry workflow closure를 본다 |
+| `Phase 3C` | `tests/test_runtime_rules.py`, `tests/test_runtime_surface.py`, `tests/e2e/test_cases.py` | ordered dependency / sidecar / seed lane rerun, `open-redirect-dynamic-name-only`, `trusted-dynamic-sqli`, `sqli-sidecar-compiler-custom-env` | generalized runtime closure 본체다. latest representative lane는 Docker-enabled rerun으로 실제 runtime path를 보되, fallback/fixture truth와 bounded sidecar comparator를 generalized closure와 혼동하지 않는다 |
+| `Phase 4` | `tests/test_rule_based_semantic_contract.py`, `tests/test_llm_assisted_verifier.py` | representative stateful / richer oracle rerun, `csrf-dynamic-name-only` | executed oracle parity와 realism rubric integration을 본다. `csrf-dynamic-name-only`는 sessionful single-flow comparator고, browserful proving ground와는 별도로 읽는다 |
+| `Phase 5A` / `5B` | `tests/test_repeatability_gate.py`, `tests/e2e/test_case_matrix_rollup.py` | `repeat_case.py`, `matrix_report.py`, `ops/ci/run_repeatability_chain.sh`, `ops/ci/run_repeatability_matrix_check.sh`, `ops/ci/run_measured_gate_operator_baseline.sh`, latest planning-only pair(`foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`), representative positive pair(`trusted-dynamic-sqli`, `open-redirect-dynamic-name-only`) | measured gate preview와 matrix/perf closure, authority-vs-measured split을 본다. positive lane가 실행돼도 measured gate blocked로 남고 current truth는 still `runnable but not promotable`일 수 있음을 같이 본다. concrete command chain은 [tests/e2e/README.md](../tests/e2e/README.md)의 `Generic Repeatability Chain`, `Repeatability Matrix Check`, `Measured Gate Operator Baseline`, `Positive Pair Promotion Check`를 따른다. blocked lane의 `repeat_case.py` nonzero-with-report는 helper에서도 review 단계까지 계속 진행되고 transient docker readiness retry도 유지된다. sandbox helper run에서 `docker daemon permission denied`가 보이면 permission-artifact note를 남기고, unrestricted Docker-enabled helper rerun에서는 same helper projection이 다시 manual truth와 정렬된다. 다만 current workspace-local direct verification에서는 same sandbox helper output이 empty aggregate(`authority_ready_bundle_count=0`, `reviewable_bundle_count=0`, `by_support_status={}`)로 끝날 수도 다시 확인됐고 helper per-case repeatability도 `case_failed`, `quality_tier_inconsistent`, `verdict_authority_inconsistent`까지 남길 수 있었으므로, same output은 runtime-equivalent truth가 아니라 permission-artifact environment output으로 읽고 unrestricted rerun 또는 manual chain을 우선한다. same latest finding은 새 core ticket이 아니라 `TKT-008-B3` companion slice로만 귀속한다 |
+| `Phase 6A` / `6B` | `tests/test_support_extract.py`, `tests/e2e/test_support_workflow.py` | `support_review.py -> support_decide.py -> support_apply.py`, `ops/ci/run_support_review_chain.sh`, `ops/ci/run_support_workflow_chain.sh`, latest blocked/no-op pair(`foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`), positive support review(`trusted-dynamic-sqli`, `open-redirect-dynamic-name-only`), bounded comparator review(`sqli-sidecar-compiler-custom-env`) | reviewable extraction과 curated registry workflow closure, blocked/no-op false-promotion safety를 본다. positive lane의 `authority_ready != reviewable`과 current `runnable but not promotable` truth도 같이 확인하고, `trusted-dynamic-sqli` / `open-redirect-dynamic-name-only`를 first promotion proving-ground candidate로, `sqli-sidecar-compiler-custom-env`를 high-quality bounded comparator로 읽는다. concrete command chain은 [tests/e2e/README.md](../tests/e2e/README.md)의 `Generic Support Workflow Chain`, `Generic Support Review Chain`, `Positive Pair Promotion Check`를 따른다. helper contract green과 review continuation semantics는 유지되며, unrestricted Docker-enabled helper rerun에서는 positive blocked-lane aggregate truth도 다시 manual chain과 정렬된다. 다만 current workspace-local direct verification에서는 same sandbox helper output이 empty aggregate(`authority_ready_bundle_count=0`, `reviewable_bundle_count=0`, `by_support_status={}`)로 끝날 수도 다시 확인됐고 helper per-case repeatability도 `case_failed`, `quality_tier_inconsistent`, `verdict_authority_inconsistent`까지 남길 수 있었으므로, same output은 runtime-equivalent truth가 아니라 permission-artifact environment output으로 읽고 unrestricted rerun 또는 manual chain을 우선한다. same latest finding은 새 core ticket이 아니라 `TKT-008-B3` companion residual로만 본다 |
 | `Phase 7` | roadmap review, residual review, gate review | no direct harness first | expansion은 runtime/oracle/eval closure review 이후에만 올린다 |
 
 구체적인 harness 진입 순서와 읽는 순서는 [docs/work_tickets.md](work_tickets.md)의 `Validation Routing` / `Validation Reading Order`, 그리고 [tests/e2e/README.md](../tests/e2e/README.md)를 따른다.
@@ -386,6 +458,11 @@ phase acceptance를 실제 검증 surface에 연결할 때는 아래 대응을 �
 - validation harness command family나 rerun entrypoint가 바뀌면 [tests/e2e/README.md](../tests/e2e/README.md), [docs/work_tickets.md](work_tickets.md)의 validation routing과 같이 맞춘다.
 - phase acceptance와 validation surface의 대응이 바뀌면 `Acceptance-To-Validation Translation`도 같이 갱신한다.
 - completion companion 관계나 completion reading order가 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춘다.
+- priority companion 관계나 priority reading order가 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춘다.
+- 잔여 작업량/turn envelope 해석이 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`와 README/handbook/code/e2e companion의 priority routing도 같이 맞춘다.
+- [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Entry`가 바뀌면 README/handbook/code/e2e companion의 same shortcut도 같이 맞춘다.
+- LLM-response stricter reading의 roadmap/acceptance 해석이 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 맞춘다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 맞춘다.
 - review mode entry shortcut이 바뀌면 [docs/work_tickets.md](work_tickets.md), [README.md](../README.md)와 같이 맞춘다.
 
 ## Default Assumptions

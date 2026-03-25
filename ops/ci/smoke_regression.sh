@@ -3,19 +3,27 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
+DOCKER_BIN="${VULD_SMOKE_DOCKER_BIN:-docker}"
+PYTHON_BIN="${VULD_SMOKE_PYTHON_BIN:-python}"
+SMOKE_FLOW_SCRIPT="${VULD_SMOKE_FLOW_SCRIPT:-}"
+SNAPSHOT_OVERRIDE="${VULD_SMOKE_SNAPSHOT:-}"
 
-if ! command -v docker >/dev/null 2>&1; then
+if ! command -v "${DOCKER_BIN}" >/dev/null 2>&1; then
   echo "[SMOKE] ERROR: docker binary not found" >&2
   exit 1
 fi
 
-if ! docker info >/dev/null 2>&1; then
+if ! "${DOCKER_BIN}" info >/dev/null 2>&1; then
   echo "[SMOKE] ERROR: unable to talk to Docker daemon (check permissions)" >&2
   exit 1
 fi
 
-SNAPSHOT=$(ls -td rag/index/rag-snap-* 2>/dev/null | head -1 | xargs -n1 basename || true)
-SNAPSHOT=${SNAPSHOT:-mvp-sample}
+if [[ -n "${SNAPSHOT_OVERRIDE}" ]]; then
+  SNAPSHOT="${SNAPSHOT_OVERRIDE}"
+else
+  SNAPSHOT=$(ls -td rag/index/rag-snap-* 2>/dev/null | head -1 | xargs -n1 basename || true)
+  SNAPSHOT=${SNAPSHOT:-mvp-sample}
+fi
 echo "[SMOKE] Using snapshot: ${SNAPSHOT}"
 
 TMP_DIR="$(mktemp -d)"
@@ -74,9 +82,16 @@ run_flow() {
   local mode="$2"
 
   echo "[SMOKE] PLAN -> ${input_file}"
-  python orchestrator/plan.py --input "${input_file}"
   local sid
-  sid=$(python - <<'PY' "${input_file}"
+  if [[ -n "${SMOKE_FLOW_SCRIPT}" ]]; then
+    if [[ ! -f "${SMOKE_FLOW_SCRIPT}" ]]; then
+      echo "[SMOKE] ERROR: smoke flow helper not found: ${SMOKE_FLOW_SCRIPT}" >&2
+      exit 1
+    fi
+    sid="$("${SMOKE_FLOW_SCRIPT}" "${input_file}" "${mode}")"
+  else
+    "${PYTHON_BIN}" orchestrator/plan.py --input "${input_file}"
+    sid=$("${PYTHON_BIN}" - <<'PY' "${input_file}"
 import sys
 from pathlib import Path
 import orchestrator.plan as plan
@@ -85,17 +100,22 @@ plan_dict = plan.build_plan(req)
 print(plan_dict["sid"])
 PY
 )
+    "${PYTHON_BIN}" agents/researcher/main.py --sid "${sid}" --mode "${mode}"
+    "${PYTHON_BIN}" agents/generator/main.py --sid "${sid}" --mode "${mode}"
+    "${PYTHON_BIN}" executor/runtime/docker_local.py --sid "${sid}" --build
+    "${PYTHON_BIN}" executor/runtime/docker_local.py --sid "${sid}" --run
+    "${PYTHON_BIN}" evals/poc_verifier/mvp_sqli.py --sid "${sid}"
+    "${PYTHON_BIN}" evals/diversity_metrics.py --sid "${sid}"
+    "${PYTHON_BIN}" orchestrator/pack.py --sid "${sid}"
+  fi
+
+  if [[ -z "${sid}" ]]; then
+    echo "[SMOKE] ERROR: smoke flow did not return sid" >&2
+    exit 1
+  fi
   echo "[SMOKE] SID=${sid}"
 
-  python agents/researcher/main.py --sid "${sid}" --mode "${mode}"
-  python agents/generator/main.py --sid "${sid}" --mode "${mode}"
-  python executor/runtime/docker_local.py --sid "${sid}" --build
-  python executor/runtime/docker_local.py --sid "${sid}" --run
-  python evals/poc_verifier/mvp_sqli.py --sid "${sid}"
-  python evals/diversity_metrics.py --sid "${sid}"
-  python orchestrator/pack.py --sid "${sid}"
-
-  SID_CURRENT="${sid}" python - <<'PY'
+  SID_CURRENT="${sid}" "${PYTHON_BIN}" - <<'PY'
 import json, os, pathlib
 sid = os.environ["SID_CURRENT"]
 root = pathlib.Path(".")
@@ -121,7 +141,7 @@ SID_DET="${SID_RESULT}"
 run_flow "${TMP_DIR}/smoke_diverse.yml" "diverse"
 SID_DIV="${SID_RESULT}"
 
-SID_DET="${SID_DET}" SID_DIV="${SID_DIV}" python - <<'PY'
+SID_DET="${SID_DET}" SID_DIV="${SID_DIV}" "${PYTHON_BIN}" - <<'PY'
 import json, os, pathlib
 root = pathlib.Path(".")
 sid_det = os.environ["SID_DET"]

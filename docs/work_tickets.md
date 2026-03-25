@@ -4,7 +4,7 @@ Status: canonical
 Audience: implementation
 Source of truth for: actionable ticket decomposition, current backlog slicing, phase-to-ticket mapping
 Not the source of truth for: rerun evidence, active constraints, operator quickstart
-Last validated against: roadmap/current-state/constraints and workspace-local direct execution on 2026-03-19, with 2026-03-15 representative reruns retained as residual grounding
+Last validated against: roadmap/current-state/constraints, workspace-local direct execution, and current regression baselines on 2026-03-21, with 2026-03-15 representative reruns retained as residual grounding
 
 이 문서는 [docs/final_solution.md](final_solution.md)의 phase roadmap과
 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)의 confirmed gap을
@@ -21,7 +21,7 @@ Last validated against: roadmap/current-state/constraints and workspace-local di
 
 ## Reader Routing
 
-- implementation owner, subtask decomposition, backlog priority를 보려면 이 문서를 본다.
+- implementation owner, subtask decomposition, backlog priority, 잔여 작업량/turn envelope를 보려면 이 문서를 본다.
 - current rerun truth나 latest direct verification 결과는 [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)를 본다.
 - phase ordering과 acceptance gate는 [docs/final_solution.md](final_solution.md)를 본다.
 - current non-claim과 operational constraint는 [docs/constraints.md](constraints.md)를 본다.
@@ -68,6 +68,37 @@ backlog/residual 관점에서 이 문서와 같이 봐야 할 companion은 아�
 - current truth와 observed rerun evidence: [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
 - forbidden claim과 current limit: [docs/constraints.md](constraints.md)
 
+## Priority Companions
+
+backlog/우선순위 판단 관점에서 이 문서와 같이 봐야 할 companion은 아래와 같다.
+
+- current completion priority order와 해석 규칙: 이 문서의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope: 이 문서의 `Estimated Turn Envelope`
+- current remaining leverage bucket: 이 문서의 `Current Remaining Snapshot`
+- queue-facing 정성/정량 shorthand: 이 문서의 `Current Capability Scorecard`
+- 계획 구체성 보강이 필요한 residual: 이 문서의 `Planning Specificity Residual Overlay`
+- phase ordering과 fixed sequencing guardrail: [docs/final_solution.md](final_solution.md), 이 문서의 `Sequencing Rule`
+- current truth와 latest direct verification 근거: [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
+- forbidden claim과 operational/non-claim boundary: [docs/constraints.md](constraints.md)
+- latest positive representative pair의 ticket-form reading: 이 문서의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 stricter capability 해석: 이 문서의 `LLM-Response Capability Overlay`
+- concrete rerun/support harness command: [tests/e2e/README.md](../tests/e2e/README.md)
+- code entrypoint와 subsystem owner: [docs/code/README.md](code/README.md)
+- operator artifact map / troubleshooting: [docs/handbook.md](handbook.md)
+
+## Turn Estimate Companions
+
+backlog/작업량 추산 관점에서 이 문서와 같이 봐야 할 companion은 아래와 같다.
+
+- turn estimate source와 practical envelope: 이 문서의 `Estimated Turn Envelope`
+- visible blocker / structural root-cause 해석: 이 문서의 `Assessment-To-Ticket Interpretation`, `LLM-Response Capability Overlay`
+- current remaining leverage bucket: 이 문서의 `Current Remaining Snapshot`, `Confirmed Completion Priority Order`
+- queue-facing 정성/정량 shorthand: 이 문서의 `Current Capability Scorecard`
+- 계획 구체성 보강이 필요한 residual: 이 문서의 `Planning Specificity Residual Overlay`
+- current truth와 operational/non-claim boundary: [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+- representative rerun/support evidence: [tests/e2e/README.md](../tests/e2e/README.md)의 `Positive Pair Promotion Check`
+- code/artifact/operator companion: [docs/code/README.md](code/README.md), [docs/handbook.md](handbook.md)
+
 ## Review Mode Matrix
 
 문서를 어떤 목적에서 열고 있는지에 따라 canonical 시작점은 아래처럼 고른다.
@@ -77,6 +108,8 @@ backlog/residual 관점에서 이 문서와 같이 봐야 할 companion은 아�
 | 검증 | `Validation Companions` | `Validation Question Routing` | `Validation Reading Order` | representative rerun / measured-support harness와 code/artifact를 연결한다 |
 | 완료판정 | `Completion Companions`, `Open-World Completion Axis Map` | `Validation Question Routing` | `Open-World Completion Reading Order` | success criteria 5축이 실제로 닫혔는지 판단한다 |
 | 잔여 검토 | `Residual Companions`, `Open-World Residual Ticket Breakdown` | `Residual Question Routing` | `Open-World Residual Reading Order` | latest confirmed residual이 어느 ticket bundle에 남았는지와 다음 확인 경로를 정한다 |
+| 작업량 추산 | `Turn Estimate Companions`, `Estimated Turn Envelope`, `Assessment-To-Ticket Interpretation` | `Priority Question Routing` | `Turn Estimate Reading Order` | representative evidence와 residual bucket을 기준으로 practical turn envelope를 읽는다 |
+| 우선순위 판단 | `Priority Companions`, `Confirmed Completion Priority Order`, `Estimated Turn Envelope`, `Assessment-To-Ticket Interpretation` | `Priority Question Routing` | `Priority Reading Order` | current completion 기준으로 무엇을 먼저 구현할지와 왜 그런지를 판단하고, latest positive representative pair를 visible blocker vs structural root-cause로 나눠 읽으며 practical turn envelope까지 같이 본다 |
 
 ## Validation Question Routing
 
@@ -104,6 +137,27 @@ backlog/residual 관점에서 이 문서와 같이 봐야 할 companion은 아�
   - 이 문서의 `Validation Reading Order`
 - “실제 rerun / repeatability / support 명령은 무엇인가?”
   - [tests/e2e/README.md](../tests/e2e/README.md)
+- “Docker 없이 가장 싸게 strict fail-closed / abstain 경계를 확인하려면 무엇을 먼저 보나?”
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Low-Cost No-Docker Validation Lanes`
+  - `open-redirect-strict-dynamic-no-remote`
+  - `open-redirect-strict-dynamic-stub`
+  - `foobar-name-only-negative`
+- “authority handoff와 measured/support gate split을 Docker 없이 가장 싸게 확인하려면 무엇을 먼저 보나?”
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 planning-only measured/support no-op pair
+  - `foobar-name-only-negative`
+  - `open-redirect-strict-dynamic-no-remote`
+- “문서/정책/measured-support regression을 Docker 없이 가장 싸게 preflight하려면 무엇을 먼저 보나?”
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Focused No-Docker Regression Slice`
+  - `tests/test_name_only_helpers.py`
+  - `tests/test_pack_promotion.py`
+  - `tests/test_repeatability_gate.py`
+  - `tests/test_support_extract.py`
+  - `tests/e2e/test_support_workflow.py`
+  - `tests/e2e/test_case_matrix_rollup.py`
+- “positive representative pair가 왜 runnable but not promotable인지 가장 직접적으로 확인하려면?”
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Positive Pair Promotion Check`
+  - `trusted-dynamic-sqli`
+  - `open-redirect-dynamic-name-only`
 - “코드는 어디부터 읽어야 하나?”
   - [docs/code/README.md](code/README.md)
 - “artifact는 어디서 읽고 어떻게 해석하나?”
@@ -130,6 +184,23 @@ residual 검토 관점에서 자주 묻는 질문은 아래처럼 문서를 나�
 - “이 residual을 먼저 어떤 하니스로 확인하나?”
   - 이 문서의 `Validation Routing`
   - [tests/e2e/README.md](../tests/e2e/README.md)
+- “이 residual이 strict capability gate boundary인지, semantic abstain인지 빠르게 가르려면?”
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Low-Cost No-Docker Validation Lanes`
+  - `open-redirect-strict-dynamic-no-remote`
+  - `open-redirect-strict-dynamic-stub`
+  - `foobar-name-only-negative`
+- “이 residual이 blocked/no-op support policy인지 accept-path closure인지 빠르게 가르려면?”
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 planning-only measured/support no-op pair
+  - `foobar-name-only-negative`
+  - `open-redirect-strict-dynamic-no-remote`
+- “이 residual이 wording/support-policy regression인지, 실제 direct rerun residual인지 먼저 가르려면?”
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Focused No-Docker Regression Slice`
+  - `tests/test_name_only_helpers.py`
+  - `tests/test_pack_promotion.py`
+  - `tests/test_repeatability_gate.py`
+  - `tests/test_support_extract.py`
+  - `tests/e2e/test_support_workflow.py`
+  - `tests/e2e/test_case_matrix_rollup.py`
 - “이 residual의 코드는 어디부터 읽어야 하나?”
   - [docs/code/README.md](code/README.md)
   - subsystem docs의 `Ticket-First Entry` / `Residual Review Focus`
@@ -137,6 +208,51 @@ residual 검토 관점에서 자주 묻는 질문은 아래처럼 문서를 나�
   - [docs/handbook.md](handbook.md)의 `Open-World Axis Reading Hints`
   - [docs/code/workspaces.md](code/workspaces.md)의 `Open-World Axis Artifact Hints`
 - “왜 아직 residual이 닫혔다고 말하면 안 되나?”
+  - [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
+  - [docs/constraints.md](constraints.md)
+
+## Priority Question Routing
+
+우선순위 판단 관점에서 자주 묻는 질문은 아래처럼 문서를 나눠 본다.
+
+- “지금 무엇을 먼저 구현해야 하나?”
+  - 이 문서의 `Confirmed Completion Priority Order`
+- “왜 이 ticket가 다음 bucket보다 앞서는가?”
+  - 이 문서의 `Confirmed Completion Priority Order`
+  - 이 문서의 `Current Remaining Snapshot`
+- “지금 남은 작업량과 practical turn envelope를 어떻게 읽나?”
+  - 이 문서의 `Estimated Turn Envelope`
+  - 이 문서의 `Confirmed Completion Priority Order`
+- “turn envelope를 latest representative evidence와 같이 어디서 읽나?”
+  - 이 문서의 `Turn Estimate Entry`
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Positive Pair Promotion Check`
+- “phase 순서와 현재 ticket 우선순위가 어떻게 대응되나?”
+  - [docs/final_solution.md](final_solution.md)의 `Phase-To-Ticket Translation`
+  - 이 문서의 `Sequencing Rule`
+- “latest direct verification이 우선순위 해석을 어떻게 바꿨나?”
+  - [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
+  - 이 문서의 `Direct Verification Slice`
+- “latest positive Docker-enabled representative pair를 ticket 관점에서 어떻게 읽나?”
+  - 이 문서의 `Assessment-To-Ticket Interpretation`
+  - 이 문서의 `LLM-Response Capability Overlay`
+- “latest positive representative pair가 왜 현재 priority를 바꾸지 않는가?”
+  - 이 문서의 `Assessment-To-Ticket Interpretation`
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Positive Pair Promotion Check`
+- “지금 priority가 높아 보여도 사실 stabilization lane인 ticket는 무엇인가?”
+  - 이 문서의 `Confirmed Completion Priority Order`
+  - 이 문서의 `Direct Verification Slice`
+- “우선순위 판단 전에 가장 싼 no-Docker preflight는 무엇인가?”
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Focused No-Docker Regression Slice`
+  - [tests/e2e/README.md](../tests/e2e/README.md)의 `Low-Cost No-Docker Validation Lanes`
+- “이 우선순위를 코드 관점에서 어디부터 따라가나?”
+  - [docs/code/README.md](code/README.md)
+  - 이 문서의 `Implementation Entry Points And Validation Surface`
+- “이 우선순위를 artifact/operator 관점에서 어떻게 읽나?”
+  - [docs/handbook.md](handbook.md)
+  - [docs/code/workspaces.md](code/workspaces.md)
+- “LLM response로 실제 vulnerable Docker를 만든다는 기준에서 남은 본체는 무엇인가?”
+  - 이 문서의 `LLM-Response Capability Overlay`
+  - 이 문서의 `Confirmed Completion Priority Order`
   - [docs/current_state_gap_analysis.md](current_state_gap_analysis.md)
   - [docs/constraints.md](constraints.md)
 
@@ -218,7 +334,7 @@ residual 검토 관점에서 자주 묻는 질문은 아래처럼 문서를 나�
 
 ## Direct Verification Slice
 
-`2026-03-19` workspace-local direct execution에서 확인한 latest residual을 work ticket으로 매핑하면 아래와 같다.
+`2026-03-19` ~ `2026-03-20` workspace-local direct execution에서 확인한 latest residual을 work ticket으로 매핑하면 아래와 같다.
 
 | Observed issue | Ticket | Why this ticket |
 | --- | --- | --- |
@@ -227,11 +343,52 @@ residual 검토 관점에서 자주 묻는 질문은 아래처럼 문서를 나�
 | `repeatability_report.json` top-level `case` vs `case_name` drift | `TKT-008-B3-C` | operator-facing measured artifact key parity 복구 |
 | legacy decision-only registry에서 nested `last_update.schema_status` drift | `TKT-009-B3-A` | legacy decision normalization truth를 top-level/nested에서 동일하게 유지 |
 | `build_curated_support_registry(...)` direct return vs final written artifact drift | `TKT-009-B3-B` | API path와 CLI/file path가 같은 support-registry truth를 보이게 정렬 |
+| focused no-Docker regression slice(`tests/test_name_only_helpers.py`, `tests/test_pack_promotion.py`, `tests/test_repeatability_gate.py`, `tests/test_support_extract.py`, `tests/e2e/test_support_workflow.py`, `tests/e2e/test_case_matrix_rollup.py`)가 `154 passed`로 green | `TKT-001-E`, `TKT-008-A1`, `TKT-009-A2` | latest low-cost policy/honesty/measured-support regression net가 여전히 살아 있다는 뜻이며 새 product backlog보다는 existing residual regression protection에 가깝다 |
 | planning-only repeatability lanes가 둘 다 `measured_gate.ready=false`와 `cache_reuse_inconsistent`, `artifact_quality_band_not_high`, `oracle_execution_parity_not_high` blocker를 남김 | `TKT-008-A1`, `TKT-008-A2` | repeatability CLI는 정상인데 measured promotion gate가 의도대로 닫혀 있는 상태를 authoritative policy 관점에서 계속 정리해야 함 |
+| planning-only pair review index가 `authority_ready_bundle_count=2`이지만 same run은 `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={blocked_mixed:2}`로 끝남 | `TKT-008-A1`, `TKT-009-A2` | authority handoff와 measured/promotion gate split을 계속 분리해서 읽어야 하며, current blocked/no-op path는 여전히 정상이지만 accept-path closure는 아님 |
 | blocked support workflow recheck가 `by_support_status={blocked_mixed:2}`, `by_case_status={all_blocked:2}`, final `registry_item_count=0` no-op로 끝남 | `TKT-009-A2` | blocked/no-op path가 false promotion 없이 유지되는 current safety behavior를 regression으로 계속 고정해야 함 |
-| current WSL 2 distro에서 `docker ps` 자체가 불가하고 representative dynamic lane 재검증이 환경 단계에서 막힘 | `none (operational precondition)` | implementation backlog라기보다 README/handbook에 반영해야 할 local verification prerequisite |
+| fixture-backed positive LLM-shaped lane(`trusted-dynamic-sqli`)가 Docker-enabled rerun에서 expectation을 통과했지만 `provider_health_state=llm_fixture`, `generation_origin=llm_manifest`, `artifact_quality.qualitative_tier=thin_or_incomplete`, `measured_gate.ready=false`로 남음 | `TKT-006-A/B/C`, `TKT-008-A1/A2`, `TKT-009-A1` | positive materialization은 다시 열렸지만 fixture-backed synthesis quality와 measured/support accept-path closure는 여전히 residual이다 |
+| representative dynamic lane(`open-redirect-dynamic-name-only`)가 Docker-enabled rerun에서 expectation을 통과했지만 `provider_health_state=llm_degraded`, `generation_origin=deterministic_fallback`, `name_only_outcome.decision=partial`, `artifact_quality.qualitative_tier=thin_fallback_demo`, `measured_gate.ready=false`로 남음 | `TKT-001`, `TKT-006-A/B/C`, `TKT-008-A1/A2` | runtime/oracle path는 다시 열렸지만 selection authority와 quality/promotion closure는 아직 current residual이다 |
+| fresh positive pair support review가 `support_candidate_file_count=2`, `authority_ready_bundle_count=2`여도 `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={blocked_mixed:2}`로 남음 | `TKT-008-A1/A2`, `TKT-009-A1` | representative positive lane도 current support workflow에서는 still “runnable but not promotable”이며, measured gate와 accept-path closure가 계속 본체 residual이다 |
+| latest slice에서는 support workflow/docker-positive baseline wrapper의 helper/default resolution contract도 `lib_operator_pair_runtime_baseline_defaults.sh`와 [tests/test_ops_ci_operator_pair_runtime_baseline_defaults.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_pair_runtime_baseline_defaults.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | pair baseline helper/default resolution도 wrapper별 inline bash가 아니라 bounded helper/operator contract로 읽는다 |
+| latest slice에서는 same pair/matrix/current defaults library가 공유하는 helper-default single/batch resolution primitive도 `lib_operator_helper_defaults.sh`와 [tests/test_ops_ci_operator_helper_defaults.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_helper_defaults.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | defaults library 내부 `${!VAR:-${script_dir}/...}` 패턴도 ad-hoc inline bash가 아니라 bounded helper/operator primitive로 읽는다 |
+| latest slice에서는 measured/no-docker baseline wrapper의 matrix helper/default resolution contract도 `lib_operator_matrix_baseline_defaults.sh`와 [tests/test_ops_ci_operator_matrix_baseline_defaults.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_matrix_baseline_defaults.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | matrix baseline helper/default resolution도 wrapper별 inline bash가 아니라 bounded helper/operator contract로 읽는다 |
+| latest slice에서는 current baseline의 helper/default resolution contract도 `lib_operator_current_baseline_defaults.sh`와 [tests/test_ops_ci_operator_current_baseline_defaults.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_current_baseline_defaults.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | current baseline helper/default resolution도 wrapper별 inline bash가 아니라 bounded helper/operator contract로 읽는다 |
+| latest slice에서는 runtime/current/matrix baseline family가 공유하는 sequence-helper executable gate와 invoke primitive도 `lib_operator_sequence_helper_contract.sh`와 [tests/test_ops_ci_operator_sequence_helper_contract.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_sequence_helper_contract.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | sequence helper validation과 helper invocation도 wrapper별 inline bash가 아니라 bounded helper/operator contract로 읽는다 |
+| latest slice에서는 named-preset runner와 matrix baseline sequence family가 공유하는 export-helper function gate와 invoke primitive도 `lib_operator_export_helper_contract.sh`와 [tests/test_ops_ci_operator_export_helper_contract.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_export_helper_contract.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | export helper function validation과 helper invocation도 wrapper별 inline bash가 아니라 bounded helper/operator contract로 읽는다 |
+| latest slice에서는 direct/support named-preset thin wrapper가 공유하는 pair-runner primitive도 `lib_operator_pair_named_preset.sh`와 [tests/test_ops_ci_operator_pair_named_preset.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_pair_named_preset.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct/support thin wrapper도 wrapper별 inline bash가 아니라 bounded helper/operator pair-runner contract로 읽는다 |
+| latest slice에서는 direct/support named-preset wrapper가 공유하는 helper/default resolution도 `lib_operator_pair_named_preset_defaults.sh`와 [tests/test_ops_ci_operator_pair_named_preset_defaults.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_pair_named_preset_defaults.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct/support wrapper entry의 named/preset/leaf helper default resolution도 wrapper별 inline bash가 아니라 bounded helper/operator defaults contract로 읽는다 |
+| latest slice에서는 direct/support wrapper family가 공유하는 pair case-check skeleton도 `lib_operator_pair_case_check.sh`와 [tests/test_ops_ci_operator_pair_case_check.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_pair_case_check.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct/support pair wrapper entry도 repeated inline bash가 아니라 bounded helper/operator pair skeleton으로 읽는다 |
+| latest slice에서는 positive direct / low-cost direct wrapper가 공유하는 direct case-check skeleton도 `lib_operator_direct_case_check.sh`와 [tests/test_ops_ci_operator_direct_case_check.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_direct_case_check.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct wrapper entry도 repeated inline bash가 아니라 bounded helper/operator direct case skeleton으로 읽는다 |
+| latest slice에서는 positive pair / blocked-noop support wrapper가 공유하는 named-preset pair-check skeleton도 `lib_operator_support_pair_check.sh`와 [tests/test_ops_ci_operator_support_pair_check.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_support_pair_check.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | support pair wrapper entry도 repeated inline bash가 아니라 bounded helper/operator pair skeleton으로 읽는다 |
+| latest slice에서는 direct/repeatability/support workflow helper family가 공유하는 cases/output-root default resolution도 `lib_cases_output_roots.sh`와 [tests/test_ops_ci_cases_output_roots.py](/home/ysw/vulDocker/tests/test_ops_ci_cases_output_roots.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | helper chain entry의 cases/output-root default resolution도 ad-hoc inline bash가 아니라 bounded helper/operator defaults contract로 읽는다 |
+| latest slice에서는 direct/repeatability helper family가 공유하는 default `expectations.json` auto-discovery와 `--expectations` argv append도 `lib_case_expectations.sh`와 [tests/test_ops_ci_case_expectations.py](/home/ysw/vulDocker/tests/test_ops_ci_case_expectations.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | helper chain entry의 expectations auto-discovery도 per-script inline file check가 아니라 bounded helper/operator contract로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 `run_case.py` / `repeat_case.py` argv assembly, expectations append, `--no-snapshot` surface도 `lib_case_command_surface.sh`와 [tests/test_ops_ci_case_command_surface.py](/home/ysw/vulDocker/tests/test_ops_ci_case_command_surface.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | helper chain entry의 case command assembly도 per-script inline argv construction이 아니라 bounded helper/operator contract로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 usage check, output-root prep, entry preflight surface도 `lib_case_chain_entry.sh`와 [tests/test_ops_ci_case_chain_entry.py](/home/ysw/vulDocker/tests/test_ops_ci_case_chain_entry.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | helper chain entry의 usage/output-root prep도 per-script inline bash가 아니라 bounded helper/operator primitive로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 case-output log, run-dirs file write, completion note surface도 `lib_case_chain_output_notes.sh`와 [tests/test_ops_ci_case_chain_output_notes.py](/home/ysw/vulDocker/tests/test_ops_ci_case_chain_output_notes.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | helper chain entry의 output-note/run-dirs surface도 per-script inline echo/printf가 아니라 bounded helper/operator primitive로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 `case=alias` split, case-dir path resolution, alias/path safety validation뿐 아니라 case-context capture, resolved output-name/safe-slug helper, named output-context export surface도 `lib_case_spec_resolution.sh`와 [tests/test_ops_ci_case_spec_resolution.py](/home/ysw/vulDocker/tests/test_ops_ci_case_spec_resolution.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | helper chain entry의 case-spec parsing도 inline bash split/path check가 아니라 bounded helper/operator context/output contract로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 repeatability report Docker failure classification, retry gate input, permission-marker writer surface도 `lib_repeatability_report_failures.sh`와 [tests/test_ops_ci_repeatability_report_failures.py](/home/ysw/vulDocker/tests/test_ops_ci_repeatability_report_failures.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | repeatability chain의 Docker failure parsing/retry-marker surface도 inline grep/printf block이 아니라 bounded helper/operator contract로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 repeatability case-failure action resolution, retry/continue/fail routing, permission-marker-aware continue surface도 `lib_repeatability_case_failure.sh`와 [tests/test_ops_ci_repeatability_case_failure.py](/home/ysw/vulDocker/tests/test_ops_ci_repeatability_case_failure.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | repeatability chain의 nonzero result branching도 inline bash branch block이 아니라 bounded helper/operator contract로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 repeatability case context hydration, report-path resolution, run-dir append, `repeat_case.py` argv assembly surface도 `lib_repeatability_case_runtime.sh`와 [tests/test_ops_ci_repeatability_case_runtime.py](/home/ysw/vulDocker/tests/test_ops_ci_repeatability_case_runtime.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | repeatability chain의 per-case setup도 inline bash context/argv block이 아니라 bounded helper/operator contract로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 direct case context hydration, output-dir resolution, `run_case.py` argv assembly surface도 `lib_direct_case_runtime.sh`와 [tests/test_ops_ci_direct_case_runtime.py](/home/ysw/vulDocker/tests/test_ops_ci_direct_case_runtime.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct chain의 per-case setup도 inline bash context/argv block이 아니라 bounded helper/operator contract로 읽는다 |
+| same helper family에서는 direct/repeatability helper가 공유하는 direct case runtime reuse, output note emission, `run_case.py` command invoke surface도 `lib_direct_case_runner.sh`와 [tests/test_ops_ci_direct_case_runner.py](/home/ysw/vulDocker/tests/test_ops_ci_direct_case_runner.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct chain의 emit/invoke block도 inline bash가 아니라 bounded helper/operator contract로 읽는다 |
+| same helper family에서는 direct/repeatability chain wrapper family가 공유하는 `cases/output-root resolve + usage/output-root prep` surface도 `lib_case_chain_paths.sh`와 [tests/test_ops_ci_case_chain_paths.py](/home/ysw/vulDocker/tests/test_ops_ci_case_chain_paths.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct/repeatability top-level chain wrapper도 duplicated resolve/preflight block이 아니라 bounded helper/operator primitive로 읽는다 |
+| latest slice에서는 same direct/repeatability profile wrapper family의 shared `profile target forward` surface도 `lib_case_chain_profile_target_forward.sh`, [tests/test_ops_ci_case_chain_profile_target_forward.py](/home/ysw/vulDocker/tests/test_ops_ci_case_chain_profile_target_forward.py), `lib_case_chain_profile_entrypoint.sh`, [tests/test_ops_ci_case_chain_profile_entrypoint.py](/home/ysw/vulDocker/tests/test_ops_ci_case_chain_profile_entrypoint.py), `lib_case_chain_main.sh`, [tests/test_ops_ci_case_chain_main.py](/home/ysw/vulDocker/tests/test_ops_ci_case_chain_main.py), `lib_case_chain_main_script.sh`, [tests/test_ops_ci_case_chain_main_script.py](/home/ysw/vulDocker/tests/test_ops_ci_case_chain_main_script.py), `run_direct_validation_chain.sh`, [tests/test_ops_ci_direct_validation_chain.py](/home/ysw/vulDocker/tests/test_ops_ci_direct_validation_chain.py), `run_repeatability_chain.sh`, [tests/test_ops_ci_repeatability_chain.py](/home/ysw/vulDocker/tests/test_ops_ci_repeatability_chain.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `343 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct/repeatability profile wrapper도 duplicated profile/script-dir target-forward block이 아니라 bounded helper/operator primitive로 읽는다 |
+| same support/matrix helper family에서는 repeat-helper invoke, env export, run-dir postprocess skeleton도 `lib_repeatability_chain_runner.sh`와 [tests/test_ops_ci_repeatability_chain_runner.py](/home/ysw/vulDocker/tests/test_ops_ci_repeatability_chain_runner.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | support/matrix helper entry도 preflight/export/postprocess inline bash가 아니라 bounded repeatability runner contract로 읽는다 |
+| same support review helper family에서는 prefix-aware output-name default resolution과 resolved output-path materialization도 `lib_support_review_output_surface.sh`, [tests/test_ops_ci_support_review_output_surface.py](/home/ysw/vulDocker/tests/test_ops_ci_support_review_output_surface.py), [tests/test_ops_ci_support_workflow_chain.py](/home/ysw/vulDocker/tests/test_ops_ci_support_workflow_chain.py) 로 direct regression까지 닫혔다. `run_support_review_chain.sh`, `run_reviewable_support_accept_check.sh`, `run_support_workflow_chain.sh`가 same resolved output-surface contract를 재사용하고, generic `VULD_SUPPORT_REVIEW_RESOLVED_*`뿐 아니라 `${PREFIX}_RESOLVED_*` output surface도 같이 export한다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | support review caller/output entry도 default/output-path inline bash가 아니라 bounded output-surface contract로 읽는다 |
+| latest slice에서는 direct/support pair wrapper family가 공유하는 cases/output-root default resolution도 `lib_operator_cases_output_roots.sh`와 [tests/test_ops_ci_operator_cases_output_roots.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_cases_output_roots.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | pair wrapper entry의 cases/output-root default resolution도 wrapper별 inline bash가 아니라 bounded helper/operator defaults contract로 읽는다 |
+| latest slice에서는 direct/support wrapper family가 공유하는 single/pair/triple/batch case-slug default resolution도 `lib_operator_case_defaults.sh`와 [tests/test_ops_ci_operator_case_defaults.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_case_defaults.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | direct/support wrapper entry의 case-slug default resolution도 wrapper별 inline bash가 아니라 bounded helper/operator defaults contract로 읽는다 |
+| latest slice에서는 same direct/support wrapper family가 공유하는 completion/output note primitive도 `lib_operator_output_notes.sh`와 [tests/test_ops_ci_operator_output_notes.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_output_notes.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | wrapper completion logging과 output-path note surface도 repeated inline echo block이 아니라 bounded helper/operator primitive로 읽는다 |
+| latest slice에서는 same direct/support wrapper family가 공유하는 `output_root + child suffix -> completion note` primitive도 `lib_operator_output_root_notes.sh`와 [tests/test_ops_ci_operator_output_root_notes.py](/home/ysw/vulDocker/tests/test_ops_ci_operator_output_root_notes.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | wrapper output-root child path note surface도 wrapper별 inline path concatenation이 아니라 bounded helper/operator primitive로 읽는다 |
+| latest slice에서는 support review helper family가 공유하는 prefix-aware single/batch output-name default resolution도 `lib_support_review_output_defaults.sh`와 [tests/test_ops_ci_support_review_output_defaults.py](/home/ysw/vulDocker/tests/test_ops_ci_support_review_output_defaults.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | support review output-name defaults도 wrapper별 inline string default가 아니라 bounded helper/operator defaults primitive로 읽는다 |
+| latest slice에서는 support review helper family가 공유하는 single/batch output-path resolution도 `lib_support_review_outputs.sh`와 [tests/test_ops_ci_support_review_outputs.py](/home/ysw/vulDocker/tests/test_ops_ci_support_review_outputs.py) 로 direct regression까지 닫혔다. workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | support review output path resolution도 fixed four-output inline export가 아니라 bounded helper/operator primitive로 읽는다 |
+| latest slice에서는 support review helper family가 공유하는 resolved completion/output note contract도 `lib_support_review_output_notes.sh`와 [tests/test_ops_ci_support_review_output_notes.py](/home/ysw/vulDocker/tests/test_ops_ci_support_review_output_notes.py) 로 direct regression까지 닫혔다. `support_review_emit_prefixed_review_only_completion(...)`, `support_review_emit_prefixed_standard_completion(...)`, `support_review_emit_prefixed_reviewable_accept_completion(...)`와 backward-compatible `support_review_emit_resolved_*` wrappers를 통해 same family가 same resolved completion surface를 재사용하고, workspace-local `tests/test_ops_ci_*.py` bundle은 `296 passed`로 다시 확인됐다 | `TKT-008-B3`, companion-only | support review completion/output surface도 wrapper별 inline echo block이 아니라 bounded helper/operator primitive로 읽는다 |
+| current workspace-local sandbox helper output이 `support_candidate_file_count=2`, `authority_ready_bundle_count=0`, `measured_gate_blocked_bundle_count=0`, `reviewable_bundle_count=0`, `by_support_status={}` empty aggregate로 끝날 수도 다시 확인됨. same helper의 per-case `repeatability_report.json`도 `passed=false`, blocker `case_failed`를 남겼고, `permission_artifact_summary.json`는 `runtime_equivalent_helper_truth_available=false`, `recommended_action=unrestricted_docker_rerun`를 남겼다. same latest direct reverify에서는 `docker ps` / `docker ps -a`가 empty list로 정상 응답하고 representative direct rerun도 다시 성공했으므로, same split은 host Docker precondition 부재가 아니라 permission-artifact environment output distinction으로 읽는 편이 맞다. same positive pair의 manual `repeat_case.py -> support_review.py` chain은 여전히 `blocked_mixed` aggregate를 재현함 | `TKT-008-B3`, companion-only | helper contract green이나 sandbox helper output을 runtime-equivalent truth로 읽지 않게 하는 bounded environment distinction이며, 새 core residual이 아니라 companion/operator stabilization residual이다 |
+| latest slice에서 `run_support_workflow_chain.sh` / `run_positive_pair_promotion_check.sh`가 blocked lane의 `repeat_case.py` nonzero-with-report를 허용하고 `run_repeatability_chain.sh`에 transient docker readiness retry seam(`VULD_REPEAT_CHAIN_DOCKER_RETRY_COUNT`, `VULD_REPEAT_CHAIN_DOCKER_RETRY_DELAY_SEC`)까지 추가됐다. same helper는 `docker daemon permission denied`를 retry 대상이 아닌 permission artifact marker/note로 분리해 surface하고, unrestricted Docker-enabled direct rerun에서는 helper projection도 다시 `blocked_mixed` aggregate current truth와 정렬된다 | `TKT-008-B3`, companion-only | helper/operator stabilization은 많이 진전됐지만 sandbox helper artifact와 runtime-equivalent helper truth는 계속 분리해서 읽어야 한다. same bounded environment distinction만 companion residual로 유지한다 |
 
-latest rerun slice는 위 항목을 재확인했을 뿐, 새 product backlog ticket을 추가로 만들지는 않았다. current residual owner는 그대로 `TKT-008-A*`, `TKT-009-A2`, 그리고 operational Docker prerequisite 분리 해석을 유지한다.
+latest rerun slice는 위 항목을 재확인했을 뿐, 새 product backlog ticket을 추가로 만들지는 않았다. current residual owner는 그대로 `TKT-001`, `TKT-006`, `TKT-008-A*`, `TKT-009-A*`를 유지한다.
+
+같은 날짜 direct recheck에서도 `strict no-remote`, `strict stub`, `unsupported negative`, planning-only repeatability/support blocked-no-op chain의 결과는 변하지 않았다. later same-day Docker-enabled rerun과 그 뒤의 fresh positive pair support review에서도 positive dynamic/LLM-shaped lane는 여전히 measured/support gate 기준으로 blocked였다. `2026-03-20` fresh rerun에서도 strict stub / positive pair / positive-pair support review verdict는 다시 바뀌지 않았고 host Docker precondition은 충족됐다. 따라서 current action item은 새 ticket 추가보다 existing `TKT-001-E`, `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1/A2` residual을 더 정확히 읽고 representative positive lane을 recurring regression set에 포함시키는 쪽이 맞다.
 
 ## Residual Coverage Map
 
@@ -269,6 +426,221 @@ latest direct verification까지 반영한 현재 잔여 구현의 묶음은 아
 | actual reviewable accept path | `TKT-009-A1` | synthetic reviewable path를 넘는 representative measured accept-path direct verification이 아직 없다 |
 | long-lived registry hardening | `TKT-009-B1`, `TKT-009-B2` | provenance/history/merge lifecycle은 local workflow가 생긴 뒤의 다음 잔여다 |
 | expansion | `TKT-010` | 지금은 defer 유지가 맞다. above closure 이전에 올리면 안 된다 |
+
+latest direct verification에서 green으로 다시 확인된 low-cost regression net(`TKT-001-E`, `TKT-008-A1`, `TKT-009-A2`)은 중요하지만, 현재 completion 기준 본체는 아니다. 이 slice는 현재 honesty / blocked-no-op / measured-support wording drift를 막는 stabilization lane으로 읽고, open-world capability 본체 우선순위는 아래 순서를 따른다.
+
+## Current Capability Scorecard
+
+latest direct verification을 current queue 판단용 shorthand로 다시 압축하면 아래처럼 읽는 편이 맞다.
+
+| Capability slice | Queue-facing score | Primary evidence shorthand | Primary ticket(s) | Queue interpretation |
+| --- | --- | --- | --- | --- |
+| bounded regression / honesty floor | `80 / 100` | `python -m pytest -q tests -> 1167 passed, 53 skipped`, `python -m pytest -q tests/test_ops_ci_*.py -> 343 passed`, focused no-Docker slice `154 passed`, strict/negative direct rerun이 `fail_closed/fail_closed/abstain`으로 유지 | `TKT-001-E`, `TKT-008-A1`, `TKT-009-A2`, companion `TKT-008-B3` | current floor는 강하다. 그러나 이는 main completion blocker라기보다 regression floor / honesty floor다 |
+| open-world `name-only -> runnable vulnerable Docker` | `50 / 100` | E2E case `50`, `name-only` case `39`, name-only family slug `14`, positive representative direct rerun 2종은 expectation을 통과했지만 `open-redirect-dynamic-name-only`는 still `deterministic_fallback`, `partial`, `thin_fallback_demo` | `TKT-001`, `TKT-002~005`, `TKT-006` | runnable closure는 일부 열렸지만 controller/runtime generalization이 아직 부족하다 |
+| LLM-response shaped artifact -> promotable / reviewable candidate | `30 / 100` | `trusted-dynamic-sqli`가 `llm_fixture` / `llm_manifest` / `thin_or_incomplete`, positive pair repeatability는 둘 다 `measured_gate.ready=false`, support review는 `reviewable_bundle_count=0`, `by_support_status={blocked_mixed:2}` | `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1` | current main product gap이다. “실행 가능”과 “promotable/reviewable” 사이가 비어 있다 |
+
+coverage shorthand는 아래처럼 읽는다.
+
+- name-only coverage breadth:
+  - total E2E cases `50`
+  - `name-only` cases `39`
+  - `name-only` family slug `14`
+  - dynamic/strict 관련 `name-only` cases `14` (`dynamic` lane `12` + strict capability-gate lane `2`)
+- boundedness summary shorthand:
+  - catalog family `12`
+  - scaffold stack pool `2`
+  - executor topology class `2` (`single_service`, `service_plus_sidecar`)
+  - `executor_multi_primary_supported=false`
+  - `closed_vocabulary_family_discovery=true`
+
+reading rule은 아래와 같다.
+
+- `80 / 100` slice는 current floor를 보여 주지만, main completion priority를 다시 정렬시키는 근거로 읽지 않는다.
+- `50 / 100` slice는 open-world runnable closure가 partial하게 열렸다는 뜻이지 generalized controller/runtime closure가 닫혔다는 뜻이 아니다.
+- `30 / 100` slice가 current queue에서 가장 중요한 product gap이고, visible blocker cluster는 그대로 `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1`로 읽는다.
+
+## Current Remaining Ticket Form
+
+latest direct verification까지 반영한 current residual을 ticket-form으로 다시 묶으면 아래처럼 읽는 편이 맞다.
+
+| Current residual cluster | Primary ticket(s) | Current interpretation |
+| --- | --- | --- |
+| selection/controller residual | `TKT-001` | representative dynamic lane가 still `deterministic_fallback`, `partial`로 남아 actual materialization branch authority가 아직 부족하다 |
+| runtime/executor residual | `TKT-002`, `TKT-003`, `TKT-004`, `TKT-005` | actual Docker materialization은 열려도 generalized topology/dependency/env/seed control-plane은 아직 아니다 |
+| visible synthesis blocker | `TKT-006` | fixture-backed positive lane가 `llm_manifest`, `thin_or_incomplete`로 남아 one-shot/stage-aware synthesis residual이 계속 보인다 |
+| oracle realism residual | `TKT-007` | runnable lane 일부가 있어도 browserful/stateful oracle realism은 아직 대표 residual이다 |
+| measured gate residual | `TKT-008-A1`, `TKT-008-A2` | positive pair manual repeatability truth가 still `measured_gate.ready=false`라 authoritative measured closure가 없다 |
+| accept-path / registry residual | `TKT-009-A1`, `TKT-009-B1`, `TKT-009-B2` | positive pair manual support review truth가 `authority_ready_bundle_count=2`, `reviewable_bundle_count=0`로 남아 still `runnable but not promotable`이다 |
+| summary/handoff polishing residual | `TKT-008-B1`, `TKT-008-B2` | main capability blocker는 아니지만 operator-facing summary/authority handoff polishing은 아직 남아 있다 |
+| helper/operator companion residual | `TKT-008-B3` | helper bundle은 green이어도 sandbox helper output은 permission-artifact environment output으로 갈라질 수 있어 core truth와 분리해서 읽어야 한다 |
+| deferred expansion | `TKT-010` | current control-plane/runtime/oracle/measured gate closure 이전에는 올리면 안 된다 |
+
+reading rule은 아래와 같다.
+
+- 눈앞의 visible core blocker는 `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1`이다.
+- 그 blocker를 반복해서 만드는 상위 원인은 `TKT-001`, `TKT-002~005`다.
+- helper/operator residual은 `TKT-008-B3` 안에서만 읽고, canonical completion priority order를 바꾸는 근거로 쓰지 않는다.
+
+## Evaluation-To-Ticket Breakdown
+
+latest 정성/정량평가를 current queue에 직접 내려쓰면 아래처럼 ticket-form으로 분해하는 편이 맞다.
+
+| Evaluation statement | Primary ticket(s) | Direct evidence shorthand | Detailed implementation reading |
+| --- | --- | --- | --- |
+| honesty / fail-closed floor는 강하고 already green이다 | `TKT-001-E`, `TKT-008-A1`, `TKT-009-A2`, companion `TKT-008-B3` | strict lane 2종은 `fail_closed`, unsupported negative lane은 `abstain`, low-cost/ops/helper regression이 green | 이 bucket은 유지/회귀 보호가 본체다. priority를 올리는 근거가 아니라 “current floor를 잃지 말라”는 ticket로 읽는다 |
+| representative dynamic lane는 runnable이지만 still fallback/partial이다 | `TKT-001-A/B/C/D/G`, `TKT-002-A/B/C`, `TKT-003-A/B`, `TKT-004-A/B`, `TKT-005-A/B/C`, `TKT-006-A/B/C` | `open-redirect-dynamic-name-only -> deterministic_fallback`, `partial`, `thin_fallback_demo` | selection/controller authority와 runtime control-plane이 아직 실제 생성 branch를 완전히 지배하지 못한다. controller/runtime/synthesis를 같이 읽어야 한다 |
+| fixture-backed positive LLM-shaped lane도 thin quality에 머문다 | `TKT-006-A/B/C`, supporting `TKT-007-A/B` | `trusted-dynamic-sqli -> llm_fixture`, `llm_manifest`, `thin_or_incomplete`, `oracle_execution_parity=missing` | positive LLM-shaped artifact가 돌아가는 것과 stage-aware synthesis / oracle closure가 충분한 것은 다르다. 이 residual은 synthesis-first로 읽는다 |
+| current measurable blocker는 quality/measured gate다 | `TKT-008-A1`, `TKT-008-A2` | positive pair repeatability 둘 다 `passed=true`지만 `measured_gate.ready=false` | current capability truth와 promotion policy truth를 authoritative gate로 더 선명하게 분리하고, high-quality representative lane가 왜 blocked인지 CI/policy surface로 승격해야 한다 |
+| current accept-path blocker는 reviewable candidate 부재다 | `TKT-009-A1` | positive pair support review `reviewable_bundle_count=0`, `all_blocked_case_count=2`, `by_support_status={blocked_mixed:2}` | synthetic accept-path rehearsal을 넘어서 representative measured positive lane에서 실제 accepted local registry item이 생기는 workflow를 확보해야 한다 |
+| broader browserful/stateful oracle realism은 아직 next quality gate다 | `TKT-007-A/B` | current positive lane 일부는 runtime까지 열렸지만 broader stateful oracle closure는 직접 닫히지 않았다 | current runnable closure를 higher-quality open-world claim으로 올리려면 browserful/sessionful replay와 realism rubric integration이 뒤따라야 한다 |
+| expansion은 지금 점수를 올리는 leverage가 아니다 | `TKT-010` | boundedness summary가 여전히 stack pool `2`, topology class `2`, closed-vocabulary family discovery로 남아 있음 | family/stack 수를 늘리기 전에 controller/runtime/synthesis/measured gate를 닫아야 한다 |
+
+queue reading rule은 아래와 같다.
+
+- “현재 가장 먼저 손대면 점수가 실제로 오르는 slice”는 `TKT-006 -> TKT-008-A -> TKT-009-A1`이다.
+- “그 score uplift를 구조적으로 지속시키는 root-cause slice”는 `TKT-001 -> TKT-002~005`다.
+- “현재 green인데 계속 유지해야 하는 floor”는 `TKT-001-E`, `TKT-008-A1`, `TKT-009-A2`이며, 이를 new product backlog처럼 읽지 않는다.
+
+## Planning Specificity Residual Overlay
+
+latest 계획 검토에서 “방향은 맞지만 구현 계획으로는 아직 덜 구체적이다”라고 판단된 축을 current ticket 체계에 내려쓰면 아래처럼 읽는 편이 맞다.
+
+| Planning-specificity question | Additional planning owner | Why current wording is still thin | Required plan upgrade |
+| --- | --- | --- | --- |
+| live LLM positive path를 무엇으로 판정하는가 | `TKT-006-D`, supporting `TKT-001-D` | current 문서는 strict live-LLM fail-closed honesty는 강하지만, live/fixture/stub/degraded positive path의 separate acceptance contract는 약하다. latest direct run의 `trusted-dynamic-sqli`도 `llm_fixture` / `llm_manifest`로 닫혀 live-positive proving ground가 아니다 | provider/model/prompt/decoding/retry/cost/cache/provenance를 묶는 live-positive materialization contract와 named proving-ground lane가 필요하다 |
+| scenario selection을 실제로 어떻게 고르는가 | `TKT-001-H`, supporting `TKT-001-F/G` | `scenario_candidates` field shape는 있으나 contradiction, tie-break, abstain threshold, negative hypothesis consumption rule이 explicit하지 않다. latest direct run의 `csrf-dynamic-name-only`는 `selected_scenario_id`가 채워져도 `scenario.selected=false`로 남아 selection consistency drift를 보여 준다 | candidate score / contradiction score / abstain reason / evidence sufficiency / selected_by surface를 가진 selection algebra가 필요하다 |
+| topology/runtime closure를 어떤 representative ladder로 닫는가 | `TKT-002-D`, supporting `TKT-003-A/B`, `TKT-004-A/B`, `TKT-005-A/B/C` | current plan은 generalized runtime closure를 말하지만 proving-ground topology class ladder가 없다. latest direct run은 사실상 `single_service`와 `service_plus_sidecar`만 직접 재현됐다 | `service_only -> service+db -> service+supporting sidecar -> multi_primary_web_pair -> browserful_lab_topology`처럼 explicit topology ladder가 필요하다 |
+| realism rubric이 실제 gate에 어떻게 들어가는가 | `TKT-007-C`, supporting `TKT-008-A1` | rubric integration은 말하지만 axis와 threshold가 문장 수준에 머문다. latest direct run의 `csrf-dynamic-name-only`도 sessionful single-flow replay까지는 보였지만 browserful/stateful realism closure를 뜻하지는 않았다 | exploit-path diversity / statefulness / victim realism / environment fidelity / verifier independence / cleanup reproducibility 같은 explicit rubric axis가 필요하다 |
+| first promotable lane를 무엇으로 삼을 것인가 | `TKT-009-A1-A`, `TKT-009-A1-B` | current accept-path는 “representative measured lane”이라는 추상 표현에 가깝다. latest direct/support run에서도 `trusted-dynamic-sqli`와 `open-redirect-dynamic-name-only`는 둘 다 `blocked_mixed`였고, comparator lane `sqli-sidecar-compiler-custom-env`는 high-quality bounded artifact지만 promotion target이 아니었다 | `trusted-dynamic-sqli`와 `open-redirect-dynamic-name-only`를 분리된 proving-ground accept-path로 고정하고, `sqli-sidecar-compiler-custom-env`는 comparator lane로 명시할 필요가 있다 |
+| expansion을 언제 열 것인가 | `TKT-010-C` | current defer rule은 맞지만 unlock contract가 없다 | expansion before/after boundary를 measurable prerequisite bundle로 명시해야 한다 |
+
+reading rule은 아래와 같다.
+
+- 이 overlay는 새 top-level ticket를 만드는 게 아니라 existing ticket의 구현 명세를 더 구체화하는 용도다.
+- current main order는 바뀌지 않는다. 다만 `TKT-001`, `TKT-006`, `TKT-009-A1`, `TKT-010` 내부의 subtask priority는 더 또렷하게 읽을 수 있어야 한다.
+- implementation review에서는 이 overlay의 각 row가 실제 subtask/acceptance wording에 반영되어 있는지 먼저 확인하는 편이 맞다.
+
+## Current Remaining Ticket Routing
+
+latest 확인 내용을 “무엇이 남았는가 / 무엇을 먼저 닫는가 / 무엇이 companion-only인가” 기준으로 다시 줄이면 아래 routing으로 읽는 편이 맞다.
+
+| Question | Ticket-form answer | Reading rule |
+| --- | --- | --- |
+| 지금 가장 먼저 눈에 보이는 blocker가 무엇인가 | `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1` | current positive representative lane에서 바로 관찰되는 visible blocker cluster다 |
+| 그 blocker를 반복해서 만드는 상위 원인은 무엇인가 | `TKT-001`, `TKT-002~005` | selection/controller authority와 generalized runtime/control-plane residual이 structural root-cause cluster다 |
+| 현재 “실행은 되지만 promotable은 아님”을 만드는 직접 근거는 무엇인가 | `TKT-006` + `TKT-008-A1/A2` + `TKT-009-A1` | `thin_or_incomplete` / `deterministic_fallback` / `measured_gate.ready=false` / `reviewable_bundle_count=0`를 같이 읽는다 |
+| helper/operator green bundle을 core progress로 읽어도 되는가 | `no`, `TKT-008-B3` only | workspace-local helper bundle `343 passed`는 companion stability evidence이지 core reprioritization 근거는 아니다 |
+| sandbox helper empty aggregate나 `case_failed` / `quality_tier_inconsistent` / `verdict_authority_inconsistent` drift는 어디에 귀속되는가 | `TKT-008-B3` | runtime-equivalent truth가 아니라 permission-artifact environment output distinction으로 읽는다 |
+| latest audit3 summary-level classification은 어떤 ticket에 귀속되는가 | `TKT-001-E`, `TKT-001`, `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1`, `TKT-008-B3` | strict stub `fail_closed`는 capability honesty, trusted positive lane `llm_manifest`/measured blocked는 synthesis+measured residual, representative dynamic lane `deterministic_fallback`/`partial`는 selection+synthesis residual, manual `blocked_mixed` aggregate는 measured+accept-path residual, helper split은 companion-only로 읽는다 |
+| summary/handoff polishing은 어디에 속하는가 | `TKT-008-B1/B2` | 본체 blocker보다 뒤에 두는 operator-facing polishing residual이다 |
+| expansion은 지금 어디에 두는가 | `TKT-010` | current control-plane/runtime/oracle/measured-support closure 이후의 defer bucket이다 |
+
+practical shorthand는 아래와 같다.
+
+- visible blocker cluster: `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1`
+- structural root-cause cluster: `TKT-001`, `TKT-002~005`
+- polishing cluster: `TKT-008-B1/B2`
+- companion-only cluster: `TKT-008-B3`
+- deferred expansion cluster: `TKT-010`
+
+## LLM-Response Capability Overlay
+
+LLM response로 open-world `name-only -> vulnerable Docker`를 만든다는 더 엄격한 기준으로 읽을 때도, 새 product backlog를 추가하기보다 기존 bucket에 아래처럼 귀속시켜 읽는 편이 맞다.
+
+| LLM-response perspective question | Primary ticket(s) | Current reading |
+| --- | --- | --- |
+| live LLM path 부재를 정직하게 fail-closed 하는가 | `TKT-001-E` | `open-redirect-strict-dynamic-stub` no-Docker lane에서 `strict_dynamic_live_llm_unavailable` honesty를 계속 회귀시킨다 |
+| LLM/research response가 actual materialization branch를 지배하는가 | `TKT-001-A/B/C/D/G/H` | current selection/evidence surface는 풍부하지만 still bounded builder/fallback 편향이 남아 있고, scenario selection algebra도 아직 약하다 |
+| positive LLM-shaped artifact를 stage-aware하게 synthesis 하는가 | `TKT-006-A/B/C/D` | one-shot manifest bottleneck과 repair-first 한계가 남아 있고, live/fixture/stub/degraded positive path provenance contract도 아직 얕다 |
+| LLM-shaped result가 실제 Docker runtime/topology/dependency로 닫히는가 | `TKT-002-A/B/C/D`, `TKT-003-A/B`, `TKT-004-A/B`, `TKT-005-A/B/C` | current session later rerun에서는 `trusted-dynamic-sqli`, `open-redirect-dynamic-name-only`가 둘 다 actual Docker materialization/runtime까지 갔지만, 하나는 fixture-backed `llm_manifest`, 다른 하나는 `deterministic_fallback` partial이어서 generalized runtime closure는 여전히 본체 residual이다 |
+| LLM-shaped result가 browserful/stateful oracle까지 검증되는가 | `TKT-007-A/B/C` | payload replay 일부를 넘는 richer realism/oracle closure가 아직 남아 있고 rubric axis도 아직 operationalized되지 않았다 |
+| LLM-shaped positive lane가 measured gate와 support promotion까지 닫히는가 | `TKT-008-A1/A2`, `TKT-009-A1-A/B`, `TKT-009-B1/B2` | current measured/support honesty는 강하지만 representative positive accept-path는 아직 direct verification이 없다 |
+| strict live-LLM fail-closed lane와 positive LLM-response Docker materialization을 혼동하지 않는가 | `none (interpretation rule)`, supporting `TKT-001-E` | current canonical reading rule은 “strict stub pass = positive capability verified”가 아니라, 둘을 분리해 읽는 것이다 |
+
+현재 direct verification 기준으로는 strict live-LLM fail-closed honesty는 no-Docker lane에서 확인됐고, later same-day Docker-enabled rerun에서는 fixture-backed positive LLM-shaped lane(`trusted-dynamic-sqli`)와 representative dynamic lane(`open-redirect-dynamic-name-only`)도 actual runtime/oracle path를 다시 열었다. 다만 전자는 `llm_fixture`/`llm_manifest`와 `thin_or_incomplete`, 후자는 `llm_degraded`/`deterministic_fallback`와 `thin_fallback_demo`/`partial`로 남았고 둘 다 measured/support gate에서는 blocked였다. 따라서 current completion priority order는 그대로 유지하되, LLM-response 기준 해석은 `TKT-001 -> TKT-002~005 -> TKT-006 -> TKT-007 -> TKT-008-A -> TKT-009-*` 본체를 더 정확히 읽는 쪽이 맞다.
+
+## Confirmed Completion Priority Order
+
+latest direct verification과 current completeness assessment를 함께 읽었을 때, 현재 open-world/name-only 목표 기준의 canonical completion priority order는 아래와 같다.
+
+| Order | Ticket bucket | Primary subtasks | Why it is ahead of the next bucket |
+| --- | --- | --- | --- |
+| `1` | `TKT-001` | `TKT-001-A/B/C/D/E/F/G/H` | selection/controller residual이 아직 actual materialization을 충분히 지배하지 못한다. scenario selection algebra까지 닫혀야 이후 runtime/oracle hardening이 bounded branch 위 보강이 아니라 real open-world closure가 된다 |
+| `2` | `TKT-002` ~ `TKT-005` | `TKT-002-A/B/C/D`, `TKT-003-A/B`, `TKT-004-A/B`, `TKT-005-A/B/C` | 무엇을 만들지보다 어떻게 실제로 실행되는지가 여전히 generalized control-plane이 아니다. topology class ladder를 포함한 runtime/executor contract가 닫혀야 representative Docker generation claim이 가능하다 |
+| `3` | `TKT-006` | `TKT-006-A/B/C/D` | branch controller와 runtime contract가 있어도 one-shot synthesis bottleneck이 남으면 actual generation success가 불안정하다. live-positive provenance contract까지 포함한 stage-aware recovery는 그 다음 leverage다 |
+| `4` | `TKT-007` | `TKT-007-A/B/C` | runtime이 닫혀도 oracle realism이 약하면 open-world success claim을 못 올린다. browserful/stateful replay와 explicit realism rubric이 next quality gate다 |
+| `5` | `TKT-008-A` | `TKT-008-A1/A2` | measured preview는 이미 있지만 authoritative CI/policy gate는 아직 아니다. capability truth와 support-ready truth를 분리하려면 이 bucket이 필요하다 |
+| `6` | `TKT-009-A1`, `TKT-009-B1/B2` | `TKT-009-A1-A/B`, `TKT-009-B1`, `TKT-009-B2` | blocked/no-op path는 정직하지만 representative accept-path proving ground와 long-lived registry lifecycle은 아직 없다. promotion surface closure는 measured gate 이후가 맞다 |
+| `7` | `TKT-008-B` | `TKT-008-B1/B2` | summary/handoff consistency residual은 중요하지만 main capability blocker라기보다 authoritative handoff polishing 성격이 더 강하다 |
+| `8` | `TKT-010` | `TKT-010-A/B/C` | expansion은 current control-plane/runtime/oracle/measured gate closure와 explicit unlock contract 이전에 올리면 안 된다 |
+
+priority 해석 규칙은 아래와 같다.
+
+- `TKT-001-E`, `TKT-008-A1`, `TKT-009-A2`는 current low-cost regression net의 핵심이지만, 이미 blocked/no-op honesty를 보호하는 stabilization lane이기도 하다.
+- `TKT-009-A2`는 current safety behavior preservation ticket이지, representative positive accept-path를 먼저 여는 ticket은 아니다.
+- `TKT-008-B3`, `TKT-009-B3`는 latest workspace-local contract drift stabilization으로서 이미 bounded closure에 더 가깝고, main completion order를 바꾸지 않는다.
+
+## Estimated Turn Envelope
+
+아래 추산은 `1턴 = 하나의 subtask 구현 + representative rerun + 문서 반영`으로 잡은 practical envelope다. backlog slicing과 sequencing 판단을 돕는 운영 추산치이지, 일정 commitment는 아니다.
+
+| Goal slice | Estimated turns | Primary ticket focus | Why this is the current envelope |
+| --- | --- | --- | --- |
+| representative positive pair를 `runnable -> promotable`로 끌어올리는 최소 범위 | `8 ~ 12턴` | `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1`, partial `TKT-001` | current visible blocker가 synthesis quality, measured gate, reviewable accept-path에 몰려 있고, positive pair가 이미 runnable이라 바로 보이는 bottleneck부터 줄이는 범위다 |
+| `live LLM response -> open-world positive`를 더 강하게 주장할 수 있는 수준 | `16 ~ 24턴` | `TKT-001`, `TKT-002~005`, `TKT-006`, `TKT-007`, `TKT-008-A` | visible blocker뿐 아니라 structural root-cause인 selection authority와 generalized runtime/oracle closure까지 같이 닫아야 stronger claim이 가능하다 |
+| promotable + generalized + polishing까지 포함한 보수적 범위 | `20 ~ 30턴` | `TKT-001` ~ `TKT-009-B`, excluding `TKT-010` | representative accept-path, registry lifecycle, summary/handoff polishing까지 포함한 end-to-end hardening 범위다 |
+
+turn envelope 해석 규칙은 아래와 같다.
+
+- `TKT-010` expansion은 현재 envelope에서 제외한다. runtime/oracle/measured gate closure 이전에는 implementation turn 추산에 넣지 않는다.
+- `8 ~ 12턴`은 current positive representative pair(`trusted-dynamic-sqli`, `open-redirect-dynamic-name-only`)를 기준으로 한 practical promotion slice다.
+- `16 ~ 24턴` 이후부터는 `live LLM response` purity와 generalized runtime/oracle claim을 함께 읽는다.
+- latest representative pair truth가 바뀌더라도 visible blocker와 structural root-cause bucket이 유지되면, turn envelope는 priority order보다 느리게 변한다.
+
+## Assessment-To-Ticket Interpretation
+
+latest Docker-enabled direct verification까지 포함해 현재 평가를 ticket 형태로 다시 쪼개면 아래처럼 읽는 편이 맞다.
+
+- visible blocker cluster: `TKT-006`, `TKT-008-A1/A2`, `TKT-009-A1`
+  - `trusted-dynamic-sqli`는 actual Docker materialization까지 갔지만 `llm_fixture` / `llm_manifest`, `thin_or_incomplete`, `measured_gate.ready=false`, `reviewable_bundle_count=0`로 남았다.
+  - 즉 current positive representative lane에서 가장 먼저 보이는 미비점은 synthesis quality, measured gate, reviewable accept-path closure다.
+- structural root-cause cluster: `TKT-001`, `TKT-002~005`
+  - `open-redirect-dynamic-name-only`는 actual runtime/oracle path를 다시 열었지만 `llm_degraded` / `deterministic_fallback`, `partial`, `thin_fallback_demo`로 남았다.
+  - 즉 visible blocker 뒤의 상위 원인은 여전히 selection authority와 generalized runtime control-plane closure 부족이다.
+- interpretation rule:
+  - latest positive rerun truth는 새 ticket를 추가하는 근거가 아니라 existing `TKT-001`, `TKT-006`, `TKT-008-A*`, `TKT-009-A1` 해석을 더 촘촘하게 만드는 근거다.
+  - 그래서 canonical priority order는 유지하되, next recurring representative regression set에는 `trusted-dynamic-sqli`, `open-redirect-dynamic-name-only`를 같이 포함해 읽는다.
+
+## Fresh Rerun Ticket Overlay
+
+`2026-03-20` fresh direct execution을 ticket 관점으로 다시 묶으면 아래처럼 읽는 편이 맞다.
+
+- `TKT-001-E`
+  - `open-redirect-strict-dynamic-stub`는 이번 fresh rerun에서도 `strict_dynamic_live_llm_unavailable`, `generation_origin=capability_gate_rejected`, `stage_ceiling=pre_generation`으로 끝났다.
+  - 즉 strict live-LLM fail-closed honesty는 계속 정상이고, 이 bucket은 여전히 regression protection 성격이 강하다.
+- `TKT-006`
+  - `trusted-dynamic-sqli`는 이번 fresh rerun에서도 `llm_fixture`, `llm_manifest`, `thin_or_incomplete`로 남았다.
+  - 즉 positive lane가 actual Docker materialization까지 가도 synthesis quality/resilience 본체 residual은 그대로다.
+- `TKT-008-A1/A2`
+  - positive pair repeatability는 둘 다 `passed=true`지만 `measured_gate.ready=false`였다.
+  - 즉 measured gate preview는 정상이고, authoritative promotion gate closure가 아직 잔여라는 해석이 다시 확인됐다.
+- `TKT-009-A1`
+  - positive pair support review는 이번 fresh rerun에서도 `support_candidate_file_count=2`, `authority_ready_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={blocked_mixed:2}`로 남았다.
+  - 즉 current claim은 여전히 `runnable but not promotable`이고 representative accept-path closure는 아직 없다.
+- `TKT-008-B3`
+  - helper contract bundle은 latest workspace-local head에서 `343 passed`로 green이고, sandbox helper run에서는 `docker daemon permission denied`가 permission artifact marker/note로 분리돼 surface된다.
+  - current workspace-local direct verification에서는 same sandbox helper output이 `support_candidate_file_count=2`, `authority_ready_bundle_count=0`, `measured_gate_blocked_bundle_count=0`, `reviewable_bundle_count=0`, `by_support_status={}` empty aggregate로 끝날 수도 다시 확인됐다. same output은 runtime-equivalent truth가 아니라 permission-artifact environment output으로 읽는다.
+  - same-day latest liveaudit rerun에서도 `docker ps` / `docker ps -a`와 representative direct rerun 3종, manual `repeat_case.py -> support_review.py` chain은 다시 정상인데 sandbox helper wrapper만 same permission-artifact split을 반복했다. therefore latest evidence도 계속 `TKT-008-B3` companion residual로만 귀속한다.
+  - same-day latest audit2 rerun에서도 `docker ps` / `docker ps -a`와 representative direct rerun 3종, manual `tests/e2e/support_review.py` aggregate는 다시 정상인데 sandbox helper wrapper만 same permission-artifact split을 반복했다. helper per-case `repeatability_report.json`도 둘 다 `passed=false`였고 blocker에 `case_failed`, `quality_tier_inconsistent`, `verdict_authority_inconsistent`가 같이 남았다.
+  - latest `2026-03-21` direct rerun에서도 `docker ps` / `docker ps -a`는 again empty list로 정상이고 `docker images`에는 fresh `sid-*` image가 남은 상태에서 representative direct rerun 3종과 manual `repeat_case.py -> support_review.py` chain은 다시 성공했지만, sandbox helper wrapper는 again empty aggregate와 `permission_artifact_summary.json(runtime_equivalent_helper_truth_available=false, recommended_action=unrestricted_docker_rerun)`로 갈라졌다.
+  - same `2026-03-21` latest audit3 rerun에서는 summary-level classification도 다시 유지됐다. strict stub은 `fail_closed`, `pre_generation`, `pre-generation fail-closed`; `trusted-dynamic-sqli`는 `llm_fixture`, `llm_manifest`, `trusted dynamic`; `open-redirect-dynamic-name-only`는 `llm_degraded`, `deterministic_fallback`, `partial`, `deterministic fallback dependent`로 다시 닫혔다.
+  - same `2026-03-21` helper per-case `repeatability_report.json`는 둘 다 `passed=false`였고 blocker에 `case_failed`, `cache_reuse_inconsistent`, `artifact_quality_band_not_high`, `quality_tier_inconsistent`, `oracle_execution_parity_not_high`, `verdict_authority_inconsistent`가 같이 남았다. therefore same latest rerun도 current core truth 변화가 아니라 bounded helper projection drift evidence로만 읽는다.
+  - unrestricted Docker-enabled rerun에서는 `run_positive_pair_promotion_check.sh` helper path도 다시 `blocked_mixed` aggregate current truth와 정렬된다. same bounded environment distinction만 companion/operator stabilization residual로 읽는다.
+- reprioritization rule:
+  - 이번 fresh rerun은 새 product backlog를 만들지 않는다.
+  - visible blocker는 계속 `TKT-006`, `TKT-008-A*`, `TKT-009-A1`이고, structural root-cause는 그대로 `TKT-001`, `TKT-002~005`다.
+  - helper/operator drift는 `TKT-008-B3` 안에서만 읽고, canonical completion priority order는 여전히 core bucket 기준으로 유지한다.
+  - 따라서 canonical completion priority order는 바뀌지 않는다.
 
 ## Open-World Completion Axis Map
 
@@ -396,8 +768,8 @@ ticket를 실제 검증 하니스와 연결할 때는 아래 순서를 따른다
 | Ticket bucket | Canonical validation doc | First harness / regression surface | Environment note |
 | --- | --- | --- | --- |
 | `TKT-001` ~ `TKT-007` | [tests/e2e/README.md](../tests/e2e/README.md), [docs/code/README.md](code/README.md) | `tests/e2e/run_case.py`, `tests/e2e/test_cases.py`, subsystem regression listed in code docs | representative executed lane는 Docker가 필요할 수 있다 |
-| `TKT-008` | [tests/e2e/README.md](../tests/e2e/README.md), [docs/handbook.md](handbook.md) | `tests/e2e/repeat_case.py`, `tests/e2e/matrix_report.py`, `tests/test_repeatability_gate.py`, `tests/e2e/test_case_matrix_rollup.py` | planning-only lane만으로도 preview/measured gate sanity 일부 확인 가능 |
-| `TKT-009` | [tests/e2e/README.md](../tests/e2e/README.md), [docs/handbook.md](handbook.md) | `tests/e2e/support_review.py`, `tests/e2e/support_decide.py`, `tests/e2e/support_apply.py`, `tests/test_support_extract.py`, `tests/e2e/test_support_workflow.py` | current local registry flow는 measured/manual workflow이지 auto-promotion path가 아니다 |
+| `TKT-008` | [tests/e2e/README.md](../tests/e2e/README.md), [docs/handbook.md](handbook.md) | `tests/e2e/repeat_case.py`, `tests/e2e/matrix_report.py`, `tests/test_repeatability_gate.py`, `tests/e2e/test_case_matrix_rollup.py` | planning-only lane만으로도 preview/measured gate sanity 일부 확인 가능. latest low-cost pair는 `foobar-name-only-negative` + `open-redirect-strict-dynamic-no-remote`다 |
+| `TKT-009` | [tests/e2e/README.md](../tests/e2e/README.md), [docs/handbook.md](handbook.md) | `tests/e2e/support_review.py`, `tests/e2e/support_decide.py`, `tests/e2e/support_apply.py`, `tests/test_support_extract.py`, `tests/e2e/test_support_workflow.py` | current local registry flow는 measured/manual workflow이지 auto-promotion path가 아니다. latest blocked/no-op rehearsal pair는 `foobar-name-only-negative` + `open-redirect-strict-dynamic-no-remote`다 |
 | `TKT-010` | [docs/final_solution.md](final_solution.md), [docs/current_state_gap_analysis.md](current_state_gap_analysis.md) | roadmap review, residual review, gate review only | implementation harness보다 readiness review가 먼저다 |
 
 ## Validation Reading Order
@@ -410,6 +782,50 @@ ticket를 실제 검증 하니스와 연결할 때는 아래 순서를 따른다
 4. [docs/handbook.md](handbook.md)의 artifact map / troubleshooting
 
 phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md](final_solution.md)의 `Acceptance-To-Validation Translation`을 같이 본다.
+
+## Priority Reading Order
+
+우선순위 판단부터 시작할 때의 canonical reading order는 아래와 같다.
+
+1. [docs/work_tickets.md](work_tickets.md)의 `Priority Companions`
+2. [docs/work_tickets.md](work_tickets.md)의 `Current Remaining Snapshot`, `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
+3. [docs/work_tickets.md](work_tickets.md)의 `Current Capability Scorecard`, `Planning Specificity Residual Overlay`, `Evaluation-To-Ticket Breakdown`, `Assessment-To-Ticket Interpretation`, `LLM-Response Capability Overlay`
+4. [docs/final_solution.md](final_solution.md)의 `Phase-To-Ticket Translation`, `Acceptance Gates`
+5. [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+6. [tests/e2e/README.md](../tests/e2e/README.md)의 low-cost preflight / no-Docker rehearsal pair
+7. [docs/code/README.md](code/README.md)와 subsystem docs의 code entrypoint
+8. [docs/handbook.md](handbook.md)의 troubleshooting / artifact reading hints
+
+## Priority Review Entry
+
+priority 판단은 아래 순서로 시작한다.
+
+1. `Priority Companions`
+2. `Priority Question Routing`
+3. `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
+4. `Current Capability Scorecard`, `Planning Specificity Residual Overlay`, `Evaluation-To-Ticket Breakdown`, `Assessment-To-Ticket Interpretation`, `LLM-Response Capability Overlay`
+5. `Priority Reading Order`
+
+## Turn Estimate Entry
+
+잔여 작업량/turn envelope를 representative evidence와 함께 읽고 싶다면 아래 순서를 쓴다.
+
+1. `Estimated Turn Envelope`
+2. `Current Capability Scorecard`, `Planning Specificity Residual Overlay`, `Evaluation-To-Ticket Breakdown`, `Assessment-To-Ticket Interpretation`, `LLM-Response Capability Overlay`
+3. `Current Remaining Snapshot`, `Confirmed Completion Priority Order`
+4. [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+5. [tests/e2e/README.md](../tests/e2e/README.md)의 `Positive Pair Promotion Check`
+
+## Turn Estimate Reading Order
+
+작업량 추산부터 시작할 때의 canonical reading order는 아래와 같다.
+
+1. [docs/work_tickets.md](work_tickets.md)의 `Turn Estimate Companions`
+2. [docs/work_tickets.md](work_tickets.md)의 `Estimated Turn Envelope`
+3. [docs/work_tickets.md](work_tickets.md)의 `Current Capability Scorecard`, `Planning Specificity Residual Overlay`, `Evaluation-To-Ticket Breakdown`, `Assessment-To-Ticket Interpretation`, `LLM-Response Capability Overlay`
+4. [docs/work_tickets.md](work_tickets.md)의 `Current Remaining Snapshot`, `Confirmed Completion Priority Order`
+5. [docs/current_state_gap_analysis.md](current_state_gap_analysis.md), [docs/constraints.md](constraints.md)
+6. [tests/e2e/README.md](../tests/e2e/README.md)의 `Positive Pair Promotion Check`
 
 ## Tickets
 
@@ -450,12 +866,18 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
   - `TKT-001-E. Partial-Lane Decision State Machine Unification`
     - `planning_focus_summary`, `next_required_step`, `name_only_outcome`를 하나의 partial-lane state machine으로 정리한다
     - compatibility/dynamic/strict_dynamic 사이의 같은 residual wording drift를 줄인다
+    - low-cost capability-gate regression pair(`open-redirect-strict-dynamic-no-remote`, `open-redirect-strict-dynamic-stub`)가 둘 다 `fail_closed`를 유지하되 `strict_dynamic_remote_research_unavailable` vs `strict_dynamic_live_llm_unavailable` subclass를 계속 분리해 남기게 고정한다
   - `TKT-001-F. Unresolved-To-Abstain Transition Modeling`
     - ambiguity/evidence-thin/unresolved 상태가 언제 `partial`, `abstain`, `fail_closed`로 넘어가는지 explicit transition rule로 고정한다
     - same transition이 researcher/generator/executor handoff에서 달라지지 않게 한다
   - `TKT-001-G. Evidence Authority Thresholding`
     - lexical support count를 넘어서 scenario selection에 필요한 minimum authority / contradiction threshold를 explicit rule로 정리한다
     - evidence graph를 causal proof로 과장하지 않으면서도 branch controller가 쓸 수 있는 threshold surface를 마련한다
+  - `TKT-001-H. Scenario Selection Algebra And Abstain Contract`
+    - `scenario_candidates[]`가 단순 field collection이 아니라 `candidate_score`, `contradiction_score`, `evidence_sufficiency`, `selected_by`, `abstain_reason`를 가진 explicit selection algebra를 쓰게 정리한다
+    - family/stack/topology/oracle, negative hypothesis, contradiction signal, ambiguous evidence가 같은 selection rule 안에서 tie-break / abstain / fail-closed로 내려가게 고정한다
+    - `selected_scenario_id` / `selected_family` / `selected_stack_id`가 populated되어도 `scenario.selected=false`로 남는 current drift를 없애고, same selected payload가 single consistency rule을 따르게 정리한다
+    - current bounded closure로는 scenario payload가 `selected_candidate_present`, `selection_state`, `selected_by`, `unresolved_reasons`를 직접 surface하기 시작했고, latest direct rerun 기준 `strict_stub` / `csrf_dynamic`는 `candidate_only + stack_unselected`, `open_redirect_dynamic`는 `selected`로 다시 확인됐다. remaining work는 same state를 scoring/tie-break/abstain algebra까지 끌어올리는 것이다
 
 ### TKT-002. Runtime Graph / Executor Plan Control-Plane Promotion
 
@@ -488,6 +910,10 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
   - `TKT-002-C. Runtime Graph Authoritative Consumption`
     - `runtime_graph`가 summary surface를 넘어서 executor의 primary canonical input이 되게 만든다
     - recipe/metadata hint fallback보다 graph/plan precedence를 먼저 읽게 정리한다
+  - `TKT-002-D. Representative Topology Class Ladder`
+    - generalized runtime closure를 추상 문구가 아니라 `service_only`, `service_plus_db`, `service_plus_supporting_sidecar`, `multi_primary_web_pair`, `browserful_lab_topology` 같은 proving-ground topology class ladder로 정리한다
+    - 각 topology class마다 required runtime contract, first validation lane, remaining blocker를 같이 남겨 Phase 3C closure를 단계적으로 읽을 수 있게 만든다
+    - current directly verified comparator는 `open-redirect-dynamic-name-only` / `csrf-dynamic-name-only`의 `service_only`와 `sqli-sidecar-compiler-custom-env`의 `service_plus_sidecar`로 고정하고, unsupported class는 explicit future proving ground로 남긴다
 
 ### TKT-003. Generalized Dependency Ordering And Lifecycle
 
@@ -625,6 +1051,26 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
   - `TKT-006-C. Stage Failure Journaling And Downgrade Policy`
     - 어떤 stage/validator/abort policy 때문에 downgrade/fallback이 일어났는지 explicit journal을 남긴다
     - malformed intermediate가 즉시 one-shot fallback으로 붕괴하지 않도록 stage-aware downgrade policy를 더 좁힌다
+  - `TKT-006-D. Live LLM Materialization Contract And Provenance`
+    - `live`, `fixture`, `stub`, `degraded` generation path를 별도 provider/materialization contract로 나누고 `provider_kind`, `model`, `prompt_version`, `decoding_profile`, `retry_budget`, `timeout_budget`, `cost_budget`, `cache_mode`를 machine-readable provenance로 남긴다
+    - strict stub honesty lane와 live-positive materialization lane가 서로 다른 acceptance surface를 쓰도록 고정하고, representative positive lane에서 “LLM-shaped”와 “live LLM-positive”를 구분해 읽게 만든다
+    - latest direct run의 `trusted-dynamic-sqli -> llm_fixture/llm_manifest`를 proving-ground baseline으로 삼아, fixture-backed positive와 true live-positive의 acceptance boundary를 explicit하게 남긴다
+    - current bounded closure already achieved:
+      - `LLMClient.execution_summary(...)`가 landed되어 researcher/generator/template/contract가 공통 `llm_execution` vocabulary를 쓰기 시작했다
+      - same additive surface는 `provider_backend`, `model`, `decoding_profile`, `path_class`, `fixture_path`, `last_error_retryable`, `prompt_contracts`, `prompt_invocations`, `retry_budget`, `timeout_budget`, `cost_budget`, `cache_mode`를 machine-readable provenance로 남긴다
+      - latest direct rerun 기준 `open-redirect-dynamic-name-only`는 `generator_manifest.json` / `resolved_contract.json`에서 `path_class=stub`, actual `prompt_contracts=[synthesis_manifest, dep_guard_inference, guard_autofix]`, `prompt_invocations={synthesis_manifest:1, dep_guard_inference:3, guard_autofix:2}`, `retry_budget={candidate_budget=1, guard_autofix_max_attempts=1, actual_candidate_runs=1}`, `last_error_class=provider_disabled`로 읽힌다
+      - same rerun 기준 `researcher_report.json`도 `cache_mode=search_cache_read_write`, actual `prompt_contracts=[researcher_report, guard_planner]`, `retry_budget={controller_loop_current=1, controller_loop_max=3, guard_planner_planned_runs=1, guard_planner_actual_runs=1}`로 읽힌다
+      - same rerun 기준 `generator_manifest.json`도 same `retry_budget` 안에 `controller_loop_current/max`, `single_attempt_mode`, `planned_candidate_budget`를 같이 남겨 stage-local budget과 controller budget이 분리되지 않게 읽힌다
+      - latest direct rerun with `VUL_LLM_TIMEOUT_S=9.5` 기준 `open-redirect-dynamic-name-only`는 `researcher_report.json`에서 `timeout_budget={llm_request_timeout_s=9.5, search_timeout_s=8.0}`, `generator_manifest.json`에서 `timeout_budget={llm_request_timeout_s=9.5}`로 읽힌다
+      - latest direct rerun with `VUL_LLM_COST_BUDGET_USD=0.25` 기준 same lane은 `researcher_report.json` / `generator_manifest.json` 모두 `cost_budget={configured_cost_budget_usd=0.25}`를 남긴다. unit closure 기준 provider success path에서는 same `cost_budget`에 `usage_tokens={prompt_tokens, completion_tokens, total_tokens}`, `usage_scope={last_call|observed}`, `estimated_cost_usd`, `pricing_model`, `pricing_basis`, `pricing_source=litellm_cost_map`도 포함된다
+      - same direct rerun 기준 top-level `manifest.json` / direct `summary.json`도 `research_retry_budget`, `research_timeout_budget`, `research_cost_budget`, `generation_retry_budget`, `generation_timeout_budget`, `generation_cost_budget`, `reviewer_retry_budget`, `reviewer_timeout_budget`, `reviewer_cost_budget` convenience field를 같이 노출해 nested metadata를 열지 않고도 operator가 stage budget surface를 읽을 수 있다
+      - same rerun 기준 `sqli-sidecar-template`는 `generator_template.json` / `resolved_contract.json`에서 `path_class=not_executed`, `cache_mode=none`이며 no-op lane이라 `prompt_contracts` / `retry_budget`를 강제로 남기지 않는다. 다만 unit closure 기준 `generator_plan`이 실제로 호출된 template lane에서는 `retry_budget={controller_loop_current/max, single_attempt_mode, template_plan_actual_runs, template_selection_candidate_budget}`가 surfaced된다
+      - reviewer도 same `llm_execution` / actual prompt tracking surface를 공유한다. unit closure 기준 feedback-enabled lane에서는 `retry_budget={controller_loop_current/max, reviewer_feedback_runs}`가 surfaced되고, latest direct rerun의 `open-redirect-dynamic-name-only` reviewer lane은 clean/no-op path라 `path_class=not_executed`, `cache_mode=none`만 남는다
+    - remaining residual after current closure:
+      - `timeout_budget`은 search timeout과 configured LLM timeout 기준으로 partial closure가 생겼지만, stage-wide default/provider policy timeout contract로 fully unify되지는 않았다
+      - `cost_budget`은 configured USD budget, observed usage token, and litellm cost-map-based conservative dollar estimate 기준으로 partial closure가 생겼지만, promotion-quality cost policy나 provider/version drift-aware pricing governance까지는 닫히지 않았다
+      - `retry_budget`는 now controller-loop/generator/researcher/reviewer/template-plan까지 partial closure가 생겼지만, true live-positive path와 cost/timeout-aware provider budget까지 fully unify되지는 않았다
+      - first true live-positive proving-ground lane는 아직 없고, current positive control은 여전히 fixture-backed 또는 degraded/stub lane에 가깝다
 
 ### TKT-007. Browserful / Multi-Step Stateful Oracle Replay
 
@@ -654,6 +1100,10 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
   - `TKT-007-B. Realism Rubric Integration`
     - browserful/stateful oracle richness를 `artifact_quality` qualitative tier와 연결한다
     - runnable success와 lab realism을 구분하는 rubric이 measured/support gate까지 이어지게 정리한다
+  - `TKT-007-C. Realism Rubric Operationalization`
+    - `exploit_path_diversity`, `statefulness`, `victim_realism`, `environment_fidelity`, `verifier_independence`, `cleanup_reproducibility` 같은 explicit rubric axis와 threshold를 정의한다
+    - same rubric이 `artifact_quality`, `measured_gate`, `support_review`에서 서로 다른 해석을 쓰지 않도록 canonical quality contract로 승격한다
+    - current directly verified `csrf-dynamic-name-only`를 sessionful single-flow comparator로 고정하고, browserful/state-transition proving ground와 구분해 rubric threshold를 설계한다
 
 ### TKT-008. Authoritative Measurement Gate Closure
 
@@ -705,6 +1155,7 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
   - same `support_registry_update.json` preview와 `support_decide.py` CLI output도 `by_case_status`를 보존
   - same preview CLI output도 `all_reviewable_cases` / `mixed_cases` / `all_blocked_cases` explicit case list를 노출
   - representative sidecar support rerun 기준 `support_review_index.json`가 `by_support_status={"blocked_mixed":1}`와 separated `by_mechanical_blocker` / `by_promotion_policy_blocker`를 남기는 것까지 direct verification
+  - planning-only pair direct verification(`foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`)에서도 `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={"blocked_mixed":2}`로 authority handoff와 measured/promotion gate split이 계속 분리된다는 것까지 direct verification
 - Active subtask decomposition:
   - `TKT-008-A. Authoritative Measured Gate`
     - snippet/evidence reuse와 representative perf comparison을 measured gate에 연결
@@ -719,6 +1170,7 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
       - same case-level aggregate를 `support_registry_update.json` preview와 decision CLI output까지 이어서 review 단계에서도 유지
       - same preview CLI output도 explicit case list를 같이 노출해 operator가 preview JSON을 열지 않고도 case-level 상태를 읽게 정리
       - representative direct rerun에서 actual `blocked_mixed` lane를 지속적으로 재검증
+      - low-cost no-Docker planning-only pair(`foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`)를 authority-ready-but-measured-blocked regression pair로 고정해, `verdict_authority_ready=true`가 곧 reviewable/promotable candidate를 뜻하지 않는다는 current policy를 계속 확인
     - `TKT-008-A2. Authoritative CI / Measured Gate`
       - current preview/enforcement bridge를 CI-level authoritative measured gate로 승격
       - `snippet/evidence reuse`, representative perf comparison, blocker precedence를 explicit regression policy로 연결
@@ -796,6 +1248,7 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
   - empty decision / blocked review queue 기준 local apply chain이 false promotion 없이 `registry_item_count=0` no-op로 끝나는 것까지 direct verification
   - same no-op path에서 `accepted/rejected/pending_by_support_status={}`와 empty local registry `by_support_status={}`로 끝나는 것까지 direct verification
   - `support_review -> support_decide -> support_apply` synthetic CLI chain에서 reviewable accept path와 blocked no-op path를 둘 다 regression으로 고정
+  - planning-only pair output을 입력으로 한 blocked/no-op support chain이 `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0` 상태에서도 false promotion 없이 empty local registry로 끝나는 것까지 direct verification
 - Active subtask decomposition:
   - `TKT-009-A. Local Registry Materialization`
     - measured/manual preview artifact를 reusable local registry JSON workflow로 연결
@@ -805,8 +1258,19 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
       - representative reviewable measured lane를 실제 `support_review -> support_decide -> support_apply` chain으로 끝까지 검증
       - local registry가 non-empty accepted item을 materialize하는 representative direct workflow를 확보
       - current bounded closure로는 synthetic reviewable CLI workflow regression이 추가됐고, remaining residual은 actual measured lane accept path direct verification
+      - `TKT-009-A1-A. First Reviewable LLM-Shaped Positive Lane`
+        - `trusted-dynamic-sqli`를 first proving-ground lane로 고정해 `llm_fixture/llm_manifest/thin_or_incomplete/oracle_execution_parity_missing` residual을 reviewable accept-path 관점에서 실제로 줄인다
+        - same lane가 support review에서 non-empty accepted local registry item으로 이어지는 minimal representative closure를 만든다
+        - current known blocker set(`measured_gate:cache_reuse_inconsistent`, `measured_gate:artifact_quality_band_not_high`, `measured_gate:oracle_execution_parity_not_high`, `name_only_outcome:not_applicable`)을 direct burn-down target으로 유지한다
+      - `TKT-009-A1-B. First Reviewable Dynamic Name-Only Positive Lane`
+        - `open-redirect-dynamic-name-only`를 first dynamic name-only proving-ground lane로 고정해 `deterministic_fallback/partial/thin_fallback_demo` residual을 reviewable accept-path 관점에서 실제로 줄인다
+        - same lane가 measured gate와 support review를 통과해 “runnable but not promotable”에서 최소 1개의 reviewable candidate로 넘어가는 direct workflow를 만든다
+        - current known blocker set(`strict_open_world:strict_minimal_dynamic_fallback`, `open_world:semantic_guided_minimal_dynamic`, `artifact_quality:medium`, `name_only_outcome:partial`, `measured_gate:artifact_quality_band_not_high`)을 direct burn-down target으로 유지한다
     - `TKT-009-A2. Blocked / No-Op Path Preservation`
       - blocked queue, empty decision, authority/measured gate blocker가 false promotion 없이 `registry_item_count=0` no-op로 끝나는 current safety behavior를 regression으로 고정
+      - planning-only pair(`foobar-name-only-negative`, `open-redirect-strict-dynamic-no-remote`) 기반 support review index가 `by_case_status={all_blocked:2}`, `by_support_status={blocked_mixed:2}`를 유지한 채 same empty-decision apply chain으로 이어지게 고정
+      - same blocked/no-op chain에서 final local registry가 `schema_status=normalized`, `registry_item_count=0`, empty `by_review_status` / `by_support_status` / `by_case_review_status`로 끝나는 것을 low-cost no-Docker regression으로 계속 재검증
+      - high-quality bounded comparator `sqli-sidecar-compiler-custom-env`도 `strict_curated_lower_bound` / `catalog_resolved_lower_bound` / `family_evidence:candidate_unbacked` / `measured_gate:cache_reuse_inconsistent` 때문에 still blocked라는 truth를 유지해, “high quality bounded artifact != first promotable open-world lane” 경계를 regression으로 고정한다
   - `TKT-009-B. Registry Provenance / Merge Policy Hardening`
     - merge conflict policy, history compaction, registry schema evolution을 정리
     - local JSON workflow를 reusable operator workflow로 더 단단하게 만들기
@@ -859,6 +1323,10 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
   - `TKT-010-B. Stack / Runtime-Class Expansion`
     - 현재 `python/flask`, `python/fastapi` narrow pool을 넘는 stack/runtime class expansion을 설계
     - non-Python 또는 broader multi-runtime expansion을 existing measurement rigor 안에서만 backlog 상향 가능하게 정리
+  - `TKT-010-C. Expansion Unlock Contract`
+    - expansion backlog를 올리기 전 충족해야 할 prerequisite bundle을 explicit하게 정의한다
+    - 최소한 `live-LLM positive proving ground`, `non-SQLi primitive-first proving ground`, `browserful/stateful oracle proving ground`, `topology class beyond single-primary bounded lane` 같은 unlock set을 measurement/support gate와 함께 묶어 둔다
+    - same unlock set은 currently direct verification된 comparator lane(`trusted-dynamic-sqli`, `open-redirect-dynamic-name-only`, `csrf-dynamic-name-only`, `sqli-sidecar-compiler-custom-env`)과 future proving-ground lane를 구분해 읽게 만든다
 
 ## Sequencing Rule
 
@@ -899,4 +1367,12 @@ phase acceptance gate와 validation surface의 대응은 [docs/final_solution.md
 - latest confirmed residual을 축별 ticket bundle로 다시 쪼개는 방식이 바뀌면 `Open-World Residual Ticket Breakdown`도 같이 갱신한다.
 - residual implementation review의 canonical 순서가 바뀌면 `Open-World Residual Review Flow`와 관련 companion/entry 링크도 같이 갱신한다.
 - residual 문서 reading order가 바뀌면 `Open-World Residual Reading Order`와 README/handbook/code/e2e 문서의 대응 섹션도 같이 갱신한다.
+- queue-facing 정성/정량 shorthand가 바뀌면 `Current Capability Scorecard`와 companion 문서의 priority/turn-estimate entry도 같이 갱신한다.
+- 평가 내용을 ticket-form으로 재분해하는 규칙이 바뀌면 `Evaluation-To-Ticket Breakdown`과 companion 문서의 priority reading order도 같이 갱신한다.
+- turn envelope 추산이 바뀌면 `Estimated Turn Envelope`와 README/handbook/code/e2e/roadmap 문서의 priority routing도 같이 갱신한다.
+- `Turn Estimate Entry`의 reading order가 바뀌면 README/handbook/code/e2e entry 문서의 same shortcut도 같이 갱신한다.
+- LLM-response stricter reading의 ticket overlay가 바뀌면 companion 문서의 same routing/update section도 같이 갱신한다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 companion 문서의 same routing/update section과 `Assessment-To-Ticket Interpretation` reference도 같이 갱신한다.
+- `Priority Review Entry`의 reading order가 바뀌면 README/handbook/code/e2e와 archive/support companion 문서의 같은 entry도 같이 갱신한다.
+- `LLM-Response Capability Overlay`의 reading order나 해석 규칙이 바뀌면 related companion 문서의 `Priority Companions` / `Priority Review Entry` / `How To Update`도 같이 갱신한다.
 - review mode matrix나 mode entry shortcuts가 바뀌면 README/handbook/code/e2e 문서의 대응 섹션도 같이 갱신한다.

@@ -1,5 +1,49 @@
 # Eval 검증 추상화/템플릿 독립화 구현안
 
+Status: support
+Audience: implementation
+Not the source of truth for: current completion priority, canonical roadmap, current rerun truth
+
+이 문서는 eval/verifier subsystem refactor proposal이다. current implementation priority와 completion ordering, 잔여 작업량/turn envelope 해석은 [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`를 우선한다.
+priority companion set과 canonical priority routing은 [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`를 우선한다.
+LLM response로 실제 vulnerable Docker를 만드는 stricter reading은 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`를 우선한다.
+phase ordering은 [docs/final_solution.md](../final_solution.md), current truth/non-claim은 [docs/current_state_gap_analysis.md](../current_state_gap_analysis.md), [docs/constraints.md](../constraints.md)를 우선한다.
+이 refactor plan은 주로 `TKT-007`, `TKT-008` companion proposal로 읽고, standalone top-priority backlog source로 읽지 않는다.
+
+## Priority Companions
+
+이 문서를 우선순위 판단 관점으로 읽을 때는 아래 문서를 같이 본다.
+
+- current completion priority order: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`
+- representative evidence와 함께 보는 turn estimate shortcut: [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / reading order: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading: [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석: [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`
+- current truth / non-claim: [docs/current_state_gap_analysis.md](../current_state_gap_analysis.md), [docs/constraints.md](../constraints.md)
+
+## Priority Review Entry
+
+이 refactor proposal에서 priority를 확인할 때는 아래 순서를 따른다.
+
+1. 이 문서의 `Priority Companions`
+2. [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
+3. [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`, `Assessment-To-Ticket Interpretation`
+4. [docs/final_solution.md](../final_solution.md), [docs/current_state_gap_analysis.md](../current_state_gap_analysis.md), [docs/constraints.md](../constraints.md)
+
+turn estimate shortcut은 [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`를 따른다.
+
+## How To Update This Document
+
+- eval subsystem refactor proposal이나 companion positioning이 바뀔 때만 갱신합니다.
+- current implementation priority, current rerun truth, current non-claim은 여기로 옮겨 적지 않습니다. 각각 [docs/work_tickets.md](../work_tickets.md), [docs/current_state_gap_analysis.md](../current_state_gap_analysis.md), [docs/constraints.md](../constraints.md)를 우선합니다.
+- priority companion 관계나 priority reading order가 바뀌면 [docs/work_tickets.md](../work_tickets.md), [README.md](../../README.md)와 같이 맞춥니다.
+- LLM-response stricter reading의 eval-side role 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 맞춥니다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 맞춥니다.
+- 잔여 작업량/turn envelope 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`와 같이 맞춥니다.
+- [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`가 바뀌면 same shortcut도 같이 맞춥니다.
+- eval harness entrypoint나 verifier architecture 설명이 canonical code doc 쪽에서 바뀌면 [docs/code/evals.md](../code/evals.md), [tests/e2e/README.md](../../tests/e2e/README.md)와 같이 맞춥니다.
+
 ## 1. 개요
 - 목적: `evals/poc_verifier` 파이프라인이 현재 SQLi(CWE-89), CSRF(CWE-352) 템플릿에만 종속되어 있는 문제를 해소하고, 새로운 취약 템플릿을 추가할 때 규칙·가드·플러그인을 반복 구현하지 않아도 되도록 공통 추상화를 도입한다.
 - 근거: 실제 산출물 `artifacts/sid-00cd2caed6d3/reports/evals.json`에서 확인되듯 검증 증거가 `app.py`, `poc.py` 고정 문자열(SELECT, "SQLi SUCCESS", "@app.route('/transfer")만을 확인한다. 또한 `agents/generator/synthesis.py:584-661`의 가드가 동일 문자열 존재 여부를 하드코딩해 합성단계에서 template 이탈을 금지한다.
@@ -75,7 +119,7 @@ class BaseScenarioVerifier(ABC):
 2. **RuleSpec 로더**: `common/rules`에서 RuleSpec dataclass와 placeholder 해석 함수를 구현한다.
 3. **평가 추상화 도입**: `evals/poc_verifier`에 `EvaluationContext`, `BaseScenarioVerifier`, `ScenarioRegistry`를 추가하고 기존 rule-based/플러그인 코드를 신규 구조로 이식한다.
 4. **Generator/Researcher 연동**: RuleSpec을 generator 가드·runtime rule 생성에 재사용하여 이중 정의를 제거한다.
-5. **회귀 테스트**: `python evals/poc_verifier/main.py --sid <SID>` 및 `ops/ci/run_base_example.sh`를 실행하고 `artifacts/<SID>/reports/evals.json` 비교, synthesis guard 에러 메시지 변화를 확인한다.
+5. **회귀 테스트**: `python evals/poc_verifier/main.py --sid <SID>` 및 `ops/ci/run_base_example.sh`를 실행하고 `artifacts/<SID>/reports/evals.json` 비교, synthesis guard 에러 메시지 변화를 확인한다. workspace-local helper contract regression은 `VULD_BASE_REQUIREMENT_FILE` / `VULD_BASE_RUN_CASE_SCRIPT` seam과 `tests/test_ops_ci_base_example_scripts.py`로 얇게 고정한다.
 
 ## 6. 추가 고려 사항
 - **LLM fallback**: `llm_assisted_verify`는 context-aware evidence를 필요로 하므로 prompt에 RuleSpec 요약(필수 시그니처/패턴)을 주입한다.

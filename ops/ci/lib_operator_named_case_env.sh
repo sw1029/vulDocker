@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+operator_prefix_export_direct_named_env() {
+  local source_prefix="$1"
+  local default_cases_root="$2"
+  local default_output_root="$3"
+  local direct_helper="$4"
+  local named_helper="$5"
+  local log_prefix="$6"
+
+  local python_var="${source_prefix}_PYTHON_BIN"
+  local cases_var="${source_prefix}_CASES_ROOT"
+  local output_var="${source_prefix}_OUTPUT_ROOT"
+  local mode_var="${source_prefix}_MODE"
+  local no_snapshot_var="${source_prefix}_NO_SNAPSHOT"
+
+  export VULD_NAMED_DIRECT_HELPER="${direct_helper}"
+  export VULD_NAMED_DIRECT_PYTHON_BIN="${!python_var:-python}"
+  export VULD_NAMED_DIRECT_CASES_ROOT="${!cases_var:-${default_cases_root}}"
+  export VULD_NAMED_DIRECT_OUTPUT_ROOT="${!output_var:-${default_output_root}}"
+  export VULD_NAMED_DIRECT_MODE="${!mode_var:-deterministic}"
+  export VULD_NAMED_DIRECT_NO_SNAPSHOT="${!no_snapshot_var:-1}"
+  export VULD_NAMED_PRESET_TARGET_HELPER="${named_helper}"
+  export VULD_NAMED_PRESET_LOG_PREFIX="${log_prefix}"
+}
+
+operator_prefix_export_support_named_env() {
+  local source_prefix="$1"
+  local default_cases_root="$2"
+  local default_output_root="$3"
+  local support_helper="$4"
+  local named_helper="$5"
+  local log_prefix="$6"
+
+  local python_var="${source_prefix}_PYTHON_BIN"
+  local cases_var="${source_prefix}_CASES_ROOT"
+  local output_var="${source_prefix}_OUTPUT_ROOT"
+  local mode_var="${source_prefix}_MODE"
+  local attempts_var="${source_prefix}_ATTEMPTS"
+  local review_only_var="${source_prefix}_REVIEW_ONLY"
+  local no_snapshot_var="${source_prefix}_NO_SNAPSHOT"
+  local retry_count_var="${source_prefix}_DOCKER_RETRY_COUNT"
+  local retry_delay_var="${source_prefix}_DOCKER_RETRY_DELAY_SEC"
+  local permission_artifact_var="${source_prefix}_PERMISSION_ARTIFACT_NAME"
+  local permission_summary_var="${source_prefix}_PERMISSION_SUMMARY_NAME"
+  local review_output_var="${source_prefix}_REVIEW_OUTPUT_NAME"
+
+  export VULD_NAMED_SUPPORT_HELPER="${support_helper}"
+  export VULD_NAMED_SUPPORT_PYTHON_BIN="${!python_var:-python}"
+  export VULD_NAMED_SUPPORT_CASES_ROOT="${!cases_var:-${default_cases_root}}"
+  export VULD_NAMED_SUPPORT_OUTPUT_ROOT="${!output_var:-${default_output_root}}"
+  export VULD_NAMED_SUPPORT_MODE="${!mode_var:-deterministic}"
+  export VULD_NAMED_SUPPORT_ATTEMPTS="${!attempts_var:-}"
+  export VULD_NAMED_SUPPORT_REVIEW_ONLY="${!review_only_var:-}"
+  export VULD_NAMED_SUPPORT_NO_SNAPSHOT="${!no_snapshot_var:-0}"
+  export VULD_NAMED_SUPPORT_PERMISSION_ARTIFACT_NAME="${!permission_artifact_var:-}"
+  export VULD_NAMED_SUPPORT_PERMISSION_SUMMARY_NAME="${!permission_summary_var:-}"
+  export VULD_NAMED_SUPPORT_DOCKER_RETRY_COUNT="${!retry_count_var:-}"
+  export VULD_NAMED_SUPPORT_DOCKER_RETRY_DELAY_SEC="${!retry_delay_var:-}"
+  export VULD_NAMED_SUPPORT_REVIEW_OUTPUT_NAME="${!review_output_var:-}"
+  export VULD_NAMED_PRESET_TARGET_HELPER="${named_helper}"
+  export VULD_NAMED_PRESET_LOG_PREFIX="${log_prefix}"
+}

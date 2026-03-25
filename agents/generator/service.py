@@ -24,7 +24,7 @@ from common.guardrails import (
     write_guard_spec,
 )
 from common.hints import normalize_hint_payload
-from common.llm import LLMClient
+from common.llm import LLMClient, llm_execution_summary
 from common.logging import get_logger
 from common.name_only import is_name_driven_requirement, name_only_mode
 from common.contracts import (
@@ -36,7 +36,7 @@ from common.contracts import (
 )
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
 from common.plan import load_plan
-from common.prompts import build_generator_prompt
+from common.prompts import build_generator_prompt, prompt_contract
 from common.runtime_assets import record_generated_runtime_asset
 from common.runtime_surface import derive_service_env, diagnose_runtime_surface
 from common.rules import list_rules, load_rule, load_static_rule, rule_filename_for_vuln_id
@@ -294,8 +294,47 @@ class GeneratorService:
         self.single_attempt = bool(single_attempt) or not internal_loops_enabled
         self._template_root = template_root
         self._registry: Optional[TemplateRegistry] = None
+        self._llm_prompt_invocations: Dict[str, int] = {}
         loop_cfg = self.plan.get("loop", {"max_loops": 3})
         self.loop_controller = LoopController(self.sid, max_loops=int(loop_cfg.get("max_loops", 3)))
+
+    def _record_prompt_invocation(self, name: str) -> None:
+        token = str(name or "").strip()
+        if not token:
+            return
+        self._llm_prompt_invocations[token] = int(self._llm_prompt_invocations.get(token) or 0) + 1
+
+    def _prompt_invocation_metadata(self) -> Dict[str, Any]:
+        prompt_invocations = {
+            str(key).strip(): int(value)
+            for key, value in (self._llm_prompt_invocations or {}).items()
+            if str(key).strip() and int(value) > 0
+        }
+        if not prompt_invocations:
+            return {}
+        return {
+            "prompt_contracts": [prompt_contract(name) for name in prompt_invocations],
+            "prompt_invocations": prompt_invocations,
+        }
+
+    def _retry_budget_context(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        loop_controller = getattr(self, "loop_controller", None)
+        if loop_controller is not None:
+            try:
+                current_loop = int(getattr(loop_controller, "current_loop", 0))
+            except Exception:
+                current_loop = 0
+            try:
+                max_loops = int(getattr(loop_controller, "max_loops", 0))
+            except Exception:
+                max_loops = 0
+            if current_loop > 0:
+                payload["controller_loop_current"] = current_loop
+            if max_loops > 0:
+                payload["controller_loop_max"] = max_loops
+        payload["single_attempt_mode"] = bool(getattr(self, "single_attempt", False))
+        return payload
 
     def _read_loop_index(self) -> int:
         loop_path = self.metadata_dir / "loop_state.json"
@@ -809,6 +848,17 @@ class GeneratorService:
 
     def _write_compiler_records(self, result: CompilerResult, written_files: List[str]) -> None:
         files = result.manifest.get("files") or []
+        llm_execution = llm_execution_summary(
+            getattr(self, "llm", None),
+            observed=True,
+            metadata={"cache_mode": "none"},
+        )
+        llm_stub_used = bool(llm_execution.get("stub_fallback"))
+        llm_fixture_used = bool(llm_execution.get("fixture_used"))
+        llm_provider_attempted = bool(llm_execution.get("provider_attempted"))
+        llm_provider_succeeded = bool(llm_execution.get("provider_succeeded"))
+        llm_failure_class = str(llm_execution.get("last_error_class") or "").strip()
+        llm_failure_message = str(llm_execution.get("last_error_message") or "").strip()
         summary = {
             "index": 1,
             "score": 1.0,
@@ -823,10 +873,13 @@ class GeneratorService:
             "fallback_used": False,
             "fallback_class": "",
             "family_override_applied": False,
-            "llm_stub_used": False,
-            "llm_fixture_used": False,
-            "llm_failure_class": "",
-            "llm_failure_message": "",
+            "llm_stub_used": llm_stub_used,
+            "llm_fixture_used": llm_fixture_used,
+            "llm_provider_attempted": llm_provider_attempted,
+            "llm_provider_succeeded": llm_provider_succeeded,
+            "llm_failure_class": llm_failure_class,
+            "llm_failure_message": llm_failure_message,
+            "llm_execution": llm_execution,
         }
         candidates_payload = {"mode": "compiler", "candidates": [summary]}
         (self.metadata_dir / "generator_candidates.json").write_text(
@@ -853,18 +906,25 @@ class GeneratorService:
             "fallback_used": False,
             "fallback_class": None,
             "family_override_applied": False,
-            "llm_stub_used": False,
-            "llm_fixture_used": False,
-            "llm_failure_class": "",
-            "llm_failure_message": "",
+            "llm_stub_used": llm_stub_used,
+            "llm_fixture_used": llm_fixture_used,
+            "llm_provider_attempted": llm_provider_attempted,
+            "llm_provider_succeeded": llm_provider_succeeded,
+            "llm_failure_class": llm_failure_class,
+            "llm_failure_message": llm_failure_message,
+            "llm_execution": llm_execution,
             "compiler_strategy": result.strategy,
             "provenance": {
                 "generation_origin": "compiler_generated",
                 "fallback_used": False,
                 "fallback_class": None,
                 "family_override_applied": False,
-                "llm_stub_used": False,
-                "llm_fixture_used": False,
+                "llm_stub_used": llm_stub_used,
+                "llm_fixture_used": llm_fixture_used,
+                "llm_provider_attempted": llm_provider_attempted,
+                "llm_provider_succeeded": llm_provider_succeeded,
+                "llm_failure_class": llm_failure_class or None,
+                "llm_execution": llm_execution,
             },
             "written_files": written_files,
         }
@@ -1059,6 +1119,10 @@ class GeneratorService:
             metadata_dir=self.metadata_dir,
             mode=self.generator_mode,
             user_deps=self.user_deps,
+            retry_budget_context={
+                **self._retry_budget_context(),
+                "planned_candidate_budget": self._candidate_k(),
+            },
         )
         return engine.run(
             requirement=self._requirement_for_synthesis(),
@@ -1134,6 +1198,7 @@ class GeneratorService:
                 context.rag,
                 failure_context=context.failure,
             )
+            self._record_prompt_invocation("generator_plan")
             llm_notes = self.llm.generate(prompt_messages)
             (self.metadata_dir / "generator_llm_plan.md").write_text(llm_notes, encoding="utf-8")
         selection, candidates = self._select_template()
@@ -1579,6 +1644,14 @@ class GeneratorService:
         )
         generation_origin = "runtime_template_clone" if runtime_template_selected else "built_in_template"
         diagnostics = self._template_runtime_diagnostics(selection)
+        llm_metadata = {"cache_mode": "none", **self._prompt_invocation_metadata()}
+        prompt_invocations = llm_metadata.get("prompt_invocations") if isinstance(llm_metadata.get("prompt_invocations"), dict) else {}
+        if prompt_invocations:
+            retry_budget = self._retry_budget_context()
+            retry_budget["template_plan_actual_runs"] = int(prompt_invocations.get("generator_plan") or 0)
+            retry_budget["template_selection_candidate_budget"] = self._candidate_k()
+            llm_metadata["retry_budget"] = retry_budget
+        llm_execution = llm_execution_summary(getattr(self, "llm", None), observed=True, metadata=llm_metadata)
         selection_payload = {
             "sid": self.sid,
             "template_id": selection.id,
@@ -1610,8 +1683,13 @@ class GeneratorService:
             "generation_origin": generation_origin,
             "fallback_used": False,
             "family_override_applied": False,
-            "llm_stub_used": bool(getattr(self.llm, "use_stub", False)),
-            "llm_fixture_used": bool(getattr(self.llm, "fixture_used", False)),
+            "llm_stub_used": bool(llm_execution.get("stub_fallback")),
+            "llm_fixture_used": bool(llm_execution.get("fixture_used")),
+            "llm_provider_attempted": bool(llm_execution.get("provider_attempted")),
+            "llm_provider_succeeded": bool(llm_execution.get("provider_succeeded")),
+            "llm_failure_class": str(llm_execution.get("last_error_class") or "").strip(),
+            "llm_failure_message": str(llm_execution.get("last_error_message") or "").strip(),
+            "llm_execution": llm_execution,
             "template_root": str(template_root),
             "template_runtime_diagnostics": diagnostics,
         }

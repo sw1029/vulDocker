@@ -14,9 +14,11 @@ Relevant canonical docs:
 - [작업 티켓](../work_tickets.md)
 - success criteria 5축과 backlog owner 대응: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Axis Map`
 - completion companion set과 canonical reading order: [docs/work_tickets.md](../work_tickets.md)의 `Completion Companions`, `Open-World Completion Reading Order`
+- priority companion set과 canonical priority routing: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
 - success criteria 5축의 완료판정 질문과 최소 근거: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Checklist`
 - success criteria 5축의 canonical 완료 검토 순서: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Completion Review Flow`
 - latest confirmed residual의 축별 ticket bundle 분해: [docs/work_tickets.md](../work_tickets.md)의 `Open-World Residual Ticket Breakdown`
+- latest direct verification까지 반영한 current completion priority order와 잔여 작업량/turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`, `Estimated Turn Envelope`
 - [검증 하니스](../../tests/e2e/README.md)
 
 ## 구성 요소
@@ -89,6 +91,7 @@ Relevant canonical docs:
 ## Current Residual Owners
 
 - partial-lane decision state-machine residual은 `TKT-001-E/F` owner다.
+- strict capability-gate fail-closed subclass split(`strict_dynamic_remote_research_unavailable` vs `strict_dynamic_live_llm_unavailable`) 유지도 현재는 `TKT-001-E` residual reading에 포함된다.
 - evidence authority / scenario selection threshold residual은 `TKT-001-G` owner다.
 - primitive-first branch controller와 runtime control-plane residual은 `TKT-001-A/D`, `TKT-002-C`, `TKT-003-A`, `TKT-004-A`, `TKT-005-A`와 직접 연결된다.
 - 현재 common surface는 strong prompt/contract candidate IR를 제공하지만, 이것만으로 primitive-first or generalized runtime closure를 claim하면 안 된다.
@@ -103,6 +106,29 @@ Relevant canonical docs:
 - `TKT-001` completion은 `selection_decision`, `scenario_candidates`, `ready_for_materialization`, `open_world_evidence_ready`가 summary helper가 아니라 authoritative branch input으로 충분한지부터 본다.
 - `TKT-002`~`TKT-005` completion은 `runtime_graph`, `executor_plan`, `env_contract`, `volume_contract`, `network_contract`가 downstream fallback 없이도 canonical runtime input으로 읽히는지부터 본다.
 
+## Priority Companions
+
+이 문서를 우선순위 판단 관점으로 읽을 때는 아래 문서를 같이 본다.
+
+- current completion priority order: [docs/work_tickets.md](../work_tickets.md)의 `Confirmed Completion Priority Order`
+- 잔여 작업량과 practical turn envelope: [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`
+- representative evidence와 함께 보는 turn estimate shortcut: [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`
+- priority companion set / reading order: [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`, `Priority Reading Order`
+- latest positive representative pair의 ticket-form reading: [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
+- LLM-response 기준 residual/priority 해석: [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`
+- current truth / non-claim: [docs/current_state_gap_analysis.md](../current_state_gap_analysis.md), [docs/constraints.md](../constraints.md)
+- code/harness entry: [docs/code/README.md](README.md), [tests/e2e/README.md](../../tests/e2e/README.md)
+
+## Priority Review Focus
+
+- current completion priority order에서 common은 `TKT-001` 다음 `TKT-002`~`TKT-005` contract/control-plane closure를 읽는 핵심 companion이다.
+- 따라서 common 문서는 expansion이나 support workflow보다 앞선 primitive/runtime contract closure가 왜 선행되어야 하는지 설명하는 code-level entry로 읽는다.
+- latest positive representative pair의 ticket-form reading도 `visible blocker`보다 먼저 `structural root-cause`를 common contract/control-plane 쪽에서 읽게 만든다. canonical 해석은 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`을 따른다.
+- 잔여 작업량/turn envelope 해석도 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`를 같이 따른다.
+- turn estimate shortcut도 [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`를 같이 따른다.
+- LLM-response stricter reading에서도 positive LLM-shaped materialization claim은 결국 common contract/control-plane closure 위에서만 성립하므로, same priority order를 설명하는 핵심 companion으로 읽는다.
+- LLM-response 기준 상세 해석은 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`를 따른다.
+
 ## Review Mode Entry
 
 이 문서를 열 때는 아래 mode entry를 먼저 고른다.
@@ -115,6 +141,10 @@ Relevant canonical docs:
 - 잔여 구현 검토:
   - 이 문서의 `Residual Review Focus`
   - [docs/code/README.md](README.md)의 `Residual Review Entry`
+- 우선순위 판단:
+  - 이 문서의 `Priority Review Focus`
+  - [docs/work_tickets.md](../work_tickets.md)의 `Priority Companions`
+  - [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`
 
 ## Ticket-First Entry
 
@@ -134,6 +164,11 @@ Relevant canonical docs:
   - `tests/test_name_only_helpers.py`
   - `tests/test_requirement_policy_defaults.py`
   - `tests/test_role_canonicalization.py`
+  - low-cost no-Docker capability-gate lanes:
+    - `open-redirect-strict-dynamic-no-remote`
+    - `open-redirect-strict-dynamic-stub`
+  - unsupported negative abstain lane:
+    - `foobar-name-only-negative`
 - contract/runtime/oracle surface regression:
   - `tests/test_contract_resolution.py`
   - `tests/test_runtime_surface.py`
@@ -151,5 +186,10 @@ Relevant canonical docs:
 - ticket-first entrypoint나 representative validation surface가 바뀌면 이 문서의 해당 섹션도 같이 갱신한다.
 - completion review focus가 바뀌면 같은 owner/ticket mapping에 맞춰 이 문서도 같이 갱신한다.
 - residual review focus가 바뀌면 같은 owner/ticket mapping에 맞춰 이 문서도 같이 갱신한다.
+- priority review focus나 priority companion 해석이 바뀌면 [docs/code/README.md](README.md), [docs/work_tickets.md](../work_tickets.md)와 같이 갱신한다.
+- LLM-response stricter reading의 common contract 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `LLM-Response Capability Overlay`와 같이 갱신한다.
+- latest positive representative pair의 ticket-form 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Assessment-To-Ticket Interpretation`와 같이 갱신한다.
+- 잔여 작업량/turn envelope 해석이 바뀌면 [docs/work_tickets.md](../work_tickets.md)의 `Estimated Turn Envelope`와 같이 갱신한다.
+- [docs/work_tickets.md](../work_tickets.md)의 `Turn Estimate Entry`가 바뀌면 same shortcut도 같이 갱신한다.
 - review mode entry shortcut이 바뀌면 [docs/code/README.md](README.md)와 같이 갱신한다.
 - contract-related representative rerun/harness entrypoint가 바뀌면 [tests/e2e/README.md](../../tests/e2e/README.md)와 같이 갱신한다.

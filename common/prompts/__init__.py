@@ -1,5 +1,6 @@
 """Prompt templates used across agents."""
 
+from .meta import prompt_contract
 from .templates import (
     build_guard_autofix_prompt,
     build_guard_planner_prompt,
@@ -11,6 +12,7 @@ from .templates import (
 )
 
 __all__ = [
+    "prompt_contract",
     "build_guard_autofix_prompt",
     "build_guard_planner_prompt",
     "build_generator_prompt",

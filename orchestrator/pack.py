@@ -315,12 +315,34 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
             manifest["retry_recommended"] = retry_recommended
     if len(bundles) == 1:
         provenance = bundles[0].get("provenance") or {}
+        researcher_bundle = bundles[0].get("researcher") if isinstance(bundles[0].get("researcher"), dict) else {}
         if isinstance(provenance.get("generation_origin"), str) and provenance.get("generation_origin", "").strip():
             manifest["generation_origin"] = provenance["generation_origin"].strip()
         for key in ("fallback_used", "family_override_applied", "llm_stub_used", "llm_fixture_used"):
             value = provenance.get(key)
             if isinstance(value, bool):
                 manifest[key] = value
+        generation_llm_execution = provenance.get("llm_execution") if isinstance(provenance, dict) else {}
+        if isinstance(generation_llm_execution, dict):
+            retry_budget = generation_llm_execution.get("retry_budget")
+            if isinstance(retry_budget, dict) and retry_budget:
+                manifest["generation_retry_budget"] = dict(retry_budget)
+            timeout_budget = generation_llm_execution.get("timeout_budget")
+            if isinstance(timeout_budget, dict) and timeout_budget:
+                manifest["generation_timeout_budget"] = dict(timeout_budget)
+            cost_budget = generation_llm_execution.get("cost_budget")
+            if isinstance(cost_budget, dict) and cost_budget:
+                manifest["generation_cost_budget"] = dict(cost_budget)
+        if isinstance(researcher_bundle, dict):
+            retry_budget = researcher_bundle.get("retry_budget")
+            if isinstance(retry_budget, dict) and retry_budget:
+                manifest["research_retry_budget"] = dict(retry_budget)
+            timeout_budget = researcher_bundle.get("timeout_budget")
+            if isinstance(timeout_budget, dict) and timeout_budget:
+                manifest["research_timeout_budget"] = dict(timeout_budget)
+            cost_budget = researcher_bundle.get("cost_budget")
+            if isinstance(cost_budget, dict) and cost_budget:
+                manifest["research_cost_budget"] = dict(cost_budget)
         for key in ("semantic_guided_selection_source", "semantic_guided_abstain_reason"):
             value = provenance.get(key)
             if isinstance(value, str) and value.strip():
@@ -336,6 +358,18 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         compiler_contract = bundles[0].get("compiler_contract") or {}
         if isinstance(compiler_contract.get("compiler_supported"), bool):
             manifest["compiler_supported"] = compiler_contract["compiler_supported"]
+        reviewer_report = _load_json(metadata_dir / "reviewer_report.json") or {}
+        reviewer_llm_execution = reviewer_report.get("llm_execution") if isinstance(reviewer_report, dict) else {}
+        if isinstance(reviewer_llm_execution, dict):
+            retry_budget = reviewer_llm_execution.get("retry_budget")
+            if isinstance(retry_budget, dict) and retry_budget:
+                manifest["reviewer_retry_budget"] = dict(retry_budget)
+            timeout_budget = reviewer_llm_execution.get("timeout_budget")
+            if isinstance(timeout_budget, dict) and timeout_budget:
+                manifest["reviewer_timeout_budget"] = dict(timeout_budget)
+            cost_budget = reviewer_llm_execution.get("cost_budget")
+            if isinstance(cost_budget, dict) and cost_budget:
+                manifest["reviewer_cost_budget"] = dict(cost_budget)
         for key in (
             "compiler_strategy",
             "compiler_reason",
@@ -1451,16 +1485,27 @@ def _bundle_generation_provenance(
         "source",
         "fallback_class",
         "materializer",
+        "llm_failure_class",
         "semantic_guided_selection_source",
         "semantic_guided_abstain_reason",
     ):
         value = _read_str(key)
         if value:
             payload[key] = value
-    for key in ("fallback_used", "family_override_applied", "llm_stub_used", "llm_fixture_used"):
+    for key in ("fallback_used", "family_override_applied", "llm_stub_used", "llm_fixture_used", "llm_provider_attempted", "llm_provider_succeeded"):
         value = _read_bool(key)
         if value is not None:
             payload[key] = value
+    for source in (
+        provenance,
+        contract if isinstance(contract, dict) else {},
+        generator_manifest_meta,
+        generator_template or {},
+    ):
+        llm_execution = source.get("llm_execution")
+        if isinstance(llm_execution, dict) and llm_execution:
+            payload["llm_execution"] = dict(llm_execution)
+            break
     semantic_guided_ambiguous = _read_bool("semantic_guided_ambiguous")
     if semantic_guided_ambiguous is not None:
         payload["semantic_guided_ambiguous"] = semantic_guided_ambiguous
@@ -1508,6 +1553,16 @@ def _latest_failure_provenance(metadata_dir: Path) -> Dict[str, Any]:
         provenance["llm_stub_used"] = True
     if latest.get("llm_fixture_used") is True:
         provenance["llm_fixture_used"] = True
+    if latest.get("llm_provider_attempted") is True:
+        provenance["llm_provider_attempted"] = True
+    if latest.get("llm_provider_succeeded") is True:
+        provenance["llm_provider_succeeded"] = True
+    llm_failure_class = str(latest.get("llm_failure_class") or "").strip()
+    if llm_failure_class:
+        provenance["llm_failure_class"] = llm_failure_class
+    llm_execution = latest.get("llm_execution")
+    if isinstance(llm_execution, dict) and llm_execution:
+        provenance["llm_execution"] = dict(llm_execution)
     return provenance
 
 
@@ -3123,6 +3178,15 @@ def _bundle_researcher_summary(
         last_error_class = llm_execution.get("last_error_class")
         if isinstance(last_error_class, str) and last_error_class.strip():
             summary["llm_failure_class"] = last_error_class.strip()
+        retry_budget = llm_execution.get("retry_budget")
+        if isinstance(retry_budget, dict) and retry_budget:
+            summary["retry_budget"] = dict(retry_budget)
+        timeout_budget = llm_execution.get("timeout_budget")
+        if isinstance(timeout_budget, dict) and timeout_budget:
+            summary["timeout_budget"] = dict(timeout_budget)
+        cost_budget = llm_execution.get("cost_budget")
+        if isinstance(cost_budget, dict) and cost_budget:
+            summary["cost_budget"] = dict(cost_budget)
     return summary
 
 

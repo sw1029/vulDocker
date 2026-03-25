@@ -251,6 +251,13 @@ def test_write_records_persists_generation_provenance(tmp_path: Path) -> None:
             "runtime_plan": {"topology": "single_service"},
         }
     }
+    engine._llm_prompt_invocations = {"synthesis_manifest": 1, "guard_autofix": 1}  # type: ignore[attr-defined]
+    engine._retry_budget_context = {  # type: ignore[attr-defined]
+        "controller_loop_current": 2,
+        "controller_loop_max": 3,
+        "single_attempt_mode": True,
+        "planned_candidate_budget": 1,
+    }
     selected = CandidateReport(
         index=1,
         manifest={
@@ -288,7 +295,20 @@ def test_write_records_persists_generation_provenance(tmp_path: Path) -> None:
     assert manifest["family_override_applied"] is False
     assert manifest["llm_stub_used"] is True
     assert manifest["llm_failure_class"] == "quota_exhausted"
+    assert manifest["llm_execution"]["path_class"] == "stub"
+    assert manifest["llm_execution"]["stub_fallback"] is True
+    assert manifest["llm_execution"]["cache_mode"] == "none"
+    assert manifest["llm_execution"]["retry_budget"]["candidate_budget"] == 1
+    assert manifest["llm_execution"]["retry_budget"]["guard_autofix_max_attempts"] == 0
+    assert manifest["llm_execution"]["retry_budget"]["controller_loop_current"] == 2
+    assert manifest["llm_execution"]["retry_budget"]["controller_loop_max"] == 3
+    assert manifest["llm_execution"]["retry_budget"]["single_attempt_mode"] is True
+    assert manifest["llm_execution"]["retry_budget"]["actual_candidate_runs"] == 1
+    assert manifest["llm_execution"]["retry_budget"]["actual_guard_autofix_runs"] == 1
+    assert manifest["llm_execution"]["prompt_contracts"][0]["name"] == "synthesis_manifest"
+    assert manifest["llm_execution"]["prompt_contracts"][1]["name"] == "guard_autofix"
     assert manifest["provenance"]["generation_origin"] == "deterministic_fallback"
+    assert manifest["provenance"]["llm_execution"]["path_class"] == "stub"
     assert manifest["failure_stage"] == "runtime_plan"
     assert manifest["failure_stage_reason"] == "runtime_plan_mismatch"
     assert manifest["staged_synthesis"]["runtime_plan"]["topology"] == "single_service"
@@ -303,6 +323,12 @@ def test_record_guard_failure_persists_failure_path_provenance(tmp_path: Path) -
             "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
             "runtime_plan": {"topology": "single_service"},
         },
+    }
+    engine._llm_prompt_invocations = {"synthesis_manifest": 1, "guard_autofix": 1}  # type: ignore[attr-defined]
+    engine._retry_budget_context = {  # type: ignore[attr-defined]
+        "controller_loop_current": 2,
+        "controller_loop_max": 3,
+        "single_attempt_mode": True,
     }
     report = CandidateReport(
         index=1,
@@ -329,6 +355,11 @@ def test_record_guard_failure_persists_failure_path_provenance(tmp_path: Path) -
     assert payload["fallback_used"] is True
     assert payload["family_override_applied"] is False
     assert payload["llm_failure_class"] == "quota_exhausted"
+    assert payload["llm_execution"]["path_class"] == "stub"
+    assert payload["llm_execution"]["last_error_class"] == "quota_exhausted"
+    assert payload["llm_execution"]["cache_mode"] == "none"
+    assert payload["llm_execution"]["prompt_contracts"][0]["version"] == "build_synthesis_prompt@1"
+    assert payload["llm_execution"]["prompt_invocations"]["guard_autofix"] == 1
     assert payload["failure_stage"] == "design_brief"
     assert payload["failure_stage_reason"] == "design_brief_mismatch"
     assert payload["staged_synthesis"]["runtime_plan"]["topology"] == "single_service"

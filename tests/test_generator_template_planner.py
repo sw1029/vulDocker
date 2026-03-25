@@ -637,3 +637,73 @@ def test_name_only_mode_strict_dynamic_disables_lower_bound_fallback_from_reques
 
     assert service._dynamic_eval_enabled() is True  # type: ignore[attr-defined]
     assert service._dynamic_eval_allow_lower_bound_fallback() is False  # type: ignore[attr-defined]
+
+
+def test_write_metadata_records_unified_retry_budget_for_template_plan(tmp_path: Path) -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.sid = "sid-template-meta"  # type: ignore[attr-defined]
+    service.metadata_dir = tmp_path  # type: ignore[attr-defined]
+    service.runtime_templates_dir = tmp_path / "runtime_templates"  # type: ignore[attr-defined]
+    service.variation = {"mode": "deterministic"}  # type: ignore[attr-defined]
+    service.loop_index = 1  # type: ignore[attr-defined]
+    service.user_deps = []  # type: ignore[attr-defined]
+    service.single_attempt = True  # type: ignore[attr-defined]
+    service.loop_controller = SimpleNamespace(current_loop=2, max_loops=4)  # type: ignore[attr-defined]
+    service._candidate_k = lambda: 3  # type: ignore[attr-defined]
+    service._llm_prompt_invocations = {"generator_plan": 1}  # type: ignore[attr-defined]
+    service._template_runtime_diagnostics = lambda selection: {  # type: ignore[attr-defined]
+        "requested_stack_id": "python/flask",
+        "stack_match": True,
+        "status": "not_required",
+        "reason": "template runtime requirements are satisfied",
+    }
+
+    class _LLM:
+        def execution_summary(self, observed=False, metadata=None):  # noqa: ANN001
+            payload = {
+                "attempt_scope": "observed" if observed else "last_call",
+                "provider_attempted": False,
+                "provider_succeeded": False,
+                "stub_fallback": False,
+                "fixture_used": False,
+                "path_class": "not_executed",
+                "cache_mode": "none",
+            }
+            if isinstance(metadata, dict):
+                payload.update(metadata)
+            return payload
+
+    service.llm = _LLM()  # type: ignore[attr-defined]
+
+    selection = SimpleNamespace(
+        id="flask_sqlite_raw",
+        path=tmp_path / "templates" / "flask_sqlite_raw" / "app",
+        pattern_id="flask_sqlite_raw",
+        stack_id="python/flask",
+        language="python",
+        framework="flask",
+        scenario_type="web-poc",
+        requires_external_db=False,
+        metadata={"ports": {"app": 5000}},
+        service_entry="app.py",
+        poc_entry="poc.py",
+        service_env={},
+    )
+
+    service._write_metadata(  # type: ignore[attr-defined]
+        selection,
+        [],
+        ["app.py", "poc.py"],
+        "",
+        mode_label="template",
+        user_deps_added=[],
+    )
+
+    payload = json.loads((tmp_path / "generator_template.json").read_text(encoding="utf-8"))
+    llm_execution = payload["llm_execution"]
+    assert llm_execution["prompt_contracts"][0]["name"] == "generator_plan"
+    assert llm_execution["retry_budget"]["controller_loop_current"] == 2
+    assert llm_execution["retry_budget"]["controller_loop_max"] == 4
+    assert llm_execution["retry_budget"]["single_attempt_mode"] is True
+    assert llm_execution["retry_budget"]["template_plan_actual_runs"] == 1
+    assert llm_execution["retry_budget"]["template_selection_candidate_budget"] == 3

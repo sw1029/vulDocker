@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from common.guardrails import GuardEngine, load_guard_spec
-from common.llm import LLMClient
+from common.llm import LLMClient, llm_execution_summary
 from common.logging import get_logger
 from common.name_only import is_name_driven_requirement
 from common.bundle_state import bundle_research_blocker
 from common.paths import ensure_dir
 from common.plan import load_plan
-from common.prompts import build_reviewer_prompt
+from common.prompts import build_reviewer_prompt, prompt_contract
 from common.roles import role_matches
 from common.rules import load_rule, load_static_rule
 from common.contracts import load_generator_contract
@@ -68,6 +68,79 @@ class ReviewerService:
         )
         self.llm = LLMClient(reviewer_model, profile)
         self.bundles = load_vuln_bundles(self.plan)
+        self._llm_prompt_invocations: Dict[str, int] = {}
+
+    def _record_prompt_invocation(
+        self,
+        name: str,
+        *,
+        prompt_invocations: Optional[Dict[str, int]] = None,
+    ) -> None:
+        token = str(name or "").strip()
+        if not token:
+            return
+        current = getattr(self, "_llm_prompt_invocations", None)
+        if not isinstance(current, dict):
+            current = {}
+            self._llm_prompt_invocations = current
+        current[token] = int(current.get(token) or 0) + 1
+        if isinstance(prompt_invocations, dict):
+            prompt_invocations[token] = int(prompt_invocations.get(token) or 0) + 1
+
+    @staticmethod
+    def _normalize_prompt_invocations(prompt_invocations: Optional[Dict[str, int]]) -> Dict[str, int]:
+        if not isinstance(prompt_invocations, dict):
+            return {}
+        normalized: Dict[str, int] = {}
+        for key, value in prompt_invocations.items():
+            token = str(key or "").strip()
+            if not token:
+                continue
+            try:
+                count = int(value)
+            except Exception:
+                continue
+            if count > 0:
+                normalized[token] = count
+        return normalized
+
+    def _llm_execution_summary(
+        self,
+        *,
+        prompt_invocations: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
+        llm = getattr(self, "llm", None)
+        if llm is None:
+            return {}
+        prompt_counts = self._normalize_prompt_invocations(prompt_invocations)
+        metadata: Dict[str, Any] = {"cache_mode": "none"}
+        if prompt_counts:
+            metadata["prompt_contracts"] = [prompt_contract(name) for name in prompt_counts]
+            metadata["prompt_invocations"] = prompt_counts
+            metadata["retry_budget"] = {
+                **self._retry_budget_context(),
+                "reviewer_feedback_runs": int(prompt_counts.get("reviewer", 0) or 0),
+            }
+        return llm_execution_summary(llm, observed=True, metadata=metadata)
+
+    def _retry_budget_context(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        loop_controller = getattr(self, "loop_controller", None)
+        if loop_controller is None:
+            return payload
+        try:
+            current_loop = int(getattr(loop_controller, "current_loop", 0))
+        except Exception:
+            current_loop = 0
+        try:
+            max_loops = int(getattr(loop_controller, "max_loops", 0))
+        except Exception:
+            max_loops = 0
+        if current_loop > 0:
+            payload["controller_loop_current"] = current_loop
+        if max_loops > 0:
+            payload["controller_loop_max"] = max_loops
+        return payload
 
     def run(self) -> None:
         record_loop_outcome = getattr(self, "record_loop_outcome", True)
@@ -85,6 +158,7 @@ class ReviewerService:
                 bundle_reports.append(report)
                 aggregated_issues.extend(report.get("issues_sample") or [])
                 continue
+            bundle_prompt_invocations: Dict[str, int] = {}
             context = self._evaluate_bundle(bundle)
             static_issues = self._scan_workspace(bundle, exploit_success=context.success)
             semantic_contract_issues = self._semantic_contract_issues(bundle)
@@ -98,7 +172,12 @@ class ReviewerService:
                 "log_excerpt": context.log_excerpt,
                 "issues": all_issues,
             }
-            llm_feedback = self._llm_feedback(run_summary, all_issues=all_issues, blocking=blocking)
+            llm_feedback = self._llm_feedback(
+                run_summary,
+                all_issues=all_issues,
+                blocking=blocking,
+                prompt_invocations=bundle_prompt_invocations,
+            )
             report = {
                 "sid": self.sid,
                 "bundle": {"vuln_id": bundle.vuln_id, "slug": bundle.slug},
@@ -111,6 +190,9 @@ class ReviewerService:
                 "llm_feedback": llm_feedback,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
+            llm_execution = self._llm_execution_summary(prompt_invocations=bundle_prompt_invocations)
+            if llm_execution:
+                report["llm_execution"] = llm_execution
             bundle_path = self._write_bundle_report(bundle, report)
             bundle_reports.append(
                 {
@@ -136,6 +218,9 @@ class ReviewerService:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "issues_sample": aggregated_issues[:5],
         }
+        llm_execution = self._llm_execution_summary(prompt_invocations=getattr(self, "_llm_prompt_invocations", {}))
+        if llm_execution:
+            summary_report["llm_execution"] = llm_execution
         self._write_summary(summary_report)
         self._write_index(bundle_reports)
 
@@ -433,6 +518,7 @@ class ReviewerService:
         *,
         all_issues: List[Dict[str, Any]],
         blocking: bool,
+        prompt_invocations: Optional[Dict[str, int]] = None,
     ) -> str:
         explicit = self.plan["requirement"].get("reviewer_always_llm_feedback")
         if explicit is not None:
@@ -446,6 +532,7 @@ class ReviewerService:
             enabled = bool(blocking or all_issues)
         if not enabled:
             return "skipped: clean run without blocking or quality issues"
+        self._record_prompt_invocation("reviewer", prompt_invocations=prompt_invocations)
         return self.llm.generate(build_reviewer_prompt(run_summary))
 
     def _confidence_issues(self, bundle: VulnBundle) -> List[Dict[str, Any]]:

@@ -171,7 +171,15 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
     assert spec["scenario_candidate_summary"]["top_family"] == "open_redirect"
     assert spec["scenario_candidate_summary"]["top_oracle_mode"] == "stateful_text"
     assert spec["scenario_candidate_summary"]["selected_oracle_mode"] == "stateful_text"
+    assert spec["scenario_candidate_summary"]["selection_state"] == "candidate_only"
+    assert spec["scenario_candidate_summary"]["selected_candidate_present"] is True
+    assert spec["scenario_candidate_summary"]["selected_by"] == "scenario_candidates.preview_candidate"
+    assert spec["scenario_candidate_summary"]["selection_unresolved_reasons"] == ["stack_unselected"]
     assert spec["request_ir"]["selection_decision"]["scenario"]["selected"] is False
+    assert spec["request_ir"]["selection_decision"]["scenario"]["selected_candidate_present"] is True
+    assert spec["request_ir"]["selection_decision"]["scenario"]["selection_state"] == "candidate_only"
+    assert spec["request_ir"]["selection_decision"]["scenario"]["selected_by"] == "scenario_candidates.preview_candidate"
+    assert spec["request_ir"]["selection_decision"]["scenario"]["unresolved_reasons"] == ["stack_unselected"]
     assert spec["request_ir"]["selection_decision"]["scenario"]["selected_scenario_id"] == (
         "family=open_redirect|stack=python/flask|topology=single_service"
     )
@@ -1872,6 +1880,9 @@ def test_contract_name_only_generation_spec_keeps_evidence_authority_focus_witho
     assert "support_count" in request_ir["selection_decision"]["family"]
     assert isinstance(request_ir["selection_decision"]["family"]["support_by_source_authority"], dict)
     assert request_ir["selection_decision"]["scenario"]["selected"] is True
+    assert request_ir["selection_decision"]["scenario"]["selected_candidate_present"] is True
+    assert request_ir["selection_decision"]["scenario"]["selection_state"] == "selected"
+    assert request_ir["selection_decision"]["scenario"]["selected_by"] == "scenario_candidates.explicit_selected"
     assert request_ir["selection_decision"]["scenario"]["selected_topology"] == "single_service"
     assert request_ir["selection_decision"]["scenario"]["selected_oracle_mode"] == "stateful_text"
     assert request_ir["selection_decision"]["ready_for_materialization"] is True
@@ -2665,6 +2676,21 @@ def test_contract_provenance_prefers_generator_manifest_metadata(tmp_path: Path)
                 "fallback_class": "generic_unsupported_family",
                 "family_override_applied": False,
                 "llm_stub_used": True,
+                "llm_provider_attempted": True,
+                "llm_provider_succeeded": False,
+                "llm_failure_class": "provider_disabled",
+                "llm_execution": {
+                    "attempt_scope": "observed",
+                    "provider_attempted": True,
+                    "provider_succeeded": False,
+                    "stub_fallback": True,
+                    "fixture_used": False,
+                    "path_class": "degraded",
+                    "cache_mode": "none",
+                    "prompt_contracts": [{"name": "synthesis_manifest", "version": "build_synthesis_prompt@1"}],
+                    "retry_budget": {"candidate_budget": 3, "guard_autofix_max_attempts": 2},
+                    "last_error_class": "provider_disabled",
+                },
                 "manifest": {
                     "files": [
                         {"path": "app.py", "role": "service_main", "content": "print('app')\n"},
@@ -2693,8 +2719,15 @@ def test_contract_provenance_prefers_generator_manifest_metadata(tmp_path: Path)
     assert payload["fallback_class"] == "generic_unsupported_family"
     assert payload["family_override_applied"] is False
     assert payload["llm_stub_used"] is True
+    assert payload["llm_provider_attempted"] is True
+    assert payload["llm_provider_succeeded"] is False
+    assert payload["llm_failure_class"] == "provider_disabled"
+    assert payload["llm_execution"]["path_class"] == "degraded"
+    assert payload["llm_execution"]["prompt_contracts"][0]["name"] == "synthesis_manifest"
+    assert payload["llm_execution"]["retry_budget"]["candidate_budget"] == 3
     assert payload["provenance"]["source"] == "generator_manifest"
     assert payload["provenance"]["fallback_class"] == "generic_unsupported_family"
+    assert payload["provenance"]["llm_execution"]["path_class"] == "degraded"
 
 
 def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_path: Path) -> None:
@@ -2724,6 +2757,19 @@ def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_
                 "fallback_used": False,
                 "family_override_applied": False,
                 "llm_stub_used": False,
+                "llm_provider_attempted": False,
+                "llm_provider_succeeded": False,
+                "llm_failure_class": "",
+                "llm_execution": {
+                    "attempt_scope": "observed",
+                    "provider_attempted": False,
+                    "provider_succeeded": False,
+                    "stub_fallback": False,
+                    "fixture_used": False,
+                    "path_class": "not_executed",
+                    "cache_mode": "none",
+                    "prompt_contracts": [{"name": "generator_plan", "version": "build_generator_prompt@1"}],
+                },
             },
             ensure_ascii=False,
         ),
@@ -2743,8 +2789,13 @@ def test_contract_provenance_uses_template_summary_when_manifest_is_missing(tmp_
     assert payload["fallback_used"] is False
     assert payload["family_override_applied"] is False
     assert payload["llm_stub_used"] is False
+    assert payload["llm_provider_attempted"] is False
+    assert payload["llm_provider_succeeded"] is False
+    assert payload["llm_execution"]["path_class"] == "not_executed"
+    assert payload["llm_execution"]["prompt_contracts"][0]["name"] == "generator_plan"
     assert payload["provenance"]["template_id"] == "flask_sqlite_raw"
     assert payload["provenance"]["source"] == "generator_template"
+    assert payload["provenance"]["llm_execution"]["path_class"] == "not_executed"
     assert payload["service_env"] == {"DB_HOST": "sqli-db", "DB_NAME": "sqliapp"}
     assert payload["template_stack_id"] == "python/flask"
     assert payload["requested_stack_id"] == "python/flask"

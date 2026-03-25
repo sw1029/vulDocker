@@ -23,6 +23,16 @@ from .providers import (
 LOGGER = get_logger(__name__)
 
 
+def _safe_timeout_seconds(value: object, default: float) -> float:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if timeout <= 0:
+        return float(default)
+    return timeout
+
+
 class WebSearchTool:
     """Hybrid search helper that prefers remote APIs but falls back to local corpus."""
 
@@ -47,7 +57,8 @@ class WebSearchTool:
         if not resolved_api_key and self.provider_name == "tavily":
             resolved_api_key = config_tavily_key
         self.api_key = resolved_api_key
-        self.timeout = timeout
+        env_timeout = os.environ.get("VUL_WEB_SEARCH_TIMEOUT_S")
+        self.timeout = _safe_timeout_seconds(env_timeout, timeout) if env_timeout is not None else float(timeout)
         self.max_local_files = max_local_files
         self.local_root = get_repo_root() / "rag" / "corpus"
         self._last_execution: Optional[SearchExecution] = None
