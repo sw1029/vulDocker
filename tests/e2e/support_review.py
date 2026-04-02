@@ -67,8 +67,13 @@ def main() -> None:
                 "all_blocked_cases": payload.get("all_blocked_cases"),
                 "by_case_status": payload.get("by_case_status"),
                 "by_support_status": payload.get("by_support_status"),
+                "by_generation_path_class": payload.get("by_generation_path_class"),
+                "by_generation_positive_bucket": payload.get("by_generation_positive_bucket"),
+                "by_generation_non_live_reason": payload.get("by_generation_non_live_reason"),
                 "mechanically_healthy_bundle_count": payload.get("mechanically_healthy_bundle_count"),
                 "promotion_policy_ready_bundle_count": payload.get("promotion_policy_ready_bundle_count"),
+                "live_positive_ready_bundle_count": payload.get("live_positive_ready_bundle_count"),
+                "live_positive_blocked_bundle_count": payload.get("live_positive_blocked_bundle_count"),
             },
             ensure_ascii=False,
         )

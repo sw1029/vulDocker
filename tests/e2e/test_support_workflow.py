@@ -54,11 +54,14 @@ def test_support_cli_workflow_materializes_reviewable_accept_path(tmp_path: Path
                         "measured_gate_ready": True,
                         "mechanically_healthy": True,
                         "promotion_policy_ready": True,
+                        "generation_path_live_positive_ready": True,
                     },
-                    "primitive_signature": {"selected_family": "sqli", "selected_stack_id": "python/flask"},
-                    "runtime_contract": {"topology": "single_service"},
-                    "oracle_contract": {"oracle_execution_parity": "high"},
-                    "verdict_authority_mode": "single_bundle",
+                        "primitive_signature": {"selected_family": "sqli", "selected_stack_id": "python/flask"},
+                        "runtime_contract": {"topology": "single_service"},
+                        "oracle_contract": {"oracle_execution_parity": "high"},
+                        "generation_materialization": {"schema_version": "generation_materialization@0.1", "path_class": "live"},
+                        "generation_path": {"path_class": "live", "positive_bucket": "live_positive"},
+                        "verdict_authority_mode": "single_bundle",
                     "verdict_authority_consistent": True,
                     "source_artifacts": {"summary_path": "/tmp/summary-a.json", "workspace": "/tmp/workspace-a"},
                 }
@@ -76,8 +79,12 @@ def test_support_cli_workflow_materializes_reviewable_accept_path(tmp_path: Path
     assert review_stdout["mixed_cases"] == []
     assert review_stdout["all_blocked_cases"] == []
     assert review_stdout["by_support_status"] == {"reviewable": 1}
+    assert review_stdout["by_generation_path_class"] == {"live": 1}
+    assert review_stdout["by_generation_positive_bucket"] == {"live_positive": 1}
+    assert review_stdout["by_generation_non_live_reason"] == {}
     assert review_stdout["mechanically_healthy_bundle_count"] == 1
     assert review_stdout["promotion_policy_ready_bundle_count"] == 1
+    assert review_stdout["live_positive_ready_bundle_count"] == 1
 
     decisions_path = _write_json(
         tmp_path / "support_review_decisions.json",
@@ -115,6 +122,7 @@ def test_support_cli_workflow_materializes_reviewable_accept_path(tmp_path: Path
     assert decide_stdout["accepted_by_support_status"] == {"reviewable": 1}
     assert decide_stdout["rejected_by_support_status"] == {}
     assert decide_stdout["pending_by_support_status"] == {}
+    assert decide_stdout["by_generation_non_live_reason"] == {}
 
     registry_path = tmp_path / "curated_support_registry.json"
     apply_stdout = _run_cli(
@@ -134,6 +142,7 @@ def test_support_cli_workflow_materializes_reviewable_accept_path(tmp_path: Path
     assert apply_stdout["all_accepted_cases"] == ["cwe-89-basic"]
     assert apply_stdout["mixed_review_status_cases"] == []
     assert apply_stdout["all_rejected_cases"] == []
+    assert apply_stdout["by_generation_non_live_reason"] == {}
     assert apply_stdout["schema_status"] == "normalized"
     assert apply_stdout["schema_upgraded_item_count"] == 0
     assert apply_stdout["by_schema_upgrade_reason"] == {}
@@ -147,6 +156,7 @@ def test_support_cli_workflow_materializes_reviewable_accept_path(tmp_path: Path
     assert registry["by_review_status"] == {"accepted": 1}
     assert registry["by_support_status"] == {"reviewable": 1}
     assert registry["by_case_review_status"] == {"all_accepted": 1}
+    assert registry["by_generation_non_live_reason"] == {}
     assert registry["items"][0]["review_status"] == "accepted"
     assert registry["items"][0]["support_status"] == "reviewable"
 
@@ -191,11 +201,18 @@ def test_support_cli_workflow_preserves_blocked_noop_path(tmp_path: Path) -> Non
                         "measured_gate_ready": False,
                         "mechanically_healthy": False,
                         "promotion_policy_ready": False,
+                        "generation_path_live_positive_ready": False,
                     },
-                    "primitive_signature": {"selected_family": "sqli", "selected_stack_id": "python/flask"},
-                    "runtime_contract": {"topology": "service_plus_sidecar"},
-                    "oracle_contract": {"oracle_execution_parity": "high"},
-                    "verdict_authority_mode": "single_bundle",
+                        "primitive_signature": {"selected_family": "sqli", "selected_stack_id": "python/flask"},
+                        "runtime_contract": {"topology": "service_plus_sidecar"},
+                        "oracle_contract": {"oracle_execution_parity": "high"},
+                        "generation_materialization": {
+                            "schema_version": "generation_materialization@0.1",
+                            "path_class": "fixture",
+                            "non_live_reason": "fixture_backed",
+                        },
+                        "generation_path": {"path_class": "fixture", "positive_bucket": "fixture_backed_positive"},
+                        "verdict_authority_mode": "single_bundle",
                     "verdict_authority_consistent": True,
                     "source_artifacts": {"summary_path": "/tmp/summary-b.json", "workspace": "/tmp/workspace-b"},
                 }
@@ -213,8 +230,12 @@ def test_support_cli_workflow_preserves_blocked_noop_path(tmp_path: Path) -> Non
     assert review_stdout["mixed_cases"] == []
     assert review_stdout["all_blocked_cases"] == ["sqli-sidecar-compiler-custom-env"]
     assert review_stdout["by_support_status"] == {"blocked_mixed": 1}
+    assert review_stdout["by_generation_path_class"] == {"fixture": 1}
+    assert review_stdout["by_generation_positive_bucket"] == {"fixture_backed_positive": 1}
+    assert review_stdout["by_generation_non_live_reason"] == {"fixture_backed": 1}
     assert review_stdout["mechanically_healthy_bundle_count"] == 0
     assert review_stdout["promotion_policy_ready_bundle_count"] == 0
+    assert review_stdout["live_positive_blocked_bundle_count"] == 1
 
     decisions_path = _write_json(
         tmp_path / "support_review_decisions.json",
@@ -246,6 +267,7 @@ def test_support_cli_workflow_preserves_blocked_noop_path(tmp_path: Path) -> Non
     assert decide_stdout["accepted_by_support_status"] == {}
     assert decide_stdout["rejected_by_support_status"] == {}
     assert decide_stdout["pending_by_support_status"] == {}
+    assert decide_stdout["by_generation_non_live_reason"] == {"fixture_backed": 1}
 
     registry_path = tmp_path / "curated_support_registry.json"
     apply_stdout = _run_cli(
@@ -265,6 +287,7 @@ def test_support_cli_workflow_preserves_blocked_noop_path(tmp_path: Path) -> Non
     assert apply_stdout["all_accepted_cases"] == []
     assert apply_stdout["mixed_review_status_cases"] == []
     assert apply_stdout["all_rejected_cases"] == []
+    assert apply_stdout["by_generation_non_live_reason"] == {}
     assert apply_stdout["schema_status"] == "normalized"
     assert apply_stdout["schema_upgraded_item_count"] == 0
     assert apply_stdout["by_schema_upgrade_reason"] == {}
@@ -278,3 +301,5 @@ def test_support_cli_workflow_preserves_blocked_noop_path(tmp_path: Path) -> Non
     assert registry["by_review_status"] == {}
     assert registry["by_support_status"] == {}
     assert registry["by_case_review_status"] == {}
+    assert registry["by_generation_non_live_reason"] == {}
+    assert registry["last_update"]["by_generation_non_live_reason"] == {"fixture_backed": 1}

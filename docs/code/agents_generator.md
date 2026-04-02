@@ -4,7 +4,7 @@ Status: support
 Audience: implementation
 Source of truth for: generator modes, synthesis/template/compiler entrypoints
 Not the source of truth for: project-level roadmap or current evidence baseline
-Last validated against: current repo layout, stage-aware recovery dispatch, bounded fallback/runtime/oracle hardening, and active ticket decomposition on 2026-03-19
+Last validated against: current repo layout, stage-aware recovery dispatch, bounded fallback/runtime/oracle hardening, and active ticket decomposition on 2026-04-02
 
 Relevant canonical docs:
 - [현재 상태](../current_state_gap_analysis.md)
@@ -33,9 +33,11 @@ Relevant canonical docs:
 - `request_ir`, `runtime_recipe`, `executor_plan`, `exploit_oracle`가 prompt/contract에 주입되지만, 아직 staged synthesis control-plane은 아닙니다.
 - `selection_decision`, `design_brief.required_roles`, `selected_oracle_mode/source`는 prompt/retry/guard input으로는 많이 올라왔지만, 아직 primitive-first materialization branch controller는 아닙니다.
 - `name_only_generation_spec`에는 이제 `scenario_candidate_summary`와 `selection_decision.scenario`가 들어가므로, generator는 family/stack만이 아니라 `family x stack x topology` alignment를 prompt에서 직접 볼 수 있습니다.
-- `GeneratorService._requirement_for_synthesis()`는 이제 `staged_synthesis`도 주입하므로, synthesis prompt는 `candidate_resolution -> design_brief -> runtime_plan -> oracle_contract` 요약을 함께 봅니다.
+- `GeneratorService._requirement_for_synthesis()`는 이제 `staged_synthesis`도 주입하므로, synthesis prompt는 `candidate_resolution -> design_brief -> runtime_plan -> executor_plan -> oracle_contract -> file_manifest` 요약을 함께 봅니다.
+- latest slice에서는 generator contract가 `selection_branch_trace`도 같이 남기기 시작했습니다. 따라서 generator/operator/support artifact가 같은 trace payload로 `selected value -> materialized value` alignment를 읽을 수 있습니다.
 - latest slice에서 `design_brief`도 `selected_topology`, `selected_oracle_mode`, `dependency_set`, `required_roles`를 싣기 시작했습니다. 즉 generator는 selected scenario의 oracle/dependency workload를 family label만이 아니라 staged brief에서도 직접 읽습니다.
 - `SynthesisEngine`는 이제 candidate/manifest/failure log에 `failure_stage`와 `failure_stage_reason`를 남기며, `staged_synthesis` snapshot을 `generator_candidates.json`, `generator_manifest.json`, `generator_failures.jsonl`에 함께 기록합니다.
+- latest slice에서는 same `staged_synthesis`가 `executor_plan`과 `file_manifest` stage도 같이 싣기 시작했습니다. 따라서 generator-side contract만 봐도 executor-facing surface와 build-ready file set을 함께 읽을 수 있습니다.
 - `SynthesisEngine.run()`은 이제 직전 candidate의 `failure_stage`를 읽어 다음 candidate prompt에 `Stage-Aware Retry Hint`를 추가합니다. 즉, retry는 더 이상 generic failure_context만 보지 않고 `runtime_plan`/`design_brief`/`oracle_contract` 같은 단계별 contract를 기준으로 좁혀집니다.
 - latest slice에서 `design_brief.required_roles`도 stage-aware recovery dispatch에 쓰이기 시작했습니다. `design_brief` 실패라도 dependency-heavy brief는 `runtime_plan` repair를, oracle-heavy brief는 `oracle_contract` repair를 먼저 시도합니다.
 - latest slice에서 `runtime_plan` repair도 thin runtime plan일 때 `design_brief`의 `selected_topology`/`dependency_set`을 fallback target으로 읽어 `target_topology`, `target_db`, `target_sidecars` metadata를 복구할 수 있게 됐습니다.

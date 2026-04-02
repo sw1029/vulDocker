@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -18,6 +19,7 @@ PROMOTION_POLICY_BLOCKER_PREFIXES = (
     "family_evidence:",
     "artifact_quality:",
     "oracle_execution_parity:",
+    "generation_path:",
 )
 
 
@@ -29,6 +31,70 @@ def _load_json_like(payload_or_path: Mapping[str, Any] | Path | str | None) -> D
     path = Path(payload_or_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     return payload if isinstance(payload, dict) else {}
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _infer_generation_path_class(
+    *,
+    path_class: str,
+    provider_attempted: bool | None,
+    provider_succeeded: bool | None,
+    stub_fallback: bool | None,
+    fixture_used: bool | None,
+    generation_origin: str,
+) -> str | None:
+    token = str(path_class or "").strip().lower()
+    if token:
+        return token
+    if fixture_used is True:
+        return "fixture"
+    if provider_succeeded is True and stub_fallback is not True:
+        return "live"
+    if stub_fallback is True and provider_attempted is True:
+        return "degraded"
+    if stub_fallback is True:
+        return "stub"
+    lowered_origin = str(generation_origin or "").strip().lower()
+    if lowered_origin == "llm_manifest":
+        return "live"
+    if lowered_origin == "deterministic_fallback":
+        return "stub"
+    if lowered_origin:
+        return "not_executed"
+    return None
+
+
+def _generation_positive_bucket(
+    *,
+    path_class: str | None,
+    generation_origin: str | None,
+    provider_health_state: str | None,
+    provider_succeeded: bool | None,
+    stub_fallback: bool | None,
+    fixture_used: bool | None,
+) -> str | None:
+    normalized_path = str(path_class or "").strip().lower()
+    normalized_origin = str(generation_origin or "").strip().lower()
+    normalized_health = str(provider_health_state or "").strip().lower()
+    if fixture_used is True or normalized_path == "fixture":
+        return "fixture_backed_positive"
+    if provider_succeeded is True or normalized_path == "live":
+        return "live_positive"
+    if (
+        normalized_path in {"degraded", "stub"}
+        or stub_fallback is True
+        or normalized_origin == "deterministic_fallback"
+        or normalized_health == "llm_degraded"
+    ):
+        return "degraded_fallback_positive"
+    if normalized_origin:
+        return "non_llm_positive"
+    return None
 
 
 def _case_gate_status(
@@ -99,6 +165,9 @@ def _classify_support_blockers(blockers: Sequence[str]) -> Dict[str, List[str]]:
     for item in blockers:
         token = str(item).strip()
         if not token:
+            continue
+        if token.startswith("generation_path:") or token.startswith("measured_gate:generation_path_"):
+            promotion_policy.append(token)
             continue
         if token.startswith(MECHANICAL_BLOCKER_PREFIXES):
             mechanical.append(token)
@@ -338,6 +407,120 @@ def _unsafe_pattern(bundle: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _generation_path_surface(
+    *,
+    summary: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+    repeatability_report: Mapping[str, Any],
+) -> Dict[str, Any]:
+    generation_materialization = (
+        bundle.get("generation_materialization")
+        if isinstance(bundle.get("generation_materialization"), dict)
+        else summary.get("generation_materialization")
+        if isinstance(summary.get("generation_materialization"), dict)
+        else {}
+    )
+    provenance = bundle.get("provenance") if isinstance(bundle.get("provenance"), dict) else {}
+    llm_execution = provenance.get("llm_execution") if isinstance(provenance.get("llm_execution"), dict) else {}
+    generation_origin = (
+        str(generation_materialization.get("generation_origin") or "").strip().lower()
+        or str(provenance.get("generation_origin") or "").strip().lower()
+        or str(summary.get("generation_origin") or "").strip().lower()
+        or None
+    )
+    provider_attempted = _optional_bool(generation_materialization.get("provider_attempted"))
+    if provider_attempted is None:
+        provider_attempted = _optional_bool(llm_execution.get("provider_attempted"))
+    if provider_attempted is None:
+        provider_attempted = _optional_bool(provenance.get("llm_provider_attempted"))
+    if provider_attempted is None:
+        provider_attempted = _optional_bool(summary.get("generation_provider_attempted"))
+    provider_succeeded = _optional_bool(generation_materialization.get("provider_succeeded"))
+    if provider_succeeded is None:
+        provider_succeeded = _optional_bool(llm_execution.get("provider_succeeded"))
+    if provider_succeeded is None:
+        provider_succeeded = _optional_bool(provenance.get("llm_provider_succeeded"))
+    if provider_succeeded is None:
+        provider_succeeded = _optional_bool(summary.get("generation_provider_succeeded"))
+    stub_fallback = _optional_bool(generation_materialization.get("stub_fallback"))
+    if stub_fallback is None:
+        stub_fallback = _optional_bool(llm_execution.get("stub_fallback"))
+    if stub_fallback is None:
+        stub_fallback = _optional_bool(provenance.get("llm_stub_used"))
+    if stub_fallback is None:
+        stub_fallback = _optional_bool(summary.get("generation_stub_fallback"))
+    fixture_used = _optional_bool(generation_materialization.get("fixture_used"))
+    if fixture_used is None:
+        fixture_used = _optional_bool(llm_execution.get("fixture_used"))
+    if fixture_used is None:
+        fixture_used = _optional_bool(provenance.get("llm_fixture_used"))
+    if fixture_used is None:
+        fixture_used = _optional_bool(summary.get("generation_fixture_used"))
+    path_class = _infer_generation_path_class(
+        path_class=str(generation_materialization.get("path_class") or llm_execution.get("path_class") or ""),
+        provider_attempted=provider_attempted,
+        provider_succeeded=provider_succeeded,
+        stub_fallback=stub_fallback,
+        fixture_used=fixture_used,
+        generation_origin=generation_origin or "",
+    )
+    generation_path_observations = (
+        repeatability_report.get("generation_path_observations")
+        if isinstance(repeatability_report.get("generation_path_observations"), dict)
+        else {}
+    )
+    generation_path_gate = (
+        repeatability_report.get("generation_path_gate")
+        if isinstance(repeatability_report.get("generation_path_gate"), dict)
+        else {}
+    )
+    provider_health_state = str(summary.get("provider_health_state") or "").strip().lower() or None
+    positive_bucket = (
+        str(generation_path_observations.get("primary_positive_bucket") or "").strip()
+        or _generation_positive_bucket(
+            path_class=path_class,
+            generation_origin=generation_origin,
+            provider_health_state=provider_health_state,
+            provider_succeeded=provider_succeeded,
+            stub_fallback=stub_fallback,
+            fixture_used=fixture_used,
+        )
+        or None
+    )
+    repeat_path_class = str(generation_path_observations.get("primary_path_class") or "").strip().lower()
+    if not path_class and repeat_path_class:
+        path_class = repeat_path_class
+    live_positive_ready = generation_path_gate.get("live_positive_ready")
+    if not isinstance(live_positive_ready, bool) and positive_bucket:
+        live_positive_ready = positive_bucket == "live_positive"
+    return {
+        "path_class": path_class or None,
+        "positive_bucket": positive_bucket or None,
+        "non_live_reason": str(generation_materialization.get("non_live_reason") or "").strip().lower() or None,
+        "provider_attempted": provider_attempted,
+        "provider_succeeded": provider_succeeded,
+        "stub_fallback": stub_fallback,
+        "fixture_used": fixture_used,
+        "provider_health_state": provider_health_state,
+        "path_class_consistent": (
+            generation_path_observations.get("path_class_consistent")
+            if isinstance(generation_path_observations.get("path_class_consistent"), bool)
+            else None
+        ),
+        "positive_bucket_consistent": (
+            generation_path_observations.get("positive_bucket_consistent")
+            if isinstance(generation_path_observations.get("positive_bucket_consistent"), bool)
+            else None
+        ),
+        "live_positive_ready": live_positive_ready if isinstance(live_positive_ready, bool) else None,
+        "policy_blockers": [
+            str(item).strip()
+            for item in (generation_path_gate.get("blockers") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+    }
+
+
 def _source_artifacts(bundle: Mapping[str, Any], *, manifest_path: Path, summary_path: Optional[Path]) -> Dict[str, Any]:
     paths = bundle.get("paths") if isinstance(bundle.get("paths"), dict) else {}
     source = {
@@ -381,7 +564,11 @@ def build_support_candidate(
     support_ready_bundle_count = 0
     mechanically_healthy_bundle_count = 0
     promotion_policy_ready_bundle_count = 0
+    live_positive_ready_bundle_count = 0
     by_support_status: Dict[str, int] = {}
+    by_generation_path_class: Dict[str, int] = {}
+    by_generation_positive_bucket: Dict[str, int] = {}
+    by_generation_non_live_reason: Dict[str, int] = {}
     for bundle in manifest.get("bundles") or []:
         if not isinstance(bundle, dict):
             continue
@@ -394,6 +581,29 @@ def build_support_candidate(
             for item in (support_promotion.get("reasons") or [])
             if isinstance(item, str) and str(item).strip()
         ]
+        generation_path = _generation_path_surface(
+            summary=summary,
+            bundle=bundle,
+            repeatability_report=repeatability_payload,
+        )
+        path_class = str(generation_path.get("path_class") or "").strip().lower()
+        positive_bucket = str(generation_path.get("positive_bucket") or "").strip()
+        non_live_reason = str(generation_path.get("non_live_reason") or "").strip().lower()
+        if path_class:
+            by_generation_path_class[path_class] = by_generation_path_class.get(path_class, 0) + 1
+        if positive_bucket:
+            by_generation_positive_bucket[positive_bucket] = by_generation_positive_bucket.get(positive_bucket, 0) + 1
+        if non_live_reason:
+            by_generation_non_live_reason[non_live_reason] = by_generation_non_live_reason.get(non_live_reason, 0) + 1
+        if generation_path.get("live_positive_ready") is True:
+            live_positive_ready_bundle_count += 1
+        else:
+            for token in (
+                "generation_path:not_live_positive",
+                f"generation_path:{non_live_reason}" if non_live_reason else "",
+            ):
+                if token and token not in blockers:
+                    blockers.append(token)
         blockers.extend(gate_status.get("external_blockers") or [])
         blockers.extend(authority_gate.get("blockers") or [])
         blocker_classes = _classify_support_blockers(blockers)
@@ -431,6 +641,7 @@ def build_support_candidate(
                     "verdict_authority_ready": not bool(authority_gate.get("blockers")),
                     "mechanically_healthy": mechanically_healthy,
                     "promotion_policy_ready": promotion_policy_ready,
+                    "generation_path_live_positive_ready": generation_path.get("live_positive_ready"),
                     "oracle_execution_parity": str(
                         ((bundle.get("artifact_quality") or {}) if isinstance(bundle.get("artifact_quality"), dict) else {}).get(
                             "oracle_execution_parity"
@@ -446,6 +657,19 @@ def build_support_candidate(
                 "runtime_contract": _runtime_contract(bundle),
                 "oracle_contract": _oracle_contract(bundle),
                 "unsafe_pattern": _unsafe_pattern(bundle),
+                "selection_branch_trace": (
+                    deepcopy(bundle.get("selection_branch_trace"))
+                    if isinstance(bundle.get("selection_branch_trace"), dict)
+                    else {}
+                ),
+                "generation_materialization": (
+                    deepcopy(bundle.get("generation_materialization"))
+                    if isinstance(bundle.get("generation_materialization"), dict)
+                    else deepcopy(summary.get("generation_materialization"))
+                    if isinstance(summary.get("generation_materialization"), dict)
+                    else {}
+                ),
+                "generation_path": generation_path,
                 "source_artifacts": _source_artifacts(bundle, manifest_path=manifest_path, summary_path=summary_path),
             }
         )
@@ -470,6 +694,10 @@ def build_support_candidate(
         "support_ready_bundle_count": support_ready_bundle_count,
         "mechanically_healthy_bundle_count": mechanically_healthy_bundle_count,
         "promotion_policy_ready_bundle_count": promotion_policy_ready_bundle_count,
+        "live_positive_ready_bundle_count": live_positive_ready_bundle_count,
+        "by_generation_path_class": by_generation_path_class,
+        "by_generation_positive_bucket": by_generation_positive_bucket,
+        "by_generation_non_live_reason": by_generation_non_live_reason,
         "by_support_status": by_support_status,
         "reviewable_bundle_count": reviewable_bundle_count,
         "all_reviewable": reviewable_bundle_count == len(candidates) if candidates else False,
@@ -498,6 +726,18 @@ def _support_review_entry(candidate_payload: Mapping[str, Any], bundle: Mapping[
     primitive_signature = bundle.get("primitive_signature") if isinstance(bundle.get("primitive_signature"), dict) else {}
     runtime_contract = bundle.get("runtime_contract") if isinstance(bundle.get("runtime_contract"), dict) else {}
     oracle_contract = bundle.get("oracle_contract") if isinstance(bundle.get("oracle_contract"), dict) else {}
+    selection_branch_trace = (
+        bundle.get("selection_branch_trace") if isinstance(bundle.get("selection_branch_trace"), dict) else {}
+    )
+    generation_materialization = (
+        bundle.get("generation_materialization") if isinstance(bundle.get("generation_materialization"), dict) else {}
+    )
+    generation_path = bundle.get("generation_path") if isinstance(bundle.get("generation_path"), dict) else {}
+    generation_non_live_reason = (
+        str(bundle.get("generation_non_live_reason") or "").strip().lower()
+        or str(generation_materialization.get("non_live_reason") or "").strip().lower()
+        or None
+    )
     source_artifacts = bundle.get("source_artifacts") if isinstance(bundle.get("source_artifacts"), dict) else {}
     return {
         "case_name": str(candidate_payload.get("case_name") or "").strip() or None,
@@ -531,6 +771,11 @@ def _support_review_entry(candidate_payload: Mapping[str, Any], bundle: Mapping[
         "selected_stack_id": str(primitive_signature.get("selected_stack_id") or "").strip() or None,
         "topology": str(runtime_contract.get("topology") or "").strip() or None,
         "oracle_execution_parity": str(oracle_contract.get("oracle_execution_parity") or "").strip().lower() or "missing",
+        "selection_branch_trace": deepcopy(selection_branch_trace) if selection_branch_trace else {},
+        "generation_materialization": deepcopy(generation_materialization) if generation_materialization else {},
+        "generation_path_class": str(generation_path.get("path_class") or "").strip().lower() or None,
+        "generation_positive_bucket": str(generation_path.get("positive_bucket") or "").strip() or None,
+        "generation_non_live_reason": generation_non_live_reason,
         "verdict_authority_mode": str(bundle.get("verdict_authority_mode") or "").strip() or None,
         "verdict_authority_consistent": bundle.get("verdict_authority_consistent"),
         "verdict_authority_ready": (
@@ -553,6 +798,11 @@ def _support_review_entry(candidate_payload: Mapping[str, Any], bundle: Mapping[
             if isinstance(((bundle.get("gates") or {}) if isinstance(bundle.get("gates"), dict) else {}).get("promotion_policy_ready"), bool)
             else None
         ),
+        "generation_path_live_positive_ready": (
+            ((bundle.get("gates") or {}) if isinstance(bundle.get("gates"), dict) else {}).get("generation_path_live_positive_ready")
+            if isinstance(((bundle.get("gates") or {}) if isinstance(bundle.get("gates"), dict) else {}).get("generation_path_live_positive_ready"), bool)
+            else None
+        ),
         "manifest_path": str(candidate_payload.get("manifest_path") or "").strip() or None,
         "summary_path": str(source_artifacts.get("summary_path") or "").strip() or None,
         "workspace": str(source_artifacts.get("workspace") or "").strip() or None,
@@ -573,6 +823,9 @@ def build_support_review_index(
     by_promotion_policy_blocker: Dict[str, int] = {}
     by_family: Dict[str, int] = {}
     by_topology: Dict[str, int] = {}
+    by_generation_path_class: Dict[str, int] = {}
+    by_generation_positive_bucket: Dict[str, int] = {}
+    by_generation_non_live_reason: Dict[str, int] = {}
     by_verdict_authority_mode: Dict[str, int] = {}
     by_support_status: Dict[str, int] = {}
     authority_ready_bundle_count = 0
@@ -583,6 +836,8 @@ def build_support_review_index(
     mechanically_blocked_bundle_count = 0
     promotion_policy_ready_bundle_count = 0
     promotion_policy_blocked_bundle_count = 0
+    live_positive_ready_bundle_count = 0
+    live_positive_blocked_bundle_count = 0
     reviewable_cases: List[str] = []
     blocked_cases: List[str] = []
     case_statuses: List[Dict[str, Any]] = []
@@ -607,6 +862,8 @@ def build_support_review_index(
         case_mechanically_blocked_bundle_count = 0
         case_promotion_policy_ready_bundle_count = 0
         case_promotion_policy_blocked_bundle_count = 0
+        case_live_positive_ready_bundle_count = 0
+        case_live_positive_blocked_bundle_count = 0
         case_by_support_status: Dict[str, int] = {}
         case_by_mechanical_blocker: Dict[str, int] = {}
         case_by_promotion_policy_blocker: Dict[str, int] = {}
@@ -618,12 +875,27 @@ def build_support_review_index(
             entry = _support_review_entry(payload, bundle)
             family = str(entry.get("selected_family") or "").strip()
             topology = str(entry.get("topology") or "").strip()
+            generation_path_class = str(entry.get("generation_path_class") or "").strip().lower()
+            generation_positive_bucket = str(entry.get("generation_positive_bucket") or "").strip()
+            generation_non_live_reason = str(entry.get("generation_non_live_reason") or "").strip().lower()
             verdict_authority_mode = str(entry.get("verdict_authority_mode") or "").strip()
             support_status = str(entry.get("support_status") or "").strip()
             if family:
                 by_family[family] = by_family.get(family, 0) + 1
             if topology:
                 by_topology[topology] = by_topology.get(topology, 0) + 1
+            if generation_path_class:
+                by_generation_path_class[generation_path_class] = (
+                    by_generation_path_class.get(generation_path_class, 0) + 1
+                )
+            if generation_positive_bucket:
+                by_generation_positive_bucket[generation_positive_bucket] = (
+                    by_generation_positive_bucket.get(generation_positive_bucket, 0) + 1
+                )
+            if generation_non_live_reason:
+                by_generation_non_live_reason[generation_non_live_reason] = (
+                    by_generation_non_live_reason.get(generation_non_live_reason, 0) + 1
+                )
             if verdict_authority_mode:
                 by_verdict_authority_mode[verdict_authority_mode] = (
                     by_verdict_authority_mode.get(verdict_authority_mode, 0) + 1
@@ -651,6 +923,12 @@ def build_support_review_index(
             elif entry.get("promotion_policy_ready") is False:
                 promotion_policy_blocked_bundle_count += 1
                 case_promotion_policy_blocked_bundle_count += 1
+            if entry.get("generation_path_live_positive_ready") is True:
+                live_positive_ready_bundle_count += 1
+                case_live_positive_ready_bundle_count += 1
+            elif entry.get("generation_path_live_positive_ready") is False:
+                live_positive_blocked_bundle_count += 1
+                case_live_positive_blocked_bundle_count += 1
             blockers = entry.get("blockers") or []
             for blocker in entry.get("mechanical_blockers") or []:
                 token = str(blocker).strip()
@@ -700,6 +978,8 @@ def build_support_review_index(
                     "mechanically_blocked_bundle_count": case_mechanically_blocked_bundle_count,
                     "promotion_policy_ready_bundle_count": case_promotion_policy_ready_bundle_count,
                     "promotion_policy_blocked_bundle_count": case_promotion_policy_blocked_bundle_count,
+                    "live_positive_ready_bundle_count": case_live_positive_ready_bundle_count,
+                    "live_positive_blocked_bundle_count": case_live_positive_blocked_bundle_count,
                     "by_support_status": case_by_support_status,
                     "by_mechanical_blocker": case_by_mechanical_blocker,
                     "by_promotion_policy_blocker": case_by_promotion_policy_blocker,
@@ -746,6 +1026,8 @@ def build_support_review_index(
         "mechanically_blocked_bundle_count": mechanically_blocked_bundle_count,
         "promotion_policy_ready_bundle_count": promotion_policy_ready_bundle_count,
         "promotion_policy_blocked_bundle_count": promotion_policy_blocked_bundle_count,
+        "live_positive_ready_bundle_count": live_positive_ready_bundle_count,
+        "live_positive_blocked_bundle_count": live_positive_blocked_bundle_count,
         "reviewable_cases": reviewable_cases,
         "blocked_cases": blocked_cases,
         "all_reviewable_case_count": len(all_reviewable_cases),
@@ -763,6 +1045,9 @@ def build_support_review_index(
         "by_promotion_policy_blocker": by_promotion_policy_blocker,
         "by_family": by_family,
         "by_topology": by_topology,
+        "by_generation_path_class": by_generation_path_class,
+        "by_generation_positive_bucket": by_generation_positive_bucket,
+        "by_generation_non_live_reason": by_generation_non_live_reason,
         "by_verdict_authority_mode": by_verdict_authority_mode,
         "by_support_status": by_support_status,
         "review_queue": review_queue,
@@ -1023,6 +1308,19 @@ def build_support_registry_update(
             "selected_stack_id": queue_entry.get("selected_stack_id"),
             "topology": queue_entry.get("topology"),
             "oracle_execution_parity": queue_entry.get("oracle_execution_parity"),
+            "selection_branch_trace": (
+                deepcopy(queue_entry.get("selection_branch_trace"))
+                if isinstance(queue_entry.get("selection_branch_trace"), dict)
+                else {}
+            ),
+            "generation_materialization": (
+                deepcopy(queue_entry.get("generation_materialization"))
+                if isinstance(queue_entry.get("generation_materialization"), dict)
+                else {}
+            ),
+            "generation_path_class": queue_entry.get("generation_path_class"),
+            "generation_positive_bucket": queue_entry.get("generation_positive_bucket"),
+            "generation_non_live_reason": queue_entry.get("generation_non_live_reason"),
             "support_status": queue_entry.get("support_status"),
             "verdict_authority_mode": queue_entry.get("verdict_authority_mode"),
             "verdict_authority_consistent": queue_entry.get("verdict_authority_consistent"),
@@ -1030,6 +1328,7 @@ def build_support_registry_update(
             "measured_gate_ready": queue_entry.get("measured_gate_ready"),
             "mechanically_healthy": queue_entry.get("mechanically_healthy"),
             "promotion_policy_ready": queue_entry.get("promotion_policy_ready"),
+            "generation_path_live_positive_ready": queue_entry.get("generation_path_live_positive_ready"),
             "source": queue_entry,
         }
         verdict_authority_mode = str(queue_entry.get("verdict_authority_mode") or "").strip()
@@ -1096,6 +1395,8 @@ def build_support_registry_update(
         "mechanically_blocked_bundle_count": int(review_index.get("mechanically_blocked_bundle_count") or 0),
         "promotion_policy_ready_bundle_count": int(review_index.get("promotion_policy_ready_bundle_count") or 0),
         "promotion_policy_blocked_bundle_count": int(review_index.get("promotion_policy_blocked_bundle_count") or 0),
+        "live_positive_ready_bundle_count": int(review_index.get("live_positive_ready_bundle_count") or 0),
+        "live_positive_blocked_bundle_count": int(review_index.get("live_positive_blocked_bundle_count") or 0),
         "reviewable_case_count": len(reviewable_cases),
         "blocked_case_count": len(blocked_cases),
         "reviewable_cases": reviewable_cases,
@@ -1131,6 +1432,21 @@ def build_support_registry_update(
         "by_support_status": (
             dict(review_index.get("by_support_status"))
             if isinstance(review_index.get("by_support_status"), dict)
+            else {}
+        ),
+        "by_generation_path_class": (
+            dict(review_index.get("by_generation_path_class"))
+            if isinstance(review_index.get("by_generation_path_class"), dict)
+            else {}
+        ),
+        "by_generation_positive_bucket": (
+            dict(review_index.get("by_generation_positive_bucket"))
+            if isinstance(review_index.get("by_generation_positive_bucket"), dict)
+            else {}
+        ),
+        "by_generation_non_live_reason": (
+            dict(review_index.get("by_generation_non_live_reason"))
+            if isinstance(review_index.get("by_generation_non_live_reason"), dict)
             else {}
         ),
         "by_verdict_authority_mode": (
@@ -1240,6 +1556,9 @@ def _normalize_registry_decision_history_entry(entry: Mapping[str, Any]) -> Dict
         "selected_family",
         "selected_stack_id",
         "topology",
+        "generation_path_class",
+        "generation_positive_bucket",
+        "generation_non_live_reason",
         "verdict_authority_mode",
         "support_candidate_path",
         "manifest_path",
@@ -1250,7 +1569,12 @@ def _normalize_registry_decision_history_entry(entry: Mapping[str, Any]) -> Dict
     ):
         normalized[field] = str(normalized.get(field) or "").strip() or None
 
-    for field in ("verdict_authority_consistent", "verdict_authority_ready", "measured_gate_ready"):
+    for field in (
+        "verdict_authority_consistent",
+        "verdict_authority_ready",
+        "measured_gate_ready",
+        "generation_path_live_positive_ready",
+    ):
         normalized[field] = normalized.get(field) if isinstance(normalized.get(field), bool) else None
 
     normalized["schema_status"] = _schema_record_status(schema_upgrade_applied)
@@ -1290,6 +1614,8 @@ def _normalize_registry_update_entry(entry: Mapping[str, Any]) -> Dict[str, Any]
         "mechanically_blocked_bundle_count",
         "promotion_policy_ready_bundle_count",
         "promotion_policy_blocked_bundle_count",
+        "live_positive_ready_bundle_count",
+        "live_positive_blocked_bundle_count",
         "schema_upgraded_item_count",
     )
     for field in scalar_zero_fields:
@@ -1303,6 +1629,9 @@ def _normalize_registry_update_entry(entry: Mapping[str, Any]) -> Dict[str, Any]
         "by_mechanical_blocker",
         "by_promotion_policy_blocker",
         "by_support_status",
+        "by_generation_path_class",
+        "by_generation_positive_bucket",
+        "by_generation_non_live_reason",
         "accepted_by_verdict_authority_mode",
         "rejected_by_verdict_authority_mode",
         "pending_by_verdict_authority_mode",
@@ -1400,6 +1729,19 @@ def _registry_decision_event(
         "selected_stack_id": str(entry.get("selected_stack_id") or "").strip() or None,
         "topology": str(entry.get("topology") or "").strip() or None,
         "oracle_execution_parity": str(entry.get("oracle_execution_parity") or "").strip().lower() or "missing",
+        "selection_branch_trace": (
+            deepcopy(entry.get("selection_branch_trace"))
+            if isinstance(entry.get("selection_branch_trace"), dict)
+            else {}
+        ),
+        "generation_materialization": (
+            deepcopy(entry.get("generation_materialization"))
+            if isinstance(entry.get("generation_materialization"), dict)
+            else {}
+        ),
+        "generation_path_class": str(entry.get("generation_path_class") or "").strip().lower() or None,
+        "generation_positive_bucket": str(entry.get("generation_positive_bucket") or "").strip() or None,
+        "generation_non_live_reason": str(entry.get("generation_non_live_reason") or "").strip().lower() or None,
         "support_status": str(entry.get("support_status") or "").strip() or None,
         "verdict_authority_mode": str(entry.get("verdict_authority_mode") or "").strip() or None,
         "verdict_authority_consistent": entry.get("verdict_authority_consistent"),
@@ -1407,6 +1749,7 @@ def _registry_decision_event(
         "measured_gate_ready": entry.get("measured_gate_ready"),
         "mechanically_healthy": entry.get("mechanically_healthy"),
         "promotion_policy_ready": entry.get("promotion_policy_ready"),
+        "generation_path_live_positive_ready": entry.get("generation_path_live_positive_ready"),
         "support_candidate_path": str(entry.get("support_candidate_path") or "").strip() or None,
         "manifest_path": str(entry.get("manifest_path") or "").strip() or None,
         "summary_path": str(entry.get("summary_path") or "").strip() or None,
@@ -1525,6 +1868,33 @@ def _normalize_registry_item(item: Mapping[str, Any]) -> Dict[str, Any]:
         promotion_policy_ready = True
         _note_upgrade("promotion_policy_ready_from_review_status_default")
 
+    generation_path_live_positive_ready = normalized.get("generation_path_live_positive_ready")
+    if (
+        not isinstance(generation_path_live_positive_ready, bool)
+        and isinstance(last_event, dict)
+        and isinstance(last_event.get("generation_path_live_positive_ready"), bool)
+    ):
+        generation_path_live_positive_ready = last_event.get("generation_path_live_positive_ready")
+        _note_upgrade("generation_path_live_positive_ready_from_last_event")
+
+    generation_path_class = str(normalized.get("generation_path_class") or "").strip().lower() or None
+    if generation_path_class is None and isinstance(last_event, dict):
+        generation_path_class = str(last_event.get("generation_path_class") or "").strip().lower() or None
+        if generation_path_class:
+            _note_upgrade("generation_path_class_from_last_event")
+
+    generation_positive_bucket = str(normalized.get("generation_positive_bucket") or "").strip() or None
+    if generation_positive_bucket is None and isinstance(last_event, dict):
+        generation_positive_bucket = str(last_event.get("generation_positive_bucket") or "").strip() or None
+        if generation_positive_bucket:
+            _note_upgrade("generation_positive_bucket_from_last_event")
+
+    generation_non_live_reason = str(normalized.get("generation_non_live_reason") or "").strip().lower() or None
+    if generation_non_live_reason is None and isinstance(last_event, dict):
+        generation_non_live_reason = str(last_event.get("generation_non_live_reason") or "").strip().lower() or None
+        if generation_non_live_reason:
+            _note_upgrade("generation_non_live_reason_from_last_event")
+
     decision_history_count = normalized.get("decision_history_count")
     if decision_history_count is None and history:
         decision_history_count = len(history)
@@ -1570,6 +1940,12 @@ def _normalize_registry_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     normalized["promotion_policy_ready"] = (
         promotion_policy_ready if isinstance(promotion_policy_ready, bool) else None
     )
+    normalized["generation_path_live_positive_ready"] = (
+        generation_path_live_positive_ready if isinstance(generation_path_live_positive_ready, bool) else None
+    )
+    normalized["generation_path_class"] = generation_path_class
+    normalized["generation_positive_bucket"] = generation_positive_bucket
+    normalized["generation_non_live_reason"] = generation_non_live_reason
     normalized["decision_history_count"] = int(decision_history_count or 0)
     normalized["source_artifacts"] = merged_source_artifacts
     normalized["schema_status"] = _schema_record_status(schema_upgrade_applied)
@@ -1748,6 +2124,32 @@ def build_curated_support_registry(
                 prior_item.get("oracle_execution_parity"),
             )
             or "missing",
+            "selection_branch_trace": (
+                deepcopy(entry.get("selection_branch_trace"))
+                if isinstance(entry.get("selection_branch_trace"), dict)
+                else deepcopy(prior_item.get("selection_branch_trace"))
+                if isinstance(prior_item.get("selection_branch_trace"), dict)
+                else {}
+            ),
+            "generation_materialization": (
+                deepcopy(entry.get("generation_materialization"))
+                if isinstance(entry.get("generation_materialization"), dict)
+                else deepcopy(prior_item.get("generation_materialization"))
+                if isinstance(prior_item.get("generation_materialization"), dict)
+                else {}
+            ),
+            "generation_path_class": _prefer_registry_str(
+                entry.get("generation_path_class"),
+                prior_item.get("generation_path_class"),
+            ),
+            "generation_positive_bucket": _prefer_registry_str(
+                entry.get("generation_positive_bucket"),
+                prior_item.get("generation_positive_bucket"),
+            ),
+            "generation_non_live_reason": _prefer_registry_str(
+                entry.get("generation_non_live_reason"),
+                prior_item.get("generation_non_live_reason"),
+            ),
             "support_status": _prefer_registry_str(entry.get("support_status"), "reviewable"),
             "verdict_authority_mode": _prefer_registry_str(
                 entry.get("verdict_authority_mode"),
@@ -1769,6 +2171,10 @@ def build_curated_support_registry(
             "promotion_policy_ready": _prefer_registry_bool(
                 entry.get("promotion_policy_ready"),
                 True,
+            ),
+            "generation_path_live_positive_ready": _prefer_registry_bool(
+                entry.get("generation_path_live_positive_ready"),
+                prior_item.get("generation_path_live_positive_ready"),
             ),
             "support_candidate_path": _prefer_registry_str(
                 entry.get("support_candidate_path"),
@@ -1824,6 +2230,22 @@ def build_curated_support_registry(
                 entry.get("support_status"),
                 "reviewable",
             )
+            if isinstance(entry.get("selection_branch_trace"), dict) and entry.get("selection_branch_trace"):
+                updated_item["selection_branch_trace"] = deepcopy(entry.get("selection_branch_trace"))
+            if isinstance(entry.get("generation_materialization"), dict) and entry.get("generation_materialization"):
+                updated_item["generation_materialization"] = deepcopy(entry.get("generation_materialization"))
+            updated_item["generation_path_class"] = _prefer_registry_str(
+                entry.get("generation_path_class"),
+                updated_item.get("generation_path_class"),
+            )
+            updated_item["generation_positive_bucket"] = _prefer_registry_str(
+                entry.get("generation_positive_bucket"),
+                updated_item.get("generation_positive_bucket"),
+            )
+            updated_item["generation_non_live_reason"] = _prefer_registry_str(
+                entry.get("generation_non_live_reason"),
+                updated_item.get("generation_non_live_reason"),
+            )
             updated_item["mechanically_healthy"] = _prefer_registry_bool(
                 entry.get("mechanically_healthy"),
                 True,
@@ -1831,6 +2253,10 @@ def build_curated_support_registry(
             updated_item["promotion_policy_ready"] = _prefer_registry_bool(
                 entry.get("promotion_policy_ready"),
                 True,
+            )
+            updated_item["generation_path_live_positive_ready"] = _prefer_registry_bool(
+                entry.get("generation_path_live_positive_ready"),
+                updated_item.get("generation_path_live_positive_ready"),
             )
             updated_item["last_decision"] = event
             updated_item["source_artifacts"] = _merged_registry_source_artifacts(updated_item, event)
@@ -1845,6 +2271,9 @@ def build_curated_support_registry(
     )
     by_selected_family: Dict[str, int] = {}
     by_topology: Dict[str, int] = {}
+    by_generation_path_class: Dict[str, int] = {}
+    by_generation_positive_bucket: Dict[str, int] = {}
+    by_generation_non_live_reason: Dict[str, int] = {}
     by_verdict_authority_mode: Dict[str, int] = {}
     by_review_status: Dict[str, int] = {}
     by_support_status: Dict[str, int] = {}
@@ -1855,6 +2284,8 @@ def build_curated_support_registry(
     mechanically_blocked_item_count = 0
     promotion_policy_ready_item_count = 0
     promotion_policy_blocked_item_count = 0
+    live_positive_ready_item_count = 0
+    live_positive_blocked_item_count = 0
     items_with_source_artifacts_count = 0
     schema_upgraded_item_count = 0
     schema_upgraded_update_count = 0
@@ -1865,6 +2296,9 @@ def build_curated_support_registry(
     for item in merged_items:
         selected_family = str(item.get("selected_family") or "").strip()
         topology = str(item.get("topology") or "").strip()
+        generation_path_class = str(item.get("generation_path_class") or "").strip().lower()
+        generation_positive_bucket = str(item.get("generation_positive_bucket") or "").strip()
+        generation_non_live_reason = str(item.get("generation_non_live_reason") or "").strip().lower()
         verdict_authority_mode = str(item.get("verdict_authority_mode") or "").strip()
         review_status = str(item.get("review_status") or "").strip().lower()
         support_status = str(item.get("support_status") or "").strip()
@@ -1874,6 +2308,18 @@ def build_curated_support_registry(
             by_selected_family[selected_family] = by_selected_family.get(selected_family, 0) + 1
         if topology:
             by_topology[topology] = by_topology.get(topology, 0) + 1
+        if generation_path_class:
+            by_generation_path_class[generation_path_class] = (
+                by_generation_path_class.get(generation_path_class, 0) + 1
+            )
+        if generation_positive_bucket:
+            by_generation_positive_bucket[generation_positive_bucket] = (
+                by_generation_positive_bucket.get(generation_positive_bucket, 0) + 1
+            )
+        if generation_non_live_reason:
+            by_generation_non_live_reason[generation_non_live_reason] = (
+                by_generation_non_live_reason.get(generation_non_live_reason, 0) + 1
+            )
         if verdict_authority_mode:
             by_verdict_authority_mode[verdict_authority_mode] = (
                 by_verdict_authority_mode.get(verdict_authority_mode, 0) + 1
@@ -1891,6 +2337,10 @@ def build_curated_support_registry(
             promotion_policy_ready_item_count += 1
         elif item.get("promotion_policy_ready") is False:
             promotion_policy_blocked_item_count += 1
+        if item.get("generation_path_live_positive_ready") is True:
+            live_positive_ready_item_count += 1
+        elif item.get("generation_path_live_positive_ready") is False:
+            live_positive_blocked_item_count += 1
         if any(str(value).strip() for value in source_artifacts.values()):
             items_with_source_artifacts_count += 1
         if item.get("schema_upgrade_applied") is True:
@@ -1966,6 +2416,8 @@ def build_curated_support_registry(
         "mechanically_blocked_bundle_count": int(registry_update.get("mechanically_blocked_bundle_count") or 0),
         "promotion_policy_ready_bundle_count": int(registry_update.get("promotion_policy_ready_bundle_count") or 0),
         "promotion_policy_blocked_bundle_count": int(registry_update.get("promotion_policy_blocked_bundle_count") or 0),
+        "live_positive_ready_bundle_count": int(registry_update.get("live_positive_ready_bundle_count") or 0),
+        "live_positive_blocked_bundle_count": int(registry_update.get("live_positive_blocked_bundle_count") or 0),
         "reviewable_case_count": int(registry_update.get("reviewable_case_count") or 0),
         "blocked_case_count": int(registry_update.get("blocked_case_count") or 0),
         "all_reviewable_case_count": int(registry_update.get("all_reviewable_case_count") or 0),
@@ -2031,6 +2483,21 @@ def build_curated_support_registry(
             if isinstance(registry_update.get("by_support_status"), dict)
             else {}
         ),
+        "by_generation_path_class": (
+            dict(registry_update.get("by_generation_path_class"))
+            if isinstance(registry_update.get("by_generation_path_class"), dict)
+            else {}
+        ),
+        "by_generation_positive_bucket": (
+            dict(registry_update.get("by_generation_positive_bucket"))
+            if isinstance(registry_update.get("by_generation_positive_bucket"), dict)
+            else {}
+        ),
+        "by_generation_non_live_reason": (
+            dict(registry_update.get("by_generation_non_live_reason"))
+            if isinstance(registry_update.get("by_generation_non_live_reason"), dict)
+            else {}
+        ),
         "accepted_by_verdict_authority_mode": (
             dict(registry_update.get("accepted_by_verdict_authority_mode"))
             if isinstance(registry_update.get("accepted_by_verdict_authority_mode"), dict)
@@ -2087,6 +2554,9 @@ def build_curated_support_registry(
         "update_count": len(update_history),
         "by_selected_family": by_selected_family,
         "by_topology": by_topology,
+        "by_generation_path_class": by_generation_path_class,
+        "by_generation_positive_bucket": by_generation_positive_bucket,
+        "by_generation_non_live_reason": by_generation_non_live_reason,
         "by_verdict_authority_mode": by_verdict_authority_mode,
         "by_review_status": by_review_status,
         "by_support_status": by_support_status,
@@ -2103,6 +2573,8 @@ def build_curated_support_registry(
         "mechanically_blocked_item_count": mechanically_blocked_item_count,
         "promotion_policy_ready_item_count": promotion_policy_ready_item_count,
         "promotion_policy_blocked_item_count": promotion_policy_blocked_item_count,
+        "live_positive_ready_item_count": live_positive_ready_item_count,
+        "live_positive_blocked_item_count": live_positive_blocked_item_count,
         "items_with_source_artifacts_count": items_with_source_artifacts_count,
         "schema_upgraded_item_count": schema_upgraded_item_count,
         "schema_upgraded_update_count": schema_upgraded_update_count,

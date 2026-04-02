@@ -218,7 +218,9 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
         "candidate_resolution",
         "design_brief",
         "runtime_plan",
+        "executor_plan",
         "oracle_contract",
+        "file_manifest",
     ]
     assert staged["candidate_resolution"]["selected_family"] == "open_redirect"
     assert staged["candidate_resolution"]["selected_topology"] == "single_service"
@@ -236,7 +238,13 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
     ]
     assert staged["design_brief"]["primary_focus"] == "stack_or_runtime_design"
     assert staged["runtime_plan"]["topology"] == "single_service"
+    assert staged["executor_plan"]["service_port"] == 5000
+    assert staged["executor_plan"]["validator"] == "executor_plan_contract"
     assert staged["oracle_contract"]["success_signature"] == "Exploit SUCCESS"
+    assert staged["file_manifest"]["build_context_root"] == "."
+    assert staged["file_manifest"]["service_entry_path"] == "app.py"
+    assert staged["file_manifest"]["poc_entry_path"] == "poc.py"
+    assert staged["file_manifest"]["validator"] == "file_manifest_contract"
 
 
 def test_contract_enriched_request_ir_surfaces_provisional_and_joint_candidates(tmp_path: Path) -> None:
@@ -1890,6 +1898,28 @@ def test_contract_name_only_generation_spec_keeps_evidence_authority_focus_witho
     assert executor_plan["service_port"] == 5000
     assert executor_plan.get("health_path") in {None, "/health"}
     assert executor_plan["stack_selection"]["selected_stack_id"] == "python/flask"
+    trace = payload["selection_branch_trace"]
+    assert trace["schema_version"] == "selection_branch_trace@0.1"
+    assert trace["controller_ready"] is True
+    assert trace["open_world_evidence_ready"] is False
+    assert trace["selected_branch"]["family"]["selected_value"] == "open_redirect"
+    assert trace["selected_branch"]["family"]["materialized_value"] == "open_redirect"
+    assert trace["selected_branch"]["family"]["aligned"] is True
+    assert trace["selected_branch"]["stack"]["selected_value"] == "python/flask"
+    assert trace["selected_branch"]["stack"]["materialized_value"] == "python/flask"
+    assert trace["selected_branch"]["stack"]["aligned"] is True
+    assert trace["selected_branch"]["scenario"]["selected_value"] == "family=open_redirect|stack=python/flask|topology=single_service"
+    assert trace["selected_branch"]["scenario"]["aligned"] is True
+    assert trace["selected_branch"]["topology"]["selected_value"] == "single_service"
+    assert trace["selected_branch"]["topology"]["materialized_value"] == "single_service"
+    assert trace["selected_branch"]["oracle_mode"]["selected_value"] == "stateful_text"
+    assert trace["selected_branch"]["oracle_mode"]["materialized_value"] == "stateful_text"
+    assert trace["branch_aligned"] is True
+    assert trace["candidate_context"]["selection_state"] == "selected"
+    assert trace["candidate_context"]["selected_by"] == "scenario_candidates.explicit_selected"
+    assert trace["materialization_bundle"]["service_entry_path"] == "app.py"
+    assert trace["materialization_bundle"]["poc_entry_path"] == "poc.py"
+    assert trace["materialization_bundle"]["build_context_root"] == "."
     assert spec["stack_candidate_summary"]["working_stack_source"] == "researcher_candidate"
     assert spec["stack_candidate_summary"]["working_stack_defaulted"] is False
     assert spec["stack_candidate_summary"]["selection_resolved"] is True

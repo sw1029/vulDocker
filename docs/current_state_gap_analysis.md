@@ -4,10 +4,20 @@ Status: canonical
 Audience: mixed
 Source of truth for: current rerun-backed truth, current completeness assessment, current structural gaps
 Not the source of truth for: implementation priority, next slice, roadmap
-Last validated against: current workspace-local `python -m pytest -q tests`, `python -m pytest -q tests/test_ops_ci_*.py`, targeted regression slices, and workspace-local direct execution / repeatability / support workflow checks on 2026-03-21, with 2026-03-15 representative reruns retained as historical comparison
+Last validated against: current workspace-local `python -m pytest -q tests`, `python -m pytest -q tests/test_ops_ci_*.py`, targeted regression slices, and workspace-local direct execution / repeatability / support workflow checks on 2026-04-02, with 2026-03-15 representative reruns retained as historical comparison
 
 본 문서는 2026-03-15 KST 기준 workspace 재검토, 최신 코드 보완, representative rerun,
-그리고 `name-only` 관점의 최신 control-plane truth에 2026-03-19 ~ 2026-03-21 KST workspace-local direct execution / helper-regression delta를 덧붙인 **현상 진단 문서**다.
+그리고 `name-only` 관점의 최신 control-plane truth에 2026-03-19 ~ 2026-04-02 KST workspace-local direct execution / helper-regression delta를 덧붙인 **현상 진단 문서**다.
+
+2026-04-02 KST workspace-local revalidation summary:
+
+- `python -m pytest -q tests` -> `1175 passed, 53 skipped`
+- `python -m pytest -q tests/test_ops_ci_*.py` -> `343 passed`
+- focused no-Docker regression slice -> `155 passed`
+- `open-redirect-strict-dynamic-no-remote`, `open-redirect-strict-dynamic-stub`, `foobar-name-only-negative` direct lane는 모두 expectations를 다시 통과했다
+- `trusted-dynamic-sqli`, `open-redirect-dynamic-name-only` direct lane도 모두 expectations를 다시 통과했다
+- positive pair `repeat_case.py -> support_review.py`는 다시 `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={blocked_mixed:2}`를 남겼다
+- full-suite rerun 중 발견된 `cost_budget.pricing_model` drift(`gpt-5.2` vs expected alias `gpt-5`)는 수정 후 green baseline으로 복구됐다
 
 관련 문서:
 - 문제 정의와 success criteria: [docs/problem.md](problem.md)

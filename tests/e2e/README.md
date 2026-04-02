@@ -4,7 +4,7 @@ Status: support
 Audience: implementation, operator
 Source of truth for: case layout, direct E2E harness usage, repeatability/support workflow commands
 Not the source of truth for: backlog priority, current-state assessment, policy claims
-Last validated against: current E2E harness scripts, `python -m pytest -q tests/test_ops_ci_*.py`, and measured/support workflow on 2026-03-21
+Last validated against: current E2E harness scripts, `python -m pytest -q tests/test_ops_ci_*.py`, and measured/support workflow on 2026-04-02
 
 canonical 관계:
 - current truth와 latest rerun 해석: [docs/current_state_gap_analysis.md](../docs/current_state_gap_analysis.md)

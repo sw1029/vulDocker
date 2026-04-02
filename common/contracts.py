@@ -580,11 +580,21 @@ def build_generator_contract(
         executor_plan=executor_plan,
         exploit_oracle=exploit_oracle,
         name_only_generation_spec=name_only_generation_spec,
+        manifest=manifest,
+        workspace_dir=workspace_dir,
+        resolved=resolved_payload,
     )
     if staged_synthesis:
         payload["staged_synthesis"] = staged_synthesis
     if provenance:
         payload["provenance"] = provenance
+    selection_branch_trace = _build_selection_branch_trace(
+        request_ir=enriched_request_ir,
+        staged_synthesis=staged_synthesis,
+        provenance=provenance or {},
+    )
+    if selection_branch_trace:
+        payload["selection_branch_trace"] = selection_branch_trace
     if proposal:
         payload["proposed_verification_contract"] = proposal
     if semantic_contract:
@@ -661,6 +671,8 @@ def build_generator_contract(
         payload["name_only_generation_spec"] = deepcopy(name_only_generation_spec)
     if staged_synthesis:
         payload["staged_synthesis"] = deepcopy(staged_synthesis)
+    if selection_branch_trace:
+        payload["selection_branch_trace"] = deepcopy(selection_branch_trace)
     generation_origin = _string_or_none(provenance.get("generation_origin")) if provenance else None
     if generation_origin:
         payload["generation_origin"] = generation_origin
@@ -1861,6 +1873,76 @@ def _first_poc_like_path(manifest: Dict[str, Any]) -> Optional[str]:
         if Path(path).name.lower().startswith("poc."):
             return path
     return None
+
+
+def _manifest_file_paths(manifest: Dict[str, Any]) -> list[str]:
+    files = manifest.get("files") or []
+    if not isinstance(files, list):
+        return []
+    paths: list[str] = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        path = _string_or_none(entry.get("path"))
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _workspace_file_paths(workspace_dir: Optional[Path]) -> list[str]:
+    if not isinstance(workspace_dir, Path) or not workspace_dir.exists():
+        return []
+    paths: list[str] = []
+    for path in workspace_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(workspace_dir).as_posix()
+        except ValueError:
+            continue
+        if rel:
+            paths.append(rel)
+    return sorted(paths)
+
+
+def _path_present_in_sources(path: Optional[str], candidates: Sequence[str], workspace_dir: Optional[Path]) -> bool:
+    token = _string_or_none(path)
+    if not token:
+        return False
+    if token in candidates:
+        return True
+    if isinstance(workspace_dir, Path):
+        return (workspace_dir / token).exists()
+    return False
+
+
+def _dependency_manifest_paths(paths: Sequence[str]) -> list[str]:
+    dependency_names = {
+        "requirements.txt",
+        "requirements-dev.txt",
+        "requirements.lock",
+        "pyproject.toml",
+        "poetry.lock",
+        "pipfile",
+        "pipfile.lock",
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "setup.py",
+    }
+    return [path for path in paths if Path(path).name.lower() in dependency_names]
+
+
+def _seed_asset_paths(paths: Sequence[str]) -> list[str]:
+    seed_names = {"schema.sql", "seed.sql", "seed_data.sql", "init.sql"}
+    results: list[str] = []
+    for path in paths:
+        name = Path(path).name.lower()
+        suffix = Path(path).suffix.lower()
+        if name in seed_names or suffix in {".sql", ".sqlite", ".sqlite3", ".db"}:
+            results.append(path)
+    return results
 
 
 def _port_from_generator_template(template: Dict[str, Any]) -> Optional[int]:
@@ -4520,6 +4602,9 @@ def _build_staged_synthesis(
     executor_plan: Dict[str, Any],
     exploit_oracle: Dict[str, Any],
     name_only_generation_spec: Dict[str, Any],
+    manifest: Dict[str, Any],
+    workspace_dir: Optional[Path],
+    resolved: Dict[str, Any],
 ) -> Dict[str, Any]:
     if not isinstance(requirement, dict):
         return {}
@@ -4527,6 +4612,9 @@ def _build_staged_synthesis(
     runtime_recipe = runtime_recipe if isinstance(runtime_recipe, dict) else {}
     executor_plan = executor_plan if isinstance(executor_plan, dict) else {}
     exploit_oracle = exploit_oracle if isinstance(exploit_oracle, dict) else {}
+    manifest = manifest if isinstance(manifest, dict) else {}
+    workspace_dir = workspace_dir if isinstance(workspace_dir, Path) else None
+    resolved = resolved if isinstance(resolved, dict) else {}
     name_only_generation_spec = (
         name_only_generation_spec if isinstance(name_only_generation_spec, dict) else {}
     )
@@ -4749,6 +4837,43 @@ def _build_staged_synthesis(
         "repair_policy": "prefer_executor_plan_over_guessing",
         "abort_policy": "fail_manifest_if_runtime_surface_conflicts",
     }
+    executor_plan_stage = {
+        "topology": _string_or_none(executor_plan.get("topology")) or _string_or_none(runtime_plan.get("topology")),
+        "service_port": executor_plan.get("service_port"),
+        "service_entry": _string_or_none(executor_plan.get("service_entry")) or _string_or_none(resolved.get("service_entry")),
+        "poc_entry": _string_or_none(executor_plan.get("poc_entry")) or _string_or_none(resolved.get("poc_entry")),
+        "health_path": _string_or_none(executor_plan.get("health_path")),
+        "network_mode": _string_or_none(executor_plan.get("network_mode")) or _string_or_none(runtime_plan.get("network_mode")) or "none",
+        "requires_external_db": executor_plan.get("requires_external_db") is True,
+        "sidecar_count": len(executor_plan.get("sidecars")) if isinstance(executor_plan.get("sidecars"), list) else 0,
+        "seed_strategy": _string_or_none(executor_plan.get("seed_strategy")),
+        "validator": "executor_plan_contract",
+        "repair_policy": "reuse_runtime_plan_and_runtime_graph",
+        "abort_policy": "fail_manifest_if_executor_surface_conflicts",
+    }
+    observed_paths = sorted(set(_manifest_file_paths(manifest) + _workspace_file_paths(workspace_dir)))
+    dockerfile_path = next((path for path in observed_paths if Path(path).name.lower() == "dockerfile"), None)
+    dependency_paths = _dependency_manifest_paths(observed_paths)
+    service_entry_path = _string_or_none(resolved.get("service_entry")) or _string_or_none(executor_plan.get("service_entry"))
+    poc_entry_path = _string_or_none(resolved.get("poc_entry")) or _string_or_none(executor_plan.get("poc_entry"))
+    file_manifest = {
+        "workspace_root_present": bool(isinstance(workspace_dir, Path) and workspace_dir.exists()),
+        "build_context_root": ".",
+        "file_count": len(observed_paths),
+        "listed_paths": observed_paths,
+        "dockerfile_path": dockerfile_path,
+        "dockerfile_present": bool(dockerfile_path),
+        "dependency_manifest_paths": dependency_paths,
+        "dependency_manifest_present": bool(dependency_paths),
+        "service_entry_path": service_entry_path,
+        "service_entry_present": _path_present_in_sources(service_entry_path, observed_paths, workspace_dir),
+        "poc_entry_path": poc_entry_path,
+        "poc_entry_present": _path_present_in_sources(poc_entry_path, observed_paths, workspace_dir),
+        "seed_asset_paths": _seed_asset_paths(observed_paths),
+        "validator": "file_manifest_contract",
+        "repair_policy": "prefer_manifest_file_index_then_workspace_scan",
+        "abort_policy": "build_required_before_promotion",
+    }
     if (
         _string_or_none(runtime_plan.get("topology")) == _string_or_none((lead_topology_hint or {}).get("topology"))
         and _string_or_none((lead_topology_hint or {}).get("source"))
@@ -4787,12 +4912,238 @@ def _build_staged_synthesis(
             "candidate_resolution",
             "design_brief",
             "runtime_plan",
+            "executor_plan",
             "oracle_contract",
+            "file_manifest",
         ],
         "candidate_resolution": candidate_resolution,
         "design_brief": design_brief,
         "runtime_plan": runtime_plan,
+        "executor_plan": executor_plan_stage,
         "oracle_contract": oracle_contract,
+        "file_manifest": file_manifest,
+    }
+
+
+def _build_selection_branch_trace(
+    *,
+    request_ir: Dict[str, Any],
+    staged_synthesis: Dict[str, Any],
+    provenance: Dict[str, Any],
+) -> Dict[str, Any]:
+    request_ir = request_ir if isinstance(request_ir, dict) else {}
+    staged_synthesis = staged_synthesis if isinstance(staged_synthesis, dict) else {}
+    provenance = provenance if isinstance(provenance, dict) else {}
+    if not staged_synthesis:
+        return {}
+
+    selection_decision = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+    family_selection = selection_decision.get("family") if isinstance(selection_decision.get("family"), dict) else {}
+    stack_selection = selection_decision.get("stack") if isinstance(selection_decision.get("stack"), dict) else {}
+    scenario_selection = selection_decision.get("scenario") if isinstance(selection_decision.get("scenario"), dict) else {}
+    scenario_candidates = (
+        deepcopy(request_ir.get("scenario_candidates"))
+        if isinstance(request_ir.get("scenario_candidates"), list)
+        else []
+    )
+
+    candidate_resolution = (
+        staged_synthesis.get("candidate_resolution")
+        if isinstance(staged_synthesis.get("candidate_resolution"), dict)
+        else {}
+    )
+    design_brief = (
+        staged_synthesis.get("design_brief")
+        if isinstance(staged_synthesis.get("design_brief"), dict)
+        else {}
+    )
+    runtime_plan = (
+        staged_synthesis.get("runtime_plan")
+        if isinstance(staged_synthesis.get("runtime_plan"), dict)
+        else {}
+    )
+    executor_plan = (
+        staged_synthesis.get("executor_plan")
+        if isinstance(staged_synthesis.get("executor_plan"), dict)
+        else {}
+    )
+    oracle_contract = (
+        staged_synthesis.get("oracle_contract")
+        if isinstance(staged_synthesis.get("oracle_contract"), dict)
+        else {}
+    )
+    file_manifest = (
+        staged_synthesis.get("file_manifest")
+        if isinstance(staged_synthesis.get("file_manifest"), dict)
+        else {}
+    )
+
+    selected_family = _string_or_none(family_selection.get("selected_family"))
+    selected_stack_id = _string_or_none(stack_selection.get("selected_stack_id"))
+    selected_scenario_id = _string_or_none(scenario_selection.get("selected_scenario_id"))
+    selected_topology = (
+        _string_or_none(scenario_selection.get("selected_topology"))
+        or _string_or_none(scenario_selection.get("topology"))
+    )
+    selected_oracle_mode = (
+        _string_or_none(scenario_selection.get("selected_oracle_mode"))
+        or _string_or_none(scenario_selection.get("top_oracle_mode"))
+    )
+
+    family_materialized = (
+        _string_or_none(candidate_resolution.get("selected_family"))
+        or _string_or_none(design_brief.get("working_family"))
+    )
+    stack_materialized = (
+        _string_or_none(candidate_resolution.get("selected_stack_id"))
+        or _string_or_none(runtime_plan.get("stack_id"))
+    )
+    scenario_materialized = (
+        _string_or_none(candidate_resolution.get("selected_scenario_id"))
+        or _string_or_none(design_brief.get("selected_scenario_id"))
+    )
+    topology_materialized = (
+        _string_or_none(executor_plan.get("topology"))
+        or _string_or_none(runtime_plan.get("topology"))
+        or _string_or_none(candidate_resolution.get("selected_topology"))
+    )
+    oracle_mode_materialized = (
+        _string_or_none(design_brief.get("selected_oracle_mode"))
+        or _string_or_none(candidate_resolution.get("selected_oracle_mode"))
+        or _string_or_none(oracle_contract.get("mode"))
+    )
+
+    rejected_scenario_ids = [
+        scenario_id
+        for scenario_id in (
+            _string_or_none(entry.get("scenario_id")) for entry in scenario_candidates if isinstance(entry, dict)
+        )
+        if scenario_id and scenario_id != selected_scenario_id
+    ]
+
+    branch_chain = [
+        {
+            "branch": "family",
+            "selected_value": selected_family,
+            "materialized_value": family_materialized,
+            "selected_source": _string_or_none(family_selection.get("source")),
+            "materialized_field": "staged_synthesis.candidate_resolution.selected_family",
+            "aligned": bool(selected_family and family_materialized and selected_family == family_materialized),
+        },
+        {
+            "branch": "stack",
+            "selected_value": selected_stack_id,
+            "materialized_value": stack_materialized,
+            "selected_source": _string_or_none(stack_selection.get("source")) or _string_or_none(stack_selection.get("basis")),
+            "materialized_field": "staged_synthesis.candidate_resolution.selected_stack_id",
+            "aligned": bool(selected_stack_id and stack_materialized and selected_stack_id == stack_materialized),
+        },
+        {
+            "branch": "scenario",
+            "selected_value": selected_scenario_id,
+            "materialized_value": scenario_materialized,
+            "selected_source": _string_or_none(scenario_selection.get("selected_by")) or _string_or_none(scenario_selection.get("source")),
+            "materialized_field": "staged_synthesis.candidate_resolution.selected_scenario_id",
+            "aligned": bool(selected_scenario_id and scenario_materialized and selected_scenario_id == scenario_materialized),
+        },
+        {
+            "branch": "topology",
+            "selected_value": selected_topology,
+            "materialized_value": topology_materialized,
+            "selected_source": _string_or_none(scenario_selection.get("selected_by")) or _string_or_none(scenario_selection.get("source")),
+            "materialized_field": "staged_synthesis.executor_plan.topology",
+            "aligned": bool(selected_topology and topology_materialized and selected_topology == topology_materialized),
+        },
+        {
+            "branch": "oracle_mode",
+            "selected_value": selected_oracle_mode,
+            "materialized_value": oracle_mode_materialized,
+            "selected_source": _string_or_none(scenario_selection.get("selected_oracle_source")) or _string_or_none(scenario_selection.get("top_oracle_source")),
+            "materialized_field": "staged_synthesis.oracle_contract.mode",
+            "aligned": bool(
+                selected_oracle_mode and oracle_mode_materialized and selected_oracle_mode == oracle_mode_materialized
+            ),
+        },
+    ]
+
+    branch_alignment = {
+        str(entry.get("branch") or ""): bool(entry.get("aligned"))
+        for entry in branch_chain
+        if str(entry.get("branch") or "").strip()
+    }
+
+    return {
+        "schema_version": "selection_branch_trace@0.1",
+        "controller_ready": selection_decision.get("ready_for_materialization") is True,
+        "open_world_evidence_ready": selection_decision.get("open_world_evidence_ready") is True,
+        "branch_aligned": all(branch_alignment.values()) if branch_alignment else False,
+        "generation_origin": _string_or_none(provenance.get("generation_origin")),
+        "materializer": _string_or_none(provenance.get("materializer")),
+        "candidate_context": {
+            "scenario_candidate_count": len([entry for entry in scenario_candidates if isinstance(entry, dict)]),
+            "selected_candidate_present": scenario_selection.get("selected_candidate_present") is True,
+            "selection_state": _string_or_none(scenario_selection.get("selection_state")),
+            "selected_by": _string_or_none(scenario_selection.get("selected_by")),
+            "unresolved_reasons": deepcopy(scenario_selection.get("unresolved_reasons"))
+            if isinstance(scenario_selection.get("unresolved_reasons"), list)
+            else [],
+            "rejected_scenario_ids_sample": rejected_scenario_ids[:3],
+            "rejected_candidate_count": len(rejected_scenario_ids),
+        },
+        "selected_branch": {
+            "family": {
+                "selected": family_selection.get("selected") is True,
+                "selected_value": selected_family,
+                "materialized_value": family_materialized,
+                "source": _string_or_none(family_selection.get("source")),
+                "aligned": branch_alignment.get("family") is True,
+            },
+            "stack": {
+                "selected": stack_selection.get("selected") is True,
+                "selected_value": selected_stack_id,
+                "materialized_value": stack_materialized,
+                "source": _string_or_none(stack_selection.get("source")) or _string_or_none(stack_selection.get("basis")),
+                "aligned": branch_alignment.get("stack") is True,
+            },
+            "scenario": {
+                "selected": scenario_selection.get("selected") is True,
+                "selected_value": selected_scenario_id,
+                "materialized_value": scenario_materialized,
+                "source": _string_or_none(scenario_selection.get("selected_by")) or _string_or_none(scenario_selection.get("source")),
+                "aligned": branch_alignment.get("scenario") is True,
+            },
+            "topology": {
+                "selected_value": selected_topology,
+                "materialized_value": topology_materialized,
+                "source": _string_or_none(scenario_selection.get("selected_by")) or _string_or_none(scenario_selection.get("source")),
+                "aligned": branch_alignment.get("topology") is True,
+            },
+            "oracle_mode": {
+                "selected_value": selected_oracle_mode,
+                "materialized_value": oracle_mode_materialized,
+                "source": _string_or_none(scenario_selection.get("selected_oracle_source")) or _string_or_none(scenario_selection.get("top_oracle_source")),
+                "aligned": branch_alignment.get("oracle_mode") is True,
+            },
+        },
+        "materialization_bundle": {
+            "runtime_topology": _string_or_none(runtime_plan.get("topology")),
+            "runtime_topology_source": _string_or_none(runtime_plan.get("topology_source")),
+            "executor_topology": _string_or_none(executor_plan.get("topology")),
+            "service_entry_path": _string_or_none(file_manifest.get("service_entry_path")),
+            "poc_entry_path": _string_or_none(file_manifest.get("poc_entry_path")),
+            "dockerfile_path": _string_or_none(file_manifest.get("dockerfile_path")),
+            "build_context_root": _string_or_none(file_manifest.get("build_context_root")) or ".",
+            "dependency_manifest_paths": deepcopy(file_manifest.get("dependency_manifest_paths"))
+            if isinstance(file_manifest.get("dependency_manifest_paths"), list)
+            else [],
+            "seed_asset_paths": deepcopy(file_manifest.get("seed_asset_paths"))
+            if isinstance(file_manifest.get("seed_asset_paths"), list)
+            else [],
+            "required_roles": deepcopy(design_brief.get("required_roles"))
+            if isinstance(design_brief.get("required_roles"), list)
+            else [],
+        },
+        "branch_chain": branch_chain,
     }
 
 

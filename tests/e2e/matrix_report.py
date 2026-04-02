@@ -89,6 +89,18 @@ def build_matrix_report(
     by_stage_ceiling_projection_mode: Dict[str, int] = {}
     by_terminal_failure_class_projection_mode: Dict[str, int] = {}
     by_oracle_execution_parity_projection_mode: Dict[str, int] = {}
+    by_primary_generation_path_class: Dict[str, int] = {}
+    by_primary_generation_positive_bucket: Dict[str, int] = {}
+    by_primary_generation_non_live_reason: Dict[str, int] = {}
+    path_class_consistent_cases = []
+    path_class_inconsistent_cases = []
+    positive_bucket_consistent_cases = []
+    positive_bucket_inconsistent_cases = []
+    non_live_reason_consistent_cases = []
+    non_live_reason_inconsistent_cases = []
+    live_positive_ready_cases = []
+    live_positive_blocked_cases = []
+    by_generation_gate_blocker: Dict[str, int] = {}
 
     for case_name in sorted(records):
         record = records[case_name]
@@ -122,6 +134,53 @@ def build_matrix_report(
                     token = str(blocker).strip()
                     if token:
                         by_measured_gate_blocker[token] = by_measured_gate_blocker.get(token, 0) + 1
+        generation_path_observations = (
+            repeatability.get("generation_path_observations")
+            if isinstance(repeatability.get("generation_path_observations"), dict)
+            else {}
+        )
+        generation_path_gate = (
+            repeatability.get("generation_path_gate")
+            if isinstance(repeatability.get("generation_path_gate"), dict)
+            else {}
+        )
+        primary_path_class = str(generation_path_observations.get("primary_path_class") or "").strip().lower()
+        primary_positive_bucket = str(generation_path_observations.get("primary_positive_bucket") or "").strip()
+        primary_non_live_reason = str(generation_path_observations.get("primary_non_live_reason") or "").strip().lower()
+        if primary_path_class:
+            by_primary_generation_path_class[primary_path_class] = (
+                by_primary_generation_path_class.get(primary_path_class, 0) + 1
+            )
+        if primary_positive_bucket:
+            by_primary_generation_positive_bucket[primary_positive_bucket] = (
+                by_primary_generation_positive_bucket.get(primary_positive_bucket, 0) + 1
+            )
+        if primary_non_live_reason:
+            by_primary_generation_non_live_reason[primary_non_live_reason] = (
+                by_primary_generation_non_live_reason.get(primary_non_live_reason, 0) + 1
+            )
+        if generation_path_observations:
+            if generation_path_observations.get("path_class_consistent") is True:
+                path_class_consistent_cases.append(case_name)
+            elif generation_path_observations.get("path_class_consistent") is False:
+                path_class_inconsistent_cases.append(case_name)
+            if generation_path_observations.get("positive_bucket_consistent") is True:
+                positive_bucket_consistent_cases.append(case_name)
+            elif generation_path_observations.get("positive_bucket_consistent") is False:
+                positive_bucket_inconsistent_cases.append(case_name)
+            if generation_path_observations.get("non_live_reason_consistent") is True:
+                non_live_reason_consistent_cases.append(case_name)
+            elif generation_path_observations.get("non_live_reason_consistent") is False:
+                non_live_reason_inconsistent_cases.append(case_name)
+        if generation_path_gate:
+            if generation_path_gate.get("live_positive_ready") is True:
+                live_positive_ready_cases.append(case_name)
+            else:
+                live_positive_blocked_cases.append(case_name)
+            for blocker in generation_path_gate.get("blockers") or []:
+                token = str(blocker).strip()
+                if token:
+                    by_generation_gate_blocker[token] = by_generation_gate_blocker.get(token, 0) + 1
         artifact_quality = summary.get("artifact_quality") if isinstance(summary.get("artifact_quality"), dict) else {}
         quality_band = str((artifact_quality or {}).get("band") or "").strip().lower()
         qualitative_tier = str((artifact_quality or {}).get("qualitative_tier") or "").strip()
@@ -183,6 +242,20 @@ def build_matrix_report(
             "ready_cases": measured_gate_ready_cases,
             "not_ready_cases": measured_gate_not_ready_cases,
             "by_blocker": by_measured_gate_blocker,
+        },
+        "generation_path_observations": {
+            "by_primary_path_class": by_primary_generation_path_class,
+            "by_primary_positive_bucket": by_primary_generation_positive_bucket,
+            "by_primary_non_live_reason": by_primary_generation_non_live_reason,
+            "path_class_consistent_cases": path_class_consistent_cases,
+            "path_class_inconsistent_cases": path_class_inconsistent_cases,
+            "positive_bucket_consistent_cases": positive_bucket_consistent_cases,
+            "positive_bucket_inconsistent_cases": positive_bucket_inconsistent_cases,
+            "non_live_reason_consistent_cases": non_live_reason_consistent_cases,
+            "non_live_reason_inconsistent_cases": non_live_reason_inconsistent_cases,
+            "live_positive_ready_cases": live_positive_ready_cases,
+            "live_positive_blocked_cases": live_positive_blocked_cases,
+            "by_generation_gate_blocker": by_generation_gate_blocker,
         },
         "cache_observations": {
             "cache_reuse_observed_cases": cache_reuse_observed_cases,

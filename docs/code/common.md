@@ -4,7 +4,7 @@ Status: support
 Audience: implementation
 Source of truth for: shared helpers, contracts, prompt and policy utilities
 Not the source of truth for: project roadmap or current constraints
-Last validated against: current repo layout, scenario-selection/staged-synthesis surfaces, bounded runtime-contract hardening, and active ticket decomposition on 2026-03-19
+Last validated against: current repo layout, scenario-selection/staged-synthesis surfaces, bounded runtime-contract hardening, and active ticket decomposition on 2026-04-02
 
 Relevant canonical docs:
 - [문제 정의](../problem.md)
@@ -24,7 +24,7 @@ Relevant canonical docs:
 ## 구성 요소
 
 - `common/name_only.py`: name-only mode contract, closure path policy, intent classification helper
-- `common/contracts.py`: `request_ir`, `runtime_recipe`, `executor_plan`, `exploit_oracle`, `name_only_generation_spec`, `staged_synthesis` 생성
+- `common/contracts.py`: `request_ir`, `runtime_recipe`, `executor_plan`, `exploit_oracle`, `name_only_generation_spec`, `staged_synthesis`, `selection_branch_trace` 생성
 - `common/prompts/templates.py`: researcher/generator/reviewer prompt surface
 - `common/paths.py`: 저장소 경로 규칙
 - `common/sid.py`: SID 필드 해시
@@ -77,10 +77,15 @@ Relevant canonical docs:
 - `staged_synthesis.oracle_contract`도 explicit `exploit_oracle`이 약한 경우 `mode`, `negative_control_present`, `metamorphic_present`, `source`, `confidence` 같은 working oracle shape를 primitive-derived hint로 보강할 수 있습니다.
 - 이 hint는 `runtime_recipe`, `runtime_graph`, `executor_plan`에도 다시 반영됩니다. 그래서 executor-facing contract surface도 primitive-derived `db/topology`와 provenance를 읽을 수는 있지만, 아직 executor가 이를 primary execution controller로 쓰는 단계는 아닙니다.
 - `selection_decision`은 family/stack만이 아니라 `scenario` payload도 포함하며, `selected_scenario_id`, `selected_topology`, scenario-level evidence authority를 노출합니다.
-- `staged_synthesis`는 `candidate_resolution`, `design_brief`, `runtime_plan`, `oracle_contract`를 typed intermediate surface로 제공하는 현재 Phase 2 진입점입니다.
+- `staged_synthesis`는 이제 `candidate_resolution`, `design_brief`, `runtime_plan`, `executor_plan`, `oracle_contract`, `file_manifest`를 typed intermediate surface로 제공합니다. 즉 runtime/oracle뿐 아니라 executor-facing surface와 build-ready file set도 같은 staged contract 안에서 읽기 시작했습니다.
+- latest slice에서는 same staged contract 위에 `selection_branch_trace`도 추가돼, `selection_decision.family/stack/scenario -> candidate_resolution/design_brief/runtime_plan/executor_plan/oracle_contract/file_manifest` alignment를 one-shot machine-readable payload로 읽을 수 있습니다.
+- same trace는 `controller_ready`, `branch_aligned`, branch별 `selected_value/materialized_value/aligned`, rejected scenario sample, materialized file/runtime bundle까지 같이 남기므로 selection enrichment와 actual Docker branch causality를 덜 섞습니다.
+- latest slice에서는 same contract/provenance 위에 `generation_materialization@0.1`도 정리돼, `generation_origin`, `materializer`, `path_class`, provider attempt/success, fixture/stub flag, provider/model/cache/prompt/retry/timeout/cost surface를 one-shot payload로 읽을 수 있습니다.
+- same why-not-live subtype(`fixture_backed`, `provider_disabled` 등)는 `generation_materialization.non_live_reason`에서 시작해 support review/update/apply aggregate의 `by_generation_non_live_reason`로 이어지므로, direct summary와 support workflow가 서로 다른 failure vocabulary를 쓰지 않게 됩니다.
 - generator는 이 `staged_synthesis` surface를 prompt에만 보여주는 것이 아니라, failure-stage classification, 기록, 그리고 다음 candidate retry narrowing에도 사용하기 시작했습니다.
 - recovery path도 `staged_synthesis`를 읽기 시작했습니다. 현재는 `runtime_plan`과 `oracle_contract` 실패에서 stage-specific repair candidate를 우선 시도하고, 그 다음에 semantic-guided fallback으로 내려갑니다.
 - pack/operator surface도 이제 이 흐름을 읽습니다. `staged_recovery`와 `staged_synthesis_summary`가 manifest에 노출되므로 generator 내부 stage-aware behavior를 PACK 이후에도 추적할 수 있습니다.
+- latest slice에서는 same staged contract와 single-bundle PACK summary가 actual `image_tag`, `build_log`, `run_log`, `sbom_path` pointer를 다시 surface하기 시작했습니다. 따라서 operator가 build/run artifact 위치를 top-level manifest와 `summary.json`에서 직접 읽을 수 있습니다.
 - executor 쪽도 첫 parity slice가 들어가서, `executor_plan.base_url`, `executor_plan.service_env`, `executor_plan.requires_external_db/topology`가 실행 판단에 더 직접 반영됩니다.
 - executor는 이제 bundle별 `effective executor policy`를 만들어 `sidecars/network_mode/allow_network`도 `executor_plan`/`runtime_recipe`에서 보완합니다.
 - `executor_plan.sidecars`는 이제 global policy defaults보다 더 우선되고, bundle별 sidecar aliases가 있으면 network selection도 bundle-scoped로 재계산됩니다.

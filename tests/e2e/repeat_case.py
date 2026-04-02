@@ -54,6 +54,40 @@ VERDICT_AUTHORITY_FIELDS = (
 )
 
 
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _generation_positive_bucket(attempt: Dict[str, Any]) -> str | None:
+    path_class = str(attempt.get("generation_path_class") or "").strip().lower()
+    generation_origin = str(attempt.get("generation_origin") or "").strip().lower()
+    provider_health_state = str(attempt.get("provider_health_state") or "").strip().lower()
+    provider_succeeded = _optional_bool(attempt.get("generation_provider_succeeded"))
+    stub_fallback = _optional_bool(attempt.get("generation_stub_fallback"))
+    fixture_used = _optional_bool(attempt.get("generation_fixture_used"))
+
+    if fixture_used is True or path_class == "fixture":
+        return "fixture_backed_positive"
+    if provider_succeeded is True or path_class == "live":
+        return "live_positive"
+    if (
+        path_class in {"degraded", "stub"}
+        or stub_fallback is True
+        or generation_origin == "deterministic_fallback"
+        or provider_health_state == "llm_degraded"
+    ):
+        return "degraded_fallback_positive"
+    if generation_origin:
+        return "non_llm_positive"
+    return None
+
+
+def _generation_non_live_reason(attempt: Dict[str, Any]) -> str | None:
+    return str(attempt.get("generation_non_live_reason") or "").strip().lower() or None
+
+
 def _safe_read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -212,6 +246,23 @@ def summarize_repeat_attempt(
             for field in VERDICT_AUTHORITY_FIELDS
             if str((authority_fields.get(field) or {}).get("projection_mode") or "").strip()
         },
+        "generation_origin": str(summary.get("generation_origin") or "").strip().lower() or None,
+        "provider_health_state": str(summary.get("provider_health_state") or "").strip().lower() or None,
+        "generation_path_class": str(summary.get("generation_path_class") or "").strip().lower() or None,
+        "generation_provider_attempted": _optional_bool(summary.get("generation_provider_attempted")),
+        "generation_provider_succeeded": _optional_bool(summary.get("generation_provider_succeeded")),
+        "generation_stub_fallback": _optional_bool(summary.get("generation_stub_fallback")),
+        "generation_fixture_used": _optional_bool(summary.get("generation_fixture_used")),
+        "generation_non_live_reason": (
+            str(summary.get("generation_non_live_reason") or "").strip().lower()
+            or str(
+                ((summary.get("generation_materialization") or {}) if isinstance(summary.get("generation_materialization"), dict) else {}).get(
+                    "non_live_reason"
+                )
+                or ""
+            ).strip().lower()
+            or None
+        ),
     }
     for field in PERFORMANCE_CACHE_FIELDS:
         value = summary.get(field)
@@ -306,6 +357,17 @@ def _fallback_matrix_report(
             "ready_cases": [],
             "not_ready_cases": [],
             "by_blocker": {},
+        },
+        "generation_path_observations": {
+            "by_primary_path_class": {},
+            "by_primary_positive_bucket": {},
+            "path_class_consistent_cases": [],
+            "path_class_inconsistent_cases": [],
+            "positive_bucket_consistent_cases": [],
+            "positive_bucket_inconsistent_cases": [],
+            "live_positive_ready_cases": [],
+            "live_positive_blocked_cases": [],
+            "by_generation_gate_blocker": {},
         },
         "cache_observations": {
             "cache_reuse_observed_cases": [],
@@ -407,6 +469,104 @@ def aggregate_repeat_results(case_name: str, attempts: List[Dict[str, Any]]) -> 
             if str(item.get("execution_salt") or "").strip()
         }
     )
+    observed_generation_path_classes = sorted(
+        {
+            str(item.get("generation_path_class") or "").strip().lower()
+            for item in successful_attempts
+            if str(item.get("generation_path_class") or "").strip()
+        }
+    )
+    observed_generation_positive_buckets = sorted(
+        {
+            bucket
+            for item in successful_attempts
+            if (bucket := _generation_positive_bucket(item))
+        }
+    )
+    observed_generation_non_live_reasons = sorted(
+        {
+            reason
+            for item in successful_attempts
+            if (reason := _generation_non_live_reason(item))
+        }
+    )
+    generation_path_class_consistent = bool(observed_generation_path_classes) and len(observed_generation_path_classes) == 1
+    generation_positive_bucket_consistent = (
+        bool(observed_generation_positive_buckets) and len(observed_generation_positive_buckets) == 1
+    )
+    generation_non_live_reason_consistent = (
+        len(observed_generation_non_live_reasons) == 1
+        if observed_generation_non_live_reasons
+        else None
+    )
+    primary_generation_path_class = (
+        observed_generation_path_classes[0] if generation_path_class_consistent else None
+    )
+    primary_generation_positive_bucket = (
+        observed_generation_positive_buckets[0] if generation_positive_bucket_consistent else None
+    )
+    primary_generation_non_live_reason = (
+        observed_generation_non_live_reasons[0] if generation_non_live_reason_consistent is True else None
+    )
+    by_generation_path_class = dict(
+        sorted(
+            Counter(
+                str(item.get("generation_path_class") or "").strip().lower()
+                for item in successful_attempts
+                if str(item.get("generation_path_class") or "").strip()
+            ).items()
+        )
+    )
+    by_generation_positive_bucket = dict(
+        sorted(
+            Counter(
+                bucket
+                for item in successful_attempts
+                if (bucket := _generation_positive_bucket(item))
+            ).items()
+        )
+    )
+    by_generation_non_live_reason = dict(
+        sorted(
+            Counter(
+                reason
+                for item in successful_attempts
+                if (reason := _generation_non_live_reason(item))
+            ).items()
+        )
+    )
+    generation_path_observed = bool(
+        observed_generation_path_classes
+        or observed_generation_positive_buckets
+        or observed_generation_non_live_reasons
+        or any(
+            item.get("generation_provider_attempted") is not None
+            or item.get("generation_provider_succeeded") is not None
+            or item.get("generation_stub_fallback") is not None
+            or item.get("generation_fixture_used") is not None
+            or str(item.get("generation_non_live_reason") or "").strip()
+            or str(item.get("generation_origin") or "").strip()
+            or str(item.get("provider_health_state") or "").strip()
+            for item in successful_attempts
+        )
+    )
+    generation_gate_blockers: List[str] = []
+    if generation_path_observed and observed_generation_path_classes and not generation_path_class_consistent:
+        generation_gate_blockers.append("generation_path_class_inconsistent")
+    if generation_path_observed and observed_generation_positive_buckets and not generation_positive_bucket_consistent:
+        generation_gate_blockers.append("generation_path_bucket_inconsistent")
+    if generation_path_observed and generation_non_live_reason_consistent is False:
+        generation_gate_blockers.append("generation_non_live_reason_inconsistent")
+    if any(
+        bucket in {"fixture_backed_positive", "degraded_fallback_positive"}
+        for bucket in observed_generation_positive_buckets
+    ) and "live_positive" not in observed_generation_positive_buckets:
+        generation_gate_blockers.append("generation_path_not_live_positive")
+    generation_path_live_positive_ready = (
+        bool(successful_attempts)
+        and generation_positive_bucket_consistent
+        and primary_generation_positive_bucket == "live_positive"
+    )
     measured_gate_blockers: List[str] = []
     if not attempts or not all(bool(item.get("success")) for item in attempts):
         measured_gate_blockers.append("case_failed")
@@ -420,6 +580,7 @@ def aggregate_repeat_results(case_name: str, attempts: List[Dict[str, Any]]) -> 
         measured_gate_blockers.append("oracle_execution_parity_not_high")
     if not verdict_authority_consistent:
         measured_gate_blockers.append("verdict_authority_inconsistent")
+    measured_gate_blockers.extend(generation_gate_blockers)
     report = {
         "case": case_name,
         "case_name": case_name,
@@ -440,6 +601,31 @@ def aggregate_repeat_results(case_name: str, attempts: List[Dict[str, Any]]) -> 
         "observed_verdict_projection_modes": observed_verdict_projection_modes,
         "quality_tier_consistent": quality_tier_consistent,
         "verdict_authority_consistent": verdict_authority_consistent,
+        "observed_generation_path_classes": observed_generation_path_classes,
+        "observed_generation_positive_buckets": observed_generation_positive_buckets,
+        "observed_generation_non_live_reasons": observed_generation_non_live_reasons,
+        "generation_path_class_consistent": generation_path_class_consistent,
+        "generation_positive_bucket_consistent": generation_positive_bucket_consistent,
+        "generation_non_live_reason_consistent": generation_non_live_reason_consistent,
+        "generation_path_observations": {
+            "path_observed": generation_path_observed,
+            "observed_path_classes": observed_generation_path_classes,
+            "observed_positive_buckets": observed_generation_positive_buckets,
+            "observed_non_live_reasons": observed_generation_non_live_reasons,
+            "primary_path_class": primary_generation_path_class,
+            "primary_positive_bucket": primary_generation_positive_bucket,
+            "primary_non_live_reason": primary_generation_non_live_reason,
+            "path_class_consistent": generation_path_class_consistent,
+            "positive_bucket_consistent": generation_positive_bucket_consistent,
+            "non_live_reason_consistent": generation_non_live_reason_consistent,
+            "by_path_class": by_generation_path_class,
+            "by_positive_bucket": by_generation_positive_bucket,
+            "by_non_live_reason": by_generation_non_live_reason,
+        },
+        "generation_path_gate": {
+            "live_positive_ready": generation_path_live_positive_ready,
+            "blockers": generation_gate_blockers,
+        },
         "measured_gate": {
             "ready": not measured_gate_blockers,
             "blockers": measured_gate_blockers,

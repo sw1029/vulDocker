@@ -231,6 +231,80 @@ def _manifest_path_for_sid(sid: str) -> Path:
     raise CaseError(f"manifest not found for SID {sid}")
 
 
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _infer_generation_path_class(
+    *,
+    path_class: str,
+    provider_attempted: bool | None,
+    provider_succeeded: bool | None,
+    stub_fallback: bool | None,
+    fixture_used: bool | None,
+    generation_origin: str,
+) -> str | None:
+    token = str(path_class or "").strip().lower()
+    if token:
+        return token
+    if fixture_used is True:
+        return "fixture"
+    if provider_succeeded is True and stub_fallback is not True:
+        return "live"
+    if stub_fallback is True and provider_attempted is True:
+        return "degraded"
+    if stub_fallback is True:
+        return "stub"
+    lowered_origin = str(generation_origin or "").strip().lower()
+    if lowered_origin == "llm_manifest":
+        return "live"
+    if lowered_origin == "deterministic_fallback":
+        return "stub"
+    if lowered_origin:
+        return "not_executed"
+    return None
+
+
+def _bundle_generation_path(bundle: Dict[str, Any]) -> Dict[str, Any]:
+    provenance = bundle.get("provenance") if isinstance(bundle.get("provenance"), dict) else {}
+    llm_execution = provenance.get("llm_execution") if isinstance(provenance.get("llm_execution"), dict) else {}
+    generation_materialization = (
+        bundle.get("generation_materialization") if isinstance(bundle.get("generation_materialization"), dict) else {}
+    )
+    generation_origin = str(provenance.get("generation_origin") or "").strip().lower() or None
+    provider_attempted = _optional_bool(llm_execution.get("provider_attempted"))
+    if provider_attempted is None:
+        provider_attempted = _optional_bool(provenance.get("llm_provider_attempted"))
+    provider_succeeded = _optional_bool(llm_execution.get("provider_succeeded"))
+    if provider_succeeded is None:
+        provider_succeeded = _optional_bool(provenance.get("llm_provider_succeeded"))
+    stub_fallback = _optional_bool(llm_execution.get("stub_fallback"))
+    if stub_fallback is None:
+        stub_fallback = _optional_bool(provenance.get("llm_stub_used"))
+    fixture_used = _optional_bool(llm_execution.get("fixture_used"))
+    if fixture_used is None:
+        fixture_used = _optional_bool(provenance.get("llm_fixture_used"))
+    path_class = _infer_generation_path_class(
+        path_class=str(llm_execution.get("path_class") or ""),
+        provider_attempted=provider_attempted,
+        provider_succeeded=provider_succeeded,
+        stub_fallback=stub_fallback,
+        fixture_used=fixture_used,
+        generation_origin=generation_origin or "",
+    )
+    return {
+        "generation_origin": generation_origin,
+        "path_class": path_class,
+        "provider_attempted": provider_attempted,
+        "provider_succeeded": provider_succeeded,
+        "stub_fallback": stub_fallback,
+        "fixture_used": fixture_used,
+        "non_live_reason": str(generation_materialization.get("non_live_reason") or "").strip().lower() or None,
+    }
+
+
 def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) -> Dict[str, Any]:
     manifest_path = _manifest_path_for_sid(sid)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -247,15 +321,19 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         eval_result = artifacts.get("eval_result") or {}
         run_summary = artifacts.get("run_summary") or {}
         compiler_contract = bundle.get("compiler_contract") or {}
+        generation_path = _bundle_generation_path(bundle)
         bundles.append(
             {
                 "slug": bundle.get("slug"),
                 "vuln_id": bundle.get("vuln_id"),
+                "image_tag": run_summary.get("image_tag"),
+                "build_log": run_summary.get("build_log") or artifacts.get("build_log"),
                 "verify_pass": eval_result.get("verify_pass"),
                 "evidence": eval_result.get("evidence") or "",
                 "run_passed": run_summary.get("run_passed"),
                 "exit_code": run_summary.get("exit_code"),
-                "run_log": run_summary.get("run_log"),
+                "run_log": run_summary.get("run_log") or artifacts.get("run_log"),
+                "sbom_path": run_summary.get("sbom_path") or artifacts.get("sbom"),
                 "service_port_source": run_summary.get("service_port_source"),
                 "service_entry_source": run_summary.get("service_entry_source"),
                 "poc_entry": run_summary.get("poc_entry"),
@@ -338,7 +416,15 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
                 "request_ir": bundle.get("request_ir") or {},
                 "name_resolution": bundle.get("name_resolution") or {},
                 "executor_plan": bundle.get("executor_plan") or {},
-                "generation_origin": (bundle.get("provenance") or {}).get("generation_origin"),
+                "selection_branch_trace": bundle.get("selection_branch_trace") or {},
+                "generation_materialization": bundle.get("generation_materialization") or {},
+                "generation_origin": generation_path.get("generation_origin"),
+                "generation_path_class": generation_path.get("path_class"),
+                "generation_provider_attempted": generation_path.get("provider_attempted"),
+                "generation_provider_succeeded": generation_path.get("provider_succeeded"),
+                "generation_stub_fallback": generation_path.get("stub_fallback"),
+                "generation_fixture_used": generation_path.get("fixture_used"),
+                "generation_non_live_reason": generation_path.get("non_live_reason"),
                 "semantic_guided_selection_source": (bundle.get("provenance") or {}).get("semantic_guided_selection_source"),
                 "semantic_guided_abstain_reason": (bundle.get("provenance") or {}).get("semantic_guided_abstain_reason"),
                 "semantic_guided_ambiguous": (bundle.get("provenance") or {}).get("semantic_guided_ambiguous"),
@@ -423,6 +509,14 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "selection_readiness_summary": manifest.get("selection_readiness_summary") or {},
         "name_resolution_summary": manifest.get("name_resolution_summary") or {},
         "executor_plan": manifest.get("executor_plan") or {},
+        "selection_branch_trace": manifest.get("selection_branch_trace") or {},
+        "generation_materialization": (
+            manifest.get("generation_materialization")
+            if isinstance(manifest.get("generation_materialization"), dict)
+            else single_bundle_summary.get("generation_materialization")
+            if isinstance(single_bundle_summary.get("generation_materialization"), dict)
+            else {}
+        ),
         "generalization_summary": manifest.get("generalization_summary") or {},
         "open_world_summary": manifest.get("open_world_summary") or {},
         "strict_open_world_summary": manifest.get("strict_open_world_summary") or {},
@@ -452,6 +546,34 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "service_env": manifest.get("service_env"),
         "service_port": manifest.get("service_port"),
         "service_base_url": manifest.get("service_base_url"),
+        "image_tag": (
+            manifest.get("image_tag")
+            if isinstance(manifest.get("image_tag"), str)
+            else single_bundle_summary.get("image_tag")
+            if isinstance(single_bundle_summary.get("image_tag"), str)
+            else None
+        ),
+        "build_log": (
+            manifest.get("build_log")
+            if isinstance(manifest.get("build_log"), str)
+            else single_bundle_summary.get("build_log")
+            if isinstance(single_bundle_summary.get("build_log"), str)
+            else None
+        ),
+        "run_log": (
+            manifest.get("run_log")
+            if isinstance(manifest.get("run_log"), str)
+            else single_bundle_summary.get("run_log")
+            if isinstance(single_bundle_summary.get("run_log"), str)
+            else None
+        ),
+        "sbom_path": (
+            manifest.get("sbom_path")
+            if isinstance(manifest.get("sbom_path"), str)
+            else single_bundle_summary.get("sbom_path")
+            if isinstance(single_bundle_summary.get("sbom_path"), str)
+            else None
+        ),
         "run_passed": (
             manifest.get("run_passed")
             if isinstance(manifest.get("run_passed"), bool)
@@ -546,7 +668,63 @@ def _load_manifest_summary(sid: str, *, pipeline_returncode: int | None = None) 
         "request_identity": manifest.get("request_identity") or {},
         "request_ir": manifest.get("request_ir") or {},
         "name_resolution": manifest.get("name_resolution") or {},
-        "generation_origin": manifest.get("generation_origin"),
+        "generation_origin": (
+            manifest.get("generation_origin")
+            if isinstance(manifest.get("generation_origin"), str)
+            else single_bundle_summary.get("generation_origin")
+            if isinstance(single_bundle_summary.get("generation_origin"), str)
+            else None
+        ),
+        "generation_path_class": (
+            manifest.get("generation_path_class")
+            if isinstance(manifest.get("generation_path_class"), str)
+            else single_bundle_summary.get("generation_path_class")
+            if isinstance(single_bundle_summary.get("generation_path_class"), str)
+            else None
+        ),
+        "generation_provider_attempted": (
+            manifest.get("llm_provider_attempted")
+            if isinstance(manifest.get("llm_provider_attempted"), bool)
+            else single_bundle_summary.get("generation_provider_attempted")
+            if isinstance(single_bundle_summary.get("generation_provider_attempted"), bool)
+            else None
+        ),
+        "generation_provider_succeeded": (
+            manifest.get("llm_provider_succeeded")
+            if isinstance(manifest.get("llm_provider_succeeded"), bool)
+            else single_bundle_summary.get("generation_provider_succeeded")
+            if isinstance(single_bundle_summary.get("generation_provider_succeeded"), bool)
+            else None
+        ),
+        "generation_stub_fallback": (
+            manifest.get("llm_stub_used")
+            if isinstance(manifest.get("llm_stub_used"), bool)
+            else single_bundle_summary.get("generation_stub_fallback")
+            if isinstance(single_bundle_summary.get("generation_stub_fallback"), bool)
+            else None
+        ),
+        "generation_fixture_used": (
+            manifest.get("llm_fixture_used")
+            if isinstance(manifest.get("llm_fixture_used"), bool)
+            else single_bundle_summary.get("generation_fixture_used")
+            if isinstance(single_bundle_summary.get("generation_fixture_used"), bool)
+            else None
+        ),
+        "generation_non_live_reason": (
+            str(manifest.get("generation_non_live_reason") or "").strip().lower()
+            or str(single_bundle_summary.get("generation_non_live_reason") or "").strip().lower()
+            or str(
+                (
+                    manifest.get("generation_materialization")
+                    if isinstance(manifest.get("generation_materialization"), dict)
+                    else single_bundle_summary.get("generation_materialization")
+                    if isinstance(single_bundle_summary.get("generation_materialization"), dict)
+                    else {}
+                ).get("non_live_reason")
+                or ""
+            ).strip().lower()
+            or None
+        ),
         "semantic_guided_selection_source": manifest.get("semantic_guided_selection_source"),
         "semantic_guided_abstain_reason": manifest.get("semantic_guided_abstain_reason"),
         "semantic_guided_ambiguous": manifest.get("semantic_guided_ambiguous"),

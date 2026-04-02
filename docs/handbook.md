@@ -4,7 +4,7 @@ Status: support
 Audience: operator
 Source of truth for: quickstart, command map, artifact locations, troubleshooting entrypoints
 Not the source of truth for: current-state assessment, constraints, roadmap
-Last validated against: repository commands, `python -m pytest -q tests/test_ops_ci_*.py`, support/repeatability workflow, and representative reruns on 2026-03-21
+Last validated against: repository commands, `python -m pytest -q tests/test_ops_ci_*.py`, support/repeatability workflow, and representative reruns on 2026-04-02
 
 이 문서는 운영/온보딩용 가이드입니다. 개념 정의와 현재 제약은 요약하지 않고, 어떤 문서를 어디서 읽어야 하는지와 실제 실행 절차만 제공합니다.
 
@@ -171,7 +171,7 @@ canonical 관계:
 - `metadata/<SID>/generator_runs.json`: generator run record index
 - `metadata/<SID>/generator_failures.jsonl`: generator failure/retry trace
 - `metadata/<SID>/resolved_contract.json`: current resolved contract surface when present
-- `metadata/<SID>/manifest.json` or `metadata/<SID>/failure_manifest.json`: pack summary / failure summary
+- `metadata/<SID>/manifest.json` or `metadata/<SID>/failure_manifest.json`: pack summary / failure summary. single-bundle lane에서는 `generation_materialization`과 `selection_branch_trace`도 direct convenience surface로 붙기 시작했습니다
 - `metadata/<SID>/reviewer_reports.json`: reviewer report index
 - `metadata/<SID>/loop_state.json`: loop / retry state
 - `metadata/<SID>/performance_summary.json`: search/cache/perf observation summary
@@ -180,12 +180,12 @@ canonical 관계:
 - `artifacts/<SID>/run/`: run log and run summary
 - `artifacts/<SID>/run/oracle_execution.json`: payload replay / oracle execution trace when present
 - `artifacts/<SID>/reports/evals.json`: verifier result
-- `<OUT_DIR>/repeatability_report.json`: measured repeatability summary, `measured_gate`, `observed_execution_salts`
-- `<OUT_DIR>/matrix_report.json`: case-matrix rollup, quality observations, measured-gate observations
+- `<OUT_DIR>/repeatability_report.json`: measured repeatability summary, `measured_gate`, `observed_execution_salts`, `generation_path_observations`, `generation_path_gate`, `observed_generation_non_live_reasons`
+- `<OUT_DIR>/matrix_report.json`: case-matrix rollup, quality observations, measured-gate observations, generation-path observations, `by_primary_non_live_reason`
 - `<OUT_DIR>/support_candidate.json`: measured support candidate with blocker classes and support status
-- `support_review_index.json`: review queue aggregate, `by_case_status`, explicit case lists
-- `support_registry_update.json`: decision preview, `accepted/rejected/pending_by_support_status`, case-level aggregate
-- `curated_support_registry.json`: local registry current state, `by_case_review_status`, `last_update`, schema/provenance history
+- `support_review_index.json`: review queue aggregate, `by_case_status`, explicit case lists, `by_generation_path_class`, `by_generation_positive_bucket`, `by_generation_non_live_reason`
+- `support_registry_update.json`: decision preview, `accepted/rejected/pending_by_support_status`, case-level aggregate, `by_generation_non_live_reason`
+- `curated_support_registry.json`: local registry current state, `by_case_review_status`, `last_update`, schema/provenance history. blocked no-op apply에서도 `last_update.by_generation_non_live_reason`는 유지된다
 
 ## Open-World Axis Reading Hints
 
@@ -194,8 +194,9 @@ canonical 관계:
 - 선택
   - `metadata/<SID>/plan.json`
   - `metadata/<SID>/researcher_report.json`
-  - `summary.json`의 `request_ir`, `request_ir_summary`, `selection_decision`, `name_only_outcome`
+  - `summary.json`의 `request_ir`, `request_ir_summary`, `selection_decision`, `selection_branch_trace`, `name_only_outcome`
   - family/stack/topology/oracle 선택이 evidence-backed인지, `ready_for_materialization`과 `open_world_evidence_ready`가 어디서 멈췄는지 본다.
+  - latest slice에서는 same `selection_branch_trace`의 `selected_value/materialized_value/aligned`와 `candidate_context.rejected_scenario_ids_sample`를 같이 읽어, selected scenario가 실제 runtime/oracle/file branch를 열었는지와 어떤 대안이 밀렸는지를 한 번에 본다.
 - 생성
   - `metadata/<SID>/generator_manifest.json`
   - `metadata/<SID>/generator_runs.json`
@@ -214,6 +215,7 @@ canonical 관계:
   - `<OUT_DIR>/repeatability_report.json`
   - `<OUT_DIR>/matrix_report.json`
   - oracle replay parity, quality tier, repeatability, measured gate blocker가 어떤 이유로 promotion을 막는지 본다.
+  - same slice에서는 `generation_path_observations(primary_path_class, primary_positive_bucket, primary_non_live_reason)`와 `generation_path_gate(blockers)`를 같이 읽어, `fixture_backed_positive`나 `degraded_fallback_positive`를 `live_positive`와 분리하고, why-not-live subtype(`fixture_backed`, `provider_disabled`)도 함께 본다.
 - 보고
   - representative E2E `summary.json`의 `name_only_outcome`
   - `<OUT_DIR>/support_candidate.json`
@@ -461,7 +463,7 @@ operator가 measured/support artifact를 읽을 때는 아래처럼 해석한다
 - positive LLM-shaped lane를 보고 싶으면 `trusted-dynamic-sqli`를 대표 lane로 본다. latest Docker-enabled rerun에서는 expectation을 통과했지만 `llm_fixture` / `llm_manifest`, `thin_or_incomplete`, measured-gate blocked로 남았다는 점을 같이 읽는다.
 - positive dynamic representative lane `open-redirect-dynamic-name-only`는 actual runtime/oracle path를 다시 열었지만 `llm_degraded` / `deterministic_fallback` / `partial`로 남았다. operator 관점의 ticket 해석은 [docs/work_tickets.md](work_tickets.md)의 `Assessment-To-Ticket Interpretation`을 같이 본다.
 - same direct rerun command family는 `ops/ci/run_positive_direct_validation.sh` helper로도 바로 실행할 수 있다.
-- positive pair의 promotion 경계를 보고 싶으면 `trusted-dynamic-sqli` + `open-redirect-dynamic-name-only`를 `repeat_case -> support_review`로 같이 본다. latest fresh rerun 기준으로는 `authority_ready_bundle_count=2`여도 `reviewable_bundle_count=0`으로 남는다.
+- positive pair의 promotion 경계를 보고 싶으면 `trusted-dynamic-sqli` + `open-redirect-dynamic-name-only`를 `repeat_case -> support_review`로 같이 본다. latest fresh rerun 기준으로는 `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_generation_non_live_reason={fixture_backed:1, provider_disabled:1}`로 남는다.
 - direct rerun + promotion-check를 같이 보려면 `ops/ci/run_docker_positive_operator_baseline.sh`를 먼저 쓴다.
 - same command family는 `ops/ci/run_positive_pair_promotion_check.sh` helper로도 바로 실행할 수 있다.
   - `python tests/e2e/repeat_case.py --case tests/e2e/cases/trusted-dynamic-sqli --expectations tests/e2e/cases/trusted-dynamic-sqli/expectations.json --mode deterministic --no-snapshot --output-dir /tmp/vuld_repeat_trusted_dynamic`

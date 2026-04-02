@@ -86,6 +86,8 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                     "reasons": [
                         "name-open-redirect: strict_open_world:strict_minimal_dynamic_fallback",
                         "name-open-redirect: selection_evidence:open_world_not_ready",
+                        "name-open-redirect: generation_path:not_live_positive",
+                        "name-open-redirect: generation_path:provider_disabled",
                     ],
                 },
                 "open_world_readiness_summary": {
@@ -95,6 +97,8 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                     "all_ready": False,
                     "by_blocker": {
                         "strict_open_world_gate": 1,
+                        "generation_path_not_live_positive": 1,
+                        "generation_path_provider_disabled": 1,
                         "stack_defaulted": 1,
                         "selection_open_world_evidence_not_ready": 1,
                     },
@@ -457,6 +461,71 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                     "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
                     "candidate_resolution": {"selected_topology": "single_service"},
                 },
+                "selection_branch_trace": {
+                    "schema_version": "selection_branch_trace@0.1",
+                    "controller_ready": True,
+                    "open_world_evidence_ready": True,
+                    "branch_aligned": True,
+                    "selected_branch": {
+                        "family": {"selected_value": "open_redirect", "materialized_value": "open_redirect", "aligned": True},
+                        "stack": {"selected_value": "python/flask", "materialized_value": "python/flask", "aligned": True},
+                        "scenario": {
+                            "selected_value": "family=open_redirect|stack=python/flask|topology=single_service",
+                            "materialized_value": "family=open_redirect|stack=python/flask|topology=single_service",
+                            "aligned": True,
+                        },
+                        "topology": {"selected_value": "single_service", "materialized_value": "single_service", "aligned": True},
+                        "oracle_mode": {"selected_value": "stateful_text", "materialized_value": "stateful_text", "aligned": True},
+                    },
+                    "materialization_bundle": {
+                        "runtime_topology": "single_service",
+                        "executor_topology": "single_service",
+                        "service_entry_path": "app.py",
+                        "poc_entry_path": "poc.py",
+                        "dockerfile_path": "Dockerfile",
+                        "build_context_root": ".",
+                        "dependency_manifest_paths": ["requirements.txt"],
+                        "seed_asset_paths": ["schema.sql"],
+                        "required_roles": ["service_main", "poc_entry"],
+                    },
+                    "candidate_context": {
+                        "scenario_candidate_count": 2,
+                        "selected_candidate_present": True,
+                        "selection_state": "selected",
+                        "selected_by": "scenario_candidates.explicit_selected",
+                        "unresolved_reasons": [],
+                        "rejected_scenario_ids_sample": ["family=open_redirect|stack=python/django|topology=single_service"],
+                        "rejected_candidate_count": 1,
+                    },
+                    "branch_chain": [
+                        {
+                            "branch": "family",
+                            "selected_value": "open_redirect",
+                            "materialized_value": "open_redirect",
+                            "selected_source": "semantic_signature",
+                            "materialized_field": "staged_synthesis.candidate_resolution.selected_family",
+                            "aligned": True,
+                        }
+                    ],
+                },
+                "generation_materialization": {
+                    "schema_version": "generation_materialization@0.1",
+                    "generation_origin": "deterministic_fallback",
+                    "materializer": "llm_fallback",
+                    "path_class": "stub",
+                    "provider_attempted": False,
+                    "provider_succeeded": False,
+                    "stub_fallback": True,
+                    "fixture_used": False,
+                    "failure_class": "provider_disabled",
+                    "provider_backend": "litellm",
+                    "model": "gpt-5.2",
+                    "cache_mode": "none",
+                    "live_positive_ready": False,
+                    "non_live_reason": "provider_disabled",
+                    "prompt_contracts": [{"name": "synthesis_manifest", "version": "build_synthesis_prompt@1"}],
+                    "prompt_invocations": {"synthesis_manifest": 1},
+                },
                 "staged_recovery": {
                     "recovery_strategy": "runtime_plan",
                     "failure_stage": "runtime_plan",
@@ -496,6 +565,18 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                             },
                         },
                         "provenance": {
+                            "generation_origin": "deterministic_fallback",
+                            "llm_provider_attempted": False,
+                            "llm_provider_succeeded": False,
+                            "llm_fixture_used": False,
+                            "llm_stub_used": True,
+                            "llm_execution": {
+                                "provider_attempted": False,
+                                "provider_succeeded": False,
+                                "stub_fallback": True,
+                                "fixture_used": False,
+                                "path_class": "stub",
+                            },
                             "semantic_guided_selection_source": "request_resolution",
                             "semantic_guided_ambiguous": True,
                         },
@@ -529,13 +610,22 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                             "working_stack_evidence_backed": True,
                         },
                         "support_promotion": {
-                            "eligible": False,
-                            "reasons": ["strict_open_world:strict_minimal_dynamic_fallback"],
-                        },
-                        "open_world_readiness": {
-                            "ready": False,
-                            "blockers": ["strict_open_world_gate", "stack_defaulted"],
-                        },
+                        "eligible": False,
+                        "reasons": [
+                            "strict_open_world:strict_minimal_dynamic_fallback",
+                            "generation_path:not_live_positive",
+                            "generation_path:provider_disabled",
+                        ],
+                    },
+                    "open_world_readiness": {
+                        "ready": False,
+                        "blockers": [
+                            "strict_open_world_gate",
+                            "generation_path_not_live_positive",
+                            "generation_path_provider_disabled",
+                            "stack_defaulted",
+                        ],
+                    },
                         "family_dependence": {
                             "class": "semantic_signature_bounded",
                             "selection_source": "semantic_signature",
@@ -595,6 +685,63 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                             "stage_order": ["candidate_resolution", "design_brief", "runtime_plan", "oracle_contract"],
                             "candidate_resolution": {"selected_topology": "single_service"},
                         },
+                        "selection_branch_trace": {
+                            "schema_version": "selection_branch_trace@0.1",
+                            "controller_ready": True,
+                            "open_world_evidence_ready": True,
+                            "branch_aligned": True,
+                            "selected_branch": {
+                                "family": {"selected_value": "open_redirect", "materialized_value": "open_redirect", "aligned": True}
+                            },
+                            "materialization_bundle": {
+                                "runtime_topology": "single_service",
+                                "executor_topology": "single_service",
+                                "service_entry_path": "app.py",
+                                "poc_entry_path": "poc.py",
+                                "dockerfile_path": "Dockerfile",
+                                "build_context_root": ".",
+                                "dependency_manifest_paths": ["requirements.txt"],
+                                "seed_asset_paths": ["schema.sql"],
+                                "required_roles": ["service_main", "poc_entry"],
+                            },
+                            "candidate_context": {
+                                "scenario_candidate_count": 2,
+                                "selected_candidate_present": True,
+                                "selection_state": "selected",
+                                "selected_by": "scenario_candidates.explicit_selected",
+                                "unresolved_reasons": [],
+                                "rejected_scenario_ids_sample": ["family=open_redirect|stack=python/django|topology=single_service"],
+                                "rejected_candidate_count": 1,
+                            },
+                            "branch_chain": [
+                                {
+                                    "branch": "family",
+                                    "selected_value": "open_redirect",
+                                    "materialized_value": "open_redirect",
+                                    "selected_source": "semantic_signature",
+                                    "materialized_field": "staged_synthesis.candidate_resolution.selected_family",
+                                    "aligned": True,
+                                }
+                            ],
+                        },
+                        "generation_materialization": {
+                            "schema_version": "generation_materialization@0.1",
+                            "generation_origin": "deterministic_fallback",
+                            "materializer": "llm_fallback",
+                            "path_class": "stub",
+                            "provider_attempted": False,
+                            "provider_succeeded": False,
+                            "stub_fallback": True,
+                            "fixture_used": False,
+                            "failure_class": "provider_disabled",
+                            "provider_backend": "litellm",
+                            "model": "gpt-5.2",
+                            "cache_mode": "none",
+                            "live_positive_ready": False,
+                            "non_live_reason": "provider_disabled",
+                            "prompt_contracts": [{"name": "synthesis_manifest", "version": "build_synthesis_prompt@1"}],
+                            "prompt_invocations": {"synthesis_manifest": 1},
+                        },
                         "staged_recovery": {
                             "recovery_strategy": "runtime_plan",
                             "failure_stage": "runtime_plan",
@@ -614,7 +761,15 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
                             "generation_origin": "deterministic_fallback",
                         },
                         "artifacts": {
+                            "build_log": "/tmp/build/build.log",
+                            "sbom": "/tmp/build/sbom.spdx.json",
+                            "run_log": "/tmp/run/run.log",
                             "run_summary": {
+                                "image_tag": "sid-summary-surface",
+                                "build_log": "/tmp/build/build.log",
+                                "run_log": "/tmp/run/run.log",
+                                "sbom_path": "/tmp/build/sbom.spdx.json",
+                                "build_passed": True,
                                 "run_passed": True,
                                 "exit_code": 0,
                                 "service_port_source": "executor_plan.service_port",
@@ -741,6 +896,10 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["completion_summary"]["by_stage_ceiling"] == {"generated": 1}
     assert summary["semantic_guided_selection_source"] == "request_resolution"
     assert summary["semantic_guided_ambiguous"] is True
+    assert summary["image_tag"] == "sid-summary-surface"
+    assert summary["build_log"] == "/tmp/build/build.log"
+    assert summary["run_log"] == "/tmp/run/run.log"
+    assert summary["sbom_path"] == "/tmp/build/sbom.spdx.json"
     assert summary["service_port"] == 9000
     assert summary["service_base_url"] == "http://127.0.0.1:9000"
     assert summary["run_passed"] is True
@@ -818,6 +977,21 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["generation_timeout_budget"]["llm_request_timeout_s"] == 9.5
     assert summary["research_cost_budget"]["configured_cost_budget_usd"] == 0.25
     assert summary["generation_cost_budget"]["configured_cost_budget_usd"] == 0.25
+    assert summary["generation_origin"] == "deterministic_fallback"
+    assert summary["generation_path_class"] == "stub"
+    assert summary["generation_provider_attempted"] is False
+    assert summary["generation_provider_succeeded"] is False
+    assert summary["generation_stub_fallback"] is True
+    assert summary["generation_fixture_used"] is False
+    assert summary["generation_non_live_reason"] == "provider_disabled"
+    assert summary["generation_materialization"]["path_class"] == "stub"
+    assert summary["generation_materialization"]["provider_backend"] == "litellm"
+    assert summary["generation_materialization"]["prompt_contracts"][0]["name"] == "synthesis_manifest"
+    assert summary["generation_materialization"]["non_live_reason"] == "provider_disabled"
+    assert summary["selection_branch_trace"]["schema_version"] == "selection_branch_trace@0.1"
+    assert summary["selection_branch_trace"]["branch_aligned"] is True
+    assert summary["selection_branch_trace"]["materialization_bundle"]["service_entry_path"] == "app.py"
+    assert summary["selection_branch_trace"]["candidate_context"]["selected_by"] == "scenario_candidates.explicit_selected"
     assert summary["search_planned_query_count"] == 4
     assert summary["search_executed_query_count"] == 3
     assert summary["search_early_stop_triggered"] is True
@@ -862,6 +1036,15 @@ def test_load_manifest_summary_surfaces_name_only_and_quality_fields(tmp_path: P
     assert summary["bundles"][0]["request_ir"]["selection_decision"]["ready_for_materialization"] is True
     assert summary["bundles"][0]["semantic_guided_selection_source"] == "request_resolution"
     assert summary["bundles"][0]["semantic_guided_ambiguous"] is True
+    assert summary["bundles"][0]["generation_origin"] == "deterministic_fallback"
+    assert summary["bundles"][0]["generation_path_class"] == "stub"
+    assert summary["bundles"][0]["generation_stub_fallback"] is True
+    assert summary["bundles"][0]["generation_fixture_used"] is False
+    assert summary["bundles"][0]["generation_non_live_reason"] == "provider_disabled"
+    assert summary["bundles"][0]["generation_materialization"]["failure_class"] == "provider_disabled"
+    assert summary["bundles"][0]["generation_materialization"]["non_live_reason"] == "provider_disabled"
+    assert summary["bundles"][0]["selection_branch_trace"]["branch_aligned"] is True
+    assert summary["bundles"][0]["selection_branch_trace"]["selected_branch"]["family"]["materialized_value"] == "open_redirect"
     assert summary["bundles"][0]["runtime_graph"]["topology"] == "single_service"
     assert summary["bundles"][0]["executor_plan"]["health_path"] == "/health"
     assert summary["bundles"][0]["evidence_graph"]["node_count"] == 3

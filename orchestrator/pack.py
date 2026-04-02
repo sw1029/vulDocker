@@ -11,6 +11,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "1", "yes", "on"}:
+            return True
+        if token in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -315,15 +328,33 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
             manifest["retry_recommended"] = retry_recommended
     if len(bundles) == 1:
         provenance = bundles[0].get("provenance") or {}
+        generation_materialization = (
+            bundles[0].get("generation_materialization")
+            if isinstance(bundles[0].get("generation_materialization"), dict)
+            else {}
+        )
         researcher_bundle = bundles[0].get("researcher") if isinstance(bundles[0].get("researcher"), dict) else {}
         if isinstance(provenance.get("generation_origin"), str) and provenance.get("generation_origin", "").strip():
             manifest["generation_origin"] = provenance["generation_origin"].strip()
-        for key in ("fallback_used", "family_override_applied", "llm_stub_used", "llm_fixture_used"):
+        for key in (
+            "fallback_used",
+            "family_override_applied",
+            "llm_stub_used",
+            "llm_fixture_used",
+            "llm_provider_attempted",
+            "llm_provider_succeeded",
+        ):
             value = provenance.get(key)
             if isinstance(value, bool):
                 manifest[key] = value
+        if generation_materialization:
+            manifest["generation_materialization"] = deepcopy(generation_materialization)
+            path_class = generation_materialization.get("path_class")
+            if isinstance(path_class, str) and path_class.strip():
+                manifest["generation_path_class"] = path_class.strip()
         generation_llm_execution = provenance.get("llm_execution") if isinstance(provenance, dict) else {}
         if isinstance(generation_llm_execution, dict):
+            manifest["generation_llm_execution"] = deepcopy(generation_llm_execution)
             retry_budget = generation_llm_execution.get("retry_budget")
             if isinstance(retry_budget, dict) and retry_budget:
                 manifest["generation_retry_budget"] = dict(retry_budget)
@@ -482,6 +513,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         staged_synthesis = bundles[0].get("staged_synthesis") or {}
         if isinstance(staged_synthesis, dict) and staged_synthesis:
             manifest["staged_synthesis"] = staged_synthesis
+        selection_branch_trace = bundles[0].get("selection_branch_trace") or {}
+        if isinstance(selection_branch_trace, dict) and selection_branch_trace:
+            manifest["selection_branch_trace"] = selection_branch_trace
         staged_recovery = bundles[0].get("staged_recovery") or {}
         if isinstance(staged_recovery, dict) and staged_recovery:
             manifest["staged_recovery"] = staged_recovery
@@ -577,6 +611,19 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
             if isinstance(run_passed, bool):
                 manifest["run_passed"] = run_passed
             for key in (
+                "image_tag",
+                "build_log",
+                "run_log",
+                "sbom_path",
+                "image_id",
+                "build_passed",
+                "build_attempted",
+                "run_attempted",
+            ):
+                value = run_summary_payload.get(key)
+                if value not in (None, "", [], {}):
+                    manifest[key] = deepcopy(value)
+            for key in (
                 "service_port",
                 "service_base_url",
                 "service_port_source",
@@ -617,6 +664,15 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
             executed_sidecars = run_summary_payload.get("sidecars")
             if isinstance(executed_sidecars, list) and executed_sidecars:
                 manifest["executed_sidecars"] = deepcopy(executed_sidecars)
+        build_log_path = artifacts_payload.get("build_log") if isinstance(artifacts_payload, dict) else None
+        if isinstance(build_log_path, str) and build_log_path.strip() and "build_log" not in manifest:
+            manifest["build_log"] = build_log_path.strip()
+        run_log_path = artifacts_payload.get("run_log") if isinstance(artifacts_payload, dict) else None
+        if isinstance(run_log_path, str) and run_log_path.strip() and "run_log" not in manifest:
+            manifest["run_log"] = run_log_path.strip()
+        sbom_path = artifacts_payload.get("sbom") if isinstance(artifacts_payload, dict) else None
+        if isinstance(sbom_path, str) and sbom_path.strip():
+            manifest["sbom_path"] = sbom_path.strip()
         eval_result_payload = artifacts_payload.get("eval_result") if isinstance(artifacts_payload, dict) else {}
         if isinstance(eval_result_payload, dict) and "verify_pass" in eval_result_payload:
             verify_pass = eval_result_payload.get("verify_pass")
@@ -722,6 +778,7 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             generator_payload,
             bundle_failure=failure,
         )
+        generation_materialization = _generation_materialization_contract(provenance)
         dynamicness = _bundle_dynamicness_verdict(provenance)
         compiler_contract = _bundle_compiler_contract(metadata_dir)
         semantic_surface = _bundle_semantic_surface(
@@ -769,6 +826,11 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             else {}
         )
         staged_synthesis = _bundle_staged_synthesis(metadata_dir)
+        selection_branch_trace = (
+            dict(contract.get("selection_branch_trace"))
+            if isinstance(contract.get("selection_branch_trace"), dict)
+            else {}
+        )
         staged_recovery = _bundle_staged_recovery(metadata_dir)
         dynamic_eval = _bundle_dynamic_eval_summary(
             requirement=requirement_view,
@@ -894,6 +956,7 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "promotion": promotion,
             "failure": failure,
             "provenance": provenance,
+            "generation_materialization": generation_materialization,
             "dynamicness": dynamicness,
             "generalization": generalization,
             "open_world": open_world,
@@ -906,6 +969,7 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "evidence_graph": evidence_graph,
             "name_only_generation_spec": name_only_generation_spec,
             "staged_synthesis": staged_synthesis,
+            "selection_branch_trace": selection_branch_trace,
             "staged_recovery": staged_recovery,
             "dynamic_eval": dynamic_eval,
             "researcher": researcher,
@@ -1123,6 +1187,7 @@ def _bundle_support_promotion_status(bundle_entry: Dict[str, Any]) -> Dict[str, 
     stack_dependence = bundle_entry.get("stack_dependence") or {}
     family_dependence = bundle_entry.get("family_dependence") or {}
     name_only_outcome = bundle_entry.get("name_only_outcome") or {}
+    generation_materialization = bundle_entry.get("generation_materialization") or {}
     reasons: List[str] = []
 
     if not bool((promotion or {}).get("eligible")):
@@ -1161,6 +1226,12 @@ def _bundle_support_promotion_status(bundle_entry: Dict[str, Any]) -> Dict[str, 
 
     request_kind = str((name_only_outcome or {}).get("request_kind") or "").strip().lower()
     mode = str((name_only_outcome or {}).get("mode") or "").strip().lower()
+    generation_path_class = str((generation_materialization or {}).get("path_class") or "").strip().lower()
+    non_live_reason = str((generation_materialization or {}).get("non_live_reason") or "").strip().lower()
+    if request_kind == "name_only" and mode in {"dynamic", "dynamic_eval", "strict_dynamic"} and generation_path_class != "live":
+        reasons.append("generation_path:not_live_positive")
+        if non_live_reason:
+            reasons.append(f"generation_path:{non_live_reason}")
     if (
         request_kind == "name_only"
         and mode in {"dynamic", "dynamic_eval", "strict_dynamic"}
@@ -1368,6 +1439,28 @@ def _open_world_readiness_blockers(bundle_entry: Dict[str, Any]) -> List[str]:
             blockers.append("selection_open_world_evidence_not_ready")
         elif token.startswith("name_only_outcome:"):
             blockers.append("name_only_intent_not_met")
+        elif token.startswith("generation_path:"):
+            suffix = token.split(":", 1)[1].strip().lower()
+            if suffix == "not_live_positive":
+                blockers.append("generation_path_not_live_positive")
+            elif suffix == "fixture_backed":
+                blockers.append("generation_path_fixture_backed")
+            elif suffix == "provider_disabled":
+                blockers.append("generation_path_provider_disabled")
+            elif suffix == "quota_exhausted":
+                blockers.append("generation_path_quota_exhausted")
+            elif suffix == "stub_fallback":
+                blockers.append("generation_path_stub_fallback")
+            elif suffix == "degraded_fallback":
+                blockers.append("generation_path_degraded_fallback")
+            elif suffix == "provider_not_attempted":
+                blockers.append("generation_path_provider_not_attempted")
+            elif suffix == "provider_attempt_failed":
+                blockers.append("generation_path_provider_attempt_failed")
+            elif suffix == "not_executed":
+                blockers.append("generation_path_not_executed")
+            else:
+                blockers.append(f"generation_path_{suffix}")
         elif token.startswith("base_promotion:"):
             blockers.append("base_promotion_ineligible")
         else:
@@ -1517,6 +1610,103 @@ def _bundle_generation_provenance(
         loop_payload = _loop_failure_provenance(sid, bundle, bundle_failure=bundle_failure)
         if loop_payload:
             payload.update(loop_payload)
+    return payload
+
+
+def _generation_materialization_contract(provenance: Dict[str, Any]) -> Dict[str, Any]:
+    provenance = provenance if isinstance(provenance, dict) else {}
+    llm_execution = provenance.get("llm_execution") if isinstance(provenance.get("llm_execution"), dict) else {}
+    generation_origin = str(provenance.get("generation_origin") or "").strip().lower() or None
+    materializer = str(provenance.get("materializer") or "").strip() or None
+    provider_attempted = _optional_bool(llm_execution.get("provider_attempted"))
+    if provider_attempted is None:
+        provider_attempted = _optional_bool(provenance.get("llm_provider_attempted"))
+    provider_succeeded = _optional_bool(llm_execution.get("provider_succeeded"))
+    if provider_succeeded is None:
+        provider_succeeded = _optional_bool(provenance.get("llm_provider_succeeded"))
+    stub_fallback = _optional_bool(llm_execution.get("stub_fallback"))
+    if stub_fallback is None:
+        stub_fallback = _optional_bool(provenance.get("llm_stub_used"))
+    fixture_used = _optional_bool(llm_execution.get("fixture_used"))
+    if fixture_used is None:
+        fixture_used = _optional_bool(provenance.get("llm_fixture_used"))
+    path_class = str(llm_execution.get("path_class") or "").strip().lower()
+    if not path_class:
+        if fixture_used is True:
+            path_class = "fixture"
+        elif provider_succeeded is True and stub_fallback is not True:
+            path_class = "live"
+        elif stub_fallback is True and provider_attempted is True:
+            path_class = "degraded"
+        elif stub_fallback is True:
+            path_class = "stub"
+        elif generation_origin == "llm_manifest":
+            path_class = "live"
+        elif generation_origin == "deterministic_fallback":
+            path_class = "stub"
+        elif generation_origin:
+            path_class = "not_executed"
+    failure_class = str(
+        llm_execution.get("last_error_class") or provenance.get("llm_failure_class") or ""
+    ).strip() or None
+    live_positive_ready = bool(
+        path_class == "live"
+        and provider_succeeded is True
+        and fixture_used is not True
+        and stub_fallback is not True
+    )
+    non_live_reason = None
+    if not live_positive_ready:
+        if fixture_used is True or path_class == "fixture":
+            non_live_reason = "fixture_backed"
+        elif failure_class in {"provider_disabled", "quota_exhausted", "auth_failure"}:
+            non_live_reason = failure_class
+        elif path_class == "degraded":
+            non_live_reason = "degraded_fallback"
+        elif path_class == "stub" and stub_fallback is True:
+            non_live_reason = "stub_fallback"
+        elif provider_attempted is False:
+            non_live_reason = "provider_not_attempted"
+        elif provider_attempted is True and provider_succeeded is False:
+            non_live_reason = "provider_attempt_failed"
+        elif path_class == "not_executed":
+            non_live_reason = "not_executed"
+        else:
+            non_live_reason = "non_live_materialization"
+    payload: Dict[str, Any] = {
+        "schema_version": "generation_materialization@0.1",
+        "generation_origin": generation_origin,
+        "materializer": materializer,
+        "path_class": path_class or None,
+        "provider_attempted": provider_attempted,
+        "provider_succeeded": provider_succeeded,
+        "stub_fallback": stub_fallback,
+        "fixture_used": fixture_used,
+        "failure_class": failure_class,
+        "live_positive_ready": live_positive_ready,
+        "non_live_reason": non_live_reason,
+    }
+    for key in ("provider_backend", "model", "cache_mode"):
+        value = str(llm_execution.get(key) or "").strip()
+        if value:
+            payload[key] = value
+    for key in (
+        "decoding_profile",
+        "prompt_contracts",
+        "prompt_invocations",
+        "retry_budget",
+        "timeout_budget",
+        "cost_budget",
+    ):
+        value = llm_execution.get(key)
+        if isinstance(value, (dict, list)) and value:
+            payload[key] = deepcopy(value)
+    if isinstance(llm_execution.get("last_error_retryable"), bool):
+        payload["last_error_retryable"] = llm_execution.get("last_error_retryable")
+    if isinstance(llm_execution.get("fallback_on_error"), bool):
+        payload["fallback_on_error"] = llm_execution.get("fallback_on_error")
+    if isinstance(llm_execution.get("stub_mode_enabled"), bool):
+        payload["stub_mode_enabled"] = llm_execution.get("stub_mode_enabled")
     return payload
 
 

@@ -18,6 +18,13 @@ def test_summarize_repeat_attempt_extracts_guard_mismatch(tmp_path: Path) -> Non
     (attempt_dir / "summary.json").write_text("{}", encoding="utf-8")
     summary = {
         "overall_pass": False,
+        "generation_origin": "deterministic_fallback",
+        "provider_health_state": "llm_degraded",
+        "generation_path_class": "stub",
+        "generation_provider_attempted": False,
+        "generation_provider_succeeded": False,
+        "generation_stub_fallback": True,
+        "generation_fixture_used": False,
         "reviewer": {"blocking_bundles": ["cwe-89"]},
         "bundles": [
             {
@@ -42,6 +49,11 @@ def test_summarize_repeat_attempt_extracts_guard_mismatch(tmp_path: Path) -> Non
     assert record["failure_stage"] == "GENERATOR"
     assert record["failure_fingerprint"] == "fp-1"
     assert record["guard_error_code"] == "guard_semantic_mismatch"
+    assert record["generation_origin"] == "deterministic_fallback"
+    assert record["provider_health_state"] == "llm_degraded"
+    assert record["generation_path_class"] == "stub"
+    assert record["generation_stub_fallback"] is True
+    assert record["generation_non_live_reason"] is None
     assert record["guard_mismatches"][0]["slug"] == "cwe-89"
 
 
@@ -82,6 +94,45 @@ def test_aggregate_repeat_results_counts_failures() -> None:
     assert report["failure_fingerprints"] == [{"fingerprint": "fp-1", "count": 2}]
     assert report["failure_stages"] == [{"stage": "GENERATOR", "count": 2}]
     assert report["guard_error_codes"] == [{"guard_error_code": "guard_semantic_mismatch", "count": 2}]
+    assert report["observed_generation_non_live_reasons"] == []
+    assert report["generation_non_live_reason_consistent"] is None
+
+
+def test_aggregate_repeat_results_surfaces_non_live_reason_rollup() -> None:
+    report = aggregate_repeat_results(
+        "open-redirect-dynamic-name-only",
+        [
+            {
+                "attempt": 1,
+                "success": True,
+                "generation_origin": "deterministic_fallback",
+                "generation_path_class": "stub",
+                "generation_provider_attempted": False,
+                "generation_provider_succeeded": False,
+                "generation_stub_fallback": True,
+                "generation_fixture_used": False,
+                "generation_non_live_reason": "provider_disabled",
+            },
+            {
+                "attempt": 2,
+                "success": True,
+                "generation_origin": "deterministic_fallback",
+                "generation_path_class": "stub",
+                "generation_provider_attempted": False,
+                "generation_provider_succeeded": False,
+                "generation_stub_fallback": True,
+                "generation_fixture_used": False,
+                "generation_non_live_reason": "provider_disabled",
+            },
+        ],
+    )
+
+    assert report["observed_generation_path_classes"] == ["stub"]
+    assert report["observed_generation_positive_buckets"] == ["degraded_fallback_positive"]
+    assert report["observed_generation_non_live_reasons"] == ["provider_disabled"]
+    assert report["generation_non_live_reason_consistent"] is True
+    assert report["generation_path_observations"]["primary_non_live_reason"] == "provider_disabled"
+    assert report["generation_path_observations"]["by_non_live_reason"] == {"provider_disabled": 2}
 
 
 def test_summarize_repeat_attempt_clears_failure_stage_for_success_without_failure_signal(tmp_path: Path) -> None:

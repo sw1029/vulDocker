@@ -1687,6 +1687,7 @@ def test_bundle_support_promotion_rejects_degraded_dynamic_bundle_even_when_base
             "artifact_quality": {"band": "high", "oracle_clarity": "high", "topology_clarity": "high"},
             "stack_dependence": {"stack_defaulted": True, "repo_prior_bounded": True},
             "family_dependence": {"candidate_evidence_backed": True},
+            "generation_materialization": {"path_class": "stub", "non_live_reason": "provider_disabled"},
             "name_only_outcome": {
                 "request_kind": "name_only",
                 "mode": "dynamic",
@@ -1701,6 +1702,8 @@ def test_bundle_support_promotion_rejects_degraded_dynamic_bundle_even_when_base
     assert status["eligible"] is False
     assert "strict_open_world:strict_minimal_dynamic_fallback" in status["reasons"]
     assert "open_world:semantic_guided_minimal_dynamic" in status["reasons"]
+    assert "generation_path:not_live_positive" in status["reasons"]
+    assert "generation_path:provider_disabled" in status["reasons"]
     assert "stack_selection:defaulted" in status["reasons"]
     assert "selection_evidence:open_world_not_ready" in status["reasons"]
     assert "name_only_outcome:partial" in status["reasons"]
@@ -1740,6 +1743,8 @@ def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
                 "reasons": [
                     "strict_open_world:strict_minimal_dynamic_fallback",
                     "open_world:semantic_guided_minimal_dynamic",
+                    "generation_path:not_live_positive",
+                    "generation_path:provider_disabled",
                     "artifact_quality:medium",
                     "stack_selection:defaulted",
                     "selection_evidence:open_world_not_ready",
@@ -1757,6 +1762,8 @@ def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
     assert readiness["ready"] is False
     assert "strict_open_world_gate" in readiness["blockers"]
     assert "open_world_non_positive" in readiness["blockers"]
+    assert "generation_path_not_live_positive" in readiness["blockers"]
+    assert "generation_path_provider_disabled" in readiness["blockers"]
     assert "stack_defaulted" in readiness["blockers"]
     assert "selection_open_world_evidence_not_ready" in readiness["blockers"]
     assert "name_only_intent_not_met" in readiness["blockers"]
@@ -4107,7 +4114,15 @@ def test_write_manifest_flattens_single_bundle_runtime_execution_surface(tmp_pat
                     "generation_origin": "compiler_generated",
                 },
                 "artifacts": {
+                    "build_log": "/tmp/build/build.log",
+                    "sbom": "/tmp/build/sbom.spdx.json",
+                    "run_log": "/tmp/run/run.log",
                     "run_summary": {
+                        "image_tag": "sid-pack-runtime-flatten",
+                        "build_log": "/tmp/build/build.log",
+                        "run_log": "/tmp/run/run.log",
+                        "sbom_path": "/tmp/build/sbom.spdx.json",
+                        "build_passed": True,
                         "service_port": 5000,
                         "service_base_url": "http://127.0.0.1:5000",
                         "service_port_source": "executor_plan.service_port",
@@ -4184,6 +4199,10 @@ def test_write_manifest_flattens_single_bundle_runtime_execution_surface(tmp_pat
     manifest_path = pack_mod.write_manifest(sid, plan)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
+    assert manifest["image_tag"] == "sid-pack-runtime-flatten"
+    assert manifest["build_log"] == "/tmp/build/build.log"
+    assert manifest["run_log"] == "/tmp/run/run.log"
+    assert manifest["sbom_path"] == "/tmp/build/sbom.spdx.json"
     assert manifest["service_port"] == 5000
     assert manifest["service_base_url"] == "http://127.0.0.1:5000"
     assert manifest["run_passed"] is True

@@ -87,6 +87,18 @@ def test_build_matrix_report_rolls_up_axis_counts(tmp_path: Path) -> None:
             "cache_reuse_observed": True,
             "cache_reuse_consistent": True,
             "executed_query_reduction_observed": True,
+            "generation_path_observations": {
+                "primary_path_class": "fixture",
+                "primary_positive_bucket": "fixture_backed_positive",
+                "primary_non_live_reason": "fixture_backed",
+                "path_class_consistent": True,
+                "positive_bucket_consistent": True,
+                "non_live_reason_consistent": True,
+            },
+            "generation_path_gate": {
+                "live_positive_ready": False,
+                "blockers": ["generation_path_not_live_positive"],
+            },
             "measured_gate": {"ready": False, "blockers": ["case_failed", "artifact_quality_band_not_high"]},
         },
     )
@@ -138,6 +150,20 @@ def test_build_matrix_report_rolls_up_axis_counts(tmp_path: Path) -> None:
             "artifact_quality_band_not_high": 1,
         },
     }
+    assert report["generation_path_observations"] == {
+        "by_primary_path_class": {"fixture": 1},
+        "by_primary_positive_bucket": {"fixture_backed_positive": 1},
+        "by_primary_non_live_reason": {"fixture_backed": 1},
+        "path_class_consistent_cases": ["open-redirect-strict-dynamic-no-remote"],
+        "path_class_inconsistent_cases": [],
+        "positive_bucket_consistent_cases": ["open-redirect-strict-dynamic-no-remote"],
+        "positive_bucket_inconsistent_cases": [],
+        "non_live_reason_consistent_cases": ["open-redirect-strict-dynamic-no-remote"],
+        "non_live_reason_inconsistent_cases": [],
+        "live_positive_ready_cases": [],
+        "live_positive_blocked_cases": ["open-redirect-strict-dynamic-no-remote"],
+        "by_generation_gate_blocker": {"generation_path_not_live_positive": 1},
+    }
 
 
 def test_write_matrix_report_collects_cache_observations(tmp_path: Path) -> None:
@@ -168,6 +194,13 @@ def test_write_matrix_report_collects_cache_observations(tmp_path: Path) -> None
             "cache_reuse_observed": True,
             "cache_reuse_consistent": True,
             "executed_query_reduction_observed": False,
+            "generation_path_observations": {
+                "primary_path_class": "live",
+                "primary_positive_bucket": "live_positive",
+                "path_class_consistent": True,
+                "positive_bucket_consistent": True,
+            },
+            "generation_path_gate": {"live_positive_ready": True, "blockers": []},
             "measured_gate": {"ready": True, "blockers": []},
         },
     )
@@ -187,6 +220,20 @@ def test_write_matrix_report_collects_cache_observations(tmp_path: Path) -> None
         "not_ready_cases": [],
         "by_blocker": {},
     }
+    assert report["generation_path_observations"] == {
+        "by_primary_path_class": {"live": 1},
+        "by_primary_positive_bucket": {"live_positive": 1},
+        "by_primary_non_live_reason": {},
+        "path_class_consistent_cases": ["template-injection-name-only"],
+        "path_class_inconsistent_cases": [],
+        "positive_bucket_consistent_cases": ["template-injection-name-only"],
+        "positive_bucket_inconsistent_cases": [],
+        "non_live_reason_consistent_cases": [],
+        "non_live_reason_inconsistent_cases": [],
+        "live_positive_ready_cases": ["template-injection-name-only"],
+        "live_positive_blocked_cases": [],
+        "by_generation_gate_blocker": {},
+    }
 
 
 def test_aggregate_repeat_results_surfaces_cache_observations() -> None:
@@ -203,6 +250,13 @@ def test_aggregate_repeat_results_surfaces_cache_observations() -> None:
                 "artifact_quality_band": "high",
                 "artifact_quality_qualitative_tier": "bounded_sidecar_parity_success",
                 "oracle_execution_parity": "high",
+                "generation_origin": "llm_manifest",
+                "provider_health_state": "live",
+                "generation_path_class": "live",
+                "generation_provider_attempted": True,
+                "generation_provider_succeeded": True,
+                "generation_stub_fallback": False,
+                "generation_fixture_used": False,
                 "verdict_authority_mode": "single_bundle",
                 "verdict_projection_modes": {
                     "run_passed": "single_bundle_exact",
@@ -220,6 +274,13 @@ def test_aggregate_repeat_results_surfaces_cache_observations() -> None:
                 "artifact_quality_band": "high",
                 "artifact_quality_qualitative_tier": "bounded_sidecar_parity_success",
                 "oracle_execution_parity": "high",
+                "generation_origin": "llm_manifest",
+                "provider_health_state": "live",
+                "generation_path_class": "live",
+                "generation_provider_attempted": True,
+                "generation_provider_succeeded": True,
+                "generation_stub_fallback": False,
+                "generation_fixture_used": False,
                 "verdict_authority_mode": "single_bundle",
                 "verdict_projection_modes": {
                     "run_passed": "single_bundle_exact",
@@ -237,6 +298,13 @@ def test_aggregate_repeat_results_surfaces_cache_observations() -> None:
                 "artifact_quality_band": "high",
                 "artifact_quality_qualitative_tier": "bounded_sidecar_parity_success",
                 "oracle_execution_parity": "high",
+                "generation_origin": "llm_manifest",
+                "provider_health_state": "live",
+                "generation_path_class": "live",
+                "generation_provider_attempted": True,
+                "generation_provider_succeeded": True,
+                "generation_stub_fallback": False,
+                "generation_fixture_used": False,
                 "verdict_authority_mode": "single_bundle",
                 "verdict_projection_modes": {
                     "run_passed": "single_bundle_exact",
@@ -264,6 +332,29 @@ def test_aggregate_repeat_results_surfaces_cache_observations() -> None:
         "oracle_execution_parity": ["single_bundle_exact"],
     }
     assert report["verdict_authority_consistent"] is True
+    assert report["observed_generation_path_classes"] == ["live"]
+    assert report["observed_generation_positive_buckets"] == ["live_positive"]
+    assert report["observed_generation_non_live_reasons"] == []
+    assert report["generation_non_live_reason_consistent"] is None
+    assert report["generation_path_observations"] == {
+        "path_observed": True,
+        "observed_path_classes": ["live"],
+        "observed_positive_buckets": ["live_positive"],
+        "observed_non_live_reasons": [],
+        "primary_path_class": "live",
+        "primary_positive_bucket": "live_positive",
+        "primary_non_live_reason": None,
+        "path_class_consistent": True,
+        "positive_bucket_consistent": True,
+        "non_live_reason_consistent": None,
+        "by_path_class": {"live": 3},
+        "by_positive_bucket": {"live_positive": 3},
+        "by_non_live_reason": {},
+    }
+    assert report["generation_path_gate"] == {
+        "live_positive_ready": True,
+        "blockers": [],
+    }
     assert report["measured_gate"] == {
         "ready": True,
         "blockers": [],

@@ -4,7 +4,7 @@ Status: support
 Audience: implementation
 Source of truth for: generated workspace paths, metadata/artifact layout, measured/support artifact locations
 Not the source of truth for: roadmap, claim policy, operator quickstart
-Last validated against: workspace layout and measured/support workflow artifacts on 2026-03-19
+Last validated against: workspace layout and measured/support workflow artifacts on 2026-04-02
 
 Relevant canonical docs:
 - [현재 상태](../current_state_gap_analysis.md)
@@ -56,13 +56,14 @@ Relevant canonical docs:
 `tests/e2e/run_case.py`, `repeat_case.py`, `support_review.py`, `support_decide.py`, `support_apply.py`는 보통 operator가 지정한 output directory 아래에 JSON artifact를 남긴다. 이 경로는 `metadata/<SID>`나 `artifacts/<SID>`에 고정되지 않는다.
 
 대표 artifact:
-- `summary.json`: case direct-run summary, `execution_salt`, top-level runtime/oracle verdict surface
-- `repeatability_report.json`: attempt rollup, `observed_execution_salts`, `distinct_sid_count`, `measured_gate`
-- `matrix_report.json`: matrix axes rollup, quality observations, measured-gate observations
+- `summary.json`: case direct-run summary, `execution_salt`, top-level runtime/oracle verdict surface. single-bundle lane에서는 `image_tag`, `build_log`, `run_log`, `sbom_path`, `generation_path_class` / provider flags, `generation_non_live_reason`, `generation_materialization`도 direct convenience field로 읽을 수 있습니다
+- same `summary.json` single-bundle lane에서는 `selection_branch_trace`도 direct convenience field로 읽을 수 있습니다
+- `repeatability_report.json`: attempt rollup, `observed_execution_salts`, `distinct_sid_count`, `measured_gate`, `generation_path_observations`, `generation_path_gate`, `observed_generation_non_live_reasons`
+- `matrix_report.json`: matrix axes rollup, quality observations, measured-gate observations, generation-path observations, `by_primary_non_live_reason`
 - `support_candidate.json`: measured support candidate, blocker classes, `support_status`
-- `support_review_index.json`: review queue aggregate, `by_case_status`, explicit case lists
-- `support_registry_update.json`: reviewer decision preview, `accepted/rejected/pending_by_support_status`, case-level aggregate
-- `curated_support_registry.json`: local registry current state, `by_case_review_status`, `last_update`, schema/history surface
+- `support_review_index.json`: review queue aggregate, `by_case_status`, explicit case lists, `by_generation_path_class`, `by_generation_positive_bucket`, `by_generation_non_live_reason`
+- `support_registry_update.json`: reviewer decision preview, `accepted/rejected/pending_by_support_status`, case-level aggregate, `by_generation_non_live_reason`
+- `curated_support_registry.json`: local registry current state, `by_case_review_status`, `last_update`, schema/history surface. latest slice에서는 generation-path aggregate와 `by_generation_non_live_reason`도 같이 보존합니다
 
 latest low-cost no-Docker rehearsal pair는 `foobar-name-only-negative`와 `open-redirect-strict-dynamic-no-remote`다. 이 pair는 current truth 기준 `support_review_index.json`에서 `authority_ready_bundle_count > 0`이더라도 same review/apply chain이 `measured_gate_blocked_bundle_count > 0`, `reviewable_bundle_count = 0`, final `registry_item_count = 0` no-op local registry로 끝나는지 확인하는 cheapest measured/support regression surface다.
 
@@ -80,7 +81,7 @@ same artifact chain의 concrete rerun command는 [tests/e2e/README.md](../../tes
 - 선택
   - `metadata/<SID>/plan.json`
   - `metadata/<SID>/researcher_report.json`
-  - representative E2E `summary.json`의 `request_ir`, `selection_decision`, `name_only_outcome`
+  - representative E2E `summary.json`의 `request_ir`, `selection_decision`, `selection_branch_trace`, `name_only_outcome`
 - 생성
   - `metadata/<SID>/generator_manifest.json`
   - `metadata/<SID>/generator_runs.json`

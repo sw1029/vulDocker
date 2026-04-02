@@ -45,6 +45,11 @@ def main() -> None:
                 "accepted_by_support_status": payload.get("accepted_by_support_status"),
                 "rejected_by_support_status": payload.get("rejected_by_support_status"),
                 "pending_by_support_status": payload.get("pending_by_support_status"),
+                "by_generation_path_class": payload.get("by_generation_path_class"),
+                "by_generation_positive_bucket": payload.get("by_generation_positive_bucket"),
+                "by_generation_non_live_reason": payload.get("by_generation_non_live_reason"),
+                "live_positive_ready_bundle_count": payload.get("live_positive_ready_bundle_count"),
+                "live_positive_blocked_bundle_count": payload.get("live_positive_blocked_bundle_count"),
             },
             ensure_ascii=False,
         )

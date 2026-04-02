@@ -88,9 +88,10 @@ def _pricing_model_candidates(model_name: Optional[str]) -> List[tuple[str, str]
     token = str(model_name or "").strip().lower()
     if not token:
         return []
-    candidates = [(token, "exact")]
+    candidates: List[tuple[str, str]] = []
     if token.startswith("gpt-5") and token != "gpt-5":
         candidates.append(("gpt-5", "alias"))
+    candidates.append((token, "exact"))
     return candidates
 
 

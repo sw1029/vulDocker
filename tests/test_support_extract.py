@@ -96,11 +96,81 @@ def _support_bundle(*, eligible: bool = True) -> dict:
             "compose_mode": "single_file",
         },
         "provenance": {
-            "generation_origin": "compiler_generated",
+            "generation_origin": "llm_manifest",
             "fallback_class": "",
             "materializer": "compiler",
+            "llm_provider_attempted": True,
+            "llm_provider_succeeded": True,
+            "llm_fixture_used": False,
+            "llm_stub_used": False,
+            "llm_execution": {
+                "provider_attempted": True,
+                "provider_succeeded": True,
+                "stub_fallback": False,
+                "fixture_used": False,
+                "path_class": "live",
+            },
         },
         "dynamicness": {"verdict": "compiler-first"},
+        "selection_branch_trace": {
+            "schema_version": "selection_branch_trace@0.1",
+            "controller_ready": True,
+            "open_world_evidence_ready": True,
+            "branch_aligned": True,
+            "selected_branch": {
+                "family": {"selected_value": "sqli", "materialized_value": "sqli", "aligned": True},
+                "stack": {"selected_value": "python/flask", "materialized_value": "python/flask", "aligned": True},
+                "scenario": {"selected_value": "scenario-1", "materialized_value": "scenario-1", "aligned": True},
+                "topology": {"selected_value": "service_plus_sidecar", "materialized_value": "service_plus_sidecar", "aligned": True},
+                "oracle_mode": {"selected_value": "stateful_text", "materialized_value": "stateful_text", "aligned": True},
+            },
+            "materialization_bundle": {
+                "runtime_topology": "service_plus_sidecar",
+                "executor_topology": "service_plus_sidecar",
+                "service_entry_path": "app.py",
+                "poc_entry_path": "poc.py",
+                "dockerfile_path": "Dockerfile",
+                "build_context_root": ".",
+                "dependency_manifest_paths": ["requirements.txt"],
+                "seed_asset_paths": ["schema.sql"],
+                "required_roles": ["service_main", "poc_entry", "dependency_sidecar"],
+            },
+            "candidate_context": {
+                "scenario_candidate_count": 2,
+                "selected_candidate_present": True,
+                "selection_state": "selected",
+                "selected_by": "scenario_candidates.explicit_selected",
+                "unresolved_reasons": [],
+                "rejected_scenario_ids_sample": ["scenario-2"],
+                "rejected_candidate_count": 1,
+            },
+            "branch_chain": [
+                {
+                    "branch": "family",
+                    "selected_value": "sqli",
+                    "materialized_value": "sqli",
+                    "selected_source": "semantic_signature",
+                    "materialized_field": "staged_synthesis.candidate_resolution.selected_family",
+                    "aligned": True,
+                }
+            ],
+        },
+        "generation_materialization": {
+            "schema_version": "generation_materialization@0.1",
+            "generation_origin": "llm_manifest",
+            "materializer": "compiler",
+            "path_class": "live",
+            "provider_attempted": True,
+            "provider_succeeded": True,
+            "stub_fallback": False,
+            "fixture_used": False,
+            "failure_class": None,
+            "provider_backend": "litellm",
+            "model": "gpt-5.2",
+            "cache_mode": "none",
+            "prompt_contracts": [{"name": "synthesis_manifest", "version": "build_synthesis_prompt@1"}],
+            "prompt_invocations": {"synthesis_manifest": 1},
+        },
         "paths": {
             "workspace": "/tmp/workspace",
             "metadata": "/tmp/metadata",
@@ -164,6 +234,10 @@ def test_build_support_candidate_creates_reviewable_package_when_all_gates_pass(
     assert payload["support_ready_bundle_count"] == 1
     assert payload["mechanically_healthy_bundle_count"] == 1
     assert payload["promotion_policy_ready_bundle_count"] == 1
+    assert payload["live_positive_ready_bundle_count"] == 1
+    assert payload["by_generation_path_class"] == {"live": 1}
+    assert payload["by_generation_positive_bucket"] == {"live_positive": 1}
+    assert payload["by_generation_non_live_reason"] == {}
     assert payload["by_support_status"] == {"reviewable": 1}
     assert payload["reviewable_bundle_count"] == 1
     assert payload["all_reviewable"] is True
@@ -197,6 +271,25 @@ def test_build_support_candidate_creates_reviewable_package_when_all_gates_pass(
     assert candidate["oracle_contract"]["oracle_execution_parity"] == "high"
     assert candidate["verdict_authority_mode"] == "single_bundle"
     assert candidate["verdict_authority_consistent"] is True
+    assert candidate["generation_path"] == {
+        "path_class": "live",
+        "positive_bucket": "live_positive",
+        "non_live_reason": None,
+        "provider_attempted": True,
+        "provider_succeeded": True,
+        "stub_fallback": False,
+        "fixture_used": False,
+        "provider_health_state": None,
+        "path_class_consistent": None,
+        "positive_bucket_consistent": None,
+        "live_positive_ready": True,
+        "policy_blockers": [],
+    }
+    assert candidate["selection_branch_trace"]["branch_aligned"] is True
+    assert candidate["selection_branch_trace"]["materialization_bundle"]["executor_topology"] == "service_plus_sidecar"
+    assert candidate["generation_materialization"]["path_class"] == "live"
+    assert candidate["generation_materialization"]["provider_succeeded"] is True
+    assert candidate["gates"]["generation_path_live_positive_ready"] is True
     assert candidate["oracle_contract"]["negative_controls_with_payload"] == 1
     assert candidate["unsafe_pattern"]["compiler_strategy"] == "sqli_string_concat_mysql"
 
@@ -427,6 +520,9 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
                     "primitive_signature": {"selected_family": "sqli", "selected_stack_id": "python/flask"},
                     "runtime_contract": {"topology": "single_service"},
                     "oracle_contract": {"oracle_execution_parity": "high"},
+                    "selection_branch_trace": {"schema_version": "selection_branch_trace@0.1", "branch_aligned": True},
+                    "generation_materialization": {"schema_version": "generation_materialization@0.1", "path_class": "live"},
+                    "generation_path": {"path_class": "live", "positive_bucket": "live_positive"},
                     "verdict_authority_mode": "single_bundle",
                     "verdict_authority_consistent": True,
                     "source_artifacts": {"summary_path": "/tmp/summary-a.json", "workspace": "/tmp/workspace-a"},
@@ -474,6 +570,14 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
                     "primitive_signature": {"selected_family": "open_redirect", "selected_stack_id": "python/flask"},
                     "runtime_contract": {"topology": "single_service"},
                     "oracle_contract": {"oracle_execution_parity": "missing"},
+                    "selection_branch_trace": {"schema_version": "selection_branch_trace@0.1", "branch_aligned": False},
+                    "generation_materialization": {
+                        "schema_version": "generation_materialization@0.1",
+                        "path_class": "fixture",
+                        "non_live_reason": "fixture_backed",
+                    },
+                    "generation_path": {"path_class": "fixture", "positive_bucket": "fixture_backed_positive"},
+                    "generation_non_live_reason": "fixture_backed",
                     "verdict_authority_mode": "multi_bundle",
                     "verdict_authority_consistent": False,
                     "source_artifacts": {"summary_path": "/tmp/summary-b.json", "workspace": "/tmp/workspace-b"},
@@ -497,6 +601,8 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
     assert payload["mechanically_blocked_bundle_count"] == 1
     assert payload["promotion_policy_ready_bundle_count"] == 1
     assert payload["promotion_policy_blocked_bundle_count"] == 1
+    assert payload["live_positive_ready_bundle_count"] == 0
+    assert payload["live_positive_blocked_bundle_count"] == 0
     assert payload["by_case_status"] == {"all_blocked": 1, "all_reviewable": 1}
     assert payload["all_reviewable_cases"] == ["cwe-89-basic"]
     assert payload["mixed_cases"] == []
@@ -522,10 +628,18 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
     }
     assert payload["by_family"] == {"open_redirect": 1, "sqli": 1}
     assert payload["by_topology"] == {"single_service": 2}
+    assert payload["by_generation_path_class"] == {"fixture": 1, "live": 1}
+    assert payload["by_generation_positive_bucket"] == {
+        "fixture_backed_positive": 1,
+        "live_positive": 1,
+    }
+    assert payload["by_generation_non_live_reason"] == {"fixture_backed": 1}
     assert payload["by_verdict_authority_mode"] == {"single_bundle": 1, "multi_bundle": 1}
     assert payload["review_queue"][0]["slug"] == "cwe-89"
     assert payload["review_queue"][0]["support_status"] == "reviewable"
     assert payload["review_queue"][0]["verdict_authority_mode"] == "single_bundle"
+    assert payload["review_queue"][0]["selection_branch_trace"]["branch_aligned"] is True
+    assert payload["review_queue"][0]["generation_materialization"]["path_class"] == "live"
     assert payload["review_queue"][0]["verdict_authority_ready"] is True
     assert payload["review_queue"][0]["measured_gate_ready"] is True
     assert payload["review_queue"][0]["mechanically_healthy"] is True
@@ -533,6 +647,8 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
     assert payload["blocked_queue"][0]["slug"] == "name-open-redirect"
     assert payload["blocked_queue"][0]["support_status"] == "blocked_mixed"
     assert payload["blocked_queue"][0]["verdict_authority_mode"] == "multi_bundle"
+    assert payload["blocked_queue"][0]["selection_branch_trace"]["branch_aligned"] is False
+    assert payload["blocked_queue"][0]["generation_materialization"]["path_class"] == "fixture"
     assert payload["blocked_queue"][0]["verdict_authority_ready"] is False
     assert payload["blocked_queue"][0]["measured_gate_ready"] is False
     assert payload["blocked_queue"][0]["mechanically_healthy"] is False
@@ -548,6 +664,8 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
             "mechanically_blocked_bundle_count": 0,
             "promotion_policy_ready_bundle_count": 1,
             "promotion_policy_blocked_bundle_count": 0,
+            "live_positive_ready_bundle_count": 0,
+            "live_positive_blocked_bundle_count": 0,
             "by_support_status": {"reviewable": 1},
             "by_mechanical_blocker": {},
             "by_promotion_policy_blocker": {},
@@ -562,6 +680,8 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
             "mechanically_blocked_bundle_count": 1,
             "promotion_policy_ready_bundle_count": 0,
             "promotion_policy_blocked_bundle_count": 1,
+            "live_positive_ready_bundle_count": 0,
+            "live_positive_blocked_bundle_count": 0,
             "by_support_status": {"blocked_mixed": 1},
             "by_mechanical_blocker": {
                 "verdict_authority:inconsistent": 1,
