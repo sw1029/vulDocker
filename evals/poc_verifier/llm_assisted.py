@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 from common.config import get_decoding_profile
 from common.logging import get_logger
-from common.llm import LLMClient
+from common.llm import DEFAULT_LLM_MODEL, LLMClient
 from common.prompts import build_llm_verifier_prompt
 from common.rules import RuleSpec, load_rulespec
 from evals.assertions import run_assertions
@@ -80,7 +80,7 @@ def llm_assisted_verify(
         cfg.get("llm_model")
         or (requirement or {}).get("reviewer_model")
         or (requirement or {}).get("model_version")
-        or "gpt-5.2"
+        or DEFAULT_LLM_MODEL
     )
     decoding = get_decoding_profile(cfg.get("llm_decoding") or "deterministic")
     client = LLMClient(model_name, decoding)

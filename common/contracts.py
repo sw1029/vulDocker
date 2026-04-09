@@ -16,7 +16,7 @@ import os
 import re
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from common.roles import role_matches
 from common.researcher_report import (
@@ -1943,6 +1943,217 @@ def _seed_asset_paths(paths: Sequence[str]) -> list[str]:
         if name in seed_names or suffix in {".sql", ".sqlite", ".sqlite3", ".db"}:
             results.append(path)
     return results
+
+
+def _manifest_file_content(manifest: Dict[str, Any], path_token: Optional[str]) -> Optional[str]:
+    token = _string_or_none(path_token)
+    if not token:
+        return None
+    files = manifest.get("files") or []
+    if not isinstance(files, list):
+        return None
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        if _string_or_none(entry.get("path")) != token:
+            continue
+        content = entry.get("content")
+        if isinstance(content, str):
+            return content
+    return None
+
+
+def _workspace_file_content(workspace_dir: Optional[Path], path_token: Optional[str]) -> Optional[str]:
+    token = _string_or_none(path_token)
+    if not token or not isinstance(workspace_dir, Path):
+        return None
+    candidate = workspace_dir / token
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    try:
+        return candidate.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+
+def _read_manifest_or_workspace_text(
+    *,
+    path_token: Optional[str],
+    manifest: Dict[str, Any],
+    workspace_dir: Optional[Path],
+) -> str:
+    content = _workspace_file_content(workspace_dir, path_token)
+    if isinstance(content, str):
+        return content
+    content = _manifest_file_content(manifest, path_token)
+    return content if isinstance(content, str) else ""
+
+
+def _dockerfile_instruction_blocks(dockerfile_text: str) -> list[tuple[str, str]]:
+    if not dockerfile_text:
+        return []
+    blocks: list[tuple[str, str]] = []
+    current_token: Optional[str] = None
+    current_body: List[str] = []
+    continuation = False
+    for raw_line in dockerfile_text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if continuation and current_token:
+            current_body.append(stripped.rstrip("\\").strip())
+            continuation = stripped.endswith("\\")
+            if not continuation:
+                blocks.append((current_token, " ".join(part for part in current_body if part).strip()))
+                current_token = None
+                current_body = []
+            continue
+        token, _, remainder = stripped.partition(" ")
+        current_token = token.upper()
+        current_body = [remainder.rstrip("\\").strip()]
+        continuation = stripped.endswith("\\")
+        if not continuation:
+            blocks.append((current_token, " ".join(part for part in current_body if part).strip()))
+            current_token = None
+            current_body = []
+    if current_token:
+        blocks.append((current_token, " ".join(part for part in current_body if part).strip()))
+    return blocks
+
+
+def _dockerfile_base_images(dockerfile_text: str) -> list[str]:
+    images: list[str] = []
+    for token, body in _dockerfile_instruction_blocks(dockerfile_text):
+        if token != "FROM":
+            continue
+        for candidate in body.split():
+            if candidate.startswith("--"):
+                continue
+            images.append(candidate)
+            break
+    return images
+
+
+def _dockerfile_is_unpinned_base_image(image: str) -> bool:
+    token = str(image or "").strip()
+    if not token:
+        return False
+    if "@sha256:" in token:
+        return False
+    leaf = token.rsplit("/", 1)[-1]
+    if ":" not in leaf:
+        return True
+    _, _, tag = leaf.rpartition(":")
+    return tag.strip().lower() == "latest"
+
+
+def _dockerfile_package_installers(dockerfile_text: str) -> list[str]:
+    detected: list[str] = []
+    patterns = {
+        "apt_get_install": re.compile(r"\bapt-get\s+install\b", re.IGNORECASE),
+        "apk_add": re.compile(r"\bapk\s+add\b", re.IGNORECASE),
+        "pip_install": re.compile(r"\b(?:python\s+-m\s+pip|pip)\s+install\b", re.IGNORECASE),
+        "npm_install": re.compile(r"\bnpm\s+install\b", re.IGNORECASE),
+        "poetry_install": re.compile(r"\bpoetry\s+install\b", re.IGNORECASE),
+        "cargo_install": re.compile(r"\bcargo\s+install\b", re.IGNORECASE),
+        "go_install": re.compile(r"\bgo\s+install\b", re.IGNORECASE),
+    }
+    for token, body in _dockerfile_instruction_blocks(dockerfile_text):
+        if token != "RUN":
+            continue
+        for name, pattern in patterns.items():
+            if pattern.search(body) and name not in detected:
+                detected.append(name)
+    return detected
+
+
+def _dockerfile_remote_fetch_commands(dockerfile_text: str) -> list[str]:
+    commands: list[str] = []
+    remote_url = re.compile(r"https?://", re.IGNORECASE)
+    remote_fetch = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
+    for token, body in _dockerfile_instruction_blocks(dockerfile_text):
+        if token == "ADD" and remote_url.search(body):
+            commands.append(f"ADD {body}".strip())
+        elif token == "RUN" and remote_fetch.search(body) and remote_url.search(body):
+            commands.append(f"RUN {body}".strip())
+    return commands
+
+
+def _dockerfile_tmp_db_artifacts(dockerfile_text: str) -> list[str]:
+    pattern = re.compile(r"/tmp/[^\s'\"\\]+?\.(?:db|sqlite|sqlite3)", re.IGNORECASE)
+    matches: list[str] = []
+    for token, body in _dockerfile_instruction_blocks(dockerfile_text):
+        if token not in {"RUN", "COPY", "ADD"}:
+            continue
+        matches.extend(pattern.findall(body))
+    return sorted(set(matches))
+
+
+def _dockerfile_final_user(dockerfile_text: str) -> Optional[str]:
+    final_user: Optional[str] = None
+    for token, body in _dockerfile_instruction_blocks(dockerfile_text):
+        if token != "USER":
+            continue
+        candidate = body.split()[0].strip() if body.split() else ""
+        final_user = candidate or None
+    return final_user
+
+
+def _dockerfile_instruction_counts(dockerfile_text: str) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for token, _ in _dockerfile_instruction_blocks(dockerfile_text):
+        key = token.lower()
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _build_file_manifest_safety_policy(
+    *,
+    dockerfile_path: Optional[str],
+    manifest: Dict[str, Any],
+    workspace_dir: Optional[Path],
+) -> Dict[str, Any]:
+    dockerfile_text = _read_manifest_or_workspace_text(
+        path_token=dockerfile_path,
+        manifest=manifest,
+        workspace_dir=workspace_dir,
+    )
+    base_images = _dockerfile_base_images(dockerfile_text)
+    package_installers = _dockerfile_package_installers(dockerfile_text)
+    remote_fetch_commands = _dockerfile_remote_fetch_commands(dockerfile_text)
+    tmp_db_artifacts = _dockerfile_tmp_db_artifacts(dockerfile_text)
+    final_user = _dockerfile_final_user(dockerfile_text)
+    instruction_counts = _dockerfile_instruction_counts(dockerfile_text)
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if not dockerfile_text:
+        blockers.append("dockerfile_missing")
+    if dockerfile_text and not base_images:
+        blockers.append("base_image_missing")
+    if remote_fetch_commands:
+        blockers.append("remote_fetch_in_build")
+    if tmp_db_artifacts:
+        blockers.append("tmp_db_artifact_in_build")
+    unpinned_images = [image for image in base_images if _dockerfile_is_unpinned_base_image(image)]
+    if unpinned_images:
+        warnings.extend(f"base_image_unpinned:{image}" for image in unpinned_images)
+    if final_user in {None, "", "root", "0"}:
+        warnings.append("final_user_root")
+
+    return {
+        "policy_version": "docker_build_safety@0.1",
+        "assessed": bool(dockerfile_text),
+        "safe": bool(dockerfile_text) and not blockers,
+        "blockers": blockers,
+        "warnings": warnings,
+        "base_images": base_images,
+        "package_installers_detected": package_installers,
+        "remote_fetch_commands": remote_fetch_commands,
+        "tmp_db_artifact_paths": tmp_db_artifacts,
+        "final_user": final_user or "root",
+        "instruction_counts": instruction_counts,
+    }
 
 
 def _port_from_generator_template(template: Dict[str, Any]) -> Optional[int]:
@@ -4856,6 +5067,20 @@ def _build_staged_synthesis(
     dependency_paths = _dependency_manifest_paths(observed_paths)
     service_entry_path = _string_or_none(resolved.get("service_entry")) or _string_or_none(executor_plan.get("service_entry"))
     poc_entry_path = _string_or_none(resolved.get("poc_entry")) or _string_or_none(executor_plan.get("poc_entry"))
+    build_safety_policy = _build_file_manifest_safety_policy(
+        dockerfile_path=dockerfile_path,
+        manifest=manifest,
+        workspace_dir=workspace_dir,
+    )
+    build_ready_blockers: list[str] = []
+    if not dockerfile_path:
+        build_ready_blockers.append("dockerfile_missing")
+    if not _path_present_in_sources(service_entry_path, observed_paths, workspace_dir):
+        build_ready_blockers.append("service_entry_missing")
+    if not _path_present_in_sources(poc_entry_path, observed_paths, workspace_dir):
+        build_ready_blockers.append("poc_entry_missing")
+    if build_safety_policy.get("package_installers_detected") and not dependency_paths:
+        build_ready_blockers.append("dependency_manifest_missing_for_install")
     file_manifest = {
         "workspace_root_present": bool(isinstance(workspace_dir, Path) and workspace_dir.exists()),
         "build_context_root": ".",
@@ -4870,6 +5095,11 @@ def _build_staged_synthesis(
         "poc_entry_path": poc_entry_path,
         "poc_entry_present": _path_present_in_sources(poc_entry_path, observed_paths, workspace_dir),
         "seed_asset_paths": _seed_asset_paths(observed_paths),
+        "build_ready": not build_ready_blockers,
+        "build_ready_blockers": build_ready_blockers,
+        "dockerfile_base_images": build_safety_policy.get("base_images") or [],
+        "package_installers_detected": build_safety_policy.get("package_installers_detected") or [],
+        "build_safety_policy": build_safety_policy,
         "validator": "file_manifest_contract",
         "repair_policy": "prefer_manifest_file_index_then_workspace_scan",
         "abort_policy": "build_required_before_promotion",

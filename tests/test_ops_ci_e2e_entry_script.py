@@ -79,6 +79,71 @@ raise SystemExit(0)
     assert json.loads(capture_path.read_text(encoding="utf-8")) == ["-m", "e2e", "-k", "sample"]
 
 
+def test_run_e2e_tests_accepts_custom_remote_provider_for_generic_live_gate(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    _write_case(cases_dir / "sample-case")
+    capture_path = tmp_path / "pytest_capture.json"
+    pytest_path = tmp_path / "fake_pytest"
+    _write_executable(
+        pytest_path,
+        f"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+Path({str(capture_path)!r}).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+raise SystemExit(0)
+""",
+    )
+
+    env = os.environ.copy()
+    env["VULD_RUN_E2E"] = "1"
+    env["VULD_E2E_REQUIRE_REMOTE_PROVIDER"] = "1"
+    env["VUL_WEB_SEARCH_PROVIDER"] = "custom"
+    env["VUL_WEB_SEARCH_ENDPOINT"] = "https://search.example/api"
+    env["VULD_E2E_CASES_DIR"] = str(cases_dir)
+    env["VULD_E2E_PYTEST_BIN"] = str(pytest_path)
+
+    completed = subprocess.run(
+        ["bash", str(REPO_ROOT / "ops/ci/run_e2e_tests.sh"), "-k", "sample"],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(capture_path.read_text(encoding="utf-8")) == ["-m", "e2e", "-k", "sample"]
+
+
+def test_run_e2e_tests_fails_generic_live_gate_without_remote_provider(tmp_path: Path) -> None:
+    cases_dir = tmp_path / "cases"
+    _write_case(cases_dir / "sample-case")
+    pytest_path = tmp_path / "fake_pytest"
+    config_path = tmp_path / "missing_api_keys.ini"
+    _write_executable(pytest_path, "#!/usr/bin/env python3\nraise SystemExit(0)\n")
+
+    env = os.environ.copy()
+    env["VULD_RUN_E2E"] = "1"
+    env["VULD_E2E_REQUIRE_REMOTE_PROVIDER"] = "1"
+    env["VULD_E2E_CASES_DIR"] = str(cases_dir)
+    env["VULD_E2E_CONFIG_PATH"] = str(config_path)
+    env["VULD_E2E_PYTEST_BIN"] = str(pytest_path)
+    env.pop("VUL_WEB_SEARCH_PROVIDER", None)
+    env.pop("VUL_WEB_SEARCH_ENDPOINT", None)
+    env.pop("VUL_WEB_SEARCH_API_KEY", None)
+
+    completed = subprocess.run(
+        ["bash", str(REPO_ROOT / "ops/ci/run_e2e_tests.sh")],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 1
+    assert "VULD_E2E_REQUIRE_REMOTE_PROVIDER=1" in completed.stderr
+
+
 def test_run_e2e_tests_fails_schema_validation_with_override_cases_dir(tmp_path: Path) -> None:
     cases_dir = tmp_path / "cases"
     _write_case(cases_dir / "broken-case", include_expectations=False)

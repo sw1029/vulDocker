@@ -166,10 +166,32 @@ def _support_bundle(*, eligible: bool = True) -> dict:
             "fixture_used": False,
             "failure_class": None,
             "provider_backend": "litellm",
-            "model": "gpt-5.2",
+            "model": "gpt-5.4",
             "cache_mode": "none",
             "prompt_contracts": [{"name": "synthesis_manifest", "version": "build_synthesis_prompt@1"}],
             "prompt_invocations": {"synthesis_manifest": 1},
+        },
+        "staged_synthesis": {
+            "schema_version": "staged_synthesis@0.1",
+            "file_manifest": {
+                "dockerfile_path": "Dockerfile",
+                "build_context_root": ".",
+                "service_entry_path": "app.py",
+                "poc_entry_path": "poc.py",
+                "dependency_manifest_paths": ["requirements.txt"],
+                "seed_asset_paths": ["schema.sql"],
+                "build_ready": True,
+                "build_ready_blockers": [],
+                "dockerfile_base_images": ["python:3.12-slim"],
+                "package_installers_detected": ["pip"],
+                "build_safety_policy": {
+                    "policy_version": "docker_build_safety@0.1",
+                    "assessed": True,
+                    "safe": True,
+                    "blockers": [],
+                    "warnings": ["final_user_root"],
+                },
+            },
         },
         "paths": {
             "workspace": "/tmp/workspace",
@@ -269,6 +291,22 @@ def test_build_support_candidate_creates_reviewable_package_when_all_gates_pass(
     assert candidate["runtime_contract"]["topology"] == "service_plus_sidecar"
     assert candidate["runtime_contract"]["service_env_keys"] == ["APP_PORT", "DB_HOST"]
     assert candidate["oracle_contract"]["oracle_execution_parity"] == "high"
+    assert candidate["build_contract"] == {
+        "build_ready": True,
+        "build_ready_blockers": [],
+        "dockerfile_path": "Dockerfile",
+        "build_context_root": ".",
+        "service_entry_path": "app.py",
+        "poc_entry_path": "poc.py",
+        "dependency_manifest_paths": ["requirements.txt"],
+        "seed_asset_paths": ["schema.sql"],
+        "dockerfile_base_images": ["python:3.12-slim"],
+        "package_installers_detected": ["pip"],
+        "build_safety_assessed": True,
+        "build_safety_safe": True,
+        "build_safety_blockers": [],
+        "build_safety_warnings": ["final_user_root"],
+    }
     assert candidate["verdict_authority_mode"] == "single_bundle"
     assert candidate["verdict_authority_consistent"] is True
     assert candidate["generation_path"] == {
@@ -290,8 +328,155 @@ def test_build_support_candidate_creates_reviewable_package_when_all_gates_pass(
     assert candidate["generation_materialization"]["path_class"] == "live"
     assert candidate["generation_materialization"]["provider_succeeded"] is True
     assert candidate["gates"]["generation_path_live_positive_ready"] is True
+    assert candidate["gates"]["build_ready"] is True
+    assert candidate["gates"]["build_safety_safe"] is True
     assert candidate["oracle_contract"]["negative_controls_with_payload"] == 1
     assert candidate["unsafe_pattern"]["compiler_strategy"] == "sqli_string_concat_mysql"
+
+
+def test_build_support_candidate_classifies_build_contract_blockers_as_promotion_policy(tmp_path: Path) -> None:
+    bundle = _support_bundle(eligible=False)
+    bundle["support_promotion"] = {
+        "eligible": False,
+        "reasons": [
+            "build_ready:dockerfile_missing",
+            "build_safety:remote_fetch_in_build",
+        ],
+    }
+    bundle["staged_synthesis"]["file_manifest"]["build_ready"] = False
+    bundle["staged_synthesis"]["file_manifest"]["build_ready_blockers"] = ["dockerfile_missing"]
+    bundle["staged_synthesis"]["file_manifest"]["build_safety_policy"]["safe"] = False
+    bundle["staged_synthesis"]["file_manifest"]["build_safety_policy"]["blockers"] = ["remote_fetch_in_build"]
+    bundle["staged_synthesis"]["file_manifest"]["build_safety_policy"]["warnings"] = []
+    manifest_path = _write_json(
+        tmp_path / "manifest.json",
+        {
+            "sid": "sid-support-build-blocked",
+            "bundles": [bundle],
+        },
+    )
+    summary_path = _write_json(
+        tmp_path / "summary.json",
+        {
+            "sid": "sid-support-build-blocked",
+            "case_name": "cwe-89-basic",
+            "manifest_path": str(manifest_path),
+            "verdict_authority": {"mode": "single_bundle", "fields": {}},
+        },
+    )
+
+    payload = build_support_candidate(
+        summary_path,
+        matrix_report={"covered_cases": ["cwe-89-basic"], "failed_cases": [], "repeatability_failures": []},
+        repeatability_report={"case": "cwe-89-basic", "passed": True, "measured_gate": {"ready": True, "blockers": []}},
+    )
+
+    assert payload["support_ready_bundle_count"] == 0
+    assert payload["mechanically_healthy_bundle_count"] == 1
+    assert payload["promotion_policy_ready_bundle_count"] == 0
+    assert payload["by_support_status"] == {"mechanically_healthy_policy_blocked": 1}
+    candidate = payload["candidates"][0]
+    assert candidate["support_status"] == "mechanically_healthy_policy_blocked"
+    assert candidate["mechanical_blockers"] == []
+    assert candidate["promotion_policy_blockers"] == [
+        "build_ready:dockerfile_missing",
+        "build_safety:remote_fetch_in_build",
+    ]
+    assert candidate["build_contract"]["build_ready"] is False
+    assert candidate["build_contract"]["build_ready_blockers"] == ["dockerfile_missing"]
+    assert candidate["build_contract"]["build_safety_safe"] is False
+    assert candidate["build_contract"]["build_safety_blockers"] == ["remote_fetch_in_build"]
+    assert candidate["gates"]["build_ready"] is False
+    assert candidate["gates"]["build_safety_safe"] is False
+
+
+def test_build_support_candidate_recovers_build_blockers_from_build_contract_without_pack_reason_tokens(tmp_path: Path) -> None:
+    bundle = _support_bundle(eligible=True)
+    bundle["support_promotion"] = {"eligible": True, "reasons": []}
+    bundle["staged_synthesis"]["file_manifest"]["build_ready"] = False
+    bundle["staged_synthesis"]["file_manifest"]["build_ready_blockers"] = ["dockerfile_missing"]
+    bundle["staged_synthesis"]["file_manifest"]["build_safety_policy"]["safe"] = False
+    bundle["staged_synthesis"]["file_manifest"]["build_safety_policy"]["blockers"] = ["remote_fetch_in_build"]
+    bundle["staged_synthesis"]["file_manifest"]["build_safety_policy"]["warnings"] = []
+    manifest_path = _write_json(
+        tmp_path / "manifest.json",
+        {
+            "sid": "sid-support-build-derived",
+            "bundles": [bundle],
+        },
+    )
+    summary_path = _write_json(
+        tmp_path / "summary.json",
+        {
+            "sid": "sid-support-build-derived",
+            "case_name": "cwe-89-basic",
+            "manifest_path": str(manifest_path),
+            "verdict_authority": {"mode": "single_bundle", "fields": {}},
+        },
+    )
+
+    payload = build_support_candidate(
+        summary_path,
+        matrix_report={"covered_cases": ["cwe-89-basic"], "failed_cases": [], "repeatability_failures": []},
+        repeatability_report={"case": "cwe-89-basic", "passed": True, "measured_gate": {"ready": True, "blockers": []}},
+    )
+
+    assert payload["support_ready_bundle_count"] == 1
+    assert payload["promotion_policy_ready_bundle_count"] == 0
+    candidate = payload["candidates"][0]
+    assert candidate["support_status"] == "mechanically_healthy_policy_blocked"
+    assert candidate["promotion_policy_blockers"] == [
+        "build_ready:dockerfile_missing",
+        "build_safety:remote_fetch_in_build",
+    ]
+    assert candidate["other_blockers"] == []
+
+
+def test_build_support_candidate_classifies_selection_and_stack_policy_tokens_as_promotion_policy(tmp_path: Path) -> None:
+    bundle = _support_bundle(eligible=False)
+    bundle["support_promotion"] = {
+        "eligible": False,
+        "reasons": [
+            "base_promotion:ineligible",
+            "topology_clarity:low",
+            "stack_selection:defaulted",
+            "selection_evidence:open_world_not_ready",
+            "name_only_outcome:partial",
+        ],
+    }
+    manifest_path = _write_json(
+        tmp_path / "manifest.json",
+        {
+            "sid": "sid-support-policy-prefixes",
+            "bundles": [bundle],
+        },
+    )
+    summary_path = _write_json(
+        tmp_path / "summary.json",
+        {
+            "sid": "sid-support-policy-prefixes",
+            "case_name": "cwe-89-basic",
+            "manifest_path": str(manifest_path),
+            "verdict_authority": {"mode": "single_bundle", "fields": {}},
+        },
+    )
+
+    payload = build_support_candidate(
+        summary_path,
+        matrix_report={"covered_cases": ["cwe-89-basic"], "failed_cases": [], "repeatability_failures": []},
+        repeatability_report={"case": "cwe-89-basic", "passed": True, "measured_gate": {"ready": True, "blockers": []}},
+    )
+
+    candidate = payload["candidates"][0]
+    assert candidate["mechanical_blockers"] == []
+    assert candidate["promotion_policy_blockers"] == [
+        "base_promotion:ineligible",
+        "topology_clarity:low",
+        "stack_selection:defaulted",
+        "selection_evidence:open_world_not_ready",
+        "name_only_outcome:partial",
+    ]
+    assert candidate["other_blockers"] == []
 
 
 def test_build_support_candidate_marks_external_gate_failures_without_losing_internal_signal(tmp_path: Path) -> None:
@@ -520,6 +705,14 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
                     "primitive_signature": {"selected_family": "sqli", "selected_stack_id": "python/flask"},
                     "runtime_contract": {"topology": "single_service"},
                     "oracle_contract": {"oracle_execution_parity": "high"},
+                    "build_contract": {
+                        "build_ready": True,
+                        "build_ready_blockers": [],
+                        "build_safety_safe": True,
+                        "build_safety_blockers": [],
+                    },
+                    "build_ready": True,
+                    "build_safety_safe": True,
                     "selection_branch_trace": {"schema_version": "selection_branch_trace@0.1", "branch_aligned": True},
                     "generation_materialization": {"schema_version": "generation_materialization@0.1", "path_class": "live"},
                     "generation_path": {"path_class": "live", "positive_bucket": "live_positive"},
@@ -570,6 +763,14 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
                     "primitive_signature": {"selected_family": "open_redirect", "selected_stack_id": "python/flask"},
                     "runtime_contract": {"topology": "single_service"},
                     "oracle_contract": {"oracle_execution_parity": "missing"},
+                    "build_contract": {
+                        "build_ready": False,
+                        "build_ready_blockers": ["build_ready:dockerfile_missing"],
+                        "build_safety_safe": False,
+                        "build_safety_blockers": ["build_safety:remote_fetch_in_build"],
+                    },
+                    "build_ready": False,
+                    "build_safety_safe": False,
                     "selection_branch_trace": {"schema_version": "selection_branch_trace@0.1", "branch_aligned": False},
                     "generation_materialization": {
                         "schema_version": "generation_materialization@0.1",
@@ -603,6 +804,10 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
     assert payload["promotion_policy_blocked_bundle_count"] == 1
     assert payload["live_positive_ready_bundle_count"] == 0
     assert payload["live_positive_blocked_bundle_count"] == 0
+    assert payload["build_ready_bundle_count"] == 1
+    assert payload["build_not_ready_bundle_count"] == 1
+    assert payload["build_safety_safe_bundle_count"] == 1
+    assert payload["build_safety_blocked_bundle_count"] == 1
     assert payload["by_case_status"] == {"all_blocked": 1, "all_reviewable": 1}
     assert payload["all_reviewable_cases"] == ["cwe-89-basic"]
     assert payload["mixed_cases"] == []
@@ -626,6 +831,8 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
         "artifact_quality:medium": 1,
         "oracle_execution_parity:missing": 1,
     }
+    assert payload["by_build_ready_blocker"] == {"build_ready:dockerfile_missing": 1}
+    assert payload["by_build_safety_blocker"] == {"build_safety:remote_fetch_in_build": 1}
     assert payload["by_family"] == {"open_redirect": 1, "sqli": 1}
     assert payload["by_topology"] == {"single_service": 2}
     assert payload["by_generation_path_class"] == {"fixture": 1, "live": 1}
@@ -640,6 +847,8 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
     assert payload["review_queue"][0]["verdict_authority_mode"] == "single_bundle"
     assert payload["review_queue"][0]["selection_branch_trace"]["branch_aligned"] is True
     assert payload["review_queue"][0]["generation_materialization"]["path_class"] == "live"
+    assert payload["review_queue"][0]["build_ready"] is True
+    assert payload["review_queue"][0]["build_safety_safe"] is True
     assert payload["review_queue"][0]["verdict_authority_ready"] is True
     assert payload["review_queue"][0]["measured_gate_ready"] is True
     assert payload["review_queue"][0]["mechanically_healthy"] is True
@@ -649,6 +858,8 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
     assert payload["blocked_queue"][0]["verdict_authority_mode"] == "multi_bundle"
     assert payload["blocked_queue"][0]["selection_branch_trace"]["branch_aligned"] is False
     assert payload["blocked_queue"][0]["generation_materialization"]["path_class"] == "fixture"
+    assert payload["blocked_queue"][0]["build_ready"] is False
+    assert payload["blocked_queue"][0]["build_safety_safe"] is False
     assert payload["blocked_queue"][0]["verdict_authority_ready"] is False
     assert payload["blocked_queue"][0]["measured_gate_ready"] is False
     assert payload["blocked_queue"][0]["mechanically_healthy"] is False
@@ -666,9 +877,15 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
             "promotion_policy_blocked_bundle_count": 0,
             "live_positive_ready_bundle_count": 0,
             "live_positive_blocked_bundle_count": 0,
+            "build_ready_bundle_count": 1,
+            "build_not_ready_bundle_count": 0,
+            "build_safety_safe_bundle_count": 1,
+            "build_safety_blocked_bundle_count": 0,
             "by_support_status": {"reviewable": 1},
             "by_mechanical_blocker": {},
             "by_promotion_policy_blocker": {},
+            "by_build_ready_blocker": {},
+            "by_build_safety_blocker": {},
         },
         {
             "case_name": "open-redirect-name-only",
@@ -682,6 +899,10 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
             "promotion_policy_blocked_bundle_count": 1,
             "live_positive_ready_bundle_count": 0,
             "live_positive_blocked_bundle_count": 0,
+            "build_ready_bundle_count": 0,
+            "build_not_ready_bundle_count": 1,
+            "build_safety_safe_bundle_count": 0,
+            "build_safety_blocked_bundle_count": 1,
             "by_support_status": {"blocked_mixed": 1},
             "by_mechanical_blocker": {
                 "verdict_authority:inconsistent": 1,
@@ -691,6 +912,8 @@ def test_build_support_review_index_splits_reviewable_and_blocked_candidates(tmp
                 "artifact_quality:medium": 1,
                 "oracle_execution_parity:missing": 1,
             },
+            "by_build_ready_blocker": {"build_ready:dockerfile_missing": 1},
+            "by_build_safety_blocker": {"build_safety:remote_fetch_in_build": 1},
         },
     ]
 
@@ -724,6 +947,9 @@ def test_write_support_review_index_persists_payload(tmp_path: Path) -> None:
                     "primitive_signature": {"selected_family": "sqli"},
                     "runtime_contract": {"topology": "single_service"},
                     "oracle_contract": {"oracle_execution_parity": "high"},
+                    "build_contract": {"build_ready": True, "build_safety_safe": True},
+                    "build_ready": True,
+                    "build_safety_safe": True,
                     "source_artifacts": {"summary_path": "/tmp/summary.json", "workspace": "/tmp/workspace"},
                 }
             ],
@@ -744,6 +970,10 @@ def test_write_support_review_index_persists_payload(tmp_path: Path) -> None:
     assert payload["mechanically_blocked_bundle_count"] == 1
     assert payload["promotion_policy_ready_bundle_count"] == 1
     assert payload["promotion_policy_blocked_bundle_count"] == 0
+    assert payload["build_ready_bundle_count"] == 1
+    assert payload["build_not_ready_bundle_count"] == 0
+    assert payload["build_safety_safe_bundle_count"] == 1
+    assert payload["build_safety_blocked_bundle_count"] == 0
     assert payload["by_case_status"] == {"all_blocked": 1}
     assert payload["all_reviewable_cases"] == []
     assert payload["mixed_cases"] == []
@@ -752,6 +982,8 @@ def test_write_support_review_index_persists_payload(tmp_path: Path) -> None:
     assert payload["by_measured_gate_blocker"] == {}
     assert payload["by_mechanical_blocker"] == {"repeatability_gate:failed": 1}
     assert payload["by_promotion_policy_blocker"] == {}
+    assert payload["by_build_ready_blocker"] == {}
+    assert payload["by_build_safety_blocker"] == {}
     assert payload["blocked_cases"] == ["cwe-89-basic"]
 
 
@@ -783,10 +1015,16 @@ def test_build_support_registry_update_applies_accept_reject_and_pending(tmp_pat
             "mechanically_blocked_bundle_count": 0,
             "promotion_policy_ready_bundle_count": 2,
             "promotion_policy_blocked_bundle_count": 0,
+            "build_ready_bundle_count": 2,
+            "build_not_ready_bundle_count": 0,
+            "build_safety_safe_bundle_count": 2,
+            "build_safety_blocked_bundle_count": 0,
             "by_authority_blocker": {},
             "by_measured_gate_blocker": {},
             "by_mechanical_blocker": {},
             "by_promotion_policy_blocker": {},
+            "by_build_ready_blocker": {},
+            "by_build_safety_blocker": {},
             "by_support_status": {"reviewable": 2},
             "by_verdict_authority_mode": {"single_bundle": 1, "multi_bundle": 1},
             "review_queue": [
@@ -805,6 +1043,9 @@ def test_build_support_registry_update_applies_accept_reject_and_pending(tmp_pat
                     "measured_gate_ready": True,
                     "mechanically_healthy": True,
                     "promotion_policy_ready": True,
+                    "build_ready": True,
+                    "build_safety_safe": True,
+                    "build_contract": {"build_ready": True, "build_safety_safe": True},
                     "manifest_path": "/tmp/manifest-a.json",
                     "summary_path": "/tmp/summary-a.json",
                     "workspace": "/tmp/workspace-a",
@@ -825,6 +1066,9 @@ def test_build_support_registry_update_applies_accept_reject_and_pending(tmp_pat
                     "measured_gate_ready": True,
                     "mechanically_healthy": True,
                     "promotion_policy_ready": True,
+                    "build_ready": True,
+                    "build_safety_safe": True,
+                    "build_contract": {"build_ready": True, "build_safety_safe": True},
                     "manifest_path": "/tmp/manifest-b.json",
                     "summary_path": "/tmp/summary-b.json",
                     "workspace": "/tmp/workspace-b",
@@ -867,6 +1111,10 @@ def test_build_support_registry_update_applies_accept_reject_and_pending(tmp_pat
     assert payload["mechanically_blocked_bundle_count"] == 0
     assert payload["promotion_policy_ready_bundle_count"] == 2
     assert payload["promotion_policy_blocked_bundle_count"] == 0
+    assert payload["build_ready_bundle_count"] == 2
+    assert payload["build_not_ready_bundle_count"] == 0
+    assert payload["build_safety_safe_bundle_count"] == 2
+    assert payload["build_safety_blocked_bundle_count"] == 0
     assert payload["reviewable_case_count"] == 2
     assert payload["blocked_case_count"] == 0
     assert payload["reviewable_cases"] == ["cwe-89-basic", "template-injection-name-only"]
@@ -880,6 +1128,8 @@ def test_build_support_registry_update_applies_accept_reject_and_pending(tmp_pat
     assert payload["by_measured_gate_blocker"] == {}
     assert payload["by_mechanical_blocker"] == {}
     assert payload["by_promotion_policy_blocker"] == {}
+    assert payload["by_build_ready_blocker"] == {}
+    assert payload["by_build_safety_blocker"] == {}
     assert payload["by_verdict_authority_mode"] == {"single_bundle": 1, "multi_bundle": 1}
     assert payload["accepted_count"] == 1
     assert payload["rejected_count"] == 1
@@ -931,6 +1181,8 @@ def test_build_support_registry_update_applies_accept_reject_and_pending(tmp_pat
     assert payload["accepted"][0]["measured_gate_ready"] is True
     assert payload["accepted"][0]["mechanically_healthy"] is True
     assert payload["accepted"][0]["promotion_policy_ready"] is True
+    assert payload["accepted"][0]["build_ready"] is True
+    assert payload["accepted"][0]["build_safety_safe"] is True
     assert payload["rejected"][0]["slug"] == "name-template-injection"
     assert payload["rejected"][0]["decision"] == "reject"
     assert payload["rejected"][0]["support_status"] == "reviewable"
@@ -939,6 +1191,8 @@ def test_build_support_registry_update_applies_accept_reject_and_pending(tmp_pat
     assert payload["rejected"][0]["measured_gate_ready"] is True
     assert payload["rejected"][0]["mechanically_healthy"] is True
     assert payload["rejected"][0]["promotion_policy_ready"] is True
+    assert payload["rejected"][0]["build_ready"] is True
+    assert payload["rejected"][0]["build_safety_safe"] is True
 
 
 def test_build_support_registry_update_flags_invalid_and_pending_entries(tmp_path: Path) -> None:
@@ -955,6 +1209,10 @@ def test_build_support_registry_update_flags_invalid_and_pending_entries(tmp_pat
             "mechanically_blocked_bundle_count": 1,
             "promotion_policy_ready_bundle_count": 0,
             "promotion_policy_blocked_bundle_count": 1,
+            "build_ready_bundle_count": 0,
+            "build_not_ready_bundle_count": 1,
+            "build_safety_safe_bundle_count": 0,
+            "build_safety_blocked_bundle_count": 1,
             "by_authority_blocker": {"verdict_authority:inconsistent": 1},
             "by_measured_gate_blocker": {"measured_gate:verdict_authority_inconsistent": 1},
             "by_mechanical_blocker": {
@@ -962,6 +1220,8 @@ def test_build_support_registry_update_flags_invalid_and_pending_entries(tmp_pat
                 "measured_gate:verdict_authority_inconsistent": 1,
             },
             "by_promotion_policy_blocker": {"artifact_quality:medium": 1},
+            "by_build_ready_blocker": {"build_ready:dockerfile_missing": 1},
+            "by_build_safety_blocker": {"build_safety:remote_fetch_in_build": 1},
             "by_support_status": {"blocked_mixed": 1},
             "by_verdict_authority_mode": {"multi_bundle": 1},
             "review_queue": [
@@ -980,6 +1240,14 @@ def test_build_support_registry_update_flags_invalid_and_pending_entries(tmp_pat
                     "measured_gate_ready": False,
                     "mechanically_healthy": False,
                     "promotion_policy_ready": False,
+                    "build_ready": False,
+                    "build_safety_safe": False,
+                    "build_contract": {
+                        "build_ready": False,
+                        "build_ready_blockers": ["dockerfile_missing"],
+                        "build_safety_safe": False,
+                        "build_safety_blockers": ["remote_fetch_in_build"],
+                    },
                     "manifest_path": "/tmp/manifest-a.json",
                     "summary_path": "/tmp/summary-a.json",
                     "workspace": "/tmp/workspace-a",
@@ -1012,6 +1280,10 @@ def test_build_support_registry_update_flags_invalid_and_pending_entries(tmp_pat
     assert payload["mechanically_blocked_bundle_count"] == 1
     assert payload["promotion_policy_ready_bundle_count"] == 0
     assert payload["promotion_policy_blocked_bundle_count"] == 1
+    assert payload["build_ready_bundle_count"] == 0
+    assert payload["build_not_ready_bundle_count"] == 1
+    assert payload["build_safety_safe_bundle_count"] == 0
+    assert payload["build_safety_blocked_bundle_count"] == 1
     assert payload["reviewable_case_count"] == 0
     assert payload["blocked_case_count"] == 1
     assert payload["reviewable_cases"] == []
@@ -1028,6 +1300,8 @@ def test_build_support_registry_update_flags_invalid_and_pending_entries(tmp_pat
         "measured_gate:verdict_authority_inconsistent": 1,
     }
     assert payload["by_promotion_policy_blocker"] == {"artifact_quality:medium": 1}
+    assert payload["by_build_ready_blocker"] == {"build_ready:dockerfile_missing": 1}
+    assert payload["by_build_safety_blocker"] == {"build_safety:remote_fetch_in_build": 1}
     assert payload["by_verdict_authority_mode"] == {"multi_bundle": 1}
     assert payload["accepted_by_verdict_authority_mode"] == {}
     assert payload["rejected_by_verdict_authority_mode"] == {}
@@ -1132,6 +1406,11 @@ def test_build_curated_support_registry_applies_accepts_and_logs_history(tmp_pat
                     "measured_gate_ready": True,
                     "mechanically_healthy": True,
                     "promotion_policy_ready": True,
+                    "generation_path_live_positive_ready": True,
+                    "generation_path_class": "live",
+                    "build_ready": True,
+                    "build_safety_safe": True,
+                    "build_contract": {"build_ready": True, "build_safety_safe": True},
                     "support_candidate_path": "/tmp/support-a.json",
                     "manifest_path": "/tmp/manifest-a.json",
                     "summary_path": "/tmp/summary-a.json",
@@ -1194,6 +1473,12 @@ def test_build_curated_support_registry_applies_accepts_and_logs_history(tmp_pat
     assert payload["mechanically_blocked_item_count"] == 0
     assert payload["promotion_policy_ready_item_count"] == 1
     assert payload["promotion_policy_blocked_item_count"] == 0
+    assert payload["live_positive_ready_item_count"] == 1
+    assert payload["live_positive_blocked_item_count"] == 0
+    assert payload["build_ready_item_count"] == 1
+    assert payload["build_not_ready_item_count"] == 0
+    assert payload["build_safety_safe_item_count"] == 1
+    assert payload["build_safety_blocked_item_count"] == 0
     assert payload["items_with_source_artifacts_count"] == 1
     assert payload["by_decision"] == {"accept": 1, "reject": 1}
     assert payload["by_reviewer"] == {"alice": 1, "bob": 1}
@@ -1204,6 +1489,10 @@ def test_build_curated_support_registry_applies_accepts_and_logs_history(tmp_pat
     assert payload["last_update"]["mechanically_blocked_bundle_count"] == 0
     assert payload["last_update"]["promotion_policy_ready_bundle_count"] == 1
     assert payload["last_update"]["promotion_policy_blocked_bundle_count"] == 0
+    assert payload["last_update"]["build_ready_bundle_count"] == 0
+    assert payload["last_update"]["build_not_ready_bundle_count"] == 0
+    assert payload["last_update"]["build_safety_safe_bundle_count"] == 0
+    assert payload["last_update"]["build_safety_blocked_bundle_count"] == 0
     assert payload["last_update"]["all_reviewable_case_count"] == 0
     assert payload["last_update"]["mixed_case_count"] == 0
     assert payload["last_update"]["all_blocked_case_count"] == 0
@@ -1240,6 +1529,10 @@ def test_build_curated_support_registry_applies_accepts_and_logs_history(tmp_pat
     assert item["support_status"] == "reviewable"
     assert item["mechanically_healthy"] is True
     assert item["promotion_policy_ready"] is True
+    assert item["generation_path_live_positive_ready"] is True
+    assert item["build_ready"] is True
+    assert item["build_safety_safe"] is True
+    assert item["build_contract"] == {"build_ready": True, "build_safety_safe": True}
     assert item["decision_history_count"] == 1
     assert item["verdict_authority_ready"] is True
     assert item["measured_gate_ready"] is True
@@ -2002,6 +2295,93 @@ def test_build_curated_support_registry_rejects_invalid_or_gate_unready_update(t
         assert "measured-gate ready" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("expected gate-unready accept to fail")
+
+
+def test_build_curated_support_registry_rejects_policy_or_build_unready_accept(tmp_path: Path) -> None:
+    policy_unready_update_path = _write_json(
+        tmp_path / "support_registry_update.policy-unready.json",
+        {
+            "schema_version": "support_registry_update@0.1",
+            "invalid_decision_count": 0,
+            "accepted": [
+                {
+                    "case_name": "cwe-89-basic",
+                    "slug": "cwe-89",
+                    "decision": "accept",
+                    "verdict_authority_ready": True,
+                    "measured_gate_ready": True,
+                    "mechanically_healthy": True,
+                    "promotion_policy_ready": False,
+                }
+            ],
+            "rejected": [],
+            "pending_review": [],
+        },
+    )
+    build_unready_update_path = _write_json(
+        tmp_path / "support_registry_update.build-unready.json",
+        {
+            "schema_version": "support_registry_update@0.1",
+            "invalid_decision_count": 0,
+            "accepted": [
+                {
+                    "case_name": "cwe-89-basic",
+                    "slug": "cwe-89",
+                    "decision": "accept",
+                    "verdict_authority_ready": True,
+                    "measured_gate_ready": True,
+                    "mechanically_healthy": True,
+                    "promotion_policy_ready": True,
+                    "build_ready": False,
+                }
+            ],
+            "rejected": [],
+            "pending_review": [],
+        },
+    )
+    non_live_update_path = _write_json(
+        tmp_path / "support_registry_update.non-live.json",
+        {
+            "schema_version": "support_registry_update@0.1",
+            "invalid_decision_count": 0,
+            "accepted": [
+                {
+                    "case_name": "cwe-89-basic",
+                    "slug": "cwe-89",
+                    "decision": "accept",
+                    "verdict_authority_ready": True,
+                    "measured_gate_ready": True,
+                    "mechanically_healthy": True,
+                    "promotion_policy_ready": True,
+                    "generation_path_live_positive_ready": False,
+                    "generation_path_class": "fixture",
+                }
+            ],
+            "rejected": [],
+            "pending_review": [],
+        },
+    )
+
+    try:
+        build_curated_support_registry(policy_unready_update_path)
+    except ValueError as exc:
+        assert "promotion-policy ready" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected policy-unready accept to fail")
+
+    try:
+        build_curated_support_registry(build_unready_update_path)
+    except ValueError as exc:
+        assert "build-ready" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected build-unready accept to fail")
+
+    try:
+        build_curated_support_registry(non_live_update_path)
+    except ValueError as exc:
+        assert "live-positive" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected non-live accept to fail")
 
 
 def test_write_curated_support_registry_persists_payload(tmp_path: Path) -> None:

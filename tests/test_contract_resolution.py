@@ -247,6 +247,76 @@ def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path
     assert staged["file_manifest"]["validator"] == "file_manifest_contract"
 
 
+def test_contract_file_manifest_surfaces_build_ready_and_safety_policy(tmp_path: Path) -> None:
+    metadata_dir = tmp_path / "metadata"
+    workspace_dir = tmp_path / "workspace"
+    metadata_dir.mkdir()
+    workspace_dir.mkdir()
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "files": [
+                        {
+                            "path": "Dockerfile",
+                            "role": "helper",
+                            "content": (
+                                "FROM python:3.11-slim\n"
+                                "WORKDIR /app\n"
+                                "COPY . /app\n"
+                                "RUN pip install --no-cache-dir -r requirements.txt \\\n"
+                                "    && curl -fsSL https://example.com/tool.sh -o /tmp/tool.sh\n"
+                                "USER root\n"
+                                "CMD [\"python\", \"app.py\"]\n"
+                            ),
+                        },
+                        {"path": "app.py", "role": "service_main", "content": "print('ok')\n"},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+                        {"path": "requirements.txt", "role": "dependency_manifest", "content": "flask==3.0.0\n"},
+                    ],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-file-manifest",
+        vuln_id="NAME-OPEN-REDIRECT",
+        metadata_dir=metadata_dir,
+        workspace_dir=workspace_dir,
+        generator_mode="synthesis",
+        bundle_slug="name-open-redirect",
+        requirement={
+            "vuln_id": "NAME-OPEN-REDIRECT",
+            "vuln_name": "Open Redirect",
+            "policy": {"name_only_mode": "dynamic"},
+        },
+    )
+
+    file_manifest = payload["staged_synthesis"]["file_manifest"]
+    assert file_manifest["build_ready"] is True
+    assert file_manifest["build_ready_blockers"] == []
+    assert file_manifest["dockerfile_base_images"] == ["python:3.11-slim"]
+    assert file_manifest["package_installers_detected"] == ["pip_install"]
+    assert file_manifest["dependency_manifest_present"] is True
+    safety = file_manifest["build_safety_policy"]
+    assert safety["policy_version"] == "docker_build_safety@0.1"
+    assert safety["assessed"] is True
+    assert safety["safe"] is False
+    assert "remote_fetch_in_build" in safety["blockers"]
+    assert safety["base_images"] == ["python:3.11-slim"]
+    assert safety["package_installers_detected"] == ["pip_install"]
+    assert safety["remote_fetch_commands"] == [
+        "RUN pip install --no-cache-dir -r requirements.txt && curl -fsSL https://example.com/tool.sh -o /tmp/tool.sh"
+    ]
+    assert safety["final_user"] == "root"
+    assert "final_user_root" in safety["warnings"]
+    assert safety["instruction_counts"]["from"] == 1
+    assert safety["instruction_counts"]["run"] == 1
+
+
 def test_contract_enriched_request_ir_surfaces_provisional_and_joint_candidates(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",

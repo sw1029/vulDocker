@@ -1188,6 +1188,17 @@ def _bundle_support_promotion_status(bundle_entry: Dict[str, Any]) -> Dict[str, 
     family_dependence = bundle_entry.get("family_dependence") or {}
     name_only_outcome = bundle_entry.get("name_only_outcome") or {}
     generation_materialization = bundle_entry.get("generation_materialization") or {}
+    staged_synthesis = bundle_entry.get("staged_synthesis") or {}
+    file_manifest = (
+        staged_synthesis.get("file_manifest")
+        if isinstance(staged_synthesis, dict) and isinstance(staged_synthesis.get("file_manifest"), dict)
+        else {}
+    )
+    build_safety_policy = (
+        file_manifest.get("build_safety_policy")
+        if isinstance(file_manifest, dict) and isinstance(file_manifest.get("build_safety_policy"), dict)
+        else {}
+    )
     reasons: List[str] = []
 
     if not bool((promotion or {}).get("eligible")):
@@ -1244,6 +1255,30 @@ def _bundle_support_promotion_status(bundle_entry: Dict[str, Any]) -> Dict[str, 
         reasons.append(
             f"name_only_outcome:{str((name_only_outcome or {}).get('decision') or '').strip().lower() or 'unknown'}"
         )
+
+    if isinstance(file_manifest, dict) and file_manifest:
+        if file_manifest.get("build_ready") is False:
+            build_ready_blockers = file_manifest.get("build_ready_blockers") or []
+            normalized_blockers = [
+                str(item).strip().lower()
+                for item in build_ready_blockers
+                if isinstance(item, str) and str(item).strip()
+            ]
+            if normalized_blockers:
+                reasons.extend(f"build_ready:{token}" for token in normalized_blockers)
+            else:
+                reasons.append("build_ready:not_ready")
+        if isinstance(build_safety_policy, dict) and build_safety_policy.get("assessed") is True and build_safety_policy.get("safe") is False:
+            build_safety_blockers = build_safety_policy.get("blockers") or []
+            normalized_blockers = [
+                str(item).strip().lower()
+                for item in build_safety_blockers
+                if isinstance(item, str) and str(item).strip()
+            ]
+            if normalized_blockers:
+                reasons.extend(f"build_safety:{token}" for token in normalized_blockers)
+            else:
+                reasons.append("build_safety:unsafe")
 
     return {
         "eligible": not reasons,
@@ -1439,6 +1474,34 @@ def _open_world_readiness_blockers(bundle_entry: Dict[str, Any]) -> List[str]:
             blockers.append("selection_open_world_evidence_not_ready")
         elif token.startswith("name_only_outcome:"):
             blockers.append("name_only_intent_not_met")
+        elif token.startswith("build_ready:"):
+            suffix = token.split(":", 1)[1].strip().lower()
+            if suffix == "dockerfile_missing":
+                blockers.append("build_dockerfile_missing")
+            elif suffix == "service_entry_missing":
+                blockers.append("build_service_entry_missing")
+            elif suffix == "poc_entry_missing":
+                blockers.append("build_poc_entry_missing")
+            elif suffix == "dependency_manifest_missing_for_install":
+                blockers.append("build_dependency_manifest_missing")
+            elif suffix == "not_ready":
+                blockers.append("build_not_ready")
+            else:
+                blockers.append(f"build_ready_{suffix}")
+        elif token.startswith("build_safety:"):
+            suffix = token.split(":", 1)[1].strip().lower()
+            if suffix == "remote_fetch_in_build":
+                blockers.append("build_remote_fetch_in_build")
+            elif suffix == "tmp_db_artifact_in_build":
+                blockers.append("build_tmp_db_artifact_in_build")
+            elif suffix == "base_image_missing":
+                blockers.append("build_base_image_missing")
+            elif suffix == "dockerfile_missing":
+                blockers.append("build_dockerfile_missing")
+            elif suffix == "unsafe":
+                blockers.append("build_safety_policy_blocked")
+            else:
+                blockers.append(f"build_safety_{suffix}")
         elif token.startswith("generation_path:"):
             suffix = token.split(":", 1)[1].strip().lower()
             if suffix == "not_live_positive":
@@ -1479,6 +1542,17 @@ def _bundle_open_world_readiness(bundle_entry: Dict[str, Any]) -> Dict[str, Any]
     name_only_outcome = bundle_entry.get("name_only_outcome") or {}
     open_world = bundle_entry.get("open_world") or {}
     strict_open_world = bundle_entry.get("strict_open_world") or {}
+    staged_synthesis = bundle_entry.get("staged_synthesis") or {}
+    file_manifest = (
+        staged_synthesis.get("file_manifest")
+        if isinstance(staged_synthesis, dict) and isinstance(staged_synthesis.get("file_manifest"), dict)
+        else {}
+    )
+    build_safety_policy = (
+        file_manifest.get("build_safety_policy")
+        if isinstance(file_manifest, dict) and isinstance(file_manifest.get("build_safety_policy"), dict)
+        else {}
+    )
     readiness = {
         "ready": bool((support_promotion or {}).get("eligible")),
         "blockers": _open_world_readiness_blockers(bundle_entry),
@@ -1488,6 +1562,31 @@ def _bundle_open_world_readiness(bundle_entry: Dict[str, Any]) -> Dict[str, Any]
         "selection_open_world_evidence_ready": bool((name_only_outcome or {}).get("selection_open_world_evidence_ready")),
         "stack_defaulted": bool((stack_dependence or {}).get("stack_defaulted")),
         "family_evidence_backed": bool((family_dependence or {}).get("candidate_evidence_backed")),
+        "build_ready": (
+            file_manifest.get("build_ready")
+            if isinstance(file_manifest.get("build_ready"), bool)
+            else None
+        ),
+        "build_ready_blockers": [
+            str(item).strip()
+            for item in (file_manifest.get("build_ready_blockers") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+        "build_safety_assessed": (
+            build_safety_policy.get("assessed")
+            if isinstance(build_safety_policy.get("assessed"), bool)
+            else None
+        ),
+        "build_safety_safe": (
+            build_safety_policy.get("safe")
+            if isinstance(build_safety_policy.get("safe"), bool)
+            else None
+        ),
+        "build_safety_blockers": [
+            str(item).strip()
+            for item in (build_safety_policy.get("blockers") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
     }
     return readiness
 

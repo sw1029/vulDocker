@@ -44,10 +44,10 @@ if ! command -v "${PYTEST_BIN}" >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ -n "${VULD_E2E_REQUIRE_TAVILY:-}" ]]; then
-  TAVILY_KEY="${VUL_WEB_SEARCH_API_KEY:-}"
-  if [[ -z "${TAVILY_KEY}" && -f "${CONFIG_PATH}" ]]; then
-    TAVILY_KEY="$("${PYTHON_BIN}" - <<'PY' "${CONFIG_PATH}"
+load_tavily_key() {
+  local tavily_key="${VUL_WEB_SEARCH_API_KEY:-}"
+  if [[ -z "${tavily_key}" && -f "${CONFIG_PATH}" ]]; then
+    tavily_key="$("${PYTHON_BIN}" - <<'PY' "${CONFIG_PATH}"
 import configparser
 import sys
 from pathlib import Path
@@ -59,6 +59,41 @@ print((parser.get("tavily", "api_key", fallback="") or "").strip(), end="")
 PY
 )"
   fi
+  printf '%s' "${tavily_key}"
+}
+
+remote_provider_configured() {
+  local provider="${VUL_WEB_SEARCH_PROVIDER:-}"
+  local endpoint="${VUL_WEB_SEARCH_ENDPOINT:-}"
+  local tavily_key
+  provider="$(printf '%s' "${provider}" | tr '[:upper:]' '[:lower:]')"
+  tavily_key="$(load_tavily_key)"
+
+  if [[ -z "${provider}" ]]; then
+    if [[ -n "${endpoint}" || -n "${tavily_key}" ]]; then
+      return 0
+    fi
+    return 1
+  fi
+
+  if [[ "${provider}" == "custom" ]]; then
+    [[ -n "${endpoint}" ]]
+    return
+  fi
+  if [[ "${provider}" == "tavily" ]]; then
+    [[ -n "${tavily_key}" ]]
+    return
+  fi
+  return 1
+}
+
+if [[ -n "${VULD_E2E_REQUIRE_REMOTE_PROVIDER:-}" ]] && ! remote_provider_configured; then
+  echo "[E2E] VULD_E2E_REQUIRE_REMOTE_PROVIDER=1 but no supported remote provider is configured. Set VUL_WEB_SEARCH_PROVIDER=tavily with a Tavily key, or configure VUL_WEB_SEARCH_PROVIDER=custom/VUL_WEB_SEARCH_ENDPOINT." >&2
+  exit 1
+fi
+
+if [[ -n "${VULD_E2E_REQUIRE_TAVILY:-}" ]]; then
+  TAVILY_KEY="$(load_tavily_key)"
   if [[ -z "${TAVILY_KEY}" ]]; then
     echo "[E2E] VULD_E2E_REQUIRE_TAVILY=1 but no Tavily API key is configured." >&2
     exit 1

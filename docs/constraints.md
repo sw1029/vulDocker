@@ -4,7 +4,7 @@ Status: canonical
 Audience: mixed
 Source of truth for: current technical, operational, and evaluation constraints
 Not the source of truth for: roadmap, rerun baseline tables, quickstart
-Last validated against: code inspection, representative reruns, and workspace-local direct/support workflow verification on 2026-03-21
+Last validated against: code inspection, representative reruns, and workspace-local direct/support workflow verification on 2026-04-02
 
 이 문서는 현재 시스템이 할 수 있는 것, 아직 못 하는 것, 그리고 무엇을 주장하면 안 되는지를 canonical하게 정리합니다. 미래 계획은 최소 링크로만 남기고, 여기에는 현재 사실만 기록합니다.
 
@@ -339,6 +339,13 @@ Constraint: strict no-remote fail-closed는 capability precheck에서 early reje
 - Observable today: representative `open-redirect-strict-dynamic-no-remote` direct rerun에서는 remote provider가 없으면 `strict_dynamic_remote_research_unavailable`로 `pre_generation` 단계에서 멈추고 `search_cache_* = 0`, `search_planned_query_count = 0`, `search_executed_query_count = 0`, `search_early_stop_triggered = false`로 남습니다. latest slice 후 same direct rerun에서는 top-level `terminal_failure_class`와 nested `name_only_outcome.terminal_failure_class`도 같이 정렬됩니다.
 - Allowed claim: strict dynamic lane can fail closed before RESEARCH when remote capability is unavailable
 - Forbidden claim: strict no-remote failure always reflects post-research semantic rejection
+
+Constraint: Tavily는 current canonical live unknown-CWE proving-ground provider이지만 repository-wide mandatory dependency는 아닙니다.
+
+- Current enforcement surface: `rag/tools/web_search.py`, `rag/tools/providers/tavily.py`, `rag/tools/providers/custom.py`, `tests/e2e/test_cases.py`, `ops/ci/run_e2e_tests.sh`
+- Observable today: remote search abstraction은 `tavily`와 `custom endpoint`를 모두 지원하고, strict/dynamic researcher gate는 “어떤 remote provider도 configured되지 않았는가”를 먼저 본다. ops/E2E entry도 `VULD_E2E_REQUIRE_REMOTE_PROVIDER=1` generic gate와 `VULD_E2E_REQUIRE_TAVILY=1` canonical Tavily gate를 분리해 쓸 수 있다. 다만 current live unknown-CWE E2E proving ground는 여전히 Tavily key를 기준으로 opt-in되어 있다.
+- Allowed claim: Tavily is the current canonical provider for the repository's live unknown-CWE gate, while custom endpoint remains a structural alternative for remote researcher capability
+- Forbidden claim: Tavily is required for all open-world/bounded/dynamic validation lanes, or that researcher remote capability is Tavily-only by design
 
 Constraint: strict dynamic live-LLM fail-closed도 capability precheck에서 early reject될 수 있습니다.
 

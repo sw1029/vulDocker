@@ -24,7 +24,7 @@ from common.guardrails import (
     write_guard_spec,
 )
 from common.hints import normalize_hint_payload
-from common.llm import LLMClient, llm_execution_summary
+from common.llm import DEFAULT_LLM_MODEL, LLMClient, llm_execution_summary
 from common.logging import get_logger
 from common.name_only import is_name_driven_requirement, name_only_mode
 from common.contracts import (
@@ -285,7 +285,7 @@ class GeneratorService:
         self.user_deps = self._normalize_user_deps()
         self.loop_index = self._read_loop_index()
         self.profile: DecodingProfile = self.variation_manager.profile_for("generator", override_mode=mode)
-        model = self.requirement.get("model_version", "gpt-5.2")
+        model = self.requirement.get("model_version", DEFAULT_LLM_MODEL)
         self.llm = LLMClient(model, self.profile)
         self.generator_mode = (self.requirement.get("generator_mode") or "synthesis").lower()
         self.synthesis_limits = SynthesisLimits.from_requirement(self.requirement)

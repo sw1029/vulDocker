@@ -4,7 +4,7 @@ Status: support
 Audience: implementation
 Source of truth for: orchestrator entrypoints and output surfaces
 Not the source of truth for: project goals, constraints, roadmap
-Last validated against: current repo layout, staged recovery/operator summary surfaces, measured gate/support workflow wiring, and local registry workflow hardening on 2026-03-19
+Last validated against: current repo layout, staged recovery/operator summary surfaces, build-ready/support workflow wiring, and local registry workflow hardening on 2026-04-02
 
 Relevant canonical docs:
 - [문제 정의](../problem.md)
@@ -33,6 +33,7 @@ Relevant canonical docs:
 - `plan.json`은 경로, policy, variation, run matrix의 시작점입니다.
 - `run_pipeline.py`는 stage timing과 capability gate를 surface합니다.
 - `pack.py`는 `name_only_outcome`, `support_promotion`, `open_world_readiness`, `artifact_quality`의 최종 집계면입니다.
+- latest slice에서는 same `pack.py`가 `staged_synthesis.file_manifest.build_ready` / `build_safety_policy`도 `support_promotion.reasons`와 `open_world_readiness.blockers` vocabulary로 읽기 시작했습니다. 따라서 buildable하지 않은 Docker bundle이 measured/support lane에서 silent positive처럼 남지 않게 됐습니다.
 - latest slice에서는 same `artifact_quality`가 `band`만이 아니라 `qualitative_tier`, `qualitative_review`, `qualitative_signals`도 같이 surface하고, `artifact_quality_summary`도 `by_qualitative_tier`, `oracle_high_nonhigh_band_bundles`를 집계합니다. 즉 executed oracle closure와 실제 artifact quality tier를 분리해서 top-level aggregate에서 읽을 수 있습니다.
 - latest slice에서는 single-bundle manifest도 `executed_sidecars`, `seed_mount_targets`, `seed_apply_*`, `network_mode`, `service_base_url` 같은 actual execution detail을 top-level로 직접 flatten하기 시작했습니다. latest slice에서는 same `executed_sidecars[*].type/aliases/seed_mount_target/seed_files_applied`뿐 아니라 actual `service_env_runtime`/`allow_network` 값, `poc_entry`, `poc_entry_source`, `poc_cmd`, `poc_cmd_source`도 top-level에서 읽을 수 있습니다.
 - latest slice에서는 multi-bundle manifest도 `bundle_verdict_rollup`를 같이 싣기 시작했습니다. 즉 `run_passed/verify_pass` count, `oracle_execution_parity` 분포, `qualitative_tier` 분포뿐 아니라 `by_stage_ceiling`/`by_terminal_failure_class`도 `bundles[]`를 직접 열지 않고 top-level convenience projection에서 읽을 수 있습니다.
@@ -69,6 +70,10 @@ Relevant canonical docs:
 - latest slice에서는 `tests/e2e/run_case.py` / `tests/e2e/repeat_case.py`도 output-dir/attempt 기반 SID isolation을 적용해, same-case concurrent direct run에서 metadata/artifact contention을 덜 만들게 됐습니다.
 - latest slice에서는 same isolation trace도 `summary.json`의 `execution_salt`, `repeatability_report.json`의 `observed_execution_salts` / `distinct_sid_count`로 읽을 수 있습니다.
 - `orchestrator/support_extract.py`는 packed manifest + matrix/repeatability artifacts에서 reviewable `support_candidate.json`을 뽑는 measured extraction helper입니다.
+- latest slice에서는 same `support_candidate.json`도 `build_contract` payload를 같이 담아, review queue가 `build_ready/build_safety`와 generation-path/quality blocker를 같은 candidate surface에서 함께 읽을 수 있게 됐습니다.
+- latest slice에서는 same `support_extract.py`가 stale/thin `support_promotion.reasons`만 복사하지 않고 `build_contract`에서 build blocker를 다시 구성하며, `selection_evidence` / `stack_selection` / `name_only_outcome` / `topology_clarity` 같은 open-world policy token도 `promotion_policy_blockers` aggregate로 남기기 시작했습니다.
+- latest slice에서는 same `support_review_index.json` / `support_registry_update.json` preview도 `build_ready_bundle_count`, `build_not_ready_bundle_count`, `build_safety_safe_bundle_count`, `build_safety_blocked_bundle_count`, `by_build_ready_blocker`, `by_build_safety_blocker`를 같이 surface합니다. 즉 queue aggregate에서도 buildability와 promotability를 직접 분리해 읽을 수 있습니다.
+- latest slice에서는 same local registry apply path도 explicit `generation_path_live_positive_ready=false` 또는 `generation_path_class!=live`, `mechanically_healthy=false`, `promotion_policy_ready=false`, `build_ready=false`, `build_safety_safe=false` accepted entry를 fail-closed 하므로, measured/support queue에서 막힌 candidate가 curated registry에 stale/manual drift로 들어가는 경로가 줄었습니다.
 - `run_pipeline.py`의 `performance_summary.json`은 이제 search cache hit/miss, reuse ratio, planned/executed query count, early-stop 여부도 같이 surface합니다.
 - `pack.py`의 `request_ir_summary`는 이제 ambiguity/evidence뿐 아니라 `provisional_family`, `primitive_hypotheses`, `runtime_dependency_hypotheses`, `topology_hypotheses`, `scenario_candidates` 집계도 담습니다.
 - `pack.py`의 `selection_readiness_summary`는 이제 `scenario_selected_bundles`, `scenario_evidence_backed_bundles`, `by_scenario_topology` 같은 joint-candidate readiness truth도 담습니다.

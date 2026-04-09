@@ -1735,6 +1735,48 @@ def test_bundle_support_promotion_accepts_high_quality_strict_open_world_bundle(
     assert summary["all_eligible"] is True
 
 
+def test_bundle_support_promotion_rejects_build_not_ready_bundle() -> None:
+    status = _bundle_support_promotion_status(
+        {
+            "promotion": {"eligible": True, "reasons": []},
+            "open_world": {"class": "open_world_positive", "counts_as_generalization": True},
+            "strict_open_world": {"class": "strict_open_world_positive", "counts_as_generalization": True},
+            "artifact_quality": {
+                "band": "high",
+                "oracle_clarity": "high",
+                "oracle_execution_parity": "high",
+                "topology_clarity": "high",
+            },
+            "stack_dependence": {"stack_defaulted": False, "repo_prior_bounded": False},
+            "family_dependence": {"candidate_evidence_backed": True},
+            "name_only_outcome": {
+                "request_kind": "name_only",
+                "mode": "dynamic",
+                "decision": "intent_met",
+                "selection_ready_for_materialization": True,
+                "selection_open_world_evidence_ready": True,
+            },
+            "generation_materialization": {"path_class": "live"},
+            "staged_synthesis": {
+                "file_manifest": {
+                    "build_ready": False,
+                    "build_ready_blockers": ["dockerfile_missing", "service_entry_missing"],
+                    "build_safety_policy": {
+                        "assessed": True,
+                        "safe": False,
+                        "blockers": ["remote_fetch_in_build"],
+                    },
+                }
+            },
+        }
+    )
+
+    assert status["eligible"] is False
+    assert "build_ready:dockerfile_missing" in status["reasons"]
+    assert "build_ready:service_entry_missing" in status["reasons"]
+    assert "build_safety:remote_fetch_in_build" in status["reasons"]
+
+
 def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
     readiness = _bundle_open_world_readiness(
         {
@@ -1743,6 +1785,8 @@ def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
                 "reasons": [
                     "strict_open_world:strict_minimal_dynamic_fallback",
                     "open_world:semantic_guided_minimal_dynamic",
+                    "build_ready:dockerfile_missing",
+                    "build_safety:remote_fetch_in_build",
                     "generation_path:not_live_positive",
                     "generation_path:provider_disabled",
                     "artifact_quality:medium",
@@ -1750,6 +1794,17 @@ def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
                     "selection_evidence:open_world_not_ready",
                     "name_only_outcome:partial",
                 ],
+            },
+            "staged_synthesis": {
+                "file_manifest": {
+                    "build_ready": False,
+                    "build_ready_blockers": ["dockerfile_missing"],
+                    "build_safety_policy": {
+                        "assessed": True,
+                        "safe": False,
+                        "blockers": ["remote_fetch_in_build"],
+                    },
+                }
             },
             "stack_dependence": {"stack_defaulted": True},
             "family_dependence": {"candidate_evidence_backed": True},
@@ -1762,12 +1817,19 @@ def test_bundle_open_world_readiness_classifies_support_blockers() -> None:
     assert readiness["ready"] is False
     assert "strict_open_world_gate" in readiness["blockers"]
     assert "open_world_non_positive" in readiness["blockers"]
+    assert "build_dockerfile_missing" in readiness["blockers"]
+    assert "build_remote_fetch_in_build" in readiness["blockers"]
     assert "generation_path_not_live_positive" in readiness["blockers"]
     assert "generation_path_provider_disabled" in readiness["blockers"]
     assert "stack_defaulted" in readiness["blockers"]
     assert "selection_open_world_evidence_not_ready" in readiness["blockers"]
     assert "name_only_intent_not_met" in readiness["blockers"]
     assert readiness["selection_open_world_evidence_ready"] is False
+    assert readiness["build_ready"] is False
+    assert readiness["build_ready_blockers"] == ["dockerfile_missing"]
+    assert readiness["build_safety_assessed"] is True
+    assert readiness["build_safety_safe"] is False
+    assert readiness["build_safety_blockers"] == ["remote_fetch_in_build"]
 
 
 def test_open_world_readiness_summary_rolls_up_blockers() -> None:

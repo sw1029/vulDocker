@@ -13,12 +13,19 @@ MECHANICAL_BLOCKER_PREFIXES = (
 )
 
 PROMOTION_POLICY_BLOCKER_PREFIXES = (
+    "base_promotion:",
     "strict_open_world:",
     "open_world:",
     "oracle_clarity:",
-    "family_evidence:",
     "artifact_quality:",
     "oracle_execution_parity:",
+    "topology_clarity:",
+    "stack_selection:",
+    "family_evidence:",
+    "selection_evidence:",
+    "name_only_outcome:",
+    "build_ready:",
+    "build_safety:",
     "generation_path:",
 )
 
@@ -407,6 +414,116 @@ def _unsafe_pattern(bundle: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _build_contract(bundle: Mapping[str, Any]) -> Dict[str, Any]:
+    staged_synthesis = bundle.get("staged_synthesis") if isinstance(bundle.get("staged_synthesis"), dict) else {}
+    file_manifest = (
+        staged_synthesis.get("file_manifest")
+        if isinstance(staged_synthesis.get("file_manifest"), dict)
+        else {}
+    )
+    build_safety_policy = (
+        file_manifest.get("build_safety_policy")
+        if isinstance(file_manifest.get("build_safety_policy"), dict)
+        else {}
+    )
+    return {
+        "build_ready": (
+            file_manifest.get("build_ready")
+            if isinstance(file_manifest.get("build_ready"), bool)
+            else None
+        ),
+        "build_ready_blockers": [
+            str(item).strip()
+            for item in (file_manifest.get("build_ready_blockers") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+        "dockerfile_path": str(file_manifest.get("dockerfile_path") or "").strip() or None,
+        "build_context_root": str(file_manifest.get("build_context_root") or "").strip() or None,
+        "service_entry_path": str(file_manifest.get("service_entry_path") or "").strip() or None,
+        "poc_entry_path": str(file_manifest.get("poc_entry_path") or "").strip() or None,
+        "dependency_manifest_paths": [
+            str(item).strip()
+            for item in (file_manifest.get("dependency_manifest_paths") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+        "seed_asset_paths": [
+            str(item).strip()
+            for item in (file_manifest.get("seed_asset_paths") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+        "dockerfile_base_images": [
+            str(item).strip()
+            for item in (file_manifest.get("dockerfile_base_images") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+        "package_installers_detected": [
+            str(item).strip()
+            for item in (file_manifest.get("package_installers_detected") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+        "build_safety_assessed": (
+            build_safety_policy.get("assessed")
+            if isinstance(build_safety_policy.get("assessed"), bool)
+            else None
+        ),
+        "build_safety_safe": (
+            build_safety_policy.get("safe")
+            if isinstance(build_safety_policy.get("safe"), bool)
+            else None
+        ),
+        "build_safety_blockers": [
+            str(item).strip()
+            for item in (build_safety_policy.get("blockers") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+        "build_safety_warnings": [
+            str(item).strip()
+            for item in (build_safety_policy.get("warnings") or [])
+            if isinstance(item, str) and str(item).strip()
+        ],
+    }
+
+
+def _append_unique_tokens(target: List[str], tokens: Sequence[str]) -> None:
+    seen = {str(item).strip() for item in target if isinstance(item, str) and str(item).strip()}
+    for item in tokens:
+        token = str(item).strip()
+        if not token or token in seen:
+            continue
+        target.append(token)
+        seen.add(token)
+
+
+def _build_contract_policy_tokens(build_contract: Mapping[str, Any]) -> List[str]:
+    tokens: List[str] = []
+    build_ready = build_contract.get("build_ready")
+    build_ready_blockers = build_contract.get("build_ready_blockers") if isinstance(build_contract.get("build_ready_blockers"), list) else []
+    build_safety_assessed = build_contract.get("build_safety_assessed")
+    build_safety_safe = build_contract.get("build_safety_safe")
+    build_safety_blockers = build_contract.get("build_safety_blockers") if isinstance(build_contract.get("build_safety_blockers"), list) else []
+    if build_ready is False:
+        normalized = [
+            str(item).strip().lower()
+            for item in build_ready_blockers
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized:
+            tokens.extend(f"build_ready:{item}" for item in normalized)
+        else:
+            tokens.append("build_ready:not_ready")
+    if build_safety_assessed is True and build_safety_safe is False:
+        normalized = [
+            str(item).strip().lower()
+            for item in build_safety_blockers
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if normalized:
+            tokens.extend(f"build_safety:{item}" for item in normalized)
+        else:
+            tokens.append("build_safety:unsafe")
+    return tokens
+
+
 def _generation_path_surface(
     *,
     summary: Mapping[str, Any],
@@ -573,6 +690,7 @@ def build_support_candidate(
         if not isinstance(bundle, dict):
             continue
         support_promotion = bundle.get("support_promotion") if isinstance(bundle.get("support_promotion"), dict) else {}
+        build_contract = _build_contract(bundle)
         internal_eligible = support_promotion.get("eligible") is True
         if internal_eligible:
             support_ready_bundle_count += 1
@@ -581,6 +699,7 @@ def build_support_candidate(
             for item in (support_promotion.get("reasons") or [])
             if isinstance(item, str) and str(item).strip()
         ]
+        _append_unique_tokens(blockers, _build_contract_policy_tokens(build_contract))
         generation_path = _generation_path_surface(
             summary=summary,
             bundle=bundle,
@@ -642,6 +761,8 @@ def build_support_candidate(
                     "mechanically_healthy": mechanically_healthy,
                     "promotion_policy_ready": promotion_policy_ready,
                     "generation_path_live_positive_ready": generation_path.get("live_positive_ready"),
+                    "build_ready": build_contract.get("build_ready"),
+                    "build_safety_safe": build_contract.get("build_safety_safe"),
                     "oracle_execution_parity": str(
                         ((bundle.get("artifact_quality") or {}) if isinstance(bundle.get("artifact_quality"), dict) else {}).get(
                             "oracle_execution_parity"
@@ -657,6 +778,7 @@ def build_support_candidate(
                 "runtime_contract": _runtime_contract(bundle),
                 "oracle_contract": _oracle_contract(bundle),
                 "unsafe_pattern": _unsafe_pattern(bundle),
+                "build_contract": build_contract,
                 "selection_branch_trace": (
                     deepcopy(bundle.get("selection_branch_trace"))
                     if isinstance(bundle.get("selection_branch_trace"), dict)
@@ -733,6 +855,7 @@ def _support_review_entry(candidate_payload: Mapping[str, Any], bundle: Mapping[
         bundle.get("generation_materialization") if isinstance(bundle.get("generation_materialization"), dict) else {}
     )
     generation_path = bundle.get("generation_path") if isinstance(bundle.get("generation_path"), dict) else {}
+    build_contract = bundle.get("build_contract") if isinstance(bundle.get("build_contract"), dict) else {}
     generation_non_live_reason = (
         str(bundle.get("generation_non_live_reason") or "").strip().lower()
         or str(generation_materialization.get("non_live_reason") or "").strip().lower()
@@ -771,6 +894,17 @@ def _support_review_entry(candidate_payload: Mapping[str, Any], bundle: Mapping[
         "selected_stack_id": str(primitive_signature.get("selected_stack_id") or "").strip() or None,
         "topology": str(runtime_contract.get("topology") or "").strip() or None,
         "oracle_execution_parity": str(oracle_contract.get("oracle_execution_parity") or "").strip().lower() or "missing",
+        "build_contract": deepcopy(build_contract) if build_contract else {},
+        "build_ready": (
+            build_contract.get("build_ready")
+            if isinstance(build_contract.get("build_ready"), bool)
+            else None
+        ),
+        "build_safety_safe": (
+            build_contract.get("build_safety_safe")
+            if isinstance(build_contract.get("build_safety_safe"), bool)
+            else None
+        ),
         "selection_branch_trace": deepcopy(selection_branch_trace) if selection_branch_trace else {},
         "generation_materialization": deepcopy(generation_materialization) if generation_materialization else {},
         "generation_path_class": str(generation_path.get("path_class") or "").strip().lower() or None,
@@ -810,6 +944,10 @@ def _support_review_entry(candidate_payload: Mapping[str, Any], bundle: Mapping[
     }
 
 
+def _bool_or_none(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
 def build_support_review_index(
     support_candidates: Sequence[Mapping[str, Any] | Path | str],
 ) -> Dict[str, Any]:
@@ -828,6 +966,8 @@ def build_support_review_index(
     by_generation_non_live_reason: Dict[str, int] = {}
     by_verdict_authority_mode: Dict[str, int] = {}
     by_support_status: Dict[str, int] = {}
+    by_build_ready_blocker: Dict[str, int] = {}
+    by_build_safety_blocker: Dict[str, int] = {}
     authority_ready_bundle_count = 0
     authority_blocked_bundle_count = 0
     measured_gate_ready_bundle_count = 0
@@ -838,6 +978,10 @@ def build_support_review_index(
     promotion_policy_blocked_bundle_count = 0
     live_positive_ready_bundle_count = 0
     live_positive_blocked_bundle_count = 0
+    build_ready_bundle_count = 0
+    build_not_ready_bundle_count = 0
+    build_safety_safe_bundle_count = 0
+    build_safety_blocked_bundle_count = 0
     reviewable_cases: List[str] = []
     blocked_cases: List[str] = []
     case_statuses: List[Dict[str, Any]] = []
@@ -864,9 +1008,15 @@ def build_support_review_index(
         case_promotion_policy_blocked_bundle_count = 0
         case_live_positive_ready_bundle_count = 0
         case_live_positive_blocked_bundle_count = 0
+        case_build_ready_bundle_count = 0
+        case_build_not_ready_bundle_count = 0
+        case_build_safety_safe_bundle_count = 0
+        case_build_safety_blocked_bundle_count = 0
         case_by_support_status: Dict[str, int] = {}
         case_by_mechanical_blocker: Dict[str, int] = {}
         case_by_promotion_policy_blocker: Dict[str, int] = {}
+        case_by_build_ready_blocker: Dict[str, int] = {}
+        case_by_build_safety_blocker: Dict[str, int] = {}
         for bundle in candidates:
             if not isinstance(bundle, dict):
                 continue
@@ -929,6 +1079,33 @@ def build_support_review_index(
             elif entry.get("generation_path_live_positive_ready") is False:
                 live_positive_blocked_bundle_count += 1
                 case_live_positive_blocked_bundle_count += 1
+            build_ready = _bool_or_none(entry.get("build_ready"))
+            if build_ready is True:
+                build_ready_bundle_count += 1
+                case_build_ready_bundle_count += 1
+            elif build_ready is False:
+                build_not_ready_bundle_count += 1
+                case_build_not_ready_bundle_count += 1
+            build_safety_safe = _bool_or_none(entry.get("build_safety_safe"))
+            if build_safety_safe is True:
+                build_safety_safe_bundle_count += 1
+                case_build_safety_safe_bundle_count += 1
+            elif build_safety_safe is False:
+                build_safety_blocked_bundle_count += 1
+                case_build_safety_blocked_bundle_count += 1
+            build_contract = entry.get("build_contract") if isinstance(entry.get("build_contract"), dict) else {}
+            for blocker in build_contract.get("build_ready_blockers") or []:
+                token = str(blocker).strip()
+                if token:
+                    normalized = token if token.startswith("build_ready:") else f"build_ready:{token}"
+                    by_build_ready_blocker[normalized] = by_build_ready_blocker.get(normalized, 0) + 1
+                    case_by_build_ready_blocker[normalized] = case_by_build_ready_blocker.get(normalized, 0) + 1
+            for blocker in build_contract.get("build_safety_blockers") or []:
+                token = str(blocker).strip()
+                if token:
+                    normalized = token if token.startswith("build_safety:") else f"build_safety:{token}"
+                    by_build_safety_blocker[normalized] = by_build_safety_blocker.get(normalized, 0) + 1
+                    case_by_build_safety_blocker[normalized] = case_by_build_safety_blocker.get(normalized, 0) + 1
             blockers = entry.get("blockers") or []
             for blocker in entry.get("mechanical_blockers") or []:
                 token = str(blocker).strip()
@@ -980,9 +1157,15 @@ def build_support_review_index(
                     "promotion_policy_blocked_bundle_count": case_promotion_policy_blocked_bundle_count,
                     "live_positive_ready_bundle_count": case_live_positive_ready_bundle_count,
                     "live_positive_blocked_bundle_count": case_live_positive_blocked_bundle_count,
+                    "build_ready_bundle_count": case_build_ready_bundle_count,
+                    "build_not_ready_bundle_count": case_build_not_ready_bundle_count,
+                    "build_safety_safe_bundle_count": case_build_safety_safe_bundle_count,
+                    "build_safety_blocked_bundle_count": case_build_safety_blocked_bundle_count,
                     "by_support_status": case_by_support_status,
                     "by_mechanical_blocker": case_by_mechanical_blocker,
                     "by_promotion_policy_blocker": case_by_promotion_policy_blocker,
+                    "by_build_ready_blocker": case_by_build_ready_blocker,
+                    "by_build_safety_blocker": case_by_build_safety_blocker,
                 }
             )
 
@@ -1028,6 +1211,10 @@ def build_support_review_index(
         "promotion_policy_blocked_bundle_count": promotion_policy_blocked_bundle_count,
         "live_positive_ready_bundle_count": live_positive_ready_bundle_count,
         "live_positive_blocked_bundle_count": live_positive_blocked_bundle_count,
+        "build_ready_bundle_count": build_ready_bundle_count,
+        "build_not_ready_bundle_count": build_not_ready_bundle_count,
+        "build_safety_safe_bundle_count": build_safety_safe_bundle_count,
+        "build_safety_blocked_bundle_count": build_safety_blocked_bundle_count,
         "reviewable_cases": reviewable_cases,
         "blocked_cases": blocked_cases,
         "all_reviewable_case_count": len(all_reviewable_cases),
@@ -1043,6 +1230,8 @@ def build_support_review_index(
         "by_measured_gate_blocker": by_measured_gate_blocker,
         "by_mechanical_blocker": by_mechanical_blocker,
         "by_promotion_policy_blocker": by_promotion_policy_blocker,
+        "by_build_ready_blocker": by_build_ready_blocker,
+        "by_build_safety_blocker": by_build_safety_blocker,
         "by_family": by_family,
         "by_topology": by_topology,
         "by_generation_path_class": by_generation_path_class,
@@ -1329,6 +1518,13 @@ def build_support_registry_update(
             "mechanically_healthy": queue_entry.get("mechanically_healthy"),
             "promotion_policy_ready": queue_entry.get("promotion_policy_ready"),
             "generation_path_live_positive_ready": queue_entry.get("generation_path_live_positive_ready"),
+            "build_ready": _bool_or_none(queue_entry.get("build_ready")),
+            "build_safety_safe": _bool_or_none(queue_entry.get("build_safety_safe")),
+            "build_contract": (
+                deepcopy(queue_entry.get("build_contract"))
+                if isinstance(queue_entry.get("build_contract"), dict)
+                else {}
+            ),
             "source": queue_entry,
         }
         verdict_authority_mode = str(queue_entry.get("verdict_authority_mode") or "").strip()
@@ -1397,6 +1593,10 @@ def build_support_registry_update(
         "promotion_policy_blocked_bundle_count": int(review_index.get("promotion_policy_blocked_bundle_count") or 0),
         "live_positive_ready_bundle_count": int(review_index.get("live_positive_ready_bundle_count") or 0),
         "live_positive_blocked_bundle_count": int(review_index.get("live_positive_blocked_bundle_count") or 0),
+        "build_ready_bundle_count": int(review_index.get("build_ready_bundle_count") or 0),
+        "build_not_ready_bundle_count": int(review_index.get("build_not_ready_bundle_count") or 0),
+        "build_safety_safe_bundle_count": int(review_index.get("build_safety_safe_bundle_count") or 0),
+        "build_safety_blocked_bundle_count": int(review_index.get("build_safety_blocked_bundle_count") or 0),
         "reviewable_case_count": len(reviewable_cases),
         "blocked_case_count": len(blocked_cases),
         "reviewable_cases": reviewable_cases,
@@ -1427,6 +1627,16 @@ def build_support_registry_update(
         "by_promotion_policy_blocker": (
             dict(review_index.get("by_promotion_policy_blocker"))
             if isinstance(review_index.get("by_promotion_policy_blocker"), dict)
+            else {}
+        ),
+        "by_build_ready_blocker": (
+            dict(review_index.get("by_build_ready_blocker"))
+            if isinstance(review_index.get("by_build_ready_blocker"), dict)
+            else {}
+        ),
+        "by_build_safety_blocker": (
+            dict(review_index.get("by_build_safety_blocker"))
+            if isinstance(review_index.get("by_build_safety_blocker"), dict)
             else {}
         ),
         "by_support_status": (
@@ -1574,8 +1784,15 @@ def _normalize_registry_decision_history_entry(entry: Mapping[str, Any]) -> Dict
         "verdict_authority_ready",
         "measured_gate_ready",
         "generation_path_live_positive_ready",
+        "build_ready",
+        "build_safety_safe",
     ):
         normalized[field] = normalized.get(field) if isinstance(normalized.get(field), bool) else None
+    normalized["build_contract"] = (
+        deepcopy(normalized.get("build_contract"))
+        if isinstance(normalized.get("build_contract"), dict)
+        else {}
+    )
 
     normalized["schema_status"] = _schema_record_status(schema_upgrade_applied)
     normalized["schema_upgrade_applied"] = schema_upgrade_applied
@@ -1750,6 +1967,13 @@ def _registry_decision_event(
         "mechanically_healthy": entry.get("mechanically_healthy"),
         "promotion_policy_ready": entry.get("promotion_policy_ready"),
         "generation_path_live_positive_ready": entry.get("generation_path_live_positive_ready"),
+        "build_ready": entry.get("build_ready"),
+        "build_safety_safe": entry.get("build_safety_safe"),
+        "build_contract": (
+            deepcopy(entry.get("build_contract"))
+            if isinstance(entry.get("build_contract"), dict)
+            else {}
+        ),
         "support_candidate_path": str(entry.get("support_candidate_path") or "").strip() or None,
         "manifest_path": str(entry.get("manifest_path") or "").strip() or None,
         "summary_path": str(entry.get("summary_path") or "").strip() or None,
@@ -1895,6 +2119,31 @@ def _normalize_registry_item(item: Mapping[str, Any]) -> Dict[str, Any]:
         if generation_non_live_reason:
             _note_upgrade("generation_non_live_reason_from_last_event")
 
+    build_contract = deepcopy(normalized.get("build_contract")) if isinstance(normalized.get("build_contract"), dict) else {}
+    if not build_contract and isinstance(last_event, dict) and isinstance(last_event.get("build_contract"), dict):
+        build_contract = deepcopy(last_event.get("build_contract"))
+        _note_upgrade("build_contract_from_last_event")
+
+    build_ready = normalized.get("build_ready")
+    if not isinstance(build_ready, bool) and isinstance(build_contract.get("build_ready"), bool):
+        build_ready = build_contract.get("build_ready")
+        _note_upgrade("build_ready_from_build_contract")
+    if not isinstance(build_ready, bool) and isinstance(last_event, dict) and isinstance(last_event.get("build_ready"), bool):
+        build_ready = last_event.get("build_ready")
+        _note_upgrade("build_ready_from_last_event")
+
+    build_safety_safe = normalized.get("build_safety_safe")
+    if not isinstance(build_safety_safe, bool) and isinstance(build_contract.get("build_safety_safe"), bool):
+        build_safety_safe = build_contract.get("build_safety_safe")
+        _note_upgrade("build_safety_safe_from_build_contract")
+    if (
+        not isinstance(build_safety_safe, bool)
+        and isinstance(last_event, dict)
+        and isinstance(last_event.get("build_safety_safe"), bool)
+    ):
+        build_safety_safe = last_event.get("build_safety_safe")
+        _note_upgrade("build_safety_safe_from_last_event")
+
     decision_history_count = normalized.get("decision_history_count")
     if decision_history_count is None and history:
         decision_history_count = len(history)
@@ -1943,6 +2192,9 @@ def _normalize_registry_item(item: Mapping[str, Any]) -> Dict[str, Any]:
     normalized["generation_path_live_positive_ready"] = (
         generation_path_live_positive_ready if isinstance(generation_path_live_positive_ready, bool) else None
     )
+    normalized["build_ready"] = build_ready if isinstance(build_ready, bool) else None
+    normalized["build_safety_safe"] = build_safety_safe if isinstance(build_safety_safe, bool) else None
+    normalized["build_contract"] = build_contract
     normalized["generation_path_class"] = generation_path_class
     normalized["generation_positive_bucket"] = generation_positive_bucket
     normalized["generation_non_live_reason"] = generation_non_live_reason
@@ -2092,6 +2344,19 @@ def build_curated_support_registry(
             raise ValueError("accepted registry entry is not verdict-authority ready")
         if entry.get("measured_gate_ready") is not True:
             raise ValueError("accepted registry entry is not measured-gate ready")
+        generation_path_class = str(entry.get("generation_path_class") or "").strip().lower()
+        if entry.get("generation_path_live_positive_ready") is False:
+            raise ValueError("accepted registry entry is not live-positive ready")
+        if generation_path_class and generation_path_class != "live":
+            raise ValueError("accepted registry entry is not live-positive materialization")
+        if entry.get("mechanically_healthy") is False:
+            raise ValueError("accepted registry entry is not mechanically healthy")
+        if entry.get("promotion_policy_ready") is False:
+            raise ValueError("accepted registry entry is not promotion-policy ready")
+        if entry.get("build_ready") is False:
+            raise ValueError("accepted registry entry is not build-ready")
+        if entry.get("build_safety_safe") is False:
+            raise ValueError("accepted registry entry is not build-safe")
 
         event = _normalize_registry_decision_history_entry(_registry_decision_event(registry_update, entry))
         decision_history.append(event)
@@ -2176,6 +2441,21 @@ def build_curated_support_registry(
                 entry.get("generation_path_live_positive_ready"),
                 prior_item.get("generation_path_live_positive_ready"),
             ),
+            "build_ready": _prefer_registry_bool(
+                entry.get("build_ready"),
+                prior_item.get("build_ready"),
+            ),
+            "build_safety_safe": _prefer_registry_bool(
+                entry.get("build_safety_safe"),
+                prior_item.get("build_safety_safe"),
+            ),
+            "build_contract": (
+                deepcopy(entry.get("build_contract"))
+                if isinstance(entry.get("build_contract"), dict) and entry.get("build_contract")
+                else deepcopy(prior_item.get("build_contract"))
+                if isinstance(prior_item.get("build_contract"), dict)
+                else {}
+            ),
             "support_candidate_path": _prefer_registry_str(
                 entry.get("support_candidate_path"),
                 prior_item.get("support_candidate_path"),
@@ -2258,6 +2538,16 @@ def build_curated_support_registry(
                 entry.get("generation_path_live_positive_ready"),
                 updated_item.get("generation_path_live_positive_ready"),
             )
+            updated_item["build_ready"] = _prefer_registry_bool(
+                entry.get("build_ready"),
+                updated_item.get("build_ready"),
+            )
+            updated_item["build_safety_safe"] = _prefer_registry_bool(
+                entry.get("build_safety_safe"),
+                updated_item.get("build_safety_safe"),
+            )
+            if isinstance(entry.get("build_contract"), dict) and entry.get("build_contract"):
+                updated_item["build_contract"] = deepcopy(entry.get("build_contract"))
             updated_item["last_decision"] = event
             updated_item["source_artifacts"] = _merged_registry_source_artifacts(updated_item, event)
             updated_item["history"] = prior_history
@@ -2286,6 +2576,10 @@ def build_curated_support_registry(
     promotion_policy_blocked_item_count = 0
     live_positive_ready_item_count = 0
     live_positive_blocked_item_count = 0
+    build_ready_item_count = 0
+    build_not_ready_item_count = 0
+    build_safety_safe_item_count = 0
+    build_safety_blocked_item_count = 0
     items_with_source_artifacts_count = 0
     schema_upgraded_item_count = 0
     schema_upgraded_update_count = 0
@@ -2341,6 +2635,14 @@ def build_curated_support_registry(
             live_positive_ready_item_count += 1
         elif item.get("generation_path_live_positive_ready") is False:
             live_positive_blocked_item_count += 1
+        if item.get("build_ready") is True:
+            build_ready_item_count += 1
+        elif item.get("build_ready") is False:
+            build_not_ready_item_count += 1
+        if item.get("build_safety_safe") is True:
+            build_safety_safe_item_count += 1
+        elif item.get("build_safety_safe") is False:
+            build_safety_blocked_item_count += 1
         if any(str(value).strip() for value in source_artifacts.values()):
             items_with_source_artifacts_count += 1
         if item.get("schema_upgrade_applied") is True:
@@ -2418,6 +2720,10 @@ def build_curated_support_registry(
         "promotion_policy_blocked_bundle_count": int(registry_update.get("promotion_policy_blocked_bundle_count") or 0),
         "live_positive_ready_bundle_count": int(registry_update.get("live_positive_ready_bundle_count") or 0),
         "live_positive_blocked_bundle_count": int(registry_update.get("live_positive_blocked_bundle_count") or 0),
+        "build_ready_bundle_count": int(registry_update.get("build_ready_bundle_count") or 0),
+        "build_not_ready_bundle_count": int(registry_update.get("build_not_ready_bundle_count") or 0),
+        "build_safety_safe_bundle_count": int(registry_update.get("build_safety_safe_bundle_count") or 0),
+        "build_safety_blocked_bundle_count": int(registry_update.get("build_safety_blocked_bundle_count") or 0),
         "reviewable_case_count": int(registry_update.get("reviewable_case_count") or 0),
         "blocked_case_count": int(registry_update.get("blocked_case_count") or 0),
         "all_reviewable_case_count": int(registry_update.get("all_reviewable_case_count") or 0),
@@ -2476,6 +2782,16 @@ def build_curated_support_registry(
         "by_promotion_policy_blocker": (
             dict(registry_update.get("by_promotion_policy_blocker"))
             if isinstance(registry_update.get("by_promotion_policy_blocker"), dict)
+            else {}
+        ),
+        "by_build_ready_blocker": (
+            dict(registry_update.get("by_build_ready_blocker"))
+            if isinstance(registry_update.get("by_build_ready_blocker"), dict)
+            else {}
+        ),
+        "by_build_safety_blocker": (
+            dict(registry_update.get("by_build_safety_blocker"))
+            if isinstance(registry_update.get("by_build_safety_blocker"), dict)
             else {}
         ),
         "by_support_status": (
@@ -2575,6 +2891,10 @@ def build_curated_support_registry(
         "promotion_policy_blocked_item_count": promotion_policy_blocked_item_count,
         "live_positive_ready_item_count": live_positive_ready_item_count,
         "live_positive_blocked_item_count": live_positive_blocked_item_count,
+        "build_ready_item_count": build_ready_item_count,
+        "build_not_ready_item_count": build_not_ready_item_count,
+        "build_safety_safe_item_count": build_safety_safe_item_count,
+        "build_safety_blocked_item_count": build_safety_blocked_item_count,
         "items_with_source_artifacts_count": items_with_source_artifacts_count,
         "schema_upgraded_item_count": schema_upgraded_item_count,
         "schema_upgraded_update_count": schema_upgraded_update_count,

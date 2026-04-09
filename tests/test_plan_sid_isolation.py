@@ -15,7 +15,7 @@ def _requirement(vuln_id: str) -> dict:
     return {
         "vuln_id": vuln_id,
         "seed": 7,
-        "model_version": "gpt-5.2",
+        "model_version": "gpt-5.4",
         "corpus_snapshot": "snapshot-a",
         "pattern_id": "dynamic-demo",
         "deps_digest": "deps-a",

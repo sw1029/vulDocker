@@ -130,7 +130,7 @@ def _service_stub(
 
 class _LLMStub:
     def __init__(self) -> None:
-        self.model_name = "gpt-5.2"
+        self.model_name = "gpt-5.4"
         self.decoding = DecodingProfile(mode="deterministic", temperature=0.0, top_p=1.0)
         self.observed_provider_attempted = False
         self.observed_provider_succeeded = False

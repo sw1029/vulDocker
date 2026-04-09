@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from common.config import DecodingProfile
+from common.llm import DEFAULT_LLM_MODEL
 import common.llm.provider as provider_mod
 from common.llm.provider import LLMClient
 
@@ -15,7 +16,7 @@ def test_llm_client_uses_generator_manifest_fixture_before_stub(monkeypatch, tmp
     monkeypatch.setenv("VUL_LLM_FIXTURE_GENERATOR_MANIFEST", str(fixture_path))
 
     client = LLMClient(
-        "gpt-5.2",
+        DEFAULT_LLM_MODEL,
         DecodingProfile(mode="deterministic", temperature=0.0, top_p=1.0),
     )
     response = client.generate(
@@ -37,7 +38,7 @@ def test_llm_client_uses_generator_manifest_fixture_before_stub(monkeypatch, tmp
     observed_summary = client.execution_summary(observed=True)
     assert last_summary["path_class"] == "fixture"
     assert last_summary["fixture_path"] == str(fixture_path)
-    assert last_summary["model"] == "gpt-5.2"
+    assert last_summary["model"] == DEFAULT_LLM_MODEL
     assert last_summary["decoding_profile"]["mode"] == "deterministic"
     assert last_summary["cache_mode"] == "fixture_file"
     assert observed_summary["path_class"] == "fixture"
@@ -60,7 +61,7 @@ def test_llm_client_does_not_latch_stub_mode_after_transient_provider_error(monk
     monkeypatch.setattr(provider_mod, "litellm_completion", _fake_completion)
 
     client = LLMClient(
-        "gpt-5.2",
+        DEFAULT_LLM_MODEL,
         DecodingProfile(mode="deterministic", temperature=0.0, top_p=1.0),
     )
     first = client.generate([{"role": "user", "content": "hello"}])
@@ -96,7 +97,7 @@ def test_llm_client_latches_stub_mode_after_quota_error(monkeypatch) -> None:
     monkeypatch.setattr(provider_mod, "litellm_completion", _fake_completion)
 
     client = LLMClient(
-        "gpt-5.2",
+        DEFAULT_LLM_MODEL,
         DecodingProfile(mode="deterministic", temperature=0.0, top_p=1.0),
     )
     first = client.generate([{"role": "user", "content": "hello"}])
@@ -126,7 +127,7 @@ def test_llm_client_surfaces_configured_timeout_budget(monkeypatch) -> None:
     monkeypatch.setattr(provider_mod, "litellm_completion", _fake_completion)
 
     client = LLMClient(
-        "gpt-5.2",
+        DEFAULT_LLM_MODEL,
         DecodingProfile(mode="deterministic", temperature=0.0, top_p=1.0),
     )
     response = client.generate([{"role": "user", "content": "hello"}])
@@ -156,7 +157,7 @@ def test_llm_client_surfaces_cost_budget_and_usage_tokens(monkeypatch) -> None:
     monkeypatch.setattr(provider_mod, "litellm_completion", _fake_completion)
 
     client = LLMClient(
-        "gpt-5.2",
+        DEFAULT_LLM_MODEL,
         DecodingProfile(mode="deterministic", temperature=0.0, top_p=1.0),
     )
     first = client.generate([{"role": "user", "content": "hello"}])

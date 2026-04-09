@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 LOGGER = logging.getLogger("common.llm")
+DEFAULT_LLM_MODEL = "gpt-5.4"
 
 
 class LLMConfigError(RuntimeError):

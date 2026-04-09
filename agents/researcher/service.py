@@ -28,7 +28,7 @@ from common.guardrails import (
     write_guard_spec,
     write_guard_spec_ensemble,
 )
-from common.llm import LLMClient, llm_execution_summary
+from common.llm import DEFAULT_LLM_MODEL, LLMClient, llm_execution_summary
 from common.logging import get_logger
 from common.name_only import build_name_only_contract, is_name_driven_requirement
 from common.paths import ensure_dir, get_repo_root
@@ -91,7 +91,7 @@ class ResearcherService:
         model = (
             self.requirement.get("researcher_model")
             or self.requirement.get("model_version")
-            or "gpt-5.2"
+            or DEFAULT_LLM_MODEL
         )
         self.llm = LLMClient(model, self.profile)
         self.react_loop = ReactLoop(sid)

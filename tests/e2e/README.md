@@ -745,7 +745,7 @@ turn estimate shortcut은 [docs/work_tickets.md](../docs/work_tickets.md)의 `Tu
 - latest slice에서는 `run_case.py`와 `repeat_case.py`가 output-dir/attempt 기반 SID salt를 쓰기 시작해, 같은 case를 병렬로 돌릴 때 metadata/artifact contention을 덜 만들게 됐다.
 - latest slice에서는 same isolation trace도 `summary.json`의 `execution_salt`, `repeatability_report.json`의 `observed_execution_salts` / `distinct_sid_count`로 같이 읽을 수 있다.
 - same `summary.json`의 `artifact_quality`와 `artifact_quality_summary`는 최근 slice 기준으로 `qualitative_tier`, `qualitative_review`, `by_qualitative_tier`, `oracle_high_nonhigh_band_bundles`도 함께 노출한다. 즉 executed oracle closure와 thin fallback demo/native-or-sidecar quality tier를 분리해서 읽을 수 있다.
-- `support_candidate.json`: packed manifest와 `matrix_report`/`repeatability_report`를 결합해 만든 reviewable support candidate package. `support_promotion` internal gate와 external matrix/repeatability gate를 같이 기록한다.
+- `support_candidate.json`: packed manifest와 `matrix_report`/`repeatability_report`를 결합해 만든 reviewable support candidate package. `support_promotion` internal gate와 external matrix/repeatability gate를 같이 기록하고, latest slice에서는 `staged_synthesis.file_manifest` 기반 `build_contract`도 함께 싣는다.
 
 여러 measured run의 support candidate를 review queue로 묶으려면:
 
@@ -753,7 +753,7 @@ turn estimate shortcut은 [docs/work_tickets.md](../docs/work_tickets.md)의 `Tu
 python tests/e2e/support_review.py /tmp/run-a /tmp/run-b --output /tmp/support_review_index.json
 ```
 
-- `support_review_index.json`: 여러 `support_candidate.json`을 모아 `review_queue`, `blocked_queue`, `by_blocker`, `by_family`, `by_topology`를 집계한 measured review index
+- `support_review_index.json`: 여러 `support_candidate.json`을 모아 `review_queue`, `blocked_queue`, `by_blocker`, `by_family`, `by_topology`를 집계한 measured review index. latest slice에서는 `build_ready_bundle_count`, `build_not_ready_bundle_count`, `build_safety_safe_bundle_count`, `build_safety_blocked_bundle_count`, `by_build_ready_blocker`, `by_build_safety_blocker`도 같이 담는다.
 
 review queue에 대해 수동 결정을 적용하려면:
 
@@ -774,16 +774,20 @@ python tests/e2e/support_apply.py \
 - latest slice에서는 same `support_review.py -> support_decide.py -> support_apply.py` chain도 synthetic reviewable accept path와 blocked no-op path를 regression으로 고정했고, CLI stdout도 `by_support_status`, `accepted/rejected/pending_by_support_status`, `by_review_status`, `schema_status`, `schema_upgraded_item_count`, `by_schema_upgrade_reason`, `schema_upgraded_update_count`, `by_update_schema_upgrade_reason`, `schema_upgraded_decision_event_count`, `by_decision_schema_upgrade_reason`까지 직접 노출하기 시작했다.
 - 결정 파일은 `{"schema_version":"support_review_decisions@0.1","decisions":[...]}` 형식을 사용하며, 각 entry는 `case_name`, `slug`, `decision`, 선택적 `reviewer`, `rationale`를 가진다.
 
-live unknown 게이트도 opt-in이며, Tavily 키를 필수로 강제할 수 있다.
+live unknown 게이트도 opt-in이다. 현재 canonical live remote-research proving ground는 Tavily를 기준으로 잡혀 있지만, 이것이 repository 전체의 필수 의존성을 뜻하지는 않는다.
 
+- generic live remote-provider gate:
+  - `VULD_RUN_E2E=1 VULD_E2E_REQUIRE_REMOTE_PROVIDER=1 pytest -m e2e -k unknown_cwe`
+  - `ops/ci/run_e2e_tests.sh`는 `VULD_E2E_REQUIRE_REMOTE_PROVIDER=1`일 때 Tavily key 또는 custom remote endpoint가 configured되어 있어야만 계속 진행한다.
 - `VULD_RUN_E2E=1 VULD_E2E_REQUIRE_TAVILY=1 pytest -m e2e -k unknown_cwe_live_tavily_case`
 - `ops/ci/run_e2e_tests.sh`는 `VULD_E2E_REQUIRE_TAVILY=1`일 때 env 또는 `config/api_keys.ini`에 Tavily 키가 없으면 바로 실패한다.
+- same gate는 “현재 canonical live unknown-CWE lane을 Tavily로 검증한다”는 뜻이지, all remote search must be Tavily 라는 뜻은 아니다. 일반 researcher remote capability는 `VUL_WEB_SEARCH_ENDPOINT` custom provider로도 열 수 있다.
 
 ## How To Update This Document
 
 - E2E harness command, case layout, measured/support CLI flow가 바뀔 때만 갱신한다.
 - current rerun truth나 completeness 평가는 [docs/current_state_gap_analysis.md](../docs/current_state_gap_analysis.md)에 남긴다.
-- claim 한계와 Docker/Tavily 같은 prerequisite는 [docs/constraints.md](../docs/constraints.md)에 남긴다.
+- claim 한계와 Docker/live remote search prerequisite는 [docs/constraints.md](../docs/constraints.md)에 남긴다.
 - ticket owner와 priority는 [docs/work_tickets.md](../docs/work_tickets.md), [docs/final_solution.md](../docs/final_solution.md)로 보낸다.
 - validation reading order가 바뀌면 [README.md](../README.md), [docs/code/README.md](../docs/code/README.md), [docs/handbook.md](../docs/handbook.md)와 같이 맞춘다.
 - validation companion 관계가 바뀌면 [README.md](../README.md), [docs/code/README.md](../docs/code/README.md), [docs/handbook.md](../docs/handbook.md)와 같이 맞춘다.

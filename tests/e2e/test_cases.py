@@ -1896,8 +1896,8 @@ def test_unknown_cwe_live_tavily_case(tmp_path: Path) -> None:
         pytest.skip(reason)
     if not _tavily_key_available():
         if _live_gate_required():
-            pytest.fail("Tavily API key is required for mandatory live unknown gate")
-        pytest.skip("Tavily API key is not configured in env or config/api_keys.ini")
+            pytest.fail("A Tavily API key is required for the current canonical live unknown-CWE gate")
+        pytest.skip("Tavily API key is not configured for the current canonical live unknown-CWE gate")
 
     case_dir = REPO_ROOT / "tests/e2e/cases/cwe-unknown-basic"
     cmd = [
@@ -1954,8 +1954,8 @@ def test_unknown_cwe_live_low_trust_fail_closed_case(tmp_path: Path) -> None:
         pytest.skip(reason)
     if not _tavily_key_available():
         if _live_gate_required():
-            pytest.fail("Tavily API key is required for mandatory live unknown gate")
-        pytest.skip("Tavily API key is not configured in env or config/api_keys.ini")
+            pytest.fail("A Tavily API key is required for the current canonical live unknown-CWE gate")
+        pytest.skip("Tavily API key is not configured for the current canonical live unknown-CWE gate")
 
     case_dir = REPO_ROOT / "tests/e2e/cases/cwe-unknown-low-trust-fail-closed"
     cmd = [

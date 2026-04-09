@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.logging import get_logger
+from common.llm import DEFAULT_LLM_MODEL
 from common.name_only import build_name_only_contract
 from common.paths import ensure_dir, get_artifacts_dir, get_metadata_dir, get_workspace_dir
 from common.schema import RequirementNormalization, RequirementValidationError, normalize_requirement
@@ -52,7 +53,7 @@ def _prompt_hash() -> str:
 
 def _default_components(requirement: Dict[str, Any]) -> Dict[str, str]:
     components = {
-        "model_version": requirement.get("model_version", "gpt-5.2"),
+        "model_version": requirement.get("model_version", DEFAULT_LLM_MODEL),
         "prompt_hash": _prompt_hash(),
         "seed": str(requirement.get("seed", 0)),
         "retriever_commit": requirement.get("retriever_commit", "unknown"),

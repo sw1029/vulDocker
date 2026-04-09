@@ -13,11 +13,17 @@ Last validated against: current workspace-local `python -m pytest -q tests`, `py
 
 - `python -m pytest -q tests` -> `1175 passed, 53 skipped`
 - `python -m pytest -q tests/test_ops_ci_*.py` -> `343 passed`
-- focused no-Docker regression slice -> `155 passed`
+- focused no-Docker regression slice -> `160 passed`
 - `open-redirect-strict-dynamic-no-remote`, `open-redirect-strict-dynamic-stub`, `foobar-name-only-negative` direct lane는 모두 expectations를 다시 통과했다
 - `trusted-dynamic-sqli`, `open-redirect-dynamic-name-only` direct lane도 모두 expectations를 다시 통과했다
 - positive pair `repeat_case.py -> support_review.py`는 다시 `authority_ready_bundle_count=2`, `measured_gate_blocked_bundle_count=2`, `reviewable_bundle_count=0`, `by_support_status={blocked_mixed:2}`를 남겼다
+- latest measured/support wiring은 `staged_synthesis.file_manifest`의 `build_ready` / `build_safety_policy`를 `support_promotion` / `open_world_readiness` blocker vocabulary로도 읽고, `support_candidate.json`에는 same `build_contract` payload를 같이 싣는다
+- latest support extraction은 `support_promotion.reasons`만 복사하지 않고, same `build_contract`에서 `build_ready:*` / `build_safety:*` blocker를 직접 복구할 수 있다. `selection_evidence`, `stack_selection`, `name_only_outcome`, `topology_clarity`, `base_promotion`도 review queue aggregate에서 `promotion_policy_blockers`로 남는다
+- latest positive pair rerun에서도 same `support_candidate.json`들은 둘 다 `build_contract.build_ready=true`, `build_contract.build_safety_safe=true`를 남겼고 combined `support_review_index.json`도 `build_ready_bundle_count=2`, `build_not_ready_bundle_count=0`, `build_safety_safe_bundle_count=2`, `build_safety_blocked_bundle_count=0`를 남겼지만 support review는 여전히 `blocked_mixed`로 끝났다. 즉 buildability와 promotability는 now 같은 current truth surface에서 분리된다
+- latest local registry apply guard도 `accepted` entry가 explicit `generation_path_live_positive_ready=false` 또는 `generation_path_class!=live`, `mechanically_healthy=false`, `promotion_policy_ready=false`, `build_ready=false`, `build_safety_safe=false`이면 fail-closed 하게 바뀌었다. therefore manual accept path도 “buildable but still policy-unready”와 “not build-ready”, “non-live materialization”를 더 이상 섞어 올리지 않는다
 - full-suite rerun 중 발견된 `cost_budget.pricing_model` drift(`gpt-5.2` vs expected alias `gpt-5`)는 수정 후 green baseline으로 복구됐다
+- Tavily necessity revalidation 결과, Tavily는 repository-wide mandatory dependency가 아니라 current canonical live unknown-CWE remote-research gate provider로 읽는 편이 맞다. researcher remote capability 자체는 `VUL_WEB_SEARCH_ENDPOINT` custom provider로도 열 수 있다.
+- latest ops/E2E entry also reflects the same distinction. `VULD_E2E_REQUIRE_REMOTE_PROVIDER=1` generic gate는 Tavily key 또는 custom endpoint를 허용하고, `VULD_E2E_REQUIRE_TAVILY=1`만 current canonical Tavily proving ground를 강제한다.
 
 관련 문서:
 - 문제 정의와 success criteria: [docs/problem.md](problem.md)
@@ -466,7 +472,9 @@ turn estimate shortcut은 [docs/work_tickets.md](work_tickets.md)의 `Turn Estim
 - `name_only_outcome`은 이제 `selection_open_world_evidence_ready`, `family_support_count`, `stack_support_count`도 같이 싣는다.
 - `executor_plan`이 추가되어 declared `health_path`와 service port/topology가 executor-facing contract로 surface된다.
 - `support_promotion` / `open_world_readiness`는 이제 selection evidence gap이 있을 때 `selection_evidence` blocker로 그 차이를 직접 표현할 수 있다.
+- same policy surface는 이제 `staged_synthesis.file_manifest`가 존재할 때 `build_ready:*` / `build_safety:*`도 같이 표현할 수 있다.
 - `open_world` verdict도 이제 selection source / selection evidence readiness를 직접 싣는다.
+- measured support candidate도 이제 same `file_manifest`를 `build_contract` payload로 함께 보존하므로, review 단계에서 Docker buildability와 generation-path/quality blocker를 같은 candidate 안에서 분리해 읽을 수 있다.
 
 의미:
 
@@ -777,6 +785,7 @@ turn estimate shortcut은 [docs/work_tickets.md](work_tickets.md)의 `Turn Estim
 - same no-op apply chain에서는 `accepted/rejected/pending_by_support_status={}`와 empty local registry `by_support_status={}`도 함께 남아, false promotion 없이 empty status aggregate로 끝나는 것도 확인했다
 - latest slice에서는 same `support_review.py -> support_decide.py -> support_apply.py` chain도 synthetic reviewable candidate와 blocked candidate로 regression이 생겼고, reviewable accept path는 non-empty local registry를, blocked no-op path는 empty local registry를 각각 materialize하는 것이 자동 검증되기 시작했다
 - latest slice에서는 same support workflow도 blocker를 `mechanical_blockers`와 `promotion_policy_blockers`로 나눠 surface하기 시작했고, candidate-level `mechanically_healthy` / `promotion_policy_ready`와 review/update aggregate의 `mechanically_*` / `promotion_policy_*` count 및 `by_mechanical_blocker` / `by_promotion_policy_blocker`도 같이 읽을 수 있게 됐다
+- latest slice에서는 same support extraction이 `support_promotion` reason token이 얇거나 오래된 경우에도 `staged_synthesis.file_manifest -> build_contract`에서 `build_ready:*` / `build_safety:*` blocker를 다시 구성하고, `selection_evidence` / `stack_selection` / `name_only_outcome` / `topology_clarity` / `base_promotion`도 `other_blockers`가 아니라 `promotion_policy_blockers`로 남기기 시작했다
 - latest slice에서는 same support workflow도 `support_status` / `by_support_status`를 같이 surface하기 시작해, `reviewable`, `mechanically_blocked`, `mechanically_healthy_policy_blocked`, `blocked_mixed` 같은 current promotion state를 더 직접 읽을 수 있게 됐다
 - latest slice에서는 same support workflow가 case-level aggregate도 같이 surface해, bundle-level token만 보지 않고 case-level reviewability 상태까지 top-level에서 읽을 수 있게 됐다
 - latest slice에서는 same `support_registry_update.json` preview와 `support_decide.py` CLI output도 `by_case_status`를 같이 보존하기 시작해, review decision preview에서도 case-level 상태 맥락이 사라지지 않게 됐다

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from common.guardrails import GuardEngine, load_guard_spec
-from common.llm import LLMClient, llm_execution_summary
+from common.llm import DEFAULT_LLM_MODEL, LLMClient, llm_execution_summary
 from common.logging import get_logger
 from common.name_only import is_name_driven_requirement
 from common.bundle_state import bundle_research_blocker
@@ -64,7 +64,7 @@ class ReviewerService:
         self.variation_manager = VariationManager(self.plan.get("variation_key"), seed=self.plan["requirement"].get("seed"))
         profile = self.variation_manager.profile_for("reviewer", override_mode=mode)
         reviewer_model = self.plan["requirement"].get("reviewer_model") or self.plan["requirement"].get(
-            "model_version", "gpt-5.2"
+            "model_version", DEFAULT_LLM_MODEL
         )
         self.llm = LLMClient(reviewer_model, profile)
         self.bundles = load_vuln_bundles(self.plan)

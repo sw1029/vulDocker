@@ -4,7 +4,7 @@ Status: support
 Audience: implementation
 Source of truth for: retrieval/memory helper paths and search adapter boundaries
 Not the source of truth for: evidence authority policy, roadmap, support-promotion claims
-Last validated against: current repo layout, researcher search adapter surface, and cache/reuse observability wiring on 2026-03-19
+Last validated against: current repo layout, researcher search adapter surface, and cache/reuse observability wiring on 2026-04-02
 
 Relevant canonical docs:
 - [제약조건](../constraints.md)
@@ -41,6 +41,9 @@ Relevant canonical docs:
 - latest slice에서는 query cache, diminishing-return early stop, cache observation surface가 measured performance summary와 `repeatability_report.json`까지 이어진다.
 - repo-local cache/reuse가 생겨도 그것만으로 authoritative measured gate closure나 open-world support claim을 만들 수는 없다.
 - reflexion memory는 synthesis/review loop를 돕는 보조 계층이며, primitive-first controller나 scenario selection policy의 primary owner는 아니다.
+- remote search provider는 구조적으로 Tavily와 custom endpoint 둘 다 지원한다. 현재 canonical live unknown-CWE proving ground는 Tavily를 기준으로 유지되지만, researcher remote capability 자체가 Tavily-only인 것은 아니다.
+- `remote_required`는 remote provider가 없으면 fail-closed하고, `remote_prefer`는 local corpus fallback이 가능하다. 따라서 Tavily necessity는 global prerequisite가 아니라 “current canonical live remote-research lane” prerequisite로 읽는 편이 맞다.
+- ops/E2E entry에서도 same distinction을 유지한다. `VULD_E2E_REQUIRE_REMOTE_PROVIDER=1`는 generic remote capability gate이고, `VULD_E2E_REQUIRE_TAVILY=1`는 current canonical Tavily proving-ground gate다.
 
 ## Current Residual Owners
 
