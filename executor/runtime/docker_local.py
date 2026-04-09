@@ -19,10 +19,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.logging import get_logger
+from common.action_trace import emit_action_trace
 from common.bundle_state import bundle_research_blocker
+from common.observations import append_observation
 from common.paths import ensure_dir, get_artifacts_dir
 from common.plan import load_plan
 from common.contracts import load_generator_contract as load_resolved_contract
+from common.stage_gates import record_stage_gate
 from common.run_matrix import (
     VulnBundle,
     artifacts_dir_for_bundle,
@@ -494,8 +497,19 @@ def _run_bundle(
             summary["build_attempted"] = True
             build_image(sid, workspace, build_dir, image_tag)
             summary["build_passed"] = True
+            emit_action_trace(
+                metadata_dir,
+                sid=sid,
+                stage="EXECUTOR",
+                action_id="executor_build",
+                status="success",
+                output_contract={"image_tag": image_tag},
+                materialized_topology=summary.get("network_mode"),
+                source_authority="docker.build",
+                retryable=True,
+            )
         if do_run:
-            current_stage = "run"
+            current_stage = "precheck"
             summary["run_attempted"] = True
             summary["service_port"] = int(execution_surface.get("service_port") or DEFAULT_APP_PORT)
             summary["service_base_url"] = str(execution_surface.get("base_url") or "")
@@ -517,6 +531,32 @@ def _run_bundle(
             _validate_service_env_contract(execution_surface)
             _validate_sidecar_env_contract(execution_surface)
             _validate_sidecar_probe_contract(execution_surface)
+            emit_action_trace(
+                metadata_dir,
+                sid=sid,
+                stage="EXECUTOR",
+                action_id="executor_precheck",
+                status="success",
+                output_contract={
+                    "service_port": summary["service_port"],
+                    "requires_external_db": needs_sidecars,
+                    "network_mode": network_handle.mode,
+                },
+                materialized_topology=network_handle.mode,
+                source_authority="executor.contract_validation",
+                retryable=False,
+            )
+            record_stage_gate(
+                metadata_dir,
+                sid=sid,
+                gate_id="executor_dependency_gate",
+                stage="EXECUTOR",
+                passed=True,
+                blocking=True,
+                detail="executor precheck passed",
+                emits=["summary.json", "oracle_execution.json"],
+            )
+            current_stage = "run"
             if needs_sidecars:
                 sidecars = _start_sidecars(
                     sid,
@@ -552,9 +592,38 @@ def _run_bundle(
             summary["run_passed"] = True
             summary["executed"] = True
             summary["exit_code"] = run_result.get("exit_code")
+            emit_action_trace(
+                metadata_dir,
+                sid=sid,
+                stage="EXECUTOR",
+                action_id="executor_run",
+                status="success",
+                output_contract={
+                    "exit_code": summary["exit_code"],
+                    "service_base_url": summary["service_base_url"],
+                },
+                materialized_topology=network_handle.mode,
+                source_authority="docker.run",
+                retryable=True,
+            )
             oracle_execution = run_result.get("oracle_execution") if isinstance(run_result.get("oracle_execution"), dict) else {}
             summary["oracle_execution"] = oracle_execution
             summary["oracle_execution_parity"] = str(oracle_execution.get("parity") or "").strip() or None
+            emit_action_trace(
+                metadata_dir,
+                sid=sid,
+                stage="EXECUTOR",
+                action_id="oracle_replay",
+                status="success",
+                output_contract={
+                    "parity": summary["oracle_execution_parity"],
+                    "negative_controls": len(oracle_execution.get("negative_controls") or {}),
+                    "metamorphic": len(oracle_execution.get("metamorphic") or {}),
+                },
+                materialized_topology=network_handle.mode,
+                source_authority="oracle.replay",
+                retryable=False,
+            )
             oracle_path = run_dir / ORACLE_EXECUTION_FILENAME
             if oracle_path.exists():
                 summary["oracle_execution_path"] = str(oracle_path)
@@ -563,6 +632,91 @@ def _run_bundle(
         summary["failed_stage"] = current_stage
         if summary.get("exit_code") is None and getattr(exc, "returncode", None) is not None:
             summary["exit_code"] = exc.returncode
+        if current_stage == "precheck":
+            emit_action_trace(
+                metadata_dir,
+                sid=sid,
+                stage="EXECUTOR",
+                action_id="executor_precheck",
+                status="failure",
+                blocking=True,
+                failure_class="executor_dependency_gate_failed",
+                detail=str(exc),
+                output_contract={"service_base_url": summary.get("service_base_url")},
+                materialized_topology=network_handle.mode,
+                source_authority="executor.contract_validation",
+                retryable=False,
+            )
+            record_stage_gate(
+                metadata_dir,
+                sid=sid,
+                gate_id="executor_dependency_gate",
+                stage="EXECUTOR",
+                passed=False,
+                blocking=True,
+                failure_class="executor_dependency_gate_failed",
+                detail=str(exc),
+                retry_policy="fix_runtime_contract_before_retry",
+                emits=["summary.json"],
+            )
+        elif current_stage == "build":
+            emit_action_trace(
+                metadata_dir,
+                sid=sid,
+                stage="EXECUTOR",
+                action_id="executor_build",
+                status="failure",
+                blocking=True,
+                failure_class="executor_build_failed",
+                detail=str(exc),
+                materialized_topology=network_handle.mode,
+                source_authority="docker.build",
+                retryable=True,
+            )
+        elif current_stage == "run":
+            emit_action_trace(
+                metadata_dir,
+                sid=sid,
+                stage="EXECUTOR",
+                action_id="executor_run",
+                status="failure",
+                blocking=True,
+                failure_class="executor_run_failed",
+                detail=str(exc),
+                output_contract={"exit_code": summary.get("exit_code")},
+                materialized_topology=network_handle.mode,
+                source_authority="docker.run",
+                retryable=True,
+            )
+        elif current_stage == "oracle_replay":
+            emit_action_trace(
+                metadata_dir,
+                sid=sid,
+                stage="EXECUTOR",
+                action_id="oracle_replay",
+                status="failure",
+                blocking=True,
+                failure_class="oracle_replay_failed",
+                detail=str(exc),
+                materialized_topology=network_handle.mode,
+                source_authority="oracle.replay",
+                retryable=False,
+            )
+        append_observation(
+            metadata_dir,
+            sid=sid,
+            observation_type="executor_failure",
+            failure_stage="EXECUTOR",
+            failure_class=str(summary.get("failed_stage") or "executor_failure"),
+            repair_strategy="fix_runtime_contract_or_container",
+            result="failure",
+            oracle_execution_parity=str(summary.get("oracle_execution_parity") or "") or None,
+            metadata={
+                "error": str(exc),
+                "bundle_slug": bundle.slug,
+                "exit_code": summary.get("exit_code"),
+            },
+        )
     finally:
         _stop_sidecars(sidecars)
         network_pool.release(network_handle)

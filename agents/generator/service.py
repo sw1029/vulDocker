@@ -34,11 +34,14 @@ from common.contracts import (
     load_semantic_profile,
     write_generator_contract,
 )
+from common.action_trace import emit_action_trace
 from common.paths import ensure_dir, get_metadata_dir, get_repo_root
+from common.observations import append_observation
 from common.plan import load_plan
 from common.prompts import build_generator_prompt, prompt_contract
 from common.runtime_assets import record_generated_runtime_asset
 from common.runtime_surface import derive_service_env, diagnose_runtime_surface
+from common.stage_gates import record_stage_gate
 from common.rules import list_rules, load_rule, load_static_rule, rule_filename_for_vuln_id
 from common.run_matrix import (
     VulnBundle,
@@ -675,6 +678,20 @@ class GeneratorService:
         context = self._build_context()
         self._ensure_loop_started()
         dynamic_eval = self._dynamic_eval_enabled()
+        emit_action_trace(
+            self.metadata_dir,
+            sid=self.sid,
+            stage="GENERATOR",
+            action_id="design_brief_validate",
+            status="success",
+            output_contract={
+                "generator_mode": self.generator_mode,
+                "dynamic_eval": dynamic_eval,
+                "single_attempt": self.single_attempt,
+            },
+            source_authority="generator.context",
+            retryable=True,
+        )
         if dynamic_eval:
             self._write_dynamic_eval_status("started")
         if self.generator_mode == "synthesis":
@@ -805,6 +822,32 @@ class GeneratorService:
         self._write_compiler_records(result, written_files)
         self._write_compiler_runtime_rule(result)
         self._write_generator_contract(mode_label="compiler")
+        emit_action_trace(
+            self.metadata_dir,
+            sid=self.sid,
+            stage="GENERATOR",
+            action_id="file_manifest_validate",
+            status="success",
+            output_contract={
+                "mode": "compiler",
+                "compiler_strategy": result.strategy,
+                "written_files": len(written_files),
+            },
+            materialized_family=str(self.requirement.get("vuln_id") or "").strip() or None,
+            materialized_topology="compiler",
+            source_authority="compiler_manifest",
+            retryable=False,
+        )
+        record_stage_gate(
+            self.metadata_dir,
+            sid=self.sid,
+            gate_id="post_generator_live_path_gate",
+            stage="GENERATOR",
+            passed=True,
+            blocking=True,
+            detail="compiler path materialized successfully",
+            emits=["generator_manifest.json", "resolved_contract.json"],
+        )
         LOGGER.info(
             "Compiler strategy %s materialized %s files for %s",
             result.strategy,
@@ -1028,6 +1071,33 @@ class GeneratorService:
                 added_user_deps = self._apply_user_deps_to_workspace()
                 self._record_user_deps_metadata(added_user_deps)
                 self._write_generator_contract(mode_label="synthesis")
+                emit_action_trace(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    stage="GENERATOR",
+                    action_id="file_manifest_validate",
+                    status="success",
+                    output_contract={
+                        "mode": "synthesis",
+                        "selected_candidate_index": outcome.selected.index,
+                        "written_files": len(outcome.written_files),
+                        "fallback_used": bool(getattr(outcome.selected, "fallback_used", False)),
+                    },
+                    materialized_family=str(self.requirement.get("vuln_id") or "").strip() or None,
+                    materialized_topology="synthesis",
+                    source_authority="generator.synthesis",
+                    retryable=False,
+                )
+                record_stage_gate(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    gate_id="post_generator_live_path_gate",
+                    stage="GENERATOR",
+                    passed=True,
+                    blocking=True,
+                    detail="synthesis path materialized successfully",
+                    emits=["generator_manifest.json", "resolved_contract.json"],
+                )
                 self.loop_controller.record_success(stage="GENERATOR", note="synthesis succeeded")
                 LOGGER.info(
                     "Synthesis candidate #%s materialized %s files for %s",
@@ -1040,6 +1110,56 @@ class GeneratorService:
                 failure_meta = self._latest_generator_failure()
                 reason = failure_meta.get("reason") or str(exc)
                 fix_hint = failure_meta.get("fix_hint") or "Review generator_failures.jsonl and add missing deps."
+                failure_class = str(failure_meta.get("guard_error_code") or "manifest_validation_failed").strip() or "manifest_validation_failed"
+                emit_action_trace(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    stage="GENERATOR",
+                    action_id="file_manifest_validate",
+                    status="failure",
+                    blocking=True,
+                    failure_class=failure_class,
+                    detail=reason,
+                    output_contract={
+                        "fix_hint": fix_hint,
+                        "failure_stage": failure_meta.get("failure_stage"),
+                        "failure_stage_reason": failure_meta.get("failure_stage_reason"),
+                    },
+                    materialized_family=str(self.requirement.get("vuln_id") or "").strip() or None,
+                    materialized_topology="synthesis",
+                    source_authority="generator.synthesis",
+                    retryable=True,
+                )
+                record_stage_gate(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    gate_id="post_generator_live_path_gate",
+                    stage="GENERATOR",
+                    passed=False,
+                    blocking=True,
+                    failure_class=failure_class,
+                    detail=reason,
+                    retry_policy="retry_with_new_candidate_or_research_refresh",
+                    emits=["generator_failures.jsonl"],
+                )
+                append_observation(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    observation_type="generator_failure",
+                    failure_stage="GENERATOR",
+                    failure_class=failure_class,
+                    repair_strategy=str(failure_meta.get("failure_stage") or "retry_generation"),
+                    result="failure",
+                    selection_signature={
+                        "vuln_id": str(self.requirement.get("vuln_id") or "").strip() or None,
+                        "bundle_slug": self.bundle.slug if self.bundle else None,
+                    },
+                    metadata={
+                        "reason": reason,
+                        "fix_hint": fix_hint,
+                        "failure_fingerprint": failure_meta.get("failure_fingerprint"),
+                    },
+                )
                 metadata = {
                     "missing_dependencies": failure_meta.get("missing_dependencies", []),
                     "suggested_dependencies": failure_meta.get("suggested_dependencies", []),
@@ -1068,6 +1188,33 @@ class GeneratorService:
                 added_user_deps = self._apply_user_deps_to_workspace()
                 self._record_user_deps_metadata(added_user_deps)
                 self._write_generator_contract(mode_label="synthesis")
+                emit_action_trace(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    stage="GENERATOR",
+                    action_id="file_manifest_validate",
+                    status="success",
+                    output_contract={
+                        "mode": "synthesis",
+                        "selected_candidate_index": outcome.selected.index,
+                        "written_files": len(outcome.written_files),
+                        "fallback_used": bool(getattr(outcome.selected, "fallback_used", False)),
+                    },
+                    materialized_family=str(self.requirement.get("vuln_id") or "").strip() or None,
+                    materialized_topology="synthesis",
+                    source_authority="generator.synthesis",
+                    retryable=False,
+                )
+                record_stage_gate(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    gate_id="post_generator_live_path_gate",
+                    stage="GENERATOR",
+                    passed=True,
+                    blocking=True,
+                    detail="synthesis path materialized successfully",
+                    emits=["generator_manifest.json", "resolved_contract.json"],
+                )
                 self.loop_controller.record_success(stage="GENERATOR", note="synthesis succeeded")
                 LOGGER.info(
                     "Synthesis candidate #%s materialized %s files for %s",
@@ -1080,6 +1227,56 @@ class GeneratorService:
                 failure_meta = self._latest_generator_failure()
                 reason = failure_meta.get("reason") or str(exc)
                 fix_hint = failure_meta.get("fix_hint") or "Review generator_failures.jsonl and add missing deps."
+                failure_class = str(failure_meta.get("guard_error_code") or "manifest_validation_failed").strip() or "manifest_validation_failed"
+                emit_action_trace(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    stage="GENERATOR",
+                    action_id="file_manifest_validate",
+                    status="failure",
+                    blocking=True,
+                    failure_class=failure_class,
+                    detail=reason,
+                    output_contract={
+                        "fix_hint": fix_hint,
+                        "failure_stage": failure_meta.get("failure_stage"),
+                        "failure_stage_reason": failure_meta.get("failure_stage_reason"),
+                    },
+                    materialized_family=str(self.requirement.get("vuln_id") or "").strip() or None,
+                    materialized_topology="synthesis",
+                    source_authority="generator.synthesis",
+                    retryable=True,
+                )
+                record_stage_gate(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    gate_id="post_generator_live_path_gate",
+                    stage="GENERATOR",
+                    passed=False,
+                    blocking=True,
+                    failure_class=failure_class,
+                    detail=reason,
+                    retry_policy="retry_with_new_candidate_or_research_refresh",
+                    emits=["generator_failures.jsonl"],
+                )
+                append_observation(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    observation_type="generator_failure",
+                    failure_stage="GENERATOR",
+                    failure_class=failure_class,
+                    repair_strategy=str(failure_meta.get("failure_stage") or "retry_generation"),
+                    result="failure",
+                    selection_signature={
+                        "vuln_id": str(self.requirement.get("vuln_id") or "").strip() or None,
+                        "bundle_slug": self.bundle.slug if self.bundle else None,
+                    },
+                    metadata={
+                        "reason": reason,
+                        "fix_hint": fix_hint,
+                        "failure_fingerprint": failure_meta.get("failure_fingerprint"),
+                    },
+                )
                 metadata = {
                     "missing_dependencies": failure_meta.get("missing_dependencies", []),
                     "suggested_dependencies": failure_meta.get("suggested_dependencies", []),
@@ -1215,6 +1412,32 @@ class GeneratorService:
             user_deps_added=added_user_deps,
         )
         self._write_generator_contract(mode_label=mode_label)
+        emit_action_trace(
+            self.metadata_dir,
+            sid=self.sid,
+            stage="GENERATOR",
+            action_id="file_manifest_validate",
+            status="success",
+            output_contract={
+                "mode": mode_label,
+                "template_id": selection.id,
+                "written_files": len(written_files),
+            },
+            materialized_family=str(self.requirement.get("vuln_id") or "").strip() or None,
+            materialized_topology=f"template:{selection.stack_id or selection.id}",
+            source_authority="template_registry",
+            retryable=False,
+        )
+        record_stage_gate(
+            self.metadata_dir,
+            sid=self.sid,
+            gate_id="post_generator_live_path_gate",
+            stage="GENERATOR",
+            passed=True,
+            blocking=True,
+            detail=f"template path materialized successfully ({selection.id})",
+            emits=["generator_manifest.json", "resolved_contract.json"],
+        )
         self.loop_controller.record_success(stage="GENERATOR", note=f"template mode: {mode_label}")
 
     def _write_generator_contract(self, *, mode_label: str) -> None:

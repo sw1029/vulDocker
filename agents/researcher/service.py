@@ -13,6 +13,7 @@ from common.contracts import (
     can_resolve_without_remote_research_for_requirement,
     write_generator_contract,
 )
+from common.action_trace import emit_action_trace
 from common.deps.stdlib import load_stdlib_spec
 from common.guardrails import (
     GENERATOR_OP_ALIASES,
@@ -36,6 +37,7 @@ from common.plan import load_plan
 from common.prompts import build_guard_planner_prompt, build_researcher_prompt, prompt_contract
 from common.researcher_report import extract_verification_spec, normalize_researcher_report_payload
 from common.roles import normalize_role
+from common.stage_gates import record_stage_gate
 from common.runtime_assets import record_generated_runtime_asset
 from common.rules import load_rule, load_static_rule, rule_filename_for_vuln_id
 from common.run_matrix import (
@@ -131,21 +133,93 @@ class ResearcherService:
         }
         active_bundle = self.bundle
         with self.react_loop.span(queries=queries, query_plan=query_plan) as span:
+            emit_action_trace(
+                self.metadata_dir,
+                sid=self.sid,
+                trace_id=self.react_loop.trace_id,
+                stage="RESEARCH",
+                action_id="query_plan_emit",
+                status="success",
+                output_contract={
+                    "query_count": len(queries),
+                    "family_hypothesis_count": len(query_plan.get("family_hypotheses") or []),
+                },
+                source_authority="react_loop.query_plan",
+                cacheable=True,
+                retryable=True,
+            )
             search_hits = self._collect_search_results(queries, span=span)
             search_meta = self._write_search_artifacts(search_hits, policy=self._search_policy())
+            emit_action_trace(
+                self.metadata_dir,
+                sid=self.sid,
+                trace_id=self.react_loop.trace_id,
+                stage="RESEARCH",
+                action_id="search_execute",
+                status="success",
+                output_contract={
+                    "search_hits": len(search_hits),
+                    "planned_queries": self._search_planned_query_count,
+                    "executed_queries": self._search_executed_query_count,
+                    "cache_hits": self._search_cache_hit_count,
+                    "cache_misses": self._search_cache_miss_count,
+                    "search_degraded": bool(search_meta.get("degraded")),
+                },
+                source_authority="search_tool",
+                cacheable=True,
+                retryable=True,
+            )
             evidence = self._build_evidence_payload(search_hits)
             evidence_type_summary = self._summarize_evidence_types(search_hits)
             tech_stack_candidates = self._infer_tech_stack_candidates(search_hits, query_plan)
+            top_stack_id = ""
+            if tech_stack_candidates and isinstance(tech_stack_candidates[0], dict):
+                top_stack_id = str(tech_stack_candidates[0].get("stack_id") or "").strip()
             family_hypothesis_summary = self.react_loop.rank_family_hypotheses(
                 search_hits,
                 base_hypotheses=list(query_plan.get("family_hypotheses") or []),
             )
             self._family_hypothesis_summary = family_hypothesis_summary
+            emit_action_trace(
+                self.metadata_dir,
+                sid=self.sid,
+                trace_id=self.react_loop.trace_id,
+                stage="RESEARCH",
+                action_id="family_rank",
+                status="success",
+                output_contract={
+                    "top_family": family_hypothesis_summary.get("top_family"),
+                    "top_confidence": family_hypothesis_summary.get("top_confidence"),
+                    "ambiguous": family_hypothesis_summary.get("ambiguous"),
+                    "contradiction_count": family_hypothesis_summary.get("contradiction_count"),
+                },
+                selected_family=str(family_hypothesis_summary.get("top_family") or "") or None,
+                selected_stack_id=top_stack_id or None,
+                source_authority="retrieval_evidence",
+                cacheable=True,
+                retryable=True,
+            )
             evidence_graph = self._build_evidence_graph(
                 search_hits=search_hits,
                 query_plan=query_plan,
                 tech_stack_candidates=tech_stack_candidates,
                 family_hypothesis_summary=family_hypothesis_summary,
+            )
+            emit_action_trace(
+                self.metadata_dir,
+                sid=self.sid,
+                trace_id=self.react_loop.trace_id,
+                stage="RESEARCH",
+                action_id="evidence_graph_build",
+                status="success",
+                output_contract={
+                    "evidence_nodes": len(evidence_graph.get("nodes") or []),
+                    "evidence_edges": len(evidence_graph.get("edges") or []),
+                },
+                selected_family=str(family_hypothesis_summary.get("top_family") or "") or None,
+                source_authority="researcher.evidence_graph",
+                cacheable=True,
+                retryable=True,
             )
             quality, quality_reason = self._evaluate_evidence_quality(active_bundle, search_hits)
             relevance_report = self._last_evidence_relevance or {
@@ -156,6 +230,37 @@ class ResearcherService:
             }
             guard_fallback = "guard fallback mode" in (quality_reason or "").lower()
             if quality == "insufficient":
+                emit_action_trace(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    trace_id=self.react_loop.trace_id,
+                    stage="RESEARCH",
+                    action_id="post_research_authority_gate",
+                    status="failure",
+                    blocking=True,
+                    failure_class="research_insufficient",
+                    detail=quality_reason,
+                    output_contract={
+                        "quality": quality,
+                        "quality_reason": quality_reason,
+                        "relevance_score": relevance_report.get("score"),
+                    },
+                    selected_family=str(family_hypothesis_summary.get("top_family") or "") or None,
+                    source_authority="researcher.quality_gate",
+                    retryable=False,
+                )
+                record_stage_gate(
+                    self.metadata_dir,
+                    sid=self.sid,
+                    gate_id="post_research_authority_gate",
+                    stage="RESEARCH",
+                    passed=False,
+                    blocking=True,
+                    failure_class="research_insufficient",
+                    detail=quality_reason,
+                    retry_policy="do_not_retry_without_new_evidence",
+                    emits=["researcher_report.json", "resolved_contract.json"],
+                )
                 failure_reason = self._format_search_failure_reason(quality_reason)
                 report = {
                     "sid": self.sid,
@@ -217,6 +322,35 @@ class ResearcherService:
             report["quality_reason"] = quality_reason or "sufficient evidence"
             report["guard_fallback"] = guard_fallback
             report["created_at"] = datetime.now(timezone.utc).isoformat()
+            emit_action_trace(
+                self.metadata_dir,
+                sid=self.sid,
+                trace_id=self.react_loop.trace_id,
+                stage="RESEARCH",
+                action_id="post_research_authority_gate",
+                status="success",
+                blocking=True,
+                output_contract={
+                    "quality": quality,
+                    "quality_reason": quality_reason or "sufficient evidence",
+                    "relevance_score": relevance_report.get("score"),
+                },
+                selected_family=str(family_hypothesis_summary.get("top_family") or "") or None,
+                selected_stack_id=top_stack_id or None,
+                source_authority="researcher.quality_gate",
+                retryable=False,
+            )
+            record_stage_gate(
+                self.metadata_dir,
+                sid=self.sid,
+                gate_id="post_research_authority_gate",
+                stage="RESEARCH",
+                passed=True,
+                blocking=True,
+                detail=quality_reason or "sufficient evidence",
+                retry_policy="no_retry_needed",
+                emits=["researcher_report.json", "resolved_contract.json"],
+            )
             guard_spec_path, guard_ensemble_path = self._build_and_write_guard_spec(
                 report=report,
                 evidence=evidence,

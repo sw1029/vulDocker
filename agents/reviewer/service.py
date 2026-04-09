@@ -8,10 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from common.action_trace import emit_action_trace
 from common.guardrails import GuardEngine, load_guard_spec
 from common.llm import DEFAULT_LLM_MODEL, LLMClient, llm_execution_summary
 from common.logging import get_logger
 from common.name_only import is_name_driven_requirement
+from common.observations import append_observation
 from common.bundle_state import bundle_research_blocker
 from common.paths import ensure_dir
 from common.plan import load_plan
@@ -28,6 +30,7 @@ from common.run_matrix import (
     metadata_dir_for_bundle,
     workspace_dir_for_bundle,
 )
+from common.stage_gates import record_stage_gate
 from common.variability import VariationManager
 from orchestrator.loop_controller import LoopController
 from evals.poc_verifier import evaluate_with_vuln
@@ -193,6 +196,49 @@ class ReviewerService:
             llm_execution = self._llm_execution_summary(prompt_invocations=bundle_prompt_invocations)
             if llm_execution:
                 report["llm_execution"] = llm_execution
+            emit_action_trace(
+                metadata_dir_for_bundle(self.plan, bundle),
+                sid=self.sid,
+                stage="REVIEW",
+                action_id="review_contract_check",
+                status="failure" if blocking else "success",
+                blocking=blocking,
+                failure_class="review_blocking" if blocking else None,
+                detail=(all_issues[0].get("issue") if blocking and all_issues else "review passed"),
+                output_contract={
+                    "success": context.success,
+                    "issue_count": len(all_issues),
+                    "blocking": blocking,
+                },
+                source_authority="reviewer.service",
+                retryable=blocking,
+            )
+            record_stage_gate(
+                metadata_dir_for_bundle(self.plan, bundle),
+                sid=self.sid,
+                gate_id="post_verify_low_trust_gate",
+                stage="REVIEW",
+                passed=not blocking,
+                blocking=True,
+                failure_class="review_blocking" if blocking else None,
+                detail=(all_issues[0].get("issue") if blocking and all_issues else "review passed"),
+                retry_policy="fix_review_findings_before_retry" if blocking else "no_retry_needed",
+                emits=["reviewer_report.json"],
+            )
+            if blocking:
+                append_observation(
+                    metadata_dir_for_bundle(self.plan, bundle),
+                    sid=self.sid,
+                    observation_type="review_blocker",
+                    failure_stage="REVIEW",
+                    failure_class="review_blocking",
+                    repair_strategy="address_review_issues",
+                    result="failure",
+                    metadata={
+                        "bundle_slug": bundle.slug,
+                        "issue_count": len(all_issues),
+                    },
+                )
             bundle_path = self._write_bundle_report(bundle, report)
             bundle_reports.append(
                 {

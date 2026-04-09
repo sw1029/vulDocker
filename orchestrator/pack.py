@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common.logging import get_logger
+from common.action_trace import load_action_trace, summarize_action_trace
 from common.name_only import (
     build_name_only_contract,
     classify_name_only_intent,
@@ -46,6 +47,8 @@ from common.contracts import (
     lower_bound_summary,
 )
 from common.rules import load_static_rule
+from common.observations import load_observations, summarize_observations
+from common.stage_gates import load_stage_gate_report, summarize_stage_gates
 from agents.generator.compiler import supported_compiler_strategies
 from orchestrator.plugins.react_loop import _FAMILY_HINTS
 from common.run_matrix import (
@@ -247,6 +250,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
     name_only_outcome_summary = _name_only_outcome_summary(bundles)
     name_only_planning_summary = _name_only_planning_summary(bundles)
     staged_synthesis_summary = _staged_synthesis_summary(bundles)
+    action_trace_summary = summarize_action_trace(load_action_trace(metadata_dir))
+    stage_gate_summary = summarize_stage_gates(load_stage_gate_report(metadata_dir))
+    observation_summary = summarize_observations(load_observations(metadata_dir))
     failure = _failure_summary(sid)
     pipeline_result = _pipeline_result(sid, bundles=bundles, failure=failure)
     if not filename:
@@ -297,6 +303,9 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         "name_only_outcome_summary": name_only_outcome_summary,
         "name_only_planning_summary": name_only_planning_summary,
         "staged_synthesis_summary": staged_synthesis_summary,
+        "action_trace_summary": action_trace_summary,
+        "stage_gate_summary": stage_gate_summary,
+        "observation_summary": observation_summary,
         "performance": performance,
         "indices": _collect_indices(metadata_dir, artifacts_dir),
         "reports": {
@@ -326,6 +335,10 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
         retry_recommended = failure.get("retry_recommended")
         if isinstance(retry_recommended, bool):
             manifest["retry_recommended"] = retry_recommended
+    if isinstance(action_trace_summary.get("first_failure_action"), dict):
+        manifest["first_failure_action"] = deepcopy(action_trace_summary["first_failure_action"])
+    if isinstance(stage_gate_summary.get("first_blocking_failure_gate"), dict):
+        manifest["first_blocking_failure_gate"] = deepcopy(stage_gate_summary["first_blocking_failure_gate"])
     if len(bundles) == 1:
         provenance = bundles[0].get("provenance") or {}
         generation_materialization = (
@@ -700,8 +713,96 @@ def write_manifest(sid: str, plan: dict, *, filename: str | None = None) -> Path
     if stale_path.exists():
         stale_path.unlink()
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    snapshot_path = _write_canonical_snapshot(metadata_dir, manifest)
+    manifest["canonical_snapshot_path"] = str(snapshot_path)
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     LOGGER.info("Manifest written to %s", manifest_path)
     return manifest_path
+
+
+def _write_canonical_snapshot(metadata_dir: Path, manifest: Dict[str, Any]) -> Path:
+    bundles = manifest.get("bundles") if isinstance(manifest.get("bundles"), list) else []
+    selection: List[Dict[str, Any]] = []
+    materialization: List[Dict[str, Any]] = []
+    runtime: List[Dict[str, Any]] = []
+    verification: List[Dict[str, Any]] = []
+    review: List[Dict[str, Any]] = []
+    artifacts: List[Dict[str, Any]] = []
+    for bundle in bundles:
+        if not isinstance(bundle, dict):
+            continue
+        selection.append(
+            {
+                "slug": bundle.get("slug"),
+                "request_identity": deepcopy(bundle.get("request_identity") or {}),
+                "request_ir": deepcopy(bundle.get("request_ir") or {}),
+                "selection_branch_trace": deepcopy(bundle.get("selection_branch_trace") or {}),
+                "action_trace_summary": deepcopy(bundle.get("action_trace_summary") or {}),
+            }
+        )
+        materialization.append(
+            {
+                "slug": bundle.get("slug"),
+                "provenance": deepcopy(bundle.get("provenance") or {}),
+                "generation_materialization": deepcopy(bundle.get("generation_materialization") or {}),
+                "staged_synthesis": deepcopy(bundle.get("staged_synthesis") or {}),
+            }
+        )
+        runtime.append(
+            {
+                "slug": bundle.get("slug"),
+                "runtime_recipe": deepcopy(bundle.get("runtime_recipe") or {}),
+                "runtime_graph": deepcopy(bundle.get("runtime_graph") or {}),
+                "executor_plan": deepcopy(bundle.get("executor_plan") or {}),
+                "executor_feasibility": deepcopy(bundle.get("executor_feasibility") or {}),
+                "oracle_execution": deepcopy(bundle.get("oracle_execution") or {}),
+            }
+        )
+        verification.append(
+            {
+                "slug": bundle.get("slug"),
+                "verification": deepcopy(bundle.get("verification") or {}),
+                "semantic": deepcopy(bundle.get("semantic") or {}),
+                "artifact_quality": deepcopy(bundle.get("artifact_quality") or {}),
+            }
+        )
+        review.append(
+            {
+                "slug": bundle.get("slug"),
+                "promotion": deepcopy(bundle.get("promotion") or {}),
+                "support_promotion": deepcopy(bundle.get("support_promotion") or {}),
+                "open_world_readiness": deepcopy(bundle.get("open_world_readiness") or {}),
+                "stage_gate_summary": deepcopy(bundle.get("stage_gate_summary") or {}),
+                "observation_summary": deepcopy(bundle.get("observation_summary") or {}),
+            }
+        )
+        artifacts.append(
+            {
+                "slug": bundle.get("slug"),
+                "paths": deepcopy(bundle.get("paths") or {}),
+                "artifacts": deepcopy(bundle.get("artifacts") or {}),
+            }
+        )
+    payload = {
+        "schema_version": "canonical_snapshot@0.1",
+        "sid": manifest.get("sid"),
+        "pipeline_result": manifest.get("pipeline_result"),
+        "selection": selection,
+        "materialization": materialization,
+        "runtime": runtime,
+        "verification": verification,
+        "review": review,
+        "measured_gate": {
+            "stage_gate_summary": deepcopy(manifest.get("stage_gate_summary") or {}),
+            "observation_summary": deepcopy(manifest.get("observation_summary") or {}),
+            "support_promotion": deepcopy(manifest.get("support_promotion") or {}),
+            "open_world_readiness_summary": deepcopy(manifest.get("open_world_readiness_summary") or {}),
+        },
+        "artifacts": artifacts,
+    }
+    path = metadata_dir / "canonical_snapshot.json"
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def _pipeline_result(
@@ -1025,6 +1126,9 @@ def _collect_bundle_records(plan: Dict[str, Any], sid: str) -> List[Dict[str, An
             "researcher_report": _existing(researcher_report),
             "generator_template": _existing(generator_template),
             "reviewer_report": _existing(reviewer_report),
+            "action_trace_summary": summarize_action_trace(load_action_trace(metadata_dir)),
+            "stage_gate_summary": summarize_stage_gates(load_stage_gate_report(metadata_dir)),
+            "observation_summary": summarize_observations(load_observations(metadata_dir)),
         }
         bundle_entry["stack_dependence"] = _bundle_stack_dependence(bundle_entry)
         bundle_entry["family_dependence"] = _bundle_family_dependence(bundle_entry)

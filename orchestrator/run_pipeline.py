@@ -31,6 +31,7 @@ from common.contracts import (
     requires_semantic_support_for_requirement,
     write_generator_contract,
 )
+from common.action_trace import emit_action_trace
 from common.bundle_state import collect_bundle_research_blockers
 from common.config import get_openai_api_key
 from common.llm.provider import litellm_completion
@@ -47,6 +48,7 @@ from common.runtime_assets import (
     restore_seeded_runtime_assets,
 )
 from common.run_matrix import bundle_requirement, load_vuln_bundles, metadata_dir_for_bundle
+from common.stage_gates import record_stage_gate
 from orchestrator.loop_controller import LoopController
 from agents.researcher.service import ResearcherService
 from rag.tools import WebSearchTool
@@ -1889,6 +1891,33 @@ def main() -> None:
     _seed_generator_contracts(plan)
     capability_gate = _strict_name_only_capability_gate_failure(plan)
     if capability_gate:
+        metadata_dir = get_metadata_dir(sid)
+        emit_action_trace(
+            metadata_dir,
+            sid=sid,
+            stage="CAPABILITY_CHECK",
+            action_id="capability_precheck",
+            status="failure",
+            blocking=True,
+            failure_class=str(capability_gate.get("terminal_failure_class") or "capability_precheck_failed"),
+            detail=str(capability_gate.get("reason") or "strict_dynamic capability precheck failed"),
+            output_contract=capability_gate.get("metadata") if isinstance(capability_gate.get("metadata"), dict) else {},
+            source_authority="run_pipeline.capability_gate",
+            retryable=False,
+        )
+        record_stage_gate(
+            metadata_dir,
+            sid=sid,
+            gate_id="capability_precheck",
+            stage="CAPABILITY_CHECK",
+            passed=False,
+            blocking=True,
+            failure_class=str(capability_gate.get("terminal_failure_class") or "capability_precheck_failed"),
+            detail=str(capability_gate.get("reason") or "strict_dynamic capability precheck failed"),
+            retry_policy="fix_capability_or_relax_policy",
+            emits=["failure_manifest.json"],
+            metadata=capability_gate.get("metadata") if isinstance(capability_gate.get("metadata"), dict) else None,
+        )
         _record_perf_event(
             sid,
             perf_events,
@@ -2443,6 +2472,33 @@ def main() -> None:
                 _refresh_manifest_after_pack(sid, plan)
                 strict_gate_failure = _strict_name_only_gate_failure(plan, sid)
                 if strict_gate_failure:
+                    metadata_dir = get_metadata_dir(sid)
+                    emit_action_trace(
+                        metadata_dir,
+                        sid=sid,
+                        stage="PACK",
+                        action_id="pre_pack_promotion_integrity_gate",
+                        status="failure",
+                        blocking=True,
+                        failure_class=str(strict_gate_failure.get("terminal_failure_class") or "strict_open_world_gate_failed"),
+                        detail=str(strict_gate_failure.get("reason") or "strict open-world gate not satisfied"),
+                        output_contract=strict_gate_failure.get("metadata") if isinstance(strict_gate_failure.get("metadata"), dict) else {},
+                        source_authority="run_pipeline.strict_name_only_gate",
+                        retryable=False,
+                    )
+                    record_stage_gate(
+                        metadata_dir,
+                        sid=sid,
+                        gate_id="pre_pack_promotion_integrity_gate",
+                        stage="PACK",
+                        passed=False,
+                        blocking=True,
+                        failure_class=str(strict_gate_failure.get("terminal_failure_class") or "strict_open_world_gate_failed"),
+                        detail=str(strict_gate_failure.get("reason") or "strict open-world gate not satisfied"),
+                        retry_policy="strengthen_open_world_evidence",
+                        emits=["manifest.json"],
+                        metadata=strict_gate_failure.get("metadata") if isinstance(strict_gate_failure.get("metadata"), dict) else None,
+                    )
                     controller.record_failure(
                         stage="PACK",
                         reason=str(strict_gate_failure.get("reason") or "strict open-world gate not satisfied"),
@@ -2455,6 +2511,16 @@ def main() -> None:
                     )
                     _refresh_manifest_after_pack(sid, plan)
                     raise SystemExit(1)
+                record_stage_gate(
+                    get_metadata_dir(sid),
+                    sid=sid,
+                    gate_id="pre_pack_promotion_integrity_gate",
+                    stage="PACK",
+                    passed=True,
+                    blocking=True,
+                    detail="pack completed without strict promotion blocker",
+                    emits=["manifest.json"],
+                )
 
         return
 
