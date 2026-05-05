@@ -129,6 +129,48 @@ def test_known_family_synthesis_prompt_keeps_family_contract() -> None:
     assert "Runtime DB expectation: `sqlite`." in prompt
 
 
+def test_cve_synthesis_prompt_uses_evidence_driven_open_world_posture() -> None:
+    messages = build_synthesis_prompt(
+        {
+            "vuln_id": "CVE-2099-0001",
+            "language": "python",
+            "framework": "flask",
+            "policy": {"require_researcher_evidence": True},
+            "researcher": {"search_policy": "remote_required"},
+        },
+        rag_context="",
+        researcher_report='{"quality":"sufficient"}',
+    )
+
+    prompt = _user_prompt(messages)
+
+    assert "Treat this as evidence-driven/open-world synthesis for an explicit vulnerability identifier" in prompt
+    assert "Do not assume CWE-family semantics from the identifier alone" in prompt
+    assert "Primary semantic contract should come from Researcher Report, structured evidence, and RAG snippets." in prompt
+    assert "especially important for CVE or unsupported explicit identifiers" in prompt
+    assert "Treat this as a known-family regression lane" not in prompt
+
+
+def test_unknown_identifier_remote_required_prompt_uses_open_world_posture() -> None:
+    messages = build_synthesis_prompt(
+        {
+            "vuln_id": "CWE-9999",
+            "language": "python",
+            "framework": "flask",
+            "policy": {"require_researcher_evidence": True},
+            "researcher": {"search_policy": "remote_required"},
+            "request_ir": {"pattern_seed_state": "genericized_unknown"},
+        },
+        rag_context="",
+        researcher_report='{"quality":"sufficient"}',
+    )
+
+    prompt = _user_prompt(messages)
+
+    assert "Treat this as evidence-driven/open-world synthesis for an explicit vulnerability identifier" in prompt
+    assert "Treat this as a known-family regression lane" not in prompt
+
+
 def test_guard_spec_overrides_name_only_semantic_contract() -> None:
     messages = build_synthesis_prompt(
         {
@@ -187,6 +229,36 @@ def test_name_only_prompt_warns_when_family_hypothesis_is_ambiguous() -> None:
 
     assert "Family hypothesis is ambiguous" in prompt
     assert "prefer minimal topology and avoid overcommitting" in prompt
+
+
+def test_synthesis_prompt_surfaces_researcher_evidence_snippets_for_cve() -> None:
+    messages = build_synthesis_prompt(
+        {
+            "vuln_id": "CVE-2099-0001",
+            "language": "python",
+            "framework": "flask",
+        },
+        rag_context="",
+        researcher_report=(
+            '{"quality":"sufficient",'
+            '"evidence_type_summary":{"hit_count":1,"matched_target_count":1,'
+            '"by_type":{"advisory":1},"by_source_authority":{"high":1}},'
+            '"evidence":[{"query":"CVE-2099-0001 NVD advisory affected versions weakness details",'
+            '"query_target":"advisory","evidence_type":"advisory","source_authority":"high",'
+            '"source":"local","provider":"local","title":"NVD - CVE-2099-0001",'
+            '"url":"file:///tmp/rag/corpus/raw/poc/20250101/CVE-2099-0001.json",'
+            '"snippet":"CVE-2099-0001 NVD advisory affected Flask endpoint uses user controlled redirect target."}]}'
+        ),
+    )
+
+    prompt = _user_prompt(messages)
+
+    assert "# Researcher Evidence" in prompt
+    assert "Evidence summary: hit_count=`1`, matched_target_count=`1`, by_type=`advisory:1`, by_authority=`high:1`." in prompt
+    assert "Evidence #1, type=`advisory`, authority=`high`, source=`local`" in prompt
+    assert "NVD - CVE-2099-0001" in prompt
+    assert "affected Flask endpoint uses user controlled redirect target" in prompt
+    assert "Use these evidence snippets as RAG context" in prompt
 
 
 def test_name_only_prompt_surfaces_generation_spec_and_exploit_oracle() -> None:

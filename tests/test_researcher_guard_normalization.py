@@ -242,6 +242,62 @@ def test_unknown_cwe_low_relevance_is_insufficient_when_evidence_required() -> N
     assert "low relevance score" in reason.lower()
 
 
+def test_local_only_unknown_cve_accepts_authoritative_cached_advisory() -> None:
+    query = "CVE-2024-12345 NVD advisory affected versions weakness details"
+    service = _service_stub("CVE-2024-12345")
+    service._search_policy = lambda: "local_only"  # type: ignore[attr-defined]
+    service._require_researcher_evidence = lambda bundle: True  # type: ignore[attr-defined]
+    service._bundle_is_unknown = lambda bundle: True  # type: ignore[attr-defined]
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CVE-2024-12345",
+        "language": "python",
+        "framework": "flask",
+    }
+    service._query_plan_index = {query: {"evidence_type": "advisory"}}  # type: ignore[attr-defined]
+    hits = [
+        SearchResult(
+            title="NVD - CVE-2024-12345",
+            url="file:///tmp/rag/corpus/raw/poc/20250101/CVE-2024-12345.json",
+            snippet=(
+                "CVE-2024-12345 NVD advisory: vulnerable Python Flask application versions allow "
+                "request parameter handling to reach the affected endpoint."
+            ),
+            source="local",
+            provider="local",
+            query=query,
+        )
+    ]
+
+    quality, reason = service._evaluate_evidence_quality(None, hits)  # type: ignore[attr-defined]
+
+    assert quality == "sufficient"
+    assert reason == ""
+    assert service._last_evidence_relevance["score"] >= service._last_evidence_relevance["threshold"]  # type: ignore[index]
+
+
+def test_remote_required_unknown_cve_rejects_cached_advisory_without_remote_hit() -> None:
+    service = _service_stub("CVE-2024-12345")
+    service._search_policy = lambda: "remote_required"  # type: ignore[attr-defined]
+    service._require_researcher_evidence = lambda bundle: True  # type: ignore[attr-defined]
+    service._bundle_is_unknown = lambda bundle: True  # type: ignore[attr-defined]
+    hits = [
+        SearchResult(
+            title="NVD - CVE-2024-12345",
+            url="file:///tmp/rag/corpus/raw/poc/20250101/CVE-2024-12345.json",
+            snippet="CVE-2024-12345 NVD advisory for a Python Flask application.",
+            source="local",
+            provider="local",
+            query="CVE-2024-12345 NVD advisory affected versions weakness details",
+        )
+    ]
+
+    quality, reason = service._evaluate_evidence_quality(None, hits)  # type: ignore[attr-defined]
+
+    assert quality == "insufficient"
+    assert "search_policy=remote_required" in reason
+    assert "requires at least one remote hit" in reason
+
+
 def test_unknown_cwe_low_confidence_policy_can_fail_closed() -> None:
     service = _service_stub("CWE-9999")
     service._search_policy = lambda: "remote_prefer"  # type: ignore[attr-defined]

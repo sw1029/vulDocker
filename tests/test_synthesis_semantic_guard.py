@@ -9,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from agents.generator.synthesis import SynthesisEngine, SynthesisLimits
+from common.guardrails import build_guard_spec
 from common.rules import load_rule, load_rulespec
 
 
@@ -1292,6 +1293,145 @@ def test_dynamic_eval_semantic_guided_fallback_prefers_request_ir_selection_when
     assert manifest["metadata"]["semantic_guided_selection_source"] == "request_ir_selection"
 
 
+def test_dynamic_eval_cve_fallback_can_use_evidence_ready_request_ir_selection_for_xss(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CVE-2099-0042")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "CVE-2099-0042",
+        "resolved_vuln_id": "CVE-2099-0042",
+        "resolution_state": "explicit_identifier",
+        "resolution_match_class": "exact_identifier",
+        "resolution_confidence": "high",
+        "name_driven": False,
+        "family_candidates": [
+            {"family": "xss", "source": "researcher_hypothesis", "confidence": "medium"}
+        ],
+        "selection_decision": {
+            "family": {
+                "selected": True,
+                "selected_family": "xss",
+                "support_count": 1,
+                "support_by_source_authority": {"high": 1},
+                "evidence_backed": True,
+                "high_or_medium_authority_support": True,
+            },
+            "stack": {
+                "selected": True,
+                "selected_stack_id": "python/flask",
+                "basis": "explicit_requirement",
+                "evidence_backed": False,
+            },
+            "ready_for_materialization": True,
+            "open_world_evidence_ready": True,
+        },
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "xss",
+            "top_confidence": "low",
+            "top_margin": 0.01,
+            "contradiction_count": 0,
+            "ambiguous": False,
+            "ranked_families": [
+                {
+                    "family": "xss",
+                    "confidence": "low",
+                    "matched_cwes": ["cwe-79"],
+                }
+            ],
+        },
+    }
+    engine._guard_spec_payload = {  # type: ignore[attr-defined]
+        "semantic_signature": {
+            "input_vector": ["request.args", "query parameter", "user input"],
+            "sink": ["render_template_string", "template response"],
+            "exploit_precondition": ["<script>", "unescaped reflection", "cross-site scripting"],
+        }
+    }
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "xss"
+    assert manifest["metadata"]["semantic_guided_selection_source"] == "request_ir_selection"
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "render_template_string" in service_main["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
+def test_dynamic_eval_cve_fallback_uses_evidence_ready_request_ir_without_semantic_signature(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path, "CVE-2099-0042")
+    engine._requirement["policy"] = {"dynamic_eval": True}  # type: ignore[index]
+    engine._requirement["request_ir"] = {  # type: ignore[index]
+        "request_label": "CVE-2099-0042",
+        "resolved_vuln_id": "CVE-2099-0042",
+        "resolution_state": "explicit_identifier",
+        "resolution_match_class": "exact_identifier",
+        "resolution_confidence": "high",
+        "name_driven": False,
+        "family_candidates": [
+            {"family": "xss", "source": "researcher_hypothesis", "confidence": "medium"}
+        ],
+        "selection_decision": {
+            "family": {
+                "selected": True,
+                "selected_family": "xss",
+                "support_count": 1,
+                "support_by_source_authority": {"high": 1},
+                "evidence_backed": True,
+                "high_or_medium_authority_support": True,
+            },
+            "stack": {
+                "selected": True,
+                "selected_stack_id": "python/flask",
+                "basis": "explicit_requirement",
+                "evidence_backed": False,
+            },
+            "ready_for_materialization": True,
+            "open_world_evidence_ready": True,
+        },
+    }
+    engine._researcher_report_payload = {  # type: ignore[attr-defined]
+        "family_hypothesis_summary": {
+            "top_family": "xss",
+            "top_confidence": "medium",
+            "top_margin": 0.5,
+            "contradiction_count": 0,
+            "ambiguous": False,
+            "ranked_families": [
+                {
+                    "family": "xss",
+                    "confidence": "medium",
+                    "matched_cwes": ["cwe-79"],
+                }
+            ],
+        },
+    }
+    engine._guard_spec_payload = {}  # type: ignore[attr-defined]
+
+    manifest = engine._fallback_manifest()
+    errors, report = engine._guard_manifest(manifest)
+
+    assert manifest["metadata"]["fallback_class"] == "semantic_guided"
+    assert manifest["metadata"]["semantic_guided_family"] == "xss"
+    assert manifest["metadata"]["semantic_guided_selection_source"] == "request_ir_selection"
+    assert manifest["metadata"]["semantic_guided_candidate_families"] == ["xss"]
+    assert manifest["metadata"]["materializer"] == "minimal_dynamic"
+    service_main = next(entry for entry in manifest["files"] if entry.get("role") == "service_main")
+    assert "render_template_string" in service_main["content"]
+    assert not any("semantic mismatch:" in item for item in errors)
+    semantics = (report or {}).get("semantics") or {}
+    assert semantics.get("semantic_match") is True
+
+
 def test_fallback_stack_id_prefers_request_ir_selected_stack_when_runtime_recipe_missing(tmp_path: Path) -> None:
     engine = _engine(tmp_path, "NAME-OPEN-REDIRECT")
     engine._requirement["request_ir"] = {  # type: ignore[index]
@@ -2318,3 +2458,179 @@ def test_semantic_guard_accepts_cwe918_same_container_loopback_indicator(tmp_pat
     semantics = (report or {}).get("semantics") or {}
     assert semantics.get("supported") is True
     assert semantics.get("semantic_match") is True
+
+
+def test_cve_synthesis_run_injects_researcher_evidence_into_llm_prompt_and_accepts_response(
+    tmp_path: Path,
+) -> None:
+    manifest = {
+        "files": [
+            {
+                "path": "Dockerfile",
+                "role": "helper",
+                "content": (
+                    "FROM python:3.11-slim\n"
+                    "WORKDIR /app\n"
+                    "COPY . /app\n"
+                    "RUN pip install --no-cache-dir -r requirements.txt\n"
+                    "EXPOSE 8000\n"
+                    "CMD [\"python\", \"app.py\"]\n"
+                ),
+            },
+            {
+                "path": "requirements.txt",
+                "role": "helper",
+                "content": "flask==3.0.0\nrequests==2.31.0\n",
+            },
+            {
+                "path": "app.py",
+                "role": "service_main",
+                "content": (
+                    "from flask import Flask, request, render_template_string\n"
+                    "app = Flask(__name__)\n"
+                    "@app.get('/health')\n"
+                    "def health():\n"
+                    "    return 'ok'\n"
+                    "@app.get('/search')\n"
+                    "def search():\n"
+                    "    # Reflected cross-site scripting: unescaped request.args payload including <script> reaches template response.\n"
+                    "    q = request.args.get('q', '')\n"
+                    "    return render_template_string('<h1>Results</h1><div>' + q + '</div>')\n"
+                    "if __name__ == '__main__':\n"
+                    "    app.run(host='0.0.0.0', port=8000)\n"
+                ),
+            },
+            {
+                "path": "poc.py",
+                "role": "poc_entry",
+                "content": (
+                    "import argparse\n"
+                    "import requests\n"
+                    "parser = argparse.ArgumentParser()\n"
+                    "parser.add_argument('--base-url', default='http://127.0.0.1:8000')\n"
+                    "args = parser.parse_args()\n"
+                    "payload = '<script>alert(1)</script>'\n"
+                    "resp = requests.get(args.base_url + '/search', params={'q': payload}, timeout=3)\n"
+                    "if payload in resp.text:\n"
+                    "    print('Exploit SUCCESS')\n"
+                    "else:\n"
+                    "    raise SystemExit('exploit failed')\n"
+                ),
+            },
+        ],
+        "deps": ["flask==3.0.0", "requests==2.31.0"],
+        "build": {"dockerfile": "Dockerfile"},
+        "run": {"command": "python app.py", "port": 8000},
+        "poc": {
+            "cmd": "python poc.py --base-url {{base_url}}",
+            "success_signature": "Exploit SUCCESS",
+        },
+        "pattern_tags": ["request_input", "template_sink", "xss"],
+        "notes": "LLM-produced CVE-specific reflected XSS training environment.",
+    }
+
+    class _EvidenceAwareLLM:
+        fixture_used = False
+        last_used_stub = False
+        last_provider_attempted = True
+        last_provider_succeeded = True
+        last_error_class = ""
+        last_error_message = ""
+
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def generate(self, messages, *, tools=None) -> str:  # noqa: ANN001
+            prompt = messages[-1]["content"]
+            is_initial_prompt = not self.prompts
+            self.prompts.append(prompt)
+            if is_initial_prompt:
+                assert "# Researcher Evidence" in prompt
+                assert "NVD - CVE-2099-0042" in prompt
+                assert "CWE-79" in prompt
+                assert "render_template_string" in prompt
+            return json.dumps(manifest)
+
+    llm = _EvidenceAwareLLM()
+    engine = SynthesisEngine(
+        sid="sid-cve-llm-rag",
+        llm=llm,
+        limits=SynthesisLimits(),
+        workspace=tmp_path / "workspace",
+        metadata_dir=tmp_path / "metadata",
+        mode="synthesis",
+    )
+    requirement = {
+        "vuln_id": "CVE-2099-0042",
+        "language": "python",
+        "framework": "flask",
+        "runtime": {"python_version": "3.11"},
+        "policy": {"dynamic_eval": True, "require_researcher_evidence": True},
+        "request_ir": {
+            "selection_decision": {
+                "family": {
+                    "selected": True,
+                    "selected_family": "xss",
+                    "evidence_backed": True,
+                    "high_or_medium_authority_support": True,
+                },
+                "ready_for_materialization": True,
+                "open_world_evidence_ready": True,
+            }
+        },
+    }
+    researcher_report = {
+        "quality": "sufficient",
+        "family_hypothesis_summary": {
+            "top_family": "xss",
+            "top_confidence": "medium",
+            "ranked_families": [
+                {"family": "xss", "confidence": "medium", "matched_cwes": ["cwe-79"]}
+            ],
+        },
+        "evidence": [
+            {
+                "query": "CVE-2099-0042 NVD advisory affected versions weakness details",
+                "evidence_type": "advisory",
+                "source_authority": "high",
+                "title": "NVD - CVE-2099-0042",
+                "url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0042",
+                "snippet": (
+                    "CVE-2099-0042 is reflected XSS in Flask search where request.args reaches "
+                    "render_template_string; weakness CWE-79."
+                ),
+            }
+        ],
+    }
+    guard_spec_payload = build_guard_spec(
+        sid="sid-cve-llm-rag",
+        vuln_id="CVE-2099-0042",
+        slug="cve-2099-0042",
+        semantic_signature={
+            "input_vector": ["request.args", "query parameter", "user input"],
+            "sink": ["render_template_string", "template response"],
+            "exploit_precondition": ["<script>", "unescaped reflection", "cross-site scripting"],
+        },
+        generator_assertions=[],
+        verifier_assertions=[],
+        source="test",
+    ).to_dict()
+
+    outcome = engine.run(
+        requirement=requirement,
+        rag_context="# CVE Record: CVE-2099-0042\n- Weakness: CWE-79\n",
+        hints="",
+        failure_context="",
+        candidate_k=1,
+        researcher_report=json.dumps(researcher_report),
+        guard_spec=json.dumps(guard_spec_payload),
+        guard_spec_payload=guard_spec_payload,
+    )
+
+    selected = outcome.selected
+    assert selected.llm_provider_succeeded is True
+    assert selected.fallback_used is False
+    assert selected.manifest["notes"] == manifest["notes"]
+    assert llm.prompts
+    service_main = next(entry for entry in selected.manifest["files"] if entry.get("role") == "service_main")
+    assert "render_template_string" in service_main["content"]

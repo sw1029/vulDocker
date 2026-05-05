@@ -39,6 +39,32 @@ def test_plan_records_sid_inputs_for_traceability() -> None:
     assert sid_inputs["components"]["effective_vuln_ids_digest"] == plan["effective_vuln_ids_digest"]
 
 
+def test_plan_records_multi_cve_bundles_and_remote_research_policy() -> None:
+    normalization = normalize_requirement(
+        {
+            "cve_ids": ["CVE-2099-0001", "CVE-2099-0002"],
+            "multi_vuln": True,
+            "seed": 7,
+            "model_version": "gpt-5.4",
+            "corpus_snapshot": "rag-snap-20251109",
+        },
+        multi_vuln_opt_in=True,
+    )
+    plan = build_plan(normalization)
+
+    assert plan["features"]["multi_vuln"] is True
+    assert plan["requested_vuln_ids"] == ["CVE-2099-0001", "CVE-2099-0002"]
+    assert plan["vuln_ids"] == ["CVE-2099-0001", "CVE-2099-0002"]
+    assert plan["vuln_ids_digest"] == plan["effective_vuln_ids_digest"]
+    assert plan["policy"]["require_researcher_evidence"] is True
+    assert plan["policy"]["researcher"]["search_policy"] == "remote_required"
+    assert [item["slug"] for item in plan["run_matrix"]["vuln_bundles"]] == [
+        "cve-2099-0001",
+        "cve-2099-0002",
+    ]
+    assert plan["requirement"]["vuln_request_irs"][1]["request_label"] == "CVE-2099-0002"
+
+
 def test_sid_changes_when_generator_mode_or_runtime_surface_changes() -> None:
     base = _requirement("CWE-89")
     template_req = dict(base)

@@ -55,6 +55,94 @@ def test_react_loop_query_plan_exposes_family_hypotheses_and_evidence_types(tmp_
     assert "user-controlled redirect target reaches redirect sink" in plan["exploit_hypotheses"]
 
 
+def test_react_loop_query_plan_prioritizes_cve_advisory_queries(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-react-cve-plan"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    plan = loop.query_plan_from_requirement(
+        {
+            "cve_id": "CVE-2099-0001",
+            "language": "python",
+            "framework": "flask",
+        },
+        limit=3,
+    )
+
+    assert plan["request_label"] == "CVE-2099-0001"
+    assert plan["queries"][0]["evidence_type"] == "advisory"
+    assert plan["queries"][0]["rationale"] == "cve-first official advisory seed"
+    assert "CVE-2099-0001 NVD advisory" in plan["queries"][0]["query"]
+    assert any(item["evidence_type"] == "writeup" for item in plan["queries"])
+
+
+def test_react_loop_query_plan_expands_multiple_cve_ids(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-react-multi-cve-plan"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    plan = loop.query_plan_from_requirement(
+        {
+            "vuln_ids": ["CVE-2099-0001", "CVE-2099-0002"],
+            "language": "python",
+            "framework": "flask",
+        },
+        limit=6,
+    )
+    queries = [item["query"] for item in plan["queries"]]
+
+    assert any("CVE-2099-0001 NVD advisory" in query for query in queries)
+    assert any("CVE-2099-0002 NVD advisory" in query for query in queries)
+    assert sum(1 for item in plan["queries"] if item["rationale"] == "cve-first official advisory seed") == 2
+
+
+def test_react_loop_query_plan_accepts_raw_cve_ids_list(tmp_path: Path, monkeypatch) -> None:
+    sid = "sid-react-raw-cve-ids-plan"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    plan = loop.query_plan_from_requirement(
+        {
+            "cve_ids": ["CVE-2099-0001", "CVE-2099-0002"],
+            "language": "python",
+            "framework": "flask",
+        },
+        limit=6,
+    )
+    queries = [item["query"] for item in plan["queries"]]
+
+    assert any("CVE-2099-0001 NVD advisory" in query for query in queries)
+    assert any("CVE-2099-0002 NVD advisory" in query for query in queries)
+    assert sum(1 for item in plan["queries"] if item["rationale"] == "cve-first official advisory seed") == 2
+
+
+def test_react_loop_query_plan_prefers_effective_vuln_ids_over_raw_cve_ids(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-react-effective-cve-plan"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    plan = loop.query_plan_from_requirement(
+        {
+            "vuln_ids": ["CVE-2099-0001"],
+            "cve_ids": ["CVE-2099-0001", "CVE-2099-0002"],
+            "language": "python",
+            "framework": "flask",
+        },
+        limit=8,
+    )
+    queries = [item["query"] for item in plan["queries"]]
+
+    assert any("CVE-2099-0001 NVD advisory" in query for query in queries)
+    assert all("CVE-2099-0002" not in query for query in queries)
+
+
 def test_react_loop_family_hypothesis_ranking_surfaces_contradictions(tmp_path: Path, monkeypatch) -> None:
     sid = "sid-react-ranking"
     monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
@@ -106,6 +194,63 @@ def test_react_loop_family_hypothesis_ranking_marks_single_family_as_non_ambiguo
     assert ranking["top_family"] == "open_redirect"
     assert ranking["ambiguous"] is False
     assert ranking["contradiction_count"] == 0
+
+
+def test_react_loop_family_hypothesis_ranking_uses_cwe_references_from_cve_advisory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-react-cve-cwe-ranking"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    ranking = loop.rank_family_hypotheses(
+        [
+            {
+                "title": "CVE-2099-0001 NVD advisory",
+                "url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0001",
+                "snippet": "Official advisory with affected versions and weakness metadata.",
+                "raw_content": '{"weaknesses":[{"description":[{"lang":"en","value":"CWE-79"}]}]}',
+            }
+        ],
+        base_hypotheses=[],
+    )
+
+    assert ranking["top_family"] == "xss"
+    assert ranking["top_confidence"] in {"medium", "high"}
+    top = ranking["ranked_families"][0]
+    assert top["matched_cwes"] == ["cwe-79"]
+    assert {
+        "basis": "cwe_reference",
+        "confidence": "high",
+        "cwe_id": "cwe-79",
+    } in top["bases"]
+
+
+def test_react_loop_family_hypothesis_ranking_ignores_cwe_references_from_query_only(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sid = "sid-react-cwe-query-only"
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    loop = ReactLoop(sid)
+
+    ranking = loop.rank_family_hypotheses(
+        [
+            {
+                "title": "Database login bypass writeup",
+                "url": "https://example.com/login-bypass",
+                "snippet": "SQL injection with UNION SELECT in a vulnerable login query.",
+                "query": "CWE-79 NVD advisory affected versions weakness details",
+            }
+        ],
+        base_hypotheses=[],
+    )
+
+    assert ranking["top_family"] == "sqli"
+    assert not any(item["family"] == "xss" for item in ranking["ranked_families"])
 
 
 def test_react_loop_queries_ignore_noisy_regression_intent(tmp_path: Path, monkeypatch) -> None:

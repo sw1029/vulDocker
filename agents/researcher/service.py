@@ -119,7 +119,7 @@ class ResearcherService:
 
     def run(self) -> Path:
         snapshot = self._snapshot_id()
-        rag_context = load_static_context(snapshot)
+        rag_context = self._scope_static_rag_context(load_static_context(snapshot))
         query_plan = self.react_loop.query_plan_from_requirement(
             self.requirement,
             limit=self._effective_query_plan_limit(),
@@ -413,6 +413,58 @@ class ResearcherService:
             or requirement.get("corpus_snapshot")
             or "mvp-sample"
         )
+
+    def _scope_static_rag_context(self, rag_context: str) -> str:
+        if not isinstance(rag_context, str) or not rag_context.strip():
+            return rag_context
+        active_cves = set(self._active_cve_identifiers())
+        if not active_cves:
+            return rag_context
+        scoped_chunks: List[str] = []
+        for raw_chunk in re.split(r"\n{2,}", rag_context):
+            chunk = raw_chunk.strip()
+            if not chunk:
+                continue
+            chunk_cves = set(self._cve_identifiers_from_value(chunk))
+            if chunk_cves and chunk_cves.isdisjoint(active_cves):
+                continue
+            scoped_chunks.append(chunk)
+        return "\n\n".join(scoped_chunks)
+
+    def _active_cve_identifiers(self) -> List[str]:
+        effective_ids = self._cve_identifiers_from_sequence(self.requirement.get("vuln_ids"))
+        if effective_ids:
+            return effective_ids
+        identifiers: List[str] = []
+        for key in ("vuln_id", "cve_id"):
+            for identifier in self._cve_identifiers_from_value(self.requirement.get(key)):
+                if identifier not in identifiers:
+                    identifiers.append(identifier)
+        if identifiers:
+            return identifiers
+        return self._cve_identifiers_from_sequence(self.requirement.get("cve_ids"))
+
+    @classmethod
+    def _cve_identifiers_from_sequence(cls, value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        identifiers: List[str] = []
+        for item in value:
+            for identifier in cls._cve_identifiers_from_value(item):
+                if identifier not in identifiers:
+                    identifiers.append(identifier)
+        return identifiers
+
+    @staticmethod
+    def _cve_identifiers_from_value(value: Any) -> List[str]:
+        if not isinstance(value, str):
+            return []
+        identifiers: List[str] = []
+        for match in re.finditer(r"\bCVE-\d{4}-\d+\b", value, flags=re.IGNORECASE):
+            token = match.group(0).upper()
+            if token not in identifiers:
+                identifiers.append(token)
+        return identifiers
 
     def _search_cache_path(self) -> Path:
         repo_root = get_repo_root().resolve()
@@ -722,6 +774,7 @@ class ResearcherService:
             score: Any = None,
             matched_aliases: Optional[List[str]] = None,
             matched_anchors: Optional[List[str]] = None,
+            matched_cwes: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
             token = str(family or "").strip().lower()
             if not token:
@@ -742,6 +795,13 @@ class ResearcherService:
                             anchor = str(item).strip().lower()
                             if anchor and anchor not in existing_anchors:
                                 existing_anchors.append(anchor)
+                if matched_cwes:
+                    existing_cwes = existing.setdefault("matched_cwes", [])
+                    if isinstance(existing_cwes, list):
+                        for item in matched_cwes:
+                            cwe_id = str(item).strip().lower()
+                            if cwe_id and cwe_id not in existing_cwes:
+                                existing_cwes.append(cwe_id)
                 return existing
             node_id = f"family:{token}"
             entry = {
@@ -756,6 +816,11 @@ class ResearcherService:
                     for item in (matched_anchors or [])
                     if isinstance(item, str) and str(item).strip()
                 ],
+                "matched_cwes": [
+                    str(item).strip().lower()
+                    for item in (matched_cwes or [])
+                    if isinstance(item, str) and str(item).strip()
+                ],
             }
             family_entries[token] = entry
             nodes.append(
@@ -767,6 +832,7 @@ class ResearcherService:
                     "score": score,
                     "matched_aliases": entry["matched_aliases"],
                     "matched_anchors": entry["matched_anchors"],
+                    "matched_cwes": entry["matched_cwes"],
                 }
             )
             return entry
@@ -789,6 +855,11 @@ class ResearcherService:
                 matched_anchors=[
                     str(item).strip().lower()
                     for item in (entry.get("matched_anchors") or [])
+                    if isinstance(item, str) and str(item).strip()
+                ],
+                matched_cwes=[
+                    str(item).strip().lower()
+                    for item in (entry.get("matched_cwes") or [])
                     if isinstance(item, str) and str(item).strip()
                 ],
             )
@@ -862,6 +933,11 @@ class ResearcherService:
                 if any(token in evidence_text for token in family_meta.get("matched_aliases") or []):
                     supports_family = True
                 elif any(token in evidence_text for token in family_meta.get("matched_anchors") or []):
+                    supports_family = True
+                elif any(
+                    self._evidence_text_contains_cwe(evidence_text, cwe_id)
+                    for cwe_id in family_meta.get("matched_cwes") or []
+                ):
                     supports_family = True
                 elif family_label and family_label in evidence_text:
                     supports_family = True
@@ -1007,7 +1083,7 @@ class ResearcherService:
     def _generate_report(self, rag_context: str, search_hits: List[SearchResult]) -> Dict[str, Any]:
         prompt = build_researcher_prompt(
             self.requirement,
-            search_results=[hit.to_payload() for hit in search_hits],
+            search_results=self._search_results_for_prompt(search_hits),
             rag_context=rag_context,
             failure_context=self.react_loop.failure_context,
             variation_key=self.variation_manager.key,
@@ -1015,6 +1091,21 @@ class ResearcherService:
         self._record_prompt_invocation("researcher_report")
         raw = self.llm.generate(prompt)
         return self._parse_report(raw)
+
+    def _search_results_for_prompt(self, search_hits: List[SearchResult]) -> List[Dict[str, Any]]:
+        payload: List[Dict[str, Any]] = []
+        raw_included = 0
+        for hit in search_hits:
+            item = hit.to_payload()
+            raw_content = getattr(hit, "raw_content", None)
+            if isinstance(raw_content, str) and raw_content.strip() and raw_included < 8:
+                evidence_type = self._classify_evidence_type(hit)
+                authority = self._source_authority_for_hit(hit, evidence_type=evidence_type)
+                if evidence_type == "advisory" or authority == "high":
+                    item["raw_content"] = re.sub(r"\s+", " ", raw_content).strip()[:1600]
+                    raw_included += 1
+            payload.append(item)
+        return payload
 
     def _parse_report(self, raw: str) -> Dict[str, Any]:
         text = (raw or "").strip()
@@ -2512,6 +2603,7 @@ class ResearcherService:
         name_driven = self._bundle_is_name_driven(bundle)
         open_world_strict = self._open_world_strict_mode()
         remote_hits = [hit for hit in search_hits if str(hit.source).strip().lower() == "remote"]
+        authoritative_cached_hits = self._authoritative_cached_hits(search_hits)
         if open_world_strict and name_driven and self._search_degraded:
             vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
             return (
@@ -2542,15 +2634,17 @@ class ResearcherService:
                 ),
             )
         if require_evidence and unknown and not remote_hits:
-            vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
-            return (
-                "insufficient",
-                (
-                    f"Insufficient researcher evidence for unknown CWE {vuln}: remote provenance is required, "
-                    "but only local/no evidence was collected. Configure the remote search provider or set "
-                    "policy.require_researcher_evidence=false explicitly."
-                ),
-            )
+            if not (search_policy == "local_only" and authoritative_cached_hits):
+                vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
+                return (
+                    "insufficient",
+                    (
+                        f"Insufficient researcher evidence for unknown vulnerability {vuln}: remote provenance is required "
+                        "unless researcher.search_policy=local_only has high-authority cached advisory evidence. Configure "
+                        "the remote search provider, add cached NVD/MITRE/advisory evidence, or set "
+                        "policy.require_researcher_evidence=false explicitly."
+                    ),
+                )
         if require_evidence and not search_hits:
             vuln = bundle.vuln_id if bundle else str(self.requirement.get("vuln_id") or "UNKNOWN")
             return (
@@ -2608,6 +2702,18 @@ class ResearcherService:
                 ),
             )
         return "sufficient", ""
+
+    def _authoritative_cached_hits(self, search_hits: List[SearchResult]) -> List[SearchResult]:
+        hits: List[SearchResult] = []
+        for hit in search_hits:
+            if str(hit.source or "").strip().lower() != "local":
+                continue
+            evidence_type = self._classify_evidence_type(hit)
+            if evidence_type != "advisory":
+                continue
+            if self._source_authority_for_hit(hit, evidence_type=evidence_type) == "high":
+                hits.append(hit)
+        return hits
 
     def _score_evidence_relevance(
         self,
@@ -2827,6 +2933,9 @@ class ResearcherService:
                 family_terms.extend(["template injection", "server-side template injection", "ssti"])
                 exploit_terms.extend(["render_template_string", "jinja2", "{{7*7}}", "template rendering"])
 
+        if re.fullmatch(r"cve-\d{4}-\d{4,}", vuln_id):
+            family_terms.append(vuln_id)
+
         raw_name = self._raw_vuln_label()
         if raw_name:
             family_terms.append(raw_name)
@@ -2955,6 +3064,13 @@ class ResearcherService:
             if token and token in lowered and token not in matched:
                 matched.append(token)
         return matched
+
+    @staticmethod
+    def _evidence_text_contains_cwe(text: str, cwe_id: str) -> bool:
+        match = re.fullmatch(r"cwe[-_\s]*(\d{1,5})", str(cwe_id or "").strip(), flags=re.IGNORECASE)
+        if not match:
+            return False
+        return bool(re.search(rf"\bcwe[-_\s]*{re.escape(match.group(1))}\b", str(text or ""), flags=re.IGNORECASE))
 
     @staticmethod
     def _dedupe_strings(values: List[str]) -> List[str]:

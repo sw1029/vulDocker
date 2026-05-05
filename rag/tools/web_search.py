@@ -1,10 +1,12 @@
 """Fallback-friendly search facade consumed by the Researcher agent."""
 from __future__ import annotations
 
+import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from common.config import get_tavily_api_key
 from common.logging import get_logger
@@ -283,31 +285,25 @@ class WebSearchTool:
 
     def _local_search(self, query: str, limit: int) -> List[SearchResult]:
         tokens = [token for token in query.lower().split() if token]
-        hits: List[SearchResult] = []
+        identifiers = _explicit_vuln_identifiers(query)
+        candidates: List[Tuple[int, str, SearchResult]] = []
         for path in self._iter_local_files():
             try:
                 text = path.read_text(encoding="utf-8")
             except Exception as exc:  # pragma: no cover - IO guard
                 LOGGER.debug("Skipping %s due to read error: %s", path, exc)
                 continue
-            haystack = text.lower()
-            if tokens and not any(token in haystack for token in tokens):
+            haystack = f"{path.name}\n{text}".lower()
+            identifier_matches = sum(1 for identifier in identifiers if identifier in haystack)
+            if identifiers and not identifier_matches:
                 continue
-            snippet = " ".join(text.strip().split())
-            if not snippet:
-                snippet = "(empty content)"
-            hits.append(
-                SearchResult(
-                    title=path.name,
-                    url=str(path),
-                    snippet=snippet[:400],
-                    source="local",
-                    provider="local",
-                )
-            )
-            if len(hits) >= limit:
-                break
-        return hits
+            token_matches = sum(1 for token in tokens if token in haystack)
+            if not identifiers and tokens and token_matches == 0:
+                continue
+            score = (identifier_matches * 100) + token_matches
+            candidates.append((score, str(path), self._local_file_result(path, text, identifiers=identifiers)))
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return [hit for _score, _path, hit in candidates[:limit]]
 
     def _iter_local_files(self) -> Iterable[Path]:
         if not self.local_root.exists():
@@ -317,12 +313,217 @@ class WebSearchTool:
             base = self.local_root / section
             if not base.exists():
                 continue
-            for pattern in ("*.md", "*.txt"):
+            for pattern in ("*.md", "*.txt", "*.json"):
                 for path in sorted(base.rglob(pattern)):
                     yield path
                     yielded += 1
                     if yielded >= self.max_local_files:
                         return
+
+    @staticmethod
+    def _local_file_result(path: Path, text: str, *, identifiers: Optional[List[str]] = None) -> SearchResult:
+        if path.suffix.lower() != ".json":
+            snippet = " ".join(text.strip().split()) or "(empty content)"
+            return SearchResult(
+                title=path.name,
+                url=str(path),
+                snippet=snippet[:400],
+                source="local",
+                provider="local",
+                raw_content=text,
+            )
+
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        cve_record = _cve_record_payload(payload, identifiers=identifiers or [])
+        if not cve_record and any(key in payload for key in ("id", "CVE_data_meta", "descriptions", "weaknesses", "problemtype", "references")):
+            cve_record = payload
+        cve_id = _json_text(payload, "cve_id", "cveID", "cveId") or _nested_json_text(
+            cve_record,
+            ("id",),
+            ("CVE_data_meta", "ID"),
+            ("cveMetadata", "cveId"),
+        )
+        title = _json_text(payload, "title", "vulnerabilityName") or cve_id or path.name
+        description = (
+            _json_text(payload, "description", "shortDescription")
+            or _localized_json_text(cve_record.get("descriptions"))
+            or _localized_json_text(_nested_json_value(cve_record, ("description", "description_data")))
+        )
+        link = (
+            _json_text(payload, "link", "url", "references")
+            or _reference_url_from_payload(cve_record)
+            or str(path)
+        )
+        published = (
+            _json_text(payload, "published", "dateAdded", "publicationDate")
+            or _nested_json_text(cve_record, ("published",), ("publishedDate",))
+            or _json_text(payload, "publishedDate")
+        )
+        source = _json_text(payload, "source") or ("nvd" if cve_record else "")
+        weakness_text = _weakness_text_from_payload(cve_record)
+        tags = payload.get("tags")
+        tag_text = ""
+        if isinstance(tags, list):
+            tag_text = ", ".join(str(item).strip() for item in tags if str(item).strip())
+        elif isinstance(tags, str):
+            tag_text = tags.strip()
+        parts = [
+            f"CVE: {cve_id}" if cve_id else "",
+            f"Title: {title}" if title else "",
+            f"Description: {description}" if description else "",
+            f"Weaknesses: {weakness_text}" if weakness_text else "",
+            f"Source: {source}" if source else "",
+            f"Tags: {tag_text}" if tag_text else "",
+        ]
+        snippet = " ".join(part for part in parts if part).strip()
+        if not snippet:
+            snippet = " ".join(text.strip().split()) or "(empty content)"
+        raw_content = text
+        if cve_record:
+            try:
+                raw_content = json.dumps(cve_record, indent=2, ensure_ascii=False)
+            except TypeError:
+                raw_content = text
+        return SearchResult(
+            title=title,
+            url=link,
+            snippet=snippet[:400],
+            source="local",
+            provider="local",
+            published=published or None,
+            raw_content=raw_content,
+        )
+
+
+def _json_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _cve_record_payload(payload: dict[str, Any], *, identifiers: List[str] | None = None) -> dict[str, Any]:
+    identifiers = [str(item or "").strip().lower() for item in (identifiers or []) if str(item or "").strip()]
+    cve_identifiers = [item for item in identifiers if item.startswith("cve-")]
+    cwe_identifiers = [item for item in identifiers if item.startswith("cwe-")]
+    records = _cve_record_payloads(payload)
+    if records:
+        for record in records:
+            cve_id = _nested_json_text(record, ("id",), ("CVE_data_meta", "ID"), ("cveMetadata", "cveId")).lower()
+            if cve_id and cve_id in cve_identifiers:
+                return record
+        for record in records:
+            weakness_text = _weakness_text_from_payload(record).lower()
+            if weakness_text and any(identifier in weakness_text for identifier in cwe_identifiers):
+                return record
+        return records[0]
+    return {}
+
+
+def _cve_record_payloads(payload: dict[str, Any]) -> List[dict[str, Any]]:
+    cve = payload.get("cve")
+    if isinstance(cve, dict):
+        record = dict(cve)
+        if "cveMetadata" not in record and isinstance(payload.get("cveMetadata"), dict):
+            record["cveMetadata"] = payload["cveMetadata"]
+        return [record]
+    vulnerabilities = payload.get("vulnerabilities")
+    records: List[dict[str, Any]] = []
+    if isinstance(vulnerabilities, list):
+        for item in vulnerabilities:
+            if not isinstance(item, dict):
+                continue
+            records.extend(_cve_record_payloads(item))
+    return records
+
+
+def _nested_json_value(payload: dict[str, Any], path: Tuple[str, ...]) -> Any:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _nested_json_text(payload: dict[str, Any], *paths: Tuple[str, ...]) -> str:
+    for path in paths:
+        value = _nested_json_value(payload, path)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _localized_json_text(values: Any) -> str:
+    if not isinstance(values, list):
+        return ""
+    fallback = ""
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        if not fallback:
+            fallback = value
+        if str(item.get("lang") or "").strip().lower() in {"en", "eng"}:
+            return value
+    return fallback
+
+
+def _reference_url_from_payload(payload: dict[str, Any]) -> str:
+    references = payload.get("references")
+    if isinstance(references, dict):
+        reference_data = references.get("referenceData")
+    else:
+        reference_data = references
+    if not isinstance(reference_data, list):
+        return ""
+    for item in reference_data:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if url:
+            return url
+    return ""
+
+
+def _weakness_text_from_payload(payload: dict[str, Any]) -> str:
+    values: List[str] = []
+    weaknesses = payload.get("weaknesses")
+    if isinstance(weaknesses, list):
+        for entry in weaknesses:
+            if not isinstance(entry, dict):
+                continue
+            text = _localized_json_text(entry.get("description"))
+            if text and text not in values:
+                values.append(text)
+    problemtype_data = _nested_json_value(payload, ("problemtype", "problemtype_data"))
+    if isinstance(problemtype_data, list):
+        for entry in problemtype_data:
+            if not isinstance(entry, dict):
+                continue
+            text = _localized_json_text(entry.get("description"))
+            if text and text not in values:
+                values.append(text)
+    return ", ".join(values)
+
+
+def _explicit_vuln_identifiers(value: str) -> List[str]:
+    text = str(value or "").lower()
+    identifiers: List[str] = []
+    for pattern in (r"\bcve-\d{4}-\d+\b", r"\bcwe-\d+\b"):
+        for match in re.finditer(pattern, text):
+            token = match.group(0)
+            if token not in identifiers:
+                identifiers.append(token)
+    return identifiers
 
 
 __all__ = ["SearchExecution", "SearchRequest", "SearchResult", "WebSearchTool"]

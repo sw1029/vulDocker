@@ -72,6 +72,213 @@ def test_contract_preserves_family_hypothesis_summary_from_researcher_report(tmp
     assert semantic_contract["family_hypothesis_summary"]["top_confidence"] == "high"
 
 
+def test_contract_marks_cve_cwe_family_selection_evidence_backed(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CVE-2099-0001",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="cve-2099-0001",
+        requirement={
+            "vuln_id": "CVE-2099-0001",
+            "cve_id": "CVE-2099-0001",
+            "language": "python",
+            "framework": "flask",
+            "request_ir": {
+                "request_label": "CVE-2099-0001",
+                "resolved_vuln_id": "CVE-2099-0001",
+                "resolution_state": "explicit_identifier",
+                "resolution_match_class": "exact_identifier",
+                "resolution_confidence": "high",
+                "pattern_seed_state": "preserved",
+            },
+            "policy": {"require_researcher_evidence": True},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "xss",
+                "top_confidence": "medium",
+                "contradiction_count": 0,
+                "contradictory_families": [],
+                "ranked_families": [
+                    {
+                        "family": "xss",
+                        "confidence": "medium",
+                        "score": 0.53,
+                        "signal_hits": 1,
+                        "matched_cwes": ["cwe-79"],
+                    }
+                ],
+            },
+            "evidence_graph": {
+                "schema_version": "evidence_graph@0.1",
+                "nodes": [
+                    {"id": "request", "kind": "request", "label": "CVE-2099-0001"},
+                    {
+                        "id": "evidence:1",
+                        "kind": "evidence",
+                        "url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0001",
+                        "evidence_type": "advisory",
+                        "source_authority": "high",
+                    },
+                    {
+                        "id": "family:xss",
+                        "kind": "family_hypothesis",
+                        "family": "xss",
+                        "confidence": "medium",
+                        "matched_cwes": ["cwe-79"],
+                    },
+                ],
+                "edges": [
+                    {"from": "request", "to": "family:xss", "kind": "family_hypothesis"},
+                    {"from": "evidence:1", "to": "family:xss", "kind": "supports_family_hypothesis"},
+                ],
+            },
+        },
+    )
+
+    selection = payload["request_ir"]["selection_decision"]
+    assert selection["family"]["selected"] is True
+    assert selection["family"]["selected_family"] == "xss"
+    assert selection["family"]["evidence_backed"] is True
+    assert selection["family"]["support_by_source_authority"] == {"high": 1}
+    assert selection["stack"]["selected"] is True
+    assert selection["stack"]["basis"] == "explicit_requirement"
+    assert selection["open_world_evidence_ready"] is True
+
+
+def test_contract_selection_branch_trace_links_cve_selection_to_semantic_materializer(
+    tmp_path: Path,
+) -> None:
+    metadata_dir = tmp_path / "metadata"
+    workspace_dir = tmp_path / "workspace"
+    metadata_dir.mkdir()
+    workspace_dir.mkdir()
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "sid": "sid-contract",
+                "generation_origin": "deterministic_fallback",
+                "fallback_used": True,
+                "fallback_class": "semantic_guided",
+                "manifest": {
+                    "files": [
+                        {
+                            "path": "app.py",
+                            "role": "service_main",
+                            "content": "from flask import Flask\napp = Flask(__name__)\n",
+                        },
+                        {
+                            "path": "poc.py",
+                            "role": "poc_entry",
+                            "content": "print('XSS SUCCESS')\n",
+                        },
+                    ],
+                    "poc": {
+                        "cmd": "python poc.py --base-url {{base_url}}",
+                        "success_signature": "XSS SUCCESS",
+                    },
+                    "metadata": {
+                        "fallback_class": "semantic_guided",
+                        "materializer": "minimal_dynamic",
+                        "semantic_guided_family": "xss",
+                        "semantic_guided_selection_source": "request_ir_selection",
+                        "semantic_guided_candidate_families": ["xss"],
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = build_generator_contract(
+        sid="sid-contract",
+        vuln_id="CVE-2099-0042",
+        metadata_dir=metadata_dir,
+        workspace_dir=workspace_dir,
+        generator_mode="synthesis",
+        bundle_slug="cve-2099-0042",
+        requirement={
+            "vuln_id": "CVE-2099-0042",
+            "cve_id": "CVE-2099-0042",
+            "language": "python",
+            "framework": "flask",
+            "request_ir": {
+                "request_label": "CVE-2099-0042",
+                "resolved_vuln_id": "CVE-2099-0042",
+                "resolution_state": "explicit_identifier",
+                "resolution_match_class": "exact_identifier",
+                "resolution_confidence": "high",
+                "family_candidates": [
+                    {
+                        "family": "xss",
+                        "source": "researcher_hypothesis",
+                        "confidence": "medium",
+                        "evidence_ids": ["evidence:1"],
+                    }
+                ],
+            },
+            "policy": {"require_researcher_evidence": True},
+        },
+        researcher_report={
+            "quality": "sufficient",
+            "family_hypothesis_summary": {
+                "top_family": "xss",
+                "top_confidence": "medium",
+                "contradiction_count": 0,
+                "ranked_families": [
+                    {
+                        "family": "xss",
+                        "confidence": "medium",
+                        "matched_cwes": ["cwe-79"],
+                    }
+                ],
+            },
+            "evidence_graph": {
+                "schema_version": "evidence_graph@0.1",
+                "nodes": [
+                    {"id": "request", "kind": "request", "label": "CVE-2099-0042"},
+                    {
+                        "id": "evidence:1",
+                        "kind": "evidence",
+                        "url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0042",
+                        "evidence_type": "advisory",
+                        "source_authority": "high",
+                    },
+                    {
+                        "id": "family:xss",
+                        "kind": "family_hypothesis",
+                        "family": "xss",
+                        "confidence": "medium",
+                        "matched_cwes": ["cwe-79"],
+                    },
+                ],
+                "edges": [
+                    {"from": "request", "to": "family:xss", "kind": "family_hypothesis"},
+                    {"from": "evidence:1", "to": "family:xss", "kind": "supports_family_hypothesis"},
+                ],
+            },
+        },
+    )
+
+    trace = payload["selection_branch_trace"]
+    assert payload["provenance"]["materializer"] == "minimal_dynamic"
+    assert payload["provenance"]["semantic_guided_selection_source"] == "request_ir_selection"
+    assert trace["materializer"] == "minimal_dynamic"
+    assert trace["materializer_selection_source"] == "request_ir_selection"
+    assert trace["materializer_family"] == "xss"
+    assert trace["selected_branch"]["family"]["selected_value"] == "xss"
+    assert trace["selected_branch"]["family"]["materializer_family"] == "xss"
+    family_causality = trace["branch_causality"]["family_to_materializer"]
+    assert family_causality["selected_value"] == "xss"
+    assert family_causality["materializer_family"] == "xss"
+    assert family_causality["materializer_selection_source"] == "request_ir_selection"
+    assert family_causality["aligned"] is True
+
+
 def test_contract_surfaces_exploit_oracle_and_name_only_generation_spec(tmp_path: Path) -> None:
     payload = build_generator_contract(
         sid="sid-contract",
@@ -1156,6 +1363,54 @@ def test_contract_surfaces_identifier_candidate_summary_and_evidence_graph(tmp_p
     assert spec["evidence_graph_summary"]["by_kind"]["evidence"] == 1
     assert spec["evidence_graph_summary"]["by_edge_kind"]["supports_family_hypothesis"] == 1
     assert spec["evidence_graph_summary"]["by_edge_kind"]["supports_stack_hypothesis"] == 1
+
+
+def test_contract_surfaces_research_evidence_summary_for_cve_advisory(tmp_path: Path) -> None:
+    payload = build_generator_contract(
+        sid="sid-contract-cve",
+        vuln_id="CVE-2099-0001",
+        metadata_dir=tmp_path,
+        workspace_dir=tmp_path,
+        generator_mode="research_seed",
+        bundle_slug="cve-2099-0001",
+        requirement={"vuln_id": "CVE-2099-0001"},
+        researcher_report={
+            "quality": "sufficient",
+            "evidence_type_summary": {
+                "hit_count": 1,
+                "matched_target_count": 1,
+                "by_type": {"advisory": 1},
+                "by_query_target": {"advisory": 1},
+                "by_source_authority": {"high": 1},
+            },
+            "evidence": [
+                {
+                    "query": "CVE-2099-0001 NVD advisory affected versions weakness details",
+                    "query_target": "advisory",
+                    "evidence_type": "advisory",
+                    "source_authority": "high",
+                    "source": "local",
+                    "provider": "local",
+                    "title": "NVD - CVE-2099-0001",
+                    "url": "file:///tmp/rag/corpus/raw/poc/20250101/CVE-2099-0001.json",
+                    "snippet": "CVE-2099-0001 advisory for affected Flask endpoint.",
+                }
+            ],
+        },
+    )
+
+    summary = payload["research_evidence_summary"]
+
+    assert summary["hit_count"] == 1
+    assert summary["evidence_count"] == 1
+    assert summary["matched_target_count"] == 1
+    assert summary["by_type"]["advisory"] == 1
+    assert summary["by_query_target"]["advisory"] == 1
+    assert summary["by_source_authority"]["high"] == 1
+    assert summary["advisory_count"] == 1
+    assert summary["high_authority_count"] == 1
+    assert summary["cve_advisory_count"] == 1
+    assert summary["local_count"] == 1
 
 
 def test_contract_name_only_generation_spec_uses_request_ir_fallback_source(tmp_path: Path) -> None:

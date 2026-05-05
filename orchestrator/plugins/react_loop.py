@@ -100,25 +100,47 @@ _FAMILY_HINTS: Dict[str, Dict[str, Any]] = {
 _VULN_ID_FAMILY_MAP = {
     "cwe-89": "sqli",
     "cwe_89": "sqli",
+    "cwe-564": "sqli",
+    "cwe_564": "sqli",
     "cwe-352": "csrf",
     "cwe_352": "csrf",
     "cwe-22": "path_traversal",
     "cwe_22": "path_traversal",
+    "cwe-23": "path_traversal",
+    "cwe_23": "path_traversal",
+    "cwe-36": "path_traversal",
+    "cwe_36": "path_traversal",
     "cwe-79": "xss",
     "cwe_79": "xss",
+    "cwe-80": "xss",
+    "cwe_80": "xss",
     "cwe-918": "ssrf",
     "cwe_918": "ssrf",
     "cwe-502": "deserialization",
     "cwe_502": "deserialization",
+    "cwe-77": "command_injection",
+    "cwe_77": "command_injection",
     "cwe-78": "command_injection",
     "cwe_78": "command_injection",
     "cwe-94": "code_injection",
     "cwe_94": "code_injection",
+    "cwe-95": "code_injection",
+    "cwe_95": "code_injection",
+    "cwe-90": "ldap_injection",
+    "cwe_90": "ldap_injection",
+    "cwe-611": "xxe",
+    "cwe_611": "xxe",
+    "cwe-601": "open_redirect",
+    "cwe_601": "open_redirect",
+    "cwe-1336": "template_injection",
+    "cwe_1336": "template_injection",
     "name-open-redirect": "open_redirect",
     "name-template-injection": "template_injection",
     "name-ldap-injection": "ldap_injection",
     "name-xxe": "xxe",
 }
+
+_CWE_ID_PATTERN = re.compile(r"\bcwe[-_\s]*(\d{1,5})\b", re.IGNORECASE)
 
 
 @dataclass
@@ -246,6 +268,21 @@ class ReactLoop:
                 evidence_type="reference_impl",
                 rationale="request_label-first vulnerable reference implementation seed",
                 priority=9,
+            )
+        for vuln_id in vuln_ids:
+            if not _is_cve_id(vuln_id):
+                continue
+            add_query(
+                f"{vuln_id} NVD advisory affected versions weakness details".strip(),
+                evidence_type="advisory",
+                rationale="cve-first official advisory seed",
+                priority=12,
+            )
+            add_query(
+                f"{vuln_id} exploit proof of concept vulnerable version {tech_stack}".strip(),
+                evidence_type="writeup",
+                rationale="cve-first exploitability seed",
+                priority=11,
             )
         for vuln_name in vuln_names:
             add_query(
@@ -504,6 +541,7 @@ class ReactLoop:
                     "signals": 0,
                     "matched_aliases": [],
                     "matched_anchors": [],
+                    "matched_cwes": [],
                     "bases": [],
                 }
                 hypotheses[family] = entry
@@ -520,23 +558,24 @@ class ReactLoop:
             entry["bases"].append({"basis": basis, "confidence": confidence})
 
         for raw in search_results:
-            if hasattr(raw, "title") and hasattr(raw, "snippet"):
-                text = " ".join(
-                    str(part or "").strip().lower()
-                    for part in (getattr(raw, "title", ""), getattr(raw, "url", ""), getattr(raw, "snippet", ""), getattr(raw, "raw_content", ""))
-                    if str(part or "").strip()
-                )
-            elif isinstance(raw, dict):
-                text = " ".join(
-                    str(part or "").strip().lower()
-                    for part in (raw.get("title"), raw.get("url"), raw.get("snippet"), raw.get("raw_content"))
-                    if str(part or "").strip()
-                )
-            else:
-                text = str(raw or "").strip().lower()
+            text = _family_ranking_evidence_text(raw)
             if not text:
                 continue
             authority_weight = _authority_weight_for_search_result(raw)
+            for cwe_id, family in _cwe_family_matches_from_text(text):
+                entry = _ensure_family(family)
+                increment = 0.46 if authority_weight >= 1.15 else 0.38
+                entry["score"] += round(increment * authority_weight, 3)
+                entry["signals"] += 1
+                if cwe_id not in entry["matched_cwes"]:
+                    entry["matched_cwes"].append(cwe_id)
+                basis = {
+                    "basis": "cwe_reference",
+                    "confidence": "high" if authority_weight >= 1.15 else "medium",
+                    "cwe_id": cwe_id,
+                }
+                if basis not in entry["bases"]:
+                    entry["bases"].append(basis)
             for family, config in _FAMILY_HINTS.items():
                 aliases = [token for token in config.get("aliases") or [] if isinstance(token, str) and token.strip()]
                 anchors = [token for token in config.get("anchors") or [] if isinstance(token, str) and token.strip()]
@@ -565,6 +604,7 @@ class ReactLoop:
                     "signal_hits": int(entry.get("signals") or 0),
                     "matched_aliases": list(entry.get("matched_aliases") or []),
                     "matched_anchors": list(entry.get("matched_anchors") or []),
+                    "matched_cwes": list(entry.get("matched_cwes") or []),
                     "bases": list(entry.get("bases") or []),
                 }
             )
@@ -640,11 +680,26 @@ class ReactLoop:
 
 
 def _vuln_ids_from_requirement(requirement: Dict[str, Any]) -> List[str]:
-    values = requirement.get("vuln_ids")
-    if isinstance(values, list):
-        normalized = [str(item).strip() for item in values if isinstance(item, str) and item.strip()]
-        if normalized:
-            return normalized
+    def collect(key: str) -> List[str]:
+        collected: List[str] = []
+        values = requirement.get(key)
+        if not isinstance(values, list):
+            return collected
+        for item in values:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            token = item.strip()
+            if token not in collected:
+                collected.append(token)
+        return collected
+
+    effective = collect("vuln_ids")
+    if effective:
+        return effective
+    for key in ("cve_ids", "cwe_ids"):
+        collected = collect(key)
+        if collected:
+            return collected
     fallback = requirement.get("vuln_id") or requirement.get("cwe_id") or requirement.get("cve_id")
     if isinstance(fallback, str) and fallback.strip():
         return [fallback.strip()]
@@ -747,6 +802,43 @@ def _curated_intent_query_seed(value: Any) -> str:
     if any(marker in lowered for marker in noisy_markers):
         return ""
     return text
+
+
+def _is_cve_id(value: Any) -> bool:
+    return bool(re.fullmatch(r"cve-\d{4}-\d+", str(value or "").strip().lower()))
+
+
+def _cwe_family_matches_from_text(text: str) -> List[tuple[str, str]]:
+    matches: List[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for match in _CWE_ID_PATTERN.finditer(str(text or "")):
+        cwe_id = f"cwe-{match.group(1)}"
+        family = _VULN_ID_FAMILY_MAP.get(cwe_id)
+        if not family:
+            continue
+        key = (cwe_id, family)
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(key)
+    return matches
+
+
+def _family_ranking_evidence_text(raw: Any) -> str:
+    if hasattr(raw, "title") and hasattr(raw, "snippet"):
+        parts = (
+            getattr(raw, "title", ""),
+            getattr(raw, "url", ""),
+            getattr(raw, "snippet", ""),
+            getattr(raw, "raw_content", ""),
+        )
+    elif isinstance(raw, dict):
+        # Query text is deliberately excluded so a planned query like
+        # "CWE-79 details" cannot become evidence for XSS by itself.
+        parts = (raw.get("title"), raw.get("url"), raw.get("snippet"), raw.get("raw_content"))
+    else:
+        parts = (raw,)
+    return " ".join(str(part or "").strip().lower() for part in parts if str(part or "").strip())
 
 
 def _infer_family_hypotheses(requirement: Dict[str, Any]) -> List[Dict[str, str]]:

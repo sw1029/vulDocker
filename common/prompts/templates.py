@@ -122,6 +122,39 @@ def _is_name_only_requirement(requirement: Dict[str, object]) -> bool:
     return is_name_driven_requirement(requirement if isinstance(requirement, dict) else {})
 
 
+def _is_cve_identifier(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    if not text.startswith("cve-"):
+        return False
+    parts = text.split("-")
+    return len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit()
+
+
+def _is_evidence_driven_open_world_requirement(requirement: Dict[str, object]) -> bool:
+    req = requirement if isinstance(requirement, dict) else {}
+    if _is_name_only_requirement(req):
+        return True
+    if _is_cve_identifier(req.get("vuln_id") or req.get("cve_id")):
+        return True
+    policy = req.get("policy") if isinstance(req.get("policy"), dict) else {}
+    if bool(policy.get("require_researcher_evidence")):
+        return True
+    researcher = req.get("researcher") if isinstance(req.get("researcher"), dict) else {}
+    if str(researcher.get("search_policy") or "").strip().lower() == "remote_required":
+        return True
+    request_ir = req.get("request_ir") if isinstance(req.get("request_ir"), dict) else {}
+    required_contract = (
+        request_ir.get("required_contract")
+        if isinstance(request_ir.get("required_contract"), dict)
+        else {}
+    )
+    if required_contract.get("require_research") is True or required_contract.get("require_remote_research") is True:
+        return True
+    if str(request_ir.get("pattern_seed_state") or "").strip().lower() == "genericized_unknown":
+        return True
+    return False
+
+
 def _has_researcher_report_payload(researcher_report: str) -> bool:
     text = str(researcher_report or "").strip()
     return bool(text and text != "(none provided)")
@@ -222,6 +255,14 @@ def _generation_posture_contract(
                 "- If evidence is weak, prefer a minimal topology over family-specific flourish.",
             ]
         )
+    elif _is_evidence_driven_open_world_requirement(requirement):
+        lines.extend(
+            [
+                "- Treat this as evidence-driven/open-world synthesis for an explicit vulnerability identifier, not as proof that a built-in family template exists.",
+                "- Do not assume CWE-family semantics from the identifier alone; use Researcher evidence, Guard Spec, and RAG snippets for input vector, sink, topology, and oracle details.",
+                "- If evidence is weak or contradictory, prefer a minimal topology and surface the uncertainty in manifest notes.",
+            ]
+        )
     else:
         lines.append("- Treat this as a known-family regression lane unless Researcher/Guard data contradicts it.")
     if _has_researcher_report_payload(researcher_report):
@@ -265,6 +306,72 @@ def _family_hypothesis_contract(researcher_report: str) -> str:
     if ambiguous and not contradiction_count:
         lines.append("- Family hypothesis margin is weak; keep the implementation minimal and evidence-driven.")
     return "\n".join(lines) if lines else "- No researcher family hypothesis summary was provided."
+
+
+def _researcher_evidence_contract(researcher_report: str) -> str:
+    payload = _parse_researcher_report_payload(researcher_report)
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+    summary = payload.get("evidence_type_summary") if isinstance(payload.get("evidence_type_summary"), dict) else {}
+    lines: List[str] = []
+    if isinstance(summary, dict) and summary:
+        hit_count = summary.get("hit_count")
+        matched_target_count = summary.get("matched_target_count")
+        by_type = summary.get("by_type") if isinstance(summary.get("by_type"), dict) else {}
+        by_authority = summary.get("by_source_authority") if isinstance(summary.get("by_source_authority"), dict) else {}
+        detail: List[str] = []
+        if isinstance(hit_count, int):
+            detail.append(f"hit_count=`{hit_count}`")
+        if isinstance(matched_target_count, int):
+            detail.append(f"matched_target_count=`{matched_target_count}`")
+        if by_type:
+            compact = ",".join(
+                f"{str(key).strip().lower()}:{int(value)}"
+                for key, value in by_type.items()
+                if str(key).strip() and isinstance(value, (int, float))
+            )
+            if compact:
+                detail.append(f"by_type=`{compact}`")
+        if by_authority:
+            compact = ",".join(
+                f"{str(key).strip().lower()}:{int(value)}"
+                for key, value in by_authority.items()
+                if str(key).strip() and isinstance(value, (int, float))
+            )
+            if compact:
+                detail.append(f"by_authority=`{compact}`")
+        if detail:
+            lines.append("- Evidence summary: " + ", ".join(detail) + ".")
+    for index, item in enumerate(evidence[:6], start=1):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        evidence_type = str(item.get("evidence_type") or item.get("query_target") or "").strip().lower()
+        authority = str(item.get("source_authority") or "").strip().lower()
+        source = str(item.get("source") or "").strip().lower()
+        provider = str(item.get("provider") or "").strip().lower()
+        url = str(item.get("url") or "").strip()
+        snippet = " ".join(str(item.get("snippet") or "").split())[:280]
+        detail = [f"#{index}"]
+        if evidence_type:
+            detail.append(f"type=`{evidence_type}`")
+        if authority:
+            detail.append(f"authority=`{authority}`")
+        if source:
+            source_detail = source
+            if provider and provider != source:
+                source_detail += f"/{provider}"
+            detail.append(f"source=`{source_detail}`")
+        if title:
+            detail.append(f"title=`{title[:120]}`")
+        if url:
+            detail.append(f"url=`{url[:180]}`")
+        if snippet:
+            detail.append(f"snippet=`{snippet}`")
+        lines.append("- Evidence " + ", ".join(detail) + ".")
+    if lines:
+        lines.append("- Use these evidence snippets as RAG context for endpoint shape, vulnerable version cues, exploit preconditions, and oracle details.")
+        return "\n".join(lines)
+    return "- No structured researcher evidence was provided."
 
 
 def _exploit_oracle_contract(requirement: Dict[str, object]) -> str:
@@ -924,6 +1031,7 @@ def build_synthesis_prompt(
         guard_spec=guard_spec,
     )
     family_hypothesis_contract = _family_hypothesis_contract(researcher_report)
+    researcher_evidence_contract = _researcher_evidence_contract(researcher_report)
     exploit_oracle_contract = _exploit_oracle_contract(requirement)
     name_only_generation_spec_contract = _name_only_generation_spec_contract(requirement)
     staged_synthesis_contract = _staged_synthesis_contract(requirement)
@@ -932,10 +1040,10 @@ def build_synthesis_prompt(
             "- Primary semantic contract is defined by Guard Spec semantic_signature.\n"
             "- Generated code and PoC must satisfy Guard Spec generator_assertions without contradiction."
         )
-    elif _is_name_only_requirement(requirement):
+    elif _is_evidence_driven_open_world_requirement(requirement):
         semantic_contract = (
-            "- Primary semantic contract should come from Researcher Report and any structured runtime/verification evidence.\n"
-            "- If the requirement only provides a name, avoid inventing extra family-specific semantics beyond the available evidence."
+            "- Primary semantic contract should come from Researcher Report, structured evidence, and RAG snippets.\n"
+            "- If the requirement only provides a name, CVE, or unsupported explicit identifier, avoid inventing extra family-specific semantics beyond the available evidence; this is especially important for CVE or unsupported explicit identifiers."
         )
     contract_block = (
         f"- Success signature: `{success_signature}`\n"
@@ -978,6 +1086,7 @@ def build_synthesis_prompt(
         "\n\n# Exploit Oracle\n{exploit_oracle_contract}"
         "\n\n# Generation Posture\n{generation_posture}"
         "\n\n# Researcher Family Hypothesis\n{family_hypothesis_contract}"
+        "\n\n# Researcher Evidence\n{researcher_evidence_contract}"
         "\n\n# Supported Guard Ops\n{supported_ops}"
         "\n\n# Vulnerability Semantics (MUST)\n{semantic_contract}"
         "\n\n# Internal Hints\n{hints}\n\n# Researcher Report (JSON)\n{researcher}"
@@ -994,6 +1103,7 @@ def build_synthesis_prompt(
             exploit_oracle_contract=exploit_oracle_contract,
             generation_posture=generation_posture,
             family_hypothesis_contract=family_hypothesis_contract,
+            researcher_evidence_contract=researcher_evidence_contract,
             supported_ops=supported_ops,
             semantic_contract=semantic_contract,
             hints=hints or "(none provided)",

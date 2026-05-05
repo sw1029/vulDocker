@@ -77,6 +77,57 @@ def _parse_nvd_rss(xml_text: str, limit: int) -> List[CveRecord]:
     return records
 
 
+def _parse_nvd_json(payload: str, limit: int) -> List[CveRecord]:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        LOGGER.warning("NVD JSON feed is not valid JSON.")
+        return []
+    if not isinstance(data, dict):
+        return []
+    raw_entries = data.get("vulnerabilities") or data.get("CVE_Items") or []
+    if not raw_entries and isinstance(data.get("cve"), dict):
+        raw_entries = [data]
+    if not isinstance(raw_entries, list):
+        return []
+    records: List[CveRecord] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        cve = entry.get("cve") if isinstance(entry.get("cve"), dict) else entry
+        if not isinstance(cve, dict):
+            continue
+        cve_id = _nested_text(cve, ("id",), ("CVE_data_meta", "ID")) or _nested_text(entry, ("cve_id",), ("cveID",), ("cveId",))
+        if not cve_id:
+            continue
+        description = (
+            _localized_text(cve.get("descriptions"))
+            or _localized_text(_nested_value(cve, ("description", "description_data")))
+            or str(entry.get("description") or "").strip()
+        )
+        link = _reference_url(cve) or f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+        published = (
+            _nested_text(cve, ("published",), ("publishedDate",))
+            or _nested_text(entry, ("published",), ("publishedDate",), ("dateAdded",), ("publicationDate",))
+            or datetime.now(timezone.utc).isoformat()
+        )
+        weakness_tags = _weakness_values(cve)
+        records.append(
+            CveRecord(
+                cve_id=cve_id,
+                title=cve_id,
+                description=description,
+                link=link,
+                published=published,
+                source="nvd",
+                tags=weakness_tags,
+            )
+        )
+        if len(records) >= limit:
+            break
+    return records
+
+
 def _parse_cisa_json(payload: str, limit: int) -> List[CveRecord]:
     try:
         data = json.loads(payload)
@@ -113,6 +164,78 @@ def _parse_cisa_json(payload: str, limit: int) -> List[CveRecord]:
     return records
 
 
+def _nested_value(payload: Dict[str, object], path: Sequence[str]) -> object:
+    current: object = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _nested_text(payload: Dict[str, object], *paths: Sequence[str]) -> str:
+    for path in paths:
+        value = _nested_value(payload, path)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _localized_text(values: object) -> str:
+    if not isinstance(values, list):
+        return ""
+    fallback = ""
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        if not fallback:
+            fallback = value
+        if str(item.get("lang") or "").strip().lower() in {"en", "eng"}:
+            return value
+    return fallback
+
+
+def _reference_url(cve: Dict[str, object]) -> str:
+    references = cve.get("references")
+    if isinstance(references, dict):
+        reference_data = references.get("referenceData")
+    else:
+        reference_data = references
+    if not isinstance(reference_data, list):
+        return ""
+    for item in reference_data:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if url:
+            return url
+    return ""
+
+
+def _weakness_values(cve: Dict[str, object]) -> List[str]:
+    values: List[str] = []
+    weaknesses = cve.get("weaknesses")
+    if isinstance(weaknesses, list):
+        for entry in weaknesses:
+            if not isinstance(entry, dict):
+                continue
+            text = _localized_text(entry.get("description"))
+            if text and text not in values:
+                values.append(text)
+    problemtype_data = _nested_value(cve, ("problemtype", "problemtype_data"))
+    if isinstance(problemtype_data, list):
+        for entry in problemtype_data:
+            if not isinstance(entry, dict):
+                continue
+            text = _localized_text(entry.get("description"))
+            if text and text not in values:
+                values.append(text)
+    return values
+
+
 def _write_records(records: Iterable[CveRecord], output_dir: Path) -> List[Path]:
     ensure_dir(output_dir)
     written: List[Path] = []
@@ -142,6 +265,14 @@ def ingest_feeds(args: argparse.Namespace) -> Path:
     batch_dir = ensure_dir(base_output / stamp)
 
     combined: Dict[str, CveRecord] = {}
+    if getattr(args, "nvd_json", None):
+        try:
+            json_text = _fetch_resource(args.nvd_json, args.timeout)
+            for record in _parse_nvd_json(json_text, args.limit):
+                combined.setdefault(record.cve_id, record)
+        except Exception as exc:  # pragma: no cover - network failure path
+            LOGGER.warning("Failed to ingest NVD JSON feed: %s", exc)
+
     if args.nvd_rss:
         try:
             xml_text = _fetch_resource(args.nvd_rss, args.timeout)
@@ -171,6 +302,7 @@ def ingest_feeds(args: argparse.Namespace) -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ingest NVD/CISA feeds into rag/corpus/raw/poc")
+    parser.add_argument("--nvd-json", default="", help="Optional NVD JSON API response path or URL")
     parser.add_argument("--nvd-rss", default="https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss.xml")
     parser.add_argument(
         "--cisa-feed",

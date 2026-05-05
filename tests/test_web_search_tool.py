@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -69,6 +70,179 @@ def test_web_search_tool_remote_prefer_falls_back_to_local_when_remote_unavailab
     assert execution is not None
     assert execution.provider == "tavily"
     assert execution.degraded is True
+
+
+def test_web_search_tool_indexes_raw_cve_json_for_local_research(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "rag" / "corpus" / "raw" / "poc" / "20251108"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "cve-2099-0001.json").write_text(
+        """
+{
+  "cve_id": "CVE-2099-0001",
+  "title": "Demo product path traversal",
+  "description": "Path traversal allows reading arbitrary files.",
+  "link": "https://nvd.nist.gov/vuln/detail/CVE-2099-0001",
+  "published": "2099-01-01",
+  "source": "nvd",
+  "tags": ["path traversal"]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    tool = WebSearchTool()
+    tool.local_root = tmp_path / "rag" / "corpus"
+
+    hits = tool.search("CVE-2099-0001 exploit", policy="local_only")
+
+    assert len(hits) == 1
+    assert hits[0].title == "Demo product path traversal"
+    assert hits[0].url == "https://nvd.nist.gov/vuln/detail/CVE-2099-0001"
+    assert hits[0].published == "2099-01-01"
+    assert "CVE: CVE-2099-0001" in hits[0].snippet
+    assert "Path traversal allows reading arbitrary files." in hits[0].snippet
+
+
+def test_web_search_tool_local_cve_query_requires_exact_identifier(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "rag" / "corpus" / "raw" / "poc" / "20251108"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "cve-2099-0001.json").write_text(
+        """
+{
+  "cve_id": "CVE-2099-0001",
+  "title": "Wrong NVD advisory",
+  "description": "NVD advisory text for a different issue.",
+  "link": "https://nvd.nist.gov/vuln/detail/CVE-2099-0001",
+  "source": "nvd",
+  "tags": ["advisory"]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    (corpus_root / "cve-2099-0002.json").write_text(
+        """
+{
+  "cve_id": "CVE-2099-0002",
+  "title": "Target NVD advisory",
+  "description": "NVD advisory text for the requested issue.",
+  "link": "https://nvd.nist.gov/vuln/detail/CVE-2099-0002",
+  "source": "nvd",
+  "tags": ["advisory"]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    tool = WebSearchTool()
+    tool.local_root = tmp_path / "rag" / "corpus"
+
+    hits = tool.search("CVE-2099-0002 NVD advisory affected versions weakness details", policy="local_only", limit=5)
+
+    assert [hit.title for hit in hits] == ["Target NVD advisory"]
+
+
+def test_web_search_tool_local_identifier_matches_filename_when_json_body_lacks_identifier(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "rag" / "corpus" / "raw" / "poc" / "20251108"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "cve-2099-0003.json").write_text(
+        """
+{
+  "title": "Filename-only CVE advisory",
+  "description": "The body omits the identifier but the cache filename carries it.",
+  "source": "nvd"
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    tool = WebSearchTool()
+    tool.local_root = tmp_path / "rag" / "corpus"
+
+    hits = tool.search("CVE-2099-0003 NVD advisory", policy="local_only")
+
+    assert len(hits) == 1
+    assert hits[0].title == "Filename-only CVE advisory"
+
+
+def test_web_search_tool_formats_nested_nvd_json_for_local_research(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "rag" / "corpus" / "raw" / "poc" / "20251108"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "cve-2099-0042.json").write_text(
+        json.dumps(
+            {
+                "cve": {
+                    "id": "CVE-2099-0042",
+                    "descriptions": [
+                        {"lang": "en", "value": "Reflected cross-site scripting in the demo search page."}
+                    ],
+                    "weaknesses": [
+                        {"description": [{"lang": "en", "value": "CWE-79"}]}
+                    ],
+                    "references": {
+                        "referenceData": [{"url": "https://vendor.example/advisory/CVE-2099-0042"}]
+                    },
+                    "published": "2099-02-03T00:00:00.000",
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    tool = WebSearchTool()
+    tool.local_root = tmp_path / "rag" / "corpus"
+
+    hits = tool.search("CVE-2099-0042 NVD advisory weakness details", policy="local_only")
+
+    assert len(hits) == 1
+    assert hits[0].title == "CVE-2099-0042"
+    assert hits[0].url == "https://vendor.example/advisory/CVE-2099-0042"
+    assert hits[0].published == "2099-02-03T00:00:00.000"
+    assert "Description: Reflected cross-site scripting" in hits[0].snippet
+    assert "Weaknesses: CWE-79" in hits[0].snippet
+    assert "Source: nvd" in hits[0].snippet
+
+
+def test_web_search_tool_selects_matching_record_from_nvd_vulnerabilities_array(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "rag" / "corpus" / "raw" / "poc" / "20251108"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "nvd-response.json").write_text(
+        json.dumps(
+            {
+                "vulnerabilities": [
+                    {
+                        "cve": {
+                            "id": "CVE-2099-0001",
+                            "descriptions": [{"lang": "en", "value": "Wrong issue."}],
+                            "weaknesses": [{"description": [{"lang": "en", "value": "CWE-89"}]}],
+                        }
+                    },
+                    {
+                        "cve": {
+                            "id": "CVE-2099-0042",
+                            "descriptions": [{"lang": "en", "value": "Requested XSS issue."}],
+                            "weaknesses": [{"description": [{"lang": "en", "value": "CWE-79"}]}],
+                            "references": [{"url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0042"}],
+                        }
+                    },
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    tool = WebSearchTool()
+    tool.local_root = tmp_path / "rag" / "corpus"
+
+    hits = tool.search("CVE-2099-0042 NVD advisory weakness details", policy="local_only")
+
+    assert len(hits) == 1
+    assert hits[0].title == "CVE-2099-0042"
+    assert hits[0].url == "https://nvd.nist.gov/vuln/detail/CVE-2099-0042"
+    assert "Description: Requested XSS issue." in hits[0].snippet
+    assert "Weaknesses: CWE-79" in hits[0].snippet
+    assert "CVE-2099-0001" not in hits[0].snippet
 
 
 def test_web_search_tool_remote_prefer_uses_backoff_after_first_remote_failure(monkeypatch, tmp_path: Path) -> None:

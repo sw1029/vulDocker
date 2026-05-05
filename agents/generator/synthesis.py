@@ -62,6 +62,20 @@ DEFAULT_POC_TEMPLATE = {
     "success_signature": "Exploit SUCCESS",
     "notes": "Auto-injected fallback PoC block",
 }
+SEMANTIC_GUIDED_FALLBACK_FAMILIES = {
+    "open_redirect",
+    "xss",
+    "path_traversal",
+    "ssrf",
+    "deserialization",
+    "command_injection",
+    "code_injection",
+    "ldap_injection",
+    "xxe",
+    "sqli",
+    "csrf",
+    "template_injection",
+}
 
 
 def _llm_path_class(
@@ -2264,6 +2278,16 @@ class SynthesisEngine:
             "abstain_reason": "",
         }
         if not candidates:
+            selected_family = self._request_ir_selected_family(require_open_world_evidence_ready=True)
+            if (
+                selected_family in SEMANTIC_GUIDED_FALLBACK_FAMILIES
+                and self._family_hypothesis_allows_semantic_guided_family(selected_family)
+            ):
+                resolution["family"] = selected_family
+                resolution["selection_source"] = "request_ir_selection"
+                resolution["candidate_families"] = [selected_family]
+                resolution["ambiguous"] = False
+                return resolution
             hinted_family, hinted_source = self._design_brief_guided_fallback_family()
             if hinted_family:
                 resolution["family"] = hinted_family

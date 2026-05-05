@@ -617,6 +617,8 @@ class GeneratorService:
             "preconditions",
             "tech_stack_candidates",
             "family_hypothesis_summary",
+            "evidence",
+            "evidence_type_summary",
             "evidence_relevance",
             "minimal_repro_steps",
             "pocs",
@@ -636,10 +638,49 @@ class GeneratorService:
                 if (not allow_full_override) or (not bool(value.get("override_static"))):
                     # Prevent static contract drift in synthesis prompts unless policy explicitly allows full override.
                     continue
+            if key == "evidence":
+                value = self._trim_evidence_for_prompt(value)
+                if value in (None, "", [], {}):
+                    continue
             trimmed[key] = value
         if not trimmed:
             return ""
         return json.dumps(trimmed, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _trim_evidence_for_prompt(raw: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw, list):
+            return []
+        output: List[Dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            trimmed: Dict[str, Any] = {}
+            for key in (
+                "query",
+                "query_target",
+                "evidence_type",
+                "source_authority",
+                "source",
+                "provider",
+                "title",
+                "url",
+                "published",
+                "retrieved_at",
+            ):
+                value = item.get(key)
+                if value in (None, "", [], {}):
+                    continue
+                trimmed[key] = value
+            snippet = item.get("snippet")
+            if isinstance(snippet, str) and snippet.strip():
+                cleaned = re.sub(r"\s+", " ", snippet).strip()
+                trimmed["snippet"] = cleaned[:800]
+            if trimmed:
+                output.append(trimmed)
+            if len(output) >= 6:
+                break
+        return output
 
     def _build_context(self) -> GeneratorContext:
         rag_snapshot = (
@@ -678,20 +719,22 @@ class GeneratorService:
         context = self._build_context()
         self._ensure_loop_started()
         dynamic_eval = self._dynamic_eval_enabled()
-        emit_action_trace(
-            self.metadata_dir,
-            sid=self.sid,
-            stage="GENERATOR",
-            action_id="design_brief_validate",
-            status="success",
-            output_contract={
-                "generator_mode": self.generator_mode,
-                "dynamic_eval": dynamic_eval,
-                "single_attempt": self.single_attempt,
-            },
-            source_authority="generator.context",
-            retryable=True,
-        )
+        metadata_dir = getattr(self, "metadata_dir", None)
+        if metadata_dir is not None:
+            emit_action_trace(
+                Path(metadata_dir),
+                sid=self.sid,
+                stage="GENERATOR",
+                action_id="design_brief_validate",
+                status="success",
+                output_contract={
+                    "generator_mode": self.generator_mode,
+                    "dynamic_eval": dynamic_eval,
+                    "single_attempt": bool(getattr(self, "single_attempt", False)),
+                },
+                source_authority="generator.context",
+                retryable=True,
+            )
         if dynamic_eval:
             self._write_dynamic_eval_status("started")
         if self.generator_mode == "synthesis":
@@ -1071,6 +1114,7 @@ class GeneratorService:
                 added_user_deps = self._apply_user_deps_to_workspace()
                 self._record_user_deps_metadata(added_user_deps)
                 self._write_generator_contract(mode_label="synthesis")
+                materialized_family = self._materialized_family_for_synthesis_outcome(outcome)
                 emit_action_trace(
                     self.metadata_dir,
                     sid=self.sid,
@@ -1083,7 +1127,8 @@ class GeneratorService:
                         "written_files": len(outcome.written_files),
                         "fallback_used": bool(getattr(outcome.selected, "fallback_used", False)),
                     },
-                    materialized_family=str(self.requirement.get("vuln_id") or "").strip() or None,
+                    selected_family=self._selected_family_for_trace(),
+                    materialized_family=materialized_family,
                     materialized_topology="synthesis",
                     source_authority="generator.synthesis",
                     retryable=False,
@@ -1188,6 +1233,7 @@ class GeneratorService:
                 added_user_deps = self._apply_user_deps_to_workspace()
                 self._record_user_deps_metadata(added_user_deps)
                 self._write_generator_contract(mode_label="synthesis")
+                materialized_family = self._materialized_family_for_synthesis_outcome(outcome)
                 emit_action_trace(
                     self.metadata_dir,
                     sid=self.sid,
@@ -1200,7 +1246,8 @@ class GeneratorService:
                         "written_files": len(outcome.written_files),
                         "fallback_used": bool(getattr(outcome.selected, "fallback_used", False)),
                     },
-                    materialized_family=str(self.requirement.get("vuln_id") or "").strip() or None,
+                    selected_family=self._selected_family_for_trace(),
+                    materialized_family=materialized_family,
                     materialized_topology="synthesis",
                     source_authority="generator.synthesis",
                     retryable=False,
@@ -1306,6 +1353,28 @@ class GeneratorService:
         if bool(getattr(selected, "fallback_used", False)):
             return "degraded_success"
         return "dynamic_success"
+
+    def _selected_family_for_trace(self) -> str | None:
+        request_ir = self.requirement.get("request_ir") if isinstance(self.requirement, dict) else {}
+        if not isinstance(request_ir, dict):
+            return None
+        selection = request_ir.get("selection_decision") if isinstance(request_ir.get("selection_decision"), dict) else {}
+        family = selection.get("family") if isinstance(selection.get("family"), dict) else {}
+        if family.get("selected") is not True:
+            return None
+        value = str(family.get("selected_family") or "").strip()
+        return value or None
+
+    def _materialized_family_for_synthesis_outcome(self, outcome: SynthesisOutcome) -> str | None:
+        selected = getattr(outcome, "selected", None)
+        manifest = getattr(selected, "manifest", {}) if selected is not None else {}
+        metadata = manifest.get("metadata") if isinstance(manifest, dict) and isinstance(manifest.get("metadata"), dict) else {}
+        for key in ("semantic_guided_family", "selected_family", "family"):
+            value = str(metadata.get(key) or "").strip() if isinstance(metadata, dict) else ""
+            if value:
+                return value
+        fallback = str(self.requirement.get("vuln_id") or "").strip() if isinstance(self.requirement, dict) else ""
+        return fallback or None
 
     def _run_synthesis_once(self, context: GeneratorContext) -> SynthesisOutcome:
         engine = SynthesisEngine(

@@ -13,12 +13,32 @@ from common.contracts import (
 from common.guardrails import GuardEngine, build_guard_spec, load_guard_spec_for_sid
 from common.roles import role_matches
 from common.rules import RuleSpec, load_rule, load_rulespec, load_static_rule
-from common.vuln_semantics import evaluate_manifest_semantics, evaluate_workspace_semantics, semantic_error_summary
+from common.vuln_semantics import (
+    evaluate_manifest_semantics,
+    evaluate_workspace_semantics,
+    normalize_vuln_id,
+    semantic_error_summary,
+)
 from evals.assertions import run_assertions
 
 DEFAULT_FLAG_MARKER = "FLAG"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACES_ROOT = REPO_ROOT / "workspaces"
+_SEMANTIC_FAMILY_CHECK_IDS = {
+    "sqli": "CWE-89",
+    "sql_injection": "CWE-89",
+    "xss": "CWE-79",
+    "path_traversal": "CWE-22",
+    "ssrf": "CWE-918",
+    "csrf": "CWE-352",
+    "deserialization": "CWE-502",
+    "command_injection": "CWE-78",
+    "code_injection": "CWE-94",
+    "ldap_injection": "NAME-LDAP-INJECTION",
+    "open_redirect": "NAME-OPEN-REDIRECT",
+    "template_injection": "NAME-TEMPLATE-INJECTION",
+    "xxe": "NAME-XXE",
+}
 
 
 def _verification_independence(rule_source: str, trust: str) -> str:
@@ -1095,6 +1115,86 @@ def _apply_exit_policy(
     return success, evidence
 
 
+def _nested_dict(root: Optional[Dict[str, Any]], *keys: str) -> Dict[str, Any]:
+    current: Any = root
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _semantic_guided_family_from_payload(payload: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("semantic_guided_family", "materializer_family", "selected_family", "family"):
+        value = str(payload.get(key) or "").strip().lower()
+        if value:
+            return value
+    return ""
+
+
+def _materialized_semantic_family(
+    generator_manifest: Optional[Dict[str, Any]],
+    contract_meta: Optional[Dict[str, Any]],
+) -> str:
+    sources: List[Dict[str, Any]] = []
+    if isinstance(contract_meta, dict):
+        sources.extend(
+            [
+                contract_meta,
+                _nested_dict(contract_meta, "provenance"),
+                _nested_dict(contract_meta, "selection_branch_trace"),
+                _nested_dict(contract_meta, "selection_branch_trace", "branch_causality", "family_to_materializer"),
+                _nested_dict(contract_meta, "staged_synthesis", "candidate_resolution"),
+            ]
+        )
+    if isinstance(generator_manifest, dict):
+        manifest_body = generator_manifest.get("manifest") if isinstance(generator_manifest.get("manifest"), dict) else {}
+        sources.extend(
+            [
+                generator_manifest,
+                _nested_dict(generator_manifest, "provenance"),
+                _nested_dict(generator_manifest, "metadata"),
+                _nested_dict(manifest_body, "metadata"),
+            ]
+        )
+    for source in sources:
+        family = _semantic_guided_family_from_payload(source)
+        if family in _SEMANTIC_FAMILY_CHECK_IDS:
+            return family
+    return ""
+
+
+def _contract_open_world_evidence_ready(contract_meta: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(contract_meta, dict):
+        return False
+    if _nested_dict(contract_meta, "selection_branch_trace").get("open_world_evidence_ready") is True:
+        return True
+    selection = _nested_dict(contract_meta, "request_ir", "selection_decision")
+    if selection.get("open_world_evidence_ready") is True:
+        return True
+    return False
+
+
+def _semantic_eval_vuln_id(
+    vuln_id: str,
+    generator_manifest: Optional[Dict[str, Any]],
+    contract_meta: Optional[Dict[str, Any]],
+) -> Tuple[str, str]:
+    normalized = normalize_vuln_id(vuln_id)
+    direct_report = evaluate_manifest_semantics(normalized or vuln_id, {"files": []})
+    if direct_report.get("supported"):
+        return vuln_id, "request_vuln_id"
+    if not _contract_open_world_evidence_ready(contract_meta):
+        return vuln_id, "request_vuln_id"
+    family = _materialized_semantic_family(generator_manifest, contract_meta)
+    mapped = _SEMANTIC_FAMILY_CHECK_IDS.get(family)
+    if not mapped:
+        return vuln_id, "request_vuln_id"
+    return mapped, "semantic_guided_materializer_family"
+
+
 def _evaluate_semantic_consistency(
     vuln_id: str,
     workspace_dirs: Iterable[Path],
@@ -1140,7 +1240,9 @@ def _evaluate_semantic_consistency(
         signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")
     )
     status = str(semantic_contract.get("status") or "").strip().lower() if isinstance(semantic_contract, dict) else ""
-    if requires_semantic_support(vuln_id) and status in {"unsupported", "empty"}:
+    semantic_eval_vuln_id, semantic_eval_source = _semantic_eval_vuln_id(vuln_id, generator_manifest, contract_meta)
+    using_materializer_semantics = normalize_vuln_id(semantic_eval_vuln_id) != normalize_vuln_id(vuln_id)
+    if requires_semantic_support(vuln_id) and status in {"unsupported", "empty"} and not using_materializer_semantics:
         return {
             "supported": False,
             "semantic_match": False,
@@ -1164,17 +1266,33 @@ def _evaluate_semantic_consistency(
         }
 
     if isinstance(generator_manifest, dict):
-        report = evaluate_manifest_semantics(vuln_id, generator_manifest)
+        report = evaluate_manifest_semantics(semantic_eval_vuln_id, generator_manifest)
         if report.get("supported"):
-            report["source"] = "generator_manifest"
+            report["source"] = (
+                "generator_manifest.materializer_family"
+                if using_materializer_semantics
+                else "generator_manifest"
+            )
             report["status"] = "aligned" if report.get("semantic_match") else "contradicted"
+            if using_materializer_semantics:
+                report["requested_vuln_id"] = str(vuln_id or "").strip().lower()
+                report["semantic_target_vuln_id"] = normalize_vuln_id(semantic_eval_vuln_id)
+                report["semantic_target_source"] = semantic_eval_source
             return report
     for workspace in workspace_roots:
-        report = evaluate_workspace_semantics(vuln_id, workspace)
+        report = evaluate_workspace_semantics(semantic_eval_vuln_id, workspace)
         if report.get("supported"):
-            report["source"] = "workspace_scan"
+            report["source"] = (
+                "workspace_scan.materializer_family"
+                if using_materializer_semantics
+                else "workspace_scan"
+            )
             report["source_detail"] = str(workspace)
             report["status"] = "aligned" if report.get("semantic_match") else "contradicted"
+            if using_materializer_semantics:
+                report["requested_vuln_id"] = str(vuln_id or "").strip().lower()
+                report["semantic_target_vuln_id"] = normalize_vuln_id(semantic_eval_vuln_id)
+                report["semantic_target_source"] = semantic_eval_source
             return report
     if isinstance(signature, dict) and any(signature.get(bucket) for bucket in ("input_vector", "sink", "exploit_precondition")):
         spec = build_guard_spec(

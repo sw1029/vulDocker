@@ -542,6 +542,9 @@ def build_generator_contract(
     evidence_graph = deepcopy(report.get("evidence_graph")) if isinstance(report.get("evidence_graph"), dict) else {}
     if evidence_graph:
         payload["evidence_graph"] = evidence_graph
+    research_evidence_summary = _research_evidence_summary(report)
+    if research_evidence_summary:
+        payload["research_evidence_summary"] = research_evidence_summary
     enriched_request_ir = _enriched_request_ir(
         requirement=requirement or {},
         report=report,
@@ -1266,6 +1269,12 @@ def _resolve_generation_provenance(
     has_manifest: bool,
 ) -> Dict[str, Any]:
     provenance: Dict[str, Any] = {}
+    manifest = _unwrap_manifest(manifest_payload) if isinstance(manifest_payload, dict) else {}
+    manifest_metadata = (
+        manifest.get("metadata")
+        if isinstance(manifest, dict) and isinstance(manifest.get("metadata"), dict)
+        else {}
+    )
 
     manifest_origin = _string_or_none(manifest_payload.get("generation_origin")) if isinstance(manifest_payload, dict) else None
     template_origin = _string_or_none(template_summary.get("generation_origin")) if isinstance(template_summary, dict) else None
@@ -1350,6 +1359,16 @@ def _resolve_generation_provenance(
     template_id = _string_or_none(template_summary.get("template_id")) if isinstance(template_summary, dict) else None
     if template_id:
         provenance["template_id"] = template_id
+
+    if isinstance(manifest_metadata, dict):
+        for key in ("materializer", "semantic_guided_selection_source", "semantic_guided_family"):
+            value = _string_or_none(manifest_metadata.get(key))
+            if value:
+                provenance[key] = value
+        candidate_families = manifest_metadata.get("semantic_guided_candidate_families")
+        if isinstance(candidate_families, list):
+            values = [_string_or_none(item) for item in candidate_families]
+            provenance["semantic_guided_candidate_families"] = [item for item in values if item]
 
     return provenance
 
@@ -2837,6 +2856,82 @@ def _evidence_graph_summary(evidence_graph: Dict[str, Any]) -> Dict[str, Any]:
         "by_edge_kind": by_edge_kind,
         "by_source_authority": by_source_authority,
         "source": _string_or_none(graph.get("source")) or "unknown",
+    }
+
+
+def _research_evidence_summary(report: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(report, dict):
+        return {}
+    summary = report.get("evidence_type_summary") if isinstance(report.get("evidence_type_summary"), dict) else {}
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), list) else []
+    if not summary and not evidence:
+        return {}
+    by_type: Dict[str, int] = {}
+    by_query_target: Dict[str, int] = {}
+    by_source_authority: Dict[str, int] = {}
+    for key, target in (
+        ("by_type", by_type),
+        ("by_query_target", by_query_target),
+        ("by_source_authority", by_source_authority),
+    ):
+        values = summary.get(key) if isinstance(summary, dict) else {}
+        if not isinstance(values, dict):
+            continue
+        for raw_name, raw_count in values.items():
+            name = _string_or_none(str(raw_name))
+            if not name:
+                continue
+            try:
+                count = int(raw_count)
+            except Exception:
+                continue
+            target[name.strip().lower()] = count
+    evidence_count = len([item for item in evidence if isinstance(item, dict)])
+    cve_advisory_count = 0
+    local_count = 0
+    remote_count = 0
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        evidence_type = (_string_or_none(item.get("evidence_type")) or "").lower()
+        source = (_string_or_none(item.get("source")) or "").lower()
+        if source == "local":
+            local_count += 1
+        elif source == "remote":
+            remote_count += 1
+        text = " ".join(
+            _string_or_none(item.get(key)) or ""
+            for key in ("query", "title", "url", "snippet")
+        ).lower()
+        if evidence_type == "advisory" and re.search(r"\bcve-\d{4}-\d{4,}\b", text):
+            cve_advisory_count += 1
+    hit_count = summary.get("hit_count") if isinstance(summary, dict) else None
+    try:
+        hit_count_int = int(hit_count)
+    except Exception:
+        hit_count_int = evidence_count
+    matched_target_count = summary.get("matched_target_count") if isinstance(summary, dict) else None
+    try:
+        matched_target_count_int = int(matched_target_count)
+    except Exception:
+        matched_target_count_int = 0
+    payload: Dict[str, Any] = {
+        "hit_count": hit_count_int,
+        "evidence_count": evidence_count,
+        "matched_target_count": matched_target_count_int,
+        "by_type": by_type,
+        "by_query_target": by_query_target,
+        "by_source_authority": by_source_authority,
+        "advisory_count": by_type.get("advisory", 0),
+        "high_authority_count": by_source_authority.get("high", 0),
+        "cve_advisory_count": cve_advisory_count,
+        "local_count": local_count,
+        "remote_count": remote_count,
+    }
+    return {
+        key: value
+        for key, value in payload.items()
+        if value not in (None, "", [], {})
     }
 
 
@@ -5219,6 +5314,9 @@ def _build_selection_branch_trace(
         _string_or_none(scenario_selection.get("selected_oracle_mode"))
         or _string_or_none(scenario_selection.get("top_oracle_mode"))
     )
+    materializer = _string_or_none(provenance.get("materializer"))
+    materializer_selection_source = _string_or_none(provenance.get("semantic_guided_selection_source"))
+    materializer_family = _string_or_none(provenance.get("semantic_guided_family"))
 
     family_materialized = (
         _string_or_none(candidate_resolution.get("selected_family"))
@@ -5257,6 +5355,8 @@ def _build_selection_branch_trace(
             "selected_value": selected_family,
             "materialized_value": family_materialized,
             "selected_source": _string_or_none(family_selection.get("source")),
+            "materializer_family": materializer_family,
+            "materializer_selection_source": materializer_selection_source,
             "materialized_field": "staged_synthesis.candidate_resolution.selected_family",
             "aligned": bool(selected_family and family_materialized and selected_family == family_materialized),
         },
@@ -5308,7 +5408,24 @@ def _build_selection_branch_trace(
         "open_world_evidence_ready": selection_decision.get("open_world_evidence_ready") is True,
         "branch_aligned": all(branch_alignment.values()) if branch_alignment else False,
         "generation_origin": _string_or_none(provenance.get("generation_origin")),
-        "materializer": _string_or_none(provenance.get("materializer")),
+        "materializer": materializer,
+        "materializer_selection_source": materializer_selection_source,
+        "materializer_family": materializer_family,
+        "branch_causality": {
+            "family_to_materializer": {
+                "selected_value": selected_family,
+                "materialized_value": family_materialized,
+                "materializer_family": materializer_family,
+                "selection_source": _string_or_none(family_selection.get("source")),
+                "materializer_selection_source": materializer_selection_source,
+                "aligned": bool(
+                    selected_family
+                    and materializer_family
+                    and selected_family == materializer_family
+                    and materializer_selection_source
+                ),
+            }
+        },
         "candidate_context": {
             "scenario_candidate_count": len([entry for entry in scenario_candidates if isinstance(entry, dict)]),
             "selected_candidate_present": scenario_selection.get("selected_candidate_present") is True,
@@ -5326,6 +5443,8 @@ def _build_selection_branch_trace(
                 "selected_value": selected_family,
                 "materialized_value": family_materialized,
                 "source": _string_or_none(family_selection.get("source")),
+                "materializer_family": materializer_family,
+                "materializer_selection_source": materializer_selection_source,
                 "aligned": branch_alignment.get("family") is True,
             },
             "stack": {
@@ -5359,6 +5478,8 @@ def _build_selection_branch_trace(
             "runtime_topology": _string_or_none(runtime_plan.get("topology")),
             "runtime_topology_source": _string_or_none(runtime_plan.get("topology_source")),
             "executor_topology": _string_or_none(executor_plan.get("topology")),
+            "materializer": materializer,
+            "materializer_selection_source": materializer_selection_source,
             "service_entry_path": _string_or_none(file_manifest.get("service_entry_path")),
             "poc_entry_path": _string_or_none(file_manifest.get("poc_entry_path")),
             "dockerfile_path": _string_or_none(file_manifest.get("dockerfile_path")),

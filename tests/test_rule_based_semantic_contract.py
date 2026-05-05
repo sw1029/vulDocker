@@ -95,6 +95,133 @@ def test_unknown_rule_based_verifier_uses_resolved_contract_semantic_contract(
     assert result["verification_independence"] == "contract_coupled"
 
 
+def test_cve_rule_based_verifier_uses_evidence_ready_materializer_family_for_semantics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo_root = tmp_path
+    sid = "sid-cve-materializer-family"
+    slug = "cve-2099-0042"
+    metadata_dir = repo_root / "metadata" / sid
+    workspace_dir = repo_root / "workspaces" / sid / "app"
+    run_dir = repo_root / "artifacts" / sid / "run"
+    metadata_dir.mkdir(parents=True)
+    workspace_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    app_text = (
+        "from flask import Flask, request, render_template_string\n"
+        "app = Flask(__name__)\n"
+        "@app.get('/search')\n"
+        "def search():\n"
+        "    q = request.args.get('q', '')\n"
+        "    return render_template_string('<p>' + q + '</p>')\n"
+    )
+    (workspace_dir / "app.py").write_text(app_text, encoding="utf-8")
+    (workspace_dir / "poc.py").write_text("print('Exploit SUCCESS')\n", encoding="utf-8")
+    (run_dir / "run.log").write_text("Exploit SUCCESS\n", encoding="utf-8")
+
+    (metadata_dir / "generator_manifest.json").write_text(
+        json.dumps(
+            {
+                "generation_origin": "deterministic_fallback",
+                "fallback_class": "semantic_guided",
+                "provenance": {
+                    "materializer": "minimal_dynamic",
+                    "semantic_guided_family": "xss",
+                    "semantic_guided_selection_source": "request_ir_selection",
+                },
+                "manifest": {
+                    "metadata": {
+                        "fallback_class": "semantic_guided",
+                        "semantic_guided_family": "xss",
+                    },
+                    "files": [
+                        {"path": "app.py", "role": "service_main", "content": app_text},
+                        {"path": "poc.py", "role": "poc_entry", "content": "print('Exploit SUCCESS')\n"},
+                    ],
+                    "poc": {"success_signature": "Exploit SUCCESS"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_generator_contract(
+        metadata_dir,
+        {
+            "schema_version": "resolved_contract@1.0",
+            "sid": sid,
+            "slug": slug,
+            "vuln_id": "CVE-2099-0042",
+            "success_signature": "Exploit SUCCESS",
+            "service_entry": "app.py",
+            "poc_entry": "poc.py",
+            "service_port": 5000,
+            "base_url": "http://127.0.0.1:5000",
+            "output_mode": "auto",
+            "fallback_class": "semantic_guided",
+            "provenance": {
+                "materializer": "minimal_dynamic",
+                "semantic_guided_family": "xss",
+                "semantic_guided_selection_source": "request_ir_selection",
+            },
+            "request_ir": {
+                "selection_decision": {
+                    "family": {
+                        "selected": True,
+                        "selected_family": "xss",
+                        "evidence_backed": True,
+                        "high_or_medium_authority_support": True,
+                    },
+                    "ready_for_materialization": True,
+                    "open_world_evidence_ready": True,
+                }
+            },
+            "selection_branch_trace": {
+                "open_world_evidence_ready": True,
+                "materializer": "minimal_dynamic",
+                "materializer_family": "xss",
+                "materializer_selection_source": "request_ir_selection",
+            },
+            "semantic_contract": {
+                "semantic_signature": {
+                    "input_vector": [],
+                    "sink": [],
+                    "exploit_precondition": [],
+                },
+                "family_hypothesis_summary": {
+                    "top_family": "xss",
+                    "top_confidence": "medium",
+                    "ranked_families": [
+                        {"family": "xss", "confidence": "medium", "matched_cwes": ["cwe-79"]}
+                    ],
+                },
+                "semantic_signature_source": ["empty"],
+                "status": "unsupported",
+            },
+        },
+    )
+
+    monkeypatch.setattr("evals.poc_verifier.rule_based.REPO_ROOT", repo_root)
+    monkeypatch.setattr("evals.poc_verifier.rule_based.WORKSPACES_ROOT", repo_root / "workspaces")
+
+    result = verify_with_rule(
+        "CVE-2099-0042",
+        run_dir / "run.log",
+        run_summary={"sid": sid, "slug": slug, "exit_code": 0},
+        policy={"require_exit_code_zero": True},
+    )
+
+    assert result["verify_pass"] is True
+    assert result["semantic_supported"] is True
+    assert result["semantic_status"] == "aligned"
+    semantic = result["semantic_consistency"]
+    assert semantic["source"] == "generator_manifest.materializer_family"
+    assert semantic["requested_vuln_id"] == "cve-2099-0042"
+    assert semantic["semantic_target_vuln_id"] == "cwe-79"
+    assert semantic["semantic_target_source"] == "semantic_guided_materializer_family"
+
+
 def test_unknown_rule_based_verifier_can_use_contract_oracle_json_output(
     tmp_path: Path,
     monkeypatch,

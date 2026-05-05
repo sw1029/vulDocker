@@ -61,6 +61,97 @@ def test_unknown_cwe_defaults_to_remote_required_research_evidence() -> None:
     assert any("generic-web-vuln" in warning for warning in normalized.warnings)
 
 
+def test_cve_id_defaults_to_open_world_remote_research_contract() -> None:
+    normalized = normalize_requirement({"cve_id": "CVE-2099-0001"})
+    requirement = normalized.requirement
+    policy = requirement.get("policy") or {}
+    researcher = requirement.get("researcher") or {}
+    request_ir = requirement.get("request_ir") or {}
+
+    assert requirement["vuln_id"] == "CVE-2099-0001"
+    assert normalized.effective_vuln_ids == ["CVE-2099-0001"]
+    assert policy.get("require_researcher_evidence") is True
+    assert researcher.get("search_policy") == "remote_required"
+    assert request_ir["request_label"] == "CVE-2099-0001"
+    assert request_ir["resolution_state"] == "explicit_identifier"
+    assert request_ir["identifier_candidates"][0]["vuln_id"] == "CVE-2099-0001"
+    assert request_ir["identifier_candidates"][0]["source"] == "explicit_identifier"
+    assert request_ir["pattern_seed_state"] == "genericized_unknown"
+
+
+def test_cve_ids_list_normalizes_as_multi_vuln_remote_research_contract() -> None:
+    normalized = normalize_requirement(
+        {
+            "cve_ids": ["CVE-2099-0001", "CVE-2099-0002"],
+            "multi_vuln": True,
+        },
+        multi_vuln_opt_in=True,
+    )
+    requirement = normalized.requirement
+
+    assert normalized.multi_vuln is True
+    assert normalized.requested_vuln_ids == ["CVE-2099-0001", "CVE-2099-0002"]
+    assert normalized.effective_vuln_ids == ["CVE-2099-0001", "CVE-2099-0002"]
+    assert requirement["vuln_id"] == "CVE-2099-0001"
+    assert requirement["vuln_ids"] == ["CVE-2099-0001", "CVE-2099-0002"]
+    assert (requirement.get("policy") or {}).get("require_researcher_evidence") is True
+    assert (requirement.get("researcher") or {}).get("search_policy") == "remote_required"
+    assert [bundle["slug"] for bundle in normalized.bundles] == [
+        "cve-2099-0001",
+        "cve-2099-0002",
+    ]
+    assert [item["request_label"] for item in requirement.get("vuln_request_irs") or []] == [
+        "CVE-2099-0001",
+        "CVE-2099-0002",
+    ]
+
+
+def test_bundle_requirement_uses_bundle_specific_cve_request_ir_for_multi_cve_inputs() -> None:
+    normalized = normalize_requirement(
+        {
+            "cve_ids": ["CVE-2099-0001", "CVE-2099-0002"],
+            "multi_vuln": True,
+        },
+        multi_vuln_opt_in=True,
+    )
+    requirement = normalized.requirement
+
+    second_req = bundle_requirement(
+        requirement,
+        VulnBundle(
+            vuln_id="CVE-2099-0002",
+            slug="cve-2099-0002",
+            workspace_subdir="app/cve-2099-0002",
+        ),
+    )
+
+    assert second_req["vuln_id"] == "CVE-2099-0002"
+    assert second_req["vuln_ids"] == ["CVE-2099-0002"]
+    assert (second_req.get("name_resolution") or {}).get("resolved_vuln_id") == "CVE-2099-0002"
+    assert (second_req.get("request_identity") or {}).get("request_label") == "CVE-2099-0002"
+    assert (second_req.get("request_ir") or {}).get("request_label") == "CVE-2099-0002"
+    assert (second_req.get("request_ir") or {}).get("identifier_candidates", [])[0]["vuln_id"] == "CVE-2099-0002"
+
+
+def test_cwe_ids_list_normalizes_as_multi_vuln_input() -> None:
+    normalized = normalize_requirement(
+        {
+            "cwe_ids": ["CWE-79", "CWE-89"],
+            "multi_vuln": True,
+        },
+        multi_vuln_opt_in=True,
+    )
+    requirement = normalized.requirement
+
+    assert normalized.multi_vuln is True
+    assert normalized.requested_vuln_ids == ["CWE-79", "CWE-89"]
+    assert normalized.effective_vuln_ids == ["CWE-79", "CWE-89"]
+    assert requirement["vuln_id"] == "CWE-79"
+    assert requirement["vuln_ids"] == ["CWE-79", "CWE-89"]
+    assert [bundle["slug"] for bundle in normalized.bundles] == ["cwe-79", "cwe-89"]
+    assert [item["request_label"] for item in requirement.get("vuln_request_irs") or []] == ["CWE-79", "CWE-89"]
+
+
 def test_unknown_cwe_can_keep_pattern_seed_when_opted_in() -> None:
     requirement = _base_requirement("CWE-9999")
     requirement["policy"] = {"allow_unknown_pattern_seed": True}

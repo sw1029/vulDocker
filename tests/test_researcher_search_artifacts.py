@@ -10,6 +10,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from agents.researcher.service import ResearcherService
 from common.config import DecodingProfile
+from common.run_matrix import VulnBundle, bundle_requirement
+from common.schema import normalize_requirement
+from orchestrator.plugins.react_loop import ReactLoop
+from rag import static_loader
 from rag.tools import SearchExecution, SearchResult, WebSearchTool
 
 
@@ -145,6 +149,312 @@ class _LLMStub:
         self.configured_cost_budget_usd = 0.25
         self._last_usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
         self._observed_usage_totals = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+
+
+def test_search_results_for_prompt_includes_bounded_raw_cve_advisory_content() -> None:
+    service = ResearcherService.__new__(ResearcherService)
+    raw_content = " ".join(["CVE-2099-0001 raw NVD JSON affected Flask endpoint"] * 80)
+    hits = [
+        SearchResult(
+            title="NVD - CVE-2099-0001",
+            url="file:///tmp/rag/corpus/raw/poc/20250101/CVE-2099-0001.json",
+            snippet="CVE-2099-0001 NVD advisory affected versions weakness details",
+            source="local",
+            provider="local",
+            query="CVE-2099-0001 NVD advisory affected versions weakness details",
+            raw_content=raw_content,
+        ),
+        SearchResult(
+            title="generic note",
+            url="file:///tmp/note.md",
+            snippet="generic local note",
+            source="local",
+            provider="local",
+            query="generic",
+            raw_content="generic raw content should stay out",
+        ),
+    ]
+
+    payload = service._search_results_for_prompt(hits)  # type: ignore[attr-defined]
+
+    assert payload[0]["raw_content"].startswith("CVE-2099-0001 raw NVD JSON")
+    assert len(payload[0]["raw_content"]) <= 1600
+    assert "raw_content" not in payload[1]
+
+
+def test_researcher_run_promotes_cached_cve_advisory_to_evidence_backed_family(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    raw_dir = root / "rag" / "corpus" / "raw" / "poc" / "20251109"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "cve-2099-0042.json").write_text(
+        json.dumps(
+            {
+                "cve": {
+                    "id": "CVE-2099-0042",
+                    "published": "2099-02-03T00:00:00.000",
+                    "descriptions": [
+                        {"lang": "en", "value": "Reflected cross-site scripting in a Flask search page."}
+                    ],
+                    "weaknesses": [
+                        {"description": [{"lang": "en", "value": "CWE-79"}]}
+                    ],
+                    "references": {
+                        "referenceData": [{"url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0042"}]
+                    },
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(static_loader, "get_repo_root", lambda: root)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / "react" / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    normalized = normalize_requirement(
+        {
+            "cve_id": "CVE-2099-0042",
+            "language": "python",
+            "framework": "flask",
+            "corpus_snapshot": "rag-snap-20251109",
+            "researcher": {"search_policy": "local_only"},
+            "policy": {"require_researcher_evidence": True},
+        }
+    )
+    metadata_dir = tmp_path / "metadata"
+    plan = {
+        "sid": "sid-cve-cached-integration",
+        "requirement": normalized.requirement,
+        "policy": {
+            "require_researcher_evidence": True,
+            "researcher": {"search_policy": "local_only"},
+        },
+        "paths": {
+            "metadata": str(metadata_dir),
+            "workspace": str(tmp_path / "workspace"),
+            "artifacts": str(tmp_path / "artifacts"),
+        },
+    }
+    service = _service_stub(
+        metadata_dir,
+        vuln_id="CVE-2099-0042",
+        search_policy="local_only",
+        require_evidence=True,
+    )
+    service.sid = "sid-cve-cached-integration"  # type: ignore[attr-defined]
+    service.plan = plan  # type: ignore[attr-defined]
+    service.metadata_dir = metadata_dir  # type: ignore[attr-defined]
+    service.metadata_root = metadata_dir  # type: ignore[attr-defined]
+    service.requirement = normalized.requirement  # type: ignore[attr-defined]
+    service.react_loop = ReactLoop("sid-cve-cached-integration")  # type: ignore[attr-defined]
+    service.search_tool = WebSearchTool(provider="")  # type: ignore[attr-defined]
+    service.search_tool.local_root = root / "rag" / "corpus"  # type: ignore[attr-defined]
+    service.search_limit = 4  # type: ignore[attr-defined]
+    observed = {}
+
+    def _fake_generate_report(rag_context, search_hits):  # noqa: ANN001
+        observed["rag_context"] = rag_context
+        observed["search_hits"] = search_hits
+        return {
+            "intent": "cached CVE advisory integration",
+            "vuln_id": "CVE-2099-0042",
+            "semantic_signature": {
+                "input_vector": ["query parameter"],
+                "sink": ["HTML response rendering"],
+                "exploit_precondition": ["unescaped reflection"],
+            },
+        }
+
+    service._generate_report = _fake_generate_report  # type: ignore[attr-defined]
+
+    report_path = service.run()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    contract = json.loads((metadata_dir / "resolved_contract.json").read_text(encoding="utf-8"))
+
+    assert "Weaknesses: CWE-79" in observed["rag_context"]
+    assert len(observed["search_hits"]) == 1
+    assert report["quality"] == "sufficient"
+    assert report["search_policy"] == "local_only"
+    assert report["query_plan"]["queries"][0]["evidence_type"] == "advisory"
+    assert report["evidence"][0]["url"] == "https://nvd.nist.gov/vuln/detail/CVE-2099-0042"
+    assert report["evidence"][0]["evidence_type"] == "advisory"
+    assert report["evidence"][0]["source_authority"] == "high"
+    assert report["family_hypothesis_summary"]["top_family"] == "xss"
+    assert report["family_hypothesis_summary"]["ranked_families"][0]["matched_cwes"] == ["cwe-79"]
+    assert {
+        "from": "evidence:1",
+        "to": "family:xss",
+        "kind": "supports_family_hypothesis",
+    } in report["evidence_graph"]["edges"]
+    family_selection = contract["request_ir"]["selection_decision"]["family"]
+    assert family_selection["selected"] is True
+    assert family_selection["selected_family"] == "xss"
+    assert family_selection["evidence_backed"] is True
+    assert family_selection["support_by_source_authority"] == {"high": 1}
+
+
+def test_multi_cve_bundle_researcher_uses_bundle_specific_cached_advisory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    raw_dir = root / "rag" / "corpus" / "raw" / "poc" / "20251111"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "nvd-response.json").write_text(
+        json.dumps(
+            {
+                "vulnerabilities": [
+                    {
+                        "cve": {
+                            "id": "CVE-2099-0001",
+                            "published": "2099-01-01T00:00:00.000",
+                            "descriptions": [
+                                {
+                                    "lang": "en",
+                                    "value": "SQL injection in a Flask login form.",
+                                }
+                            ],
+                            "weaknesses": [
+                                {"description": [{"lang": "en", "value": "CWE-89"}]}
+                            ],
+                            "references": {
+                                "referenceData": [
+                                    {"url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0001"}
+                                ]
+                            },
+                        }
+                    },
+                    {
+                        "cve": {
+                            "id": "CVE-2099-0042",
+                            "published": "2099-02-03T00:00:00.000",
+                            "descriptions": [
+                                {
+                                    "lang": "en",
+                                    "value": "Reflected cross-site scripting in a Flask search page.",
+                                }
+                            ],
+                            "weaknesses": [
+                                {"description": [{"lang": "en", "value": "CWE-79"}]}
+                            ],
+                            "references": {
+                                "referenceData": [
+                                    {"url": "https://nvd.nist.gov/vuln/detail/CVE-2099-0042"}
+                                ]
+                            },
+                        }
+                    },
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(static_loader, "get_repo_root", lambda: root)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.get_metadata_dir", lambda incoming_sid: tmp_path / "react" / incoming_sid)
+    monkeypatch.setattr("orchestrator.plugins.react_loop.latest_failure_context", lambda incoming_sid: "")
+    normalized = normalize_requirement(
+        {
+            "cve_ids": ["CVE-2099-0001", "CVE-2099-0042"],
+            "multi_vuln": True,
+            "language": "python",
+            "framework": "flask",
+            "corpus_snapshot": "rag-snap-20251111",
+            "researcher": {"search_policy": "local_only"},
+            "policy": {"require_researcher_evidence": True},
+        },
+        multi_vuln_opt_in=True,
+    )
+    bundle = VulnBundle(
+        vuln_id="CVE-2099-0042",
+        slug="cve-2099-0042",
+        workspace_subdir="app/cve-2099-0042",
+    )
+    metadata_root = tmp_path / "metadata"
+    metadata_dir = metadata_root / "bundles" / bundle.slug
+    plan = {
+        "sid": "sid-multi-cve-cached-integration",
+        "requirement": normalized.requirement,
+        "features": {"multi_vuln": True},
+        "run_matrix": {"vuln_bundles": normalized.bundles},
+        "policy": {
+            "require_researcher_evidence": True,
+            "researcher": {"search_policy": "local_only"},
+        },
+        "paths": {
+            "metadata": str(metadata_root),
+            "workspace": str(tmp_path / "workspace"),
+            "artifacts": str(tmp_path / "artifacts"),
+        },
+    }
+    service = _service_stub(
+        metadata_dir,
+        vuln_id="CVE-2099-0042",
+        search_policy="local_only",
+        require_evidence=True,
+    )
+    service.sid = "sid-multi-cve-cached-integration"  # type: ignore[attr-defined]
+    service.bundle = bundle  # type: ignore[attr-defined]
+    service.plan = plan  # type: ignore[attr-defined]
+    service.metadata_dir = metadata_dir  # type: ignore[attr-defined]
+    service.metadata_root = metadata_root  # type: ignore[attr-defined]
+    service.requirement = bundle_requirement(normalized.requirement, bundle)  # type: ignore[attr-defined]
+    service.react_loop = ReactLoop("sid-multi-cve-cached-integration")  # type: ignore[attr-defined]
+    service.search_tool = WebSearchTool(provider="")  # type: ignore[attr-defined]
+    service.search_tool.local_root = root / "rag" / "corpus"  # type: ignore[attr-defined]
+    service.search_limit = 4  # type: ignore[attr-defined]
+    observed = {}
+
+    def _fake_generate_report(rag_context, search_hits):  # noqa: ANN001
+        observed["rag_context"] = rag_context
+        observed["search_hits"] = search_hits
+        return {
+            "intent": "cached multi-CVE bundle advisory integration",
+            "vuln_id": "CVE-2099-0042",
+            "semantic_signature": {
+                "input_vector": ["query parameter"],
+                "sink": ["HTML response rendering"],
+                "exploit_precondition": ["unescaped reflection"],
+            },
+        }
+
+    service._generate_report = _fake_generate_report  # type: ignore[attr-defined]
+
+    report_path = service.run()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    contract = json.loads((metadata_dir / "resolved_contract.json").read_text(encoding="utf-8"))
+
+    planned_queries = [entry["query"] for entry in report["query_plan"]["queries"]]
+    assert planned_queries[0].startswith("CVE-2099-0042 NVD advisory")
+    assert all("CVE-2099-0001" not in query for query in planned_queries)
+    assert "CVE-2099-0042" in observed["rag_context"]
+    assert "Weaknesses: CWE-79" in observed["rag_context"]
+    assert "CVE-2099-0001" not in observed["rag_context"]
+    assert "CWE-89" not in observed["rag_context"]
+    assert len(observed["search_hits"]) == 1
+    hit = observed["search_hits"][0]
+    assert hit.title == "CVE-2099-0042"
+    assert "Weaknesses: CWE-79" in hit.snippet
+    assert "CVE-2099-0001" not in hit.snippet
+    assert "CWE-89" not in hit.snippet
+    assert "CVE-2099-0001" not in (hit.raw_content or "")
+    assert report["vuln_id"] == "CVE-2099-0042"
+    assert report["evidence"][0]["url"] == "https://nvd.nist.gov/vuln/detail/CVE-2099-0042"
+    assert report["family_hypothesis_summary"]["top_family"] == "xss"
+    assert report["family_hypothesis_summary"]["ranked_families"][0]["matched_cwes"] == ["cwe-79"]
+    assert {
+        "from": "evidence:1",
+        "to": "family:xss",
+        "kind": "supports_family_hypothesis",
+    } in report["evidence_graph"]["edges"]
+    request_ir = contract["request_ir"]
+    assert request_ir["request_label"] == "CVE-2099-0042"
+    assert request_ir["resolved_vuln_id"] == "CVE-2099-0042"
+    family_selection = request_ir["selection_decision"]["family"]
+    assert family_selection["selected_family"] == "xss"
+    assert family_selection["evidence_backed"] is True
 
 
 def test_remote_required_failure_records_search_health_path(monkeypatch, tmp_path: Path) -> None:
@@ -334,6 +644,68 @@ def test_evidence_graph_adds_family_and_stack_support_edges(tmp_path: Path) -> N
     assert {"from": "evidence:1", "to": "family:sqli", "kind": "supports_family_hypothesis"} in edges
     assert {"from": "evidence:1", "to": "stack:python/flask", "kind": "supports_stack_hypothesis"} in edges
     assert {"from": "evidence:2", "to": "stack:python/flask", "kind": "supports_stack_hypothesis"} in edges
+
+
+def test_evidence_graph_adds_family_support_edges_from_cwe_references(tmp_path: Path) -> None:
+    service = _service_stub(
+        tmp_path,
+        vuln_id="CVE-2099-0001",
+        search_policy="remote_prefer",
+        require_evidence=False,
+    )
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CVE-2099-0001",
+        "cve_id": "CVE-2099-0001",
+    }
+    query_plan = {
+        "request_label": "CVE-2099-0001",
+        "queries": [
+            {
+                "query": "CVE-2099-0001 NVD advisory affected versions weakness details",
+                "evidence_type": "advisory",
+                "priority": 12,
+            }
+        ],
+    }
+
+    graph = service._build_evidence_graph(  # type: ignore[attr-defined]
+        search_hits=[
+            SearchResult(
+                title="CVE-2099-0001 NVD advisory",
+                url="https://nvd.nist.gov/vuln/detail/CVE-2099-0001",
+                snippet="Official advisory with affected versions and weakness metadata.",
+                source="remote",
+                provider="tavily",
+                query="CVE-2099-0001 NVD advisory affected versions weakness details",
+                raw_content='{"weaknesses":[{"description":[{"lang":"en","value":"CWE-79"}]}]}',
+            )
+        ],
+        query_plan=query_plan,
+        tech_stack_candidates=[],
+        family_hypothesis_summary={
+            "ranked_families": [
+                {
+                    "family": "xss",
+                    "confidence": "medium",
+                    "score": 0.53,
+                    "matched_aliases": [],
+                    "matched_anchors": [],
+                    "matched_cwes": ["cwe-79"],
+                    "bases": [{"basis": "cwe_reference", "confidence": "high", "cwe_id": "cwe-79"}],
+                }
+            ]
+        },
+    )
+
+    assert {
+        "from": "evidence:1",
+        "to": "family:xss",
+        "kind": "supports_family_hypothesis",
+    } in graph["edges"]
+    assert any(
+        node.get("id") == "family:xss" and node.get("matched_cwes") == ["cwe-79"]
+        for node in graph["nodes"]
+    )
 
 
 def test_evidence_graph_preserves_negative_family_hypotheses_from_query_plan(tmp_path: Path) -> None:

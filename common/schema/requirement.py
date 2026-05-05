@@ -860,13 +860,19 @@ def _extract_vuln_targets(requirement: Dict[str, Any]) -> List[Dict[str, str]]:
             }
         )
 
-    seq = requirement.get("vuln_ids")
-    if isinstance(seq, list):
+    for seq_key, allow_synthetic in (
+        ("vuln_ids", True),
+        ("cve_ids", False),
+        ("cwe_ids", False),
+    ):
+        seq = requirement.get(seq_key)
+        if not isinstance(seq, list):
+            continue
         for index, entry in enumerate(seq):
             _append_target(
                 entry,
-                field=f"vuln_ids[{index}]",
-                allow_synthetic_name=True,
+                field=f"{seq_key}[{index}]",
+                allow_synthetic_name=allow_synthetic,
             )
 
     primary: Dict[str, str] = {}

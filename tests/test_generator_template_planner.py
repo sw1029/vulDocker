@@ -43,6 +43,34 @@ def test_dynamic_eval_status_for_outcome_marks_non_fallback_as_dynamic_success()
     assert GeneratorService._dynamic_eval_status_for_outcome(outcome) == "dynamic_success"
 
 
+def test_synthesis_action_trace_family_helpers_use_selection_and_materializer_family() -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.requirement = {  # type: ignore[attr-defined]
+        "vuln_id": "CVE-2099-0042",
+        "request_ir": {
+            "selection_decision": {
+                "family": {
+                    "selected": True,
+                    "selected_family": "xss",
+                }
+            }
+        },
+    }
+    outcome = SimpleNamespace(
+        selected=SimpleNamespace(
+            manifest={
+                "metadata": {
+                    "semantic_guided_family": "xss",
+                    "semantic_guided_selection_source": "request_ir_selection",
+                }
+            }
+        )
+    )
+
+    assert service._selected_family_for_trace() == "xss"  # type: ignore[attr-defined]
+    assert service._materialized_family_for_synthesis_outcome(outcome) == "xss"  # type: ignore[attr-defined]
+
+
 def test_template_planner_runs_when_failure_context_exists() -> None:
     service = GeneratorService.__new__(GeneratorService)
     service.requirement = {}  # type: ignore[attr-defined]
@@ -220,6 +248,52 @@ def test_researcher_report_for_prompt_preserves_family_hypothesis_summary(tmp_pa
     assert trimmed["family_hypothesis_summary"]["top_family"] == "open_redirect"
     assert trimmed["family_hypothesis_summary"]["ambiguous"] is True
     assert trimmed["evidence_relevance"]["confidence"] == "medium"
+
+
+def test_researcher_report_for_prompt_preserves_compact_evidence_for_rag_injection(tmp_path: Path) -> None:
+    service = GeneratorService.__new__(GeneratorService)
+    service.metadata_dir = tmp_path  # type: ignore[attr-defined]
+    service.requirement = {"vuln_id": "CVE-2099-0001"}  # type: ignore[attr-defined]
+    long_snippet = " ".join(["NVD advisory CVE-2099-0001 affected Flask endpoint"] * 30)
+    (tmp_path / "researcher_report.json").write_text(
+        json.dumps(
+            {
+                "vuln_id": "CVE-2099-0001",
+                "evidence": [
+                    {
+                        "query": "CVE-2099-0001 NVD advisory affected versions weakness details",
+                        "query_target": "advisory",
+                        "evidence_type": "advisory",
+                        "source_authority": "high",
+                        "source": "local",
+                        "provider": "local",
+                        "title": "NVD - CVE-2099-0001",
+                        "url": "file:///tmp/rag/corpus/raw/poc/20250101/CVE-2099-0001.json",
+                        "snippet": long_snippet,
+                        "raw_content": "should not be forwarded into the generator prompt",
+                    }
+                ],
+                "evidence_type_summary": {
+                    "hit_count": 1,
+                    "matched_target_count": 1,
+                    "by_type": {"advisory": 1},
+                    "by_source_authority": {"high": 1},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    trimmed = json.loads(service._researcher_report_for_prompt())  # type: ignore[attr-defined]
+
+    evidence = trimmed["evidence"][0]
+    assert evidence["evidence_type"] == "advisory"
+    assert evidence["source_authority"] == "high"
+    assert evidence["title"] == "NVD - CVE-2099-0001"
+    assert "raw_content" not in evidence
+    assert len(evidence["snippet"]) <= 800
+    assert trimmed["evidence_type_summary"]["by_type"]["advisory"] == 1
 
 
 def test_hybrid_template_fallback_requires_compatible_template() -> None:
